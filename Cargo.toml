@@ -16,6 +16,18 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # Standard library for paths and directories
 dirs = "5.0"
 
+# Native file/folder picker dialogs
+rfd = "0.14"
+
+# Recursive directory traversal
+walkdir = "2.4"
+
+# Better error handling with derive macros
+thiserror = "1.0"
+
+# Date and time utilities
+chrono = "0.4"
+
 [profile.release]
 # Maximum performance optimizations
 opt-level = 3
