@@ -1,5 +1,5 @@
 use iced::{Element, Task, Theme};
-use iced::widget::{button, column, container, scrollable, text, Column};
+use iced::widget::{button, column, container, row, scrollable, text, Column};
 use iced::{Alignment, Length};
 use rfd::FileDialog;
 use rusqlite::{Connection, ErrorCode};
@@ -7,17 +7,24 @@ use std::path::PathBuf;
 use walkdir::WalkDir;
 use chrono::Utc;
 
-// Declare the state module
+// Declare the state and raw modules
 mod state;
+mod raw;
 
-// Import shared data structures
-use state::data::Image;
+// Import shared data structures (alias to avoid conflict with iced's image widget)
+use state::data::Image as ImageData;
 
 /// Result of a folder import operation
 #[derive(Debug, Clone)]
 struct ImportResult {
     imported_count: usize,
     skipped_count: usize,
+}
+
+/// Result of thumbnail generation
+#[derive(Debug, Clone)]
+struct ThumbnailResult {
+    generated_count: usize,
 }
 
 /// Main application state
@@ -27,7 +34,7 @@ struct RawEditor {
     /// Status message to display to the user
     status: String,
     /// All images loaded from the database
-    images: Vec<Image>,
+    images: Vec<ImageData>,
 }
 
 /// Application messages (events)
@@ -37,6 +44,8 @@ enum Message {
     ImportFolder,
     /// Background import completed with results
     ImportComplete(ImportResult),
+    /// Background thumbnail generation completed
+    ThumbnailGenerated(ThumbnailResult),
 }
 
 impl RawEditor {
@@ -47,6 +56,9 @@ impl RawEditor {
         let library = state::library::Library::new()
             .expect("Failed to initialize database. Check permissions and disk space.");
         
+        // Verify thumbnails exist on disk (reset if deleted)
+        let _ = library.verify_thumbnails();
+        
         // Load all images from the database
         let images = library.get_all_images().unwrap_or_default();
         let image_count = images.len();
@@ -55,9 +67,16 @@ impl RawEditor {
         
         let status = format!("Loaded {} images.", image_count);
         
+        // Get database path for background thumbnail generation
+        let db_path = library.path().clone();
+        
         (
             RawEditor { library, status, images },
-            Task::none(),
+            // Start thumbnail generation in the background
+            Task::perform(
+                generate_thumbnails_async(db_path),
+                Message::ThumbnailGenerated,
+            ),
         )
     }
 
@@ -101,24 +120,83 @@ impl RawEditor {
                     result.imported_count, result.skipped_count, self.images.len()
                 );
                 
-                Task::none()
+                // Start thumbnail generation for newly imported images
+                let db_path = self.library.path().clone();
+                Task::perform(
+                    generate_thumbnails_async(db_path),
+                    Message::ThumbnailGenerated,
+                )
+            }
+            Message::ThumbnailGenerated(result) => {
+                // Reload images to show updated thumbnail paths
+                self.images = self.library.get_all_images().unwrap_or_default();
+                
+                println!(
+                    "🖼️  Generated {} thumbnails",
+                    result.generated_count
+                );
+                
+                // Update status to show thumbnail generation progress
+                let pending_count = self.library.get_pending_thumbnails(1)
+                    .map(|imgs| imgs.len())
+                    .unwrap_or(0);
+                
+                if pending_count > 0 {
+                    self.status = format!(
+                        "Generating thumbnails... {} remaining",
+                        pending_count
+                    );
+                    
+                    // Continue generating more thumbnails
+                    let db_path = self.library.path().clone();
+                    Task::perform(
+                        generate_thumbnails_async(db_path),
+                        Message::ThumbnailGenerated,
+                    )
+                } else {
+                    self.status = format!(
+                        "Ready. {} images in library. All thumbnails generated!",
+                        self.images.len()
+                    );
+                    Task::none()
+                }
             }
         }
     }
 
     /// Build the user interface
     fn view(&self) -> Element<Message> {
-        // Create a column of image filenames
+        // Count thumbnails
+        let cached_count = self.images.iter()
+            .filter(|img| img.thumbnail_path.is_some())
+            .count();
+        let total_count = self.images.len();
+        
+        // Create a column of image entries with status indicators
         let image_list: Column<Message> = self.images.iter().fold(
             column![].spacing(5),
-            |col, image| {
-                col.push(text(&image.filename).size(14))
+            |col, img| {
+                // Show status indicator based on thumbnail availability
+                let status_icon = if img.thumbnail_path.is_some() {
+                    "✅" // Checkmark for cached
+                } else {
+                    "⏳" // Hourglass for pending
+                };
+                
+                let row_content = row![
+                    text(status_icon).size(20),
+                    text(&img.filename).size(14),
+                ]
+                .spacing(10)
+                .align_y(Alignment::Center);
+                
+                col.push(row_content)
             },
         );
         
         // Main content layout
         let content: Column<Message> = column![
-            text("RAW Editor v0.0.4")
+            text("RAW Editor v0.0.5")
                 .size(48),
             
             button("Import Folder")
@@ -128,7 +206,10 @@ impl RawEditor {
             text(&self.status)
                 .size(16),
             
-            // Scrollable list of images
+            text(format!("Thumbnails: {}/{}", cached_count, total_count))
+                .size(14),
+            
+            // Scrollable list of images with thumbnails
             scrollable(image_list)
                 .height(Length::Fill)
                 .width(Length::Fill),
@@ -245,5 +326,68 @@ async fn import_folder_async(folder_path: PathBuf, db_path: PathBuf) -> ImportRe
     ImportResult {
         imported_count,
         skipped_count,
+    }
+}
+
+/// Async function to generate thumbnails for pending images
+/// Processes images in batches to avoid blocking the UI
+async fn generate_thumbnails_async(db_path: PathBuf) -> ThumbnailResult {
+    let mut generated_count = 0;
+    const BATCH_SIZE: usize = 20; // Process 20 images per batch for speed
+    
+    // Open a separate database connection for this background thread
+    let conn = Connection::open(&db_path)
+        .expect("Failed to open database connection for thumbnail generation");
+    
+    // Get pending images that need thumbnails
+    // Prioritize 'pending' over 'failed' so fresh imports get processed first
+    let mut stmt = conn.prepare(
+        "SELECT id, path FROM images 
+         WHERE cache_status IN ('pending', 'failed') 
+         ORDER BY 
+           CASE cache_status 
+             WHEN 'pending' THEN 1 
+             WHEN 'failed' THEN 2 
+           END,
+           id 
+         LIMIT ?"
+    ).expect("Failed to prepare statement");
+    
+    let pending_images: Vec<(i64, String)> = stmt
+        .query_map([BATCH_SIZE], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .expect("Failed to query pending images")
+        .filter_map(|r| r.ok())
+        .collect();
+    
+    println!("🔍 Processing {} images for thumbnail generation...", pending_images.len());
+    
+    // Generate thumbnails for each pending image
+    for (image_id, raw_path_str) in pending_images {
+        let raw_path = std::path::Path::new(&raw_path_str);
+        
+        // Try to generate thumbnail
+        if let Some(thumbnail_path) = raw::thumbnail::generate_thumbnail(raw_path, image_id) {
+            // Update database with thumbnail path
+            let thumbnail_path_str = thumbnail_path.to_string_lossy().to_string();
+            let _ = conn.execute(
+                "UPDATE images SET thumbnail_path = ?1, cache_status = 'cached' WHERE id = ?2",
+                rusqlite::params![thumbnail_path_str, image_id],
+            );
+            
+            generated_count += 1;
+        } else {
+            // Mark as failed if thumbnail generation didn't work
+            let _ = conn.execute(
+                "UPDATE images SET cache_status = 'failed' WHERE id = ?1",
+                rusqlite::params![image_id],
+            );
+            eprintln!("⚠️  Failed to generate thumbnail for image ID {}", image_id);
+        }
+    }
+    
+    ThumbnailResult {
+        generated_count,
     }
 }

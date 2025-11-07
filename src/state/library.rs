@@ -90,6 +90,20 @@ impl Library {
             [],
         )?;
 
+        // Add thumbnail_path column if it doesn't exist (for existing databases)
+        // This is safe - if the column exists, the ALTER will be silently ignored
+        let _ = self.conn.execute(
+            "ALTER TABLE images ADD COLUMN thumbnail_path TEXT",
+            [],
+        );
+
+        // Create index for cache_status to quickly find pending thumbnails
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_images_cache_status 
+             ON images(cache_status)",
+            [],
+        )?;
+
         println!("✅ Database schema initialized");
         
         Ok(())
@@ -132,7 +146,7 @@ impl Library {
     /// Returns a vector of Image structs ordered by import date (newest first)
     pub fn get_all_images(&self) -> SqlResult<Vec<Image>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, filename, path FROM images ORDER BY imported_at DESC"
+            "SELECT id, filename, path, thumbnail_path FROM images ORDER BY imported_at DESC"
         )?;
 
         let image_iter = stmt.query_map([], |row| {
@@ -140,6 +154,7 @@ impl Library {
                 id: row.get(0)?,
                 filename: row.get(1)?,
                 path: row.get(2)?,
+                thumbnail_path: row.get(3)?,
             })
         })?;
 
@@ -149,6 +164,75 @@ impl Library {
         }
 
         Ok(images)
+    }
+
+    /// Get images that need thumbnail generation (cache_status = 'pending')
+    pub fn get_pending_thumbnails(&self, limit: usize) -> SqlResult<Vec<Image>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, filename, path, thumbnail_path 
+             FROM images 
+             WHERE cache_status = 'pending' 
+             LIMIT ?1"
+        )?;
+
+        let image_iter = stmt.query_map([limit], |row| {
+            Ok(Image {
+                id: row.get(0)?,
+                filename: row.get(1)?,
+                path: row.get(2)?,
+                thumbnail_path: row.get(3)?,
+            })
+        })?;
+
+        let mut images = Vec::new();
+        for image in image_iter {
+            images.push(image?);
+        }
+
+        Ok(images)
+    }
+
+    /// Update an image's thumbnail path and mark it as cached
+    pub fn update_thumbnail(&self, image_id: i64, thumbnail_path: &str) -> SqlResult<()> {
+        self.conn.execute(
+            "UPDATE images SET thumbnail_path = ?1, cache_status = 'cached' WHERE id = ?2",
+            rusqlite::params![thumbnail_path, image_id],
+        )?;
+        Ok(())
+    }
+
+    /// Verify cached thumbnails actually exist on disk
+    /// Reset to 'pending' if thumbnail file is missing
+    pub fn verify_thumbnails(&self) -> SqlResult<usize> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, thumbnail_path FROM images WHERE cache_status = 'cached' AND thumbnail_path IS NOT NULL"
+        )?;
+
+        let cached_images: Vec<(i64, String)> = stmt
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        let mut reset_count = 0;
+        for (id, thumbnail_path) in cached_images {
+            // Check if file exists
+            if !std::path::Path::new(&thumbnail_path).exists() {
+                // Reset to pending since thumbnail is missing
+                self.conn.execute(
+                    "UPDATE images SET cache_status = 'pending', thumbnail_path = NULL WHERE id = ?1",
+                    rusqlite::params![id],
+                )?;
+                reset_count += 1;
+            }
+        }
+
+        if reset_count > 0 {
+            println!("🔄 Reset {} missing thumbnails to pending", reset_count);
+        }
+
+        Ok(reset_count)
     }
 }
 

@@ -12,4 +12,6 @@ pub struct Image {
     pub filename: String,
     /// Full path to the RAW file
     pub path: String,
+    /// Path to the cached thumbnail (None if not yet generated)
+    pub thumbnail_path: Option<String>,
 }

@@ -28,6 +28,15 @@ thiserror = "1.0"
 # Date and time utilities
 chrono = "0.4"
 
+# RAW image decoding (extract embedded JPEGs)
+rawloader = "0.37"
+
+# Image processing (decode, resize, save thumbnails)
+image = "0.25"
+
+# System cache directory detection
+dirs-next = "2.0"
+
 [profile.release]
 # Maximum performance optimizations
 opt-level = 3
