@@ -1,14 +1,14 @@
 [package]
 name = "raw-editor"
-version = "0.0.1"
+version = "0.0.6"
 edition = "2021"
-authors = ["Your Name <your.email@example.com>"]
+authors = ["Ayman REBAI <ayman.rebai@gmail.com>"]
 description = "A blazing-fast, native RAW photo editor"
 license = "MIT"
 
 [dependencies]
 # GUI framework with native rendering via wgpu
-iced = { version = "0.13", features = ["wgpu", "tokio", "advanced"] }
+iced = { version = "0.13", features = ["wgpu", "tokio", "image", "advanced"] }
 
 # Additional widgets for iced (Wrap for grid layout)
 iced_aw = { version = "0.10", default-features = false, features = ["wrap"] }

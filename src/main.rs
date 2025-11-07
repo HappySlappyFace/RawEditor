@@ -1,5 +1,6 @@
 use iced::{Element, Task, Theme};
-use iced::widget::{button, column, container, row, scrollable, text};
+use iced::widget::{button, column, container, row, scrollable, text, Image};
+use iced::advanced::image::Handle;
 use iced::{Alignment, Length};
 use iced_aw::Wrap;
 use rfd::FileDialog;
@@ -232,18 +233,12 @@ impl RawEditor {
                         .padding(5)
                     )
                     .on_press(Message::ImageSelected(img.id))
-                } else if let Some(ref _thumb_path) = img.thumbnail_path {
-                    // Temporary: Show filename as text thumbnail
-                    // TODO: Add actual image display once we figure out iced 0.13 image API
+                } else if let Some(ref thumb_path) = img.thumbnail_path {
+                    let handle = Handle::from_path(thumb_path.clone());
                     button(
-                        column![
-                            text("✓").size(24),
-                            text(&img.filename).size(8),
-                        ]
-                        .align_x(Alignment::Center)
-                        .width(128)
-                        .height(128)
-                        .padding(5)
+                        Image::new(handle)
+                            .width(128)
+                            .height(128)
                     )
                     .on_press(Message::ImageSelected(img.id))
                 } else {
