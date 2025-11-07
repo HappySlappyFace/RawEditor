@@ -1,5 +1,5 @@
 use iced::{Element, Task, Theme};
-use iced::widget::{button, column, container, text, Column};
+use iced::widget::{button, column, container, scrollable, text, Column};
 use iced::{Alignment, Length};
 use rfd::FileDialog;
 use rusqlite::{Connection, ErrorCode};
@@ -9,6 +9,9 @@ use chrono::Utc;
 
 // Declare the state module
 mod state;
+
+// Import shared data structures
+use state::data::Image;
 
 /// Result of a folder import operation
 #[derive(Debug, Clone)]
@@ -23,6 +26,8 @@ struct RawEditor {
     library: state::library::Library,
     /// Status message to display to the user
     status: String,
+    /// All images loaded from the database
+    images: Vec<Image>,
 }
 
 /// Application messages (events)
@@ -42,13 +47,16 @@ impl RawEditor {
         let library = state::library::Library::new()
             .expect("Failed to initialize database. Check permissions and disk space.");
         
-        let image_count = library.image_count().unwrap_or(0);
+        // Load all images from the database
+        let images = library.get_all_images().unwrap_or_default();
+        let image_count = images.len();
+        
         println!("🎨 RAW Editor initialized with {} images", image_count);
         
-        let status = format!("Ready. {} images in library.", image_count);
+        let status = format!("Loaded {} images.", image_count);
         
         (
-            RawEditor { library, status },
+            RawEditor { library, status, images },
             Task::none(),
         )
     }
@@ -79,15 +87,18 @@ impl RawEditor {
                 Task::none()
             }
             Message::ImportComplete(result) => {
+                // Reload images from database to show newly imported files
+                self.images = self.library.get_all_images().unwrap_or_default();
+                
                 // Update status with import results
                 self.status = format!(
-                    "✅ Import complete! Added {} images, skipped {} duplicates.",
-                    result.imported_count, result.skipped_count
+                    "✅ Import complete! Added {} images, skipped {} duplicates. Total: {} images.",
+                    result.imported_count, result.skipped_count, self.images.len()
                 );
                 
                 println!(
-                    "📊 Import summary: {} new, {} skipped",
-                    result.imported_count, result.skipped_count
+                    "📊 Import summary: {} new, {} skipped, {} total",
+                    result.imported_count, result.skipped_count, self.images.len()
                 );
                 
                 Task::none()
@@ -97,8 +108,17 @@ impl RawEditor {
 
     /// Build the user interface
     fn view(&self) -> Element<Message> {
+        // Create a column of image filenames
+        let image_list: Column<Message> = self.images.iter().fold(
+            column![].spacing(5),
+            |col, image| {
+                col.push(text(&image.filename).size(14))
+            },
+        );
+        
+        // Main content layout
         let content: Column<Message> = column![
-            text("RAW Editor v0.0.3")
+            text("RAW Editor v0.0.4")
                 .size(48),
             
             button("Import Folder")
@@ -107,6 +127,11 @@ impl RawEditor {
             
             text(&self.status)
                 .size(16),
+            
+            // Scrollable list of images
+            scrollable(image_list)
+                .height(Length::Fill)
+                .width(Length::Fill),
         ]
         .spacing(20)
         .padding(40)
@@ -115,8 +140,6 @@ impl RawEditor {
         container(content)
             .width(Length::Fill)
             .height(Length::Fill)
-            .center_x(Length::Fill)
-            .center_y(Length::Fill)
             .into()
     }
 

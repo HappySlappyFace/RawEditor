@@ -1,5 +1,6 @@
 use rusqlite::{Connection, Result as SqlResult};
 use std::path::PathBuf;
+use super::data::Image;
 
 /// The Library manages the SQLite catalog database.
 /// It stores image metadata, edit history, and references to RAW files.
@@ -125,6 +126,29 @@ impl Library {
         )?;
 
         Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Get all images from the library
+    /// Returns a vector of Image structs ordered by import date (newest first)
+    pub fn get_all_images(&self) -> SqlResult<Vec<Image>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, filename, path FROM images ORDER BY imported_at DESC"
+        )?;
+
+        let image_iter = stmt.query_map([], |row| {
+            Ok(Image {
+                id: row.get(0)?,
+                filename: row.get(1)?,
+                path: row.get(2)?,
+            })
+        })?;
+
+        let mut images = Vec::new();
+        for image in image_iter {
+            images.push(image?);
+        }
+
+        Ok(images)
     }
 }
 
