@@ -173,13 +173,8 @@ impl RawEditor {
                 )
             }
             Message::ThumbnailGenerated(result) => {
-                // Reload images to show updated thumbnail paths
+                // Always reload images to show updated thumbnail in the grid (even if count is 0)
                 self.images = self.library.get_all_images().unwrap_or_default();
-                
-                println!(
-                    "🖼️  Generated {} thumbnails",
-                    result.generated_count
-                );
                 
                 // Update status to show thumbnail generation progress
                 let pending_count = self.library.get_pending_thumbnails(1)
@@ -192,7 +187,7 @@ impl RawEditor {
                         pending_count
                     );
                     
-                    // Continue generating more thumbnails
+                    // Continue generating next thumbnail
                     let db_path = self.library.path().clone();
                     Task::perform(
                         generate_thumbnails_async(db_path),
@@ -545,10 +540,10 @@ async fn import_folder_async(folder_path: PathBuf, db_path: PathBuf) -> ImportRe
 }
 
 /// Async function to generate thumbnails for pending images
-/// Processes images in batches to avoid blocking the UI
+/// Processes ONE image at a time for immediate UI feedback
 async fn generate_thumbnails_async(db_path: PathBuf) -> ThumbnailResult {
     let mut generated_count = 0;
-    const BATCH_SIZE: usize = 20; // Process 20 images per batch for speed
+    const BATCH_SIZE: usize = 1; // Process 1 image at a time for per-image UI updates
     
     // Open a separate database connection for this background thread
     let conn = Connection::open(&db_path)
@@ -576,9 +571,7 @@ async fn generate_thumbnails_async(db_path: PathBuf) -> ThumbnailResult {
         .filter_map(|r| r.ok())
         .collect();
     
-    println!("🔍 Processing {} images for thumbnail generation...", pending_images.len());
-    
-    // Generate thumbnails for each pending image
+    // Generate thumbnail for the image (batch size = 1 for per-image updates)
     for (image_id, raw_path_str) in pending_images {
         let raw_path = std::path::Path::new(&raw_path_str);
         
