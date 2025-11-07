@@ -10,6 +10,12 @@ license = "MIT"
 # GUI framework with native rendering via wgpu
 iced = { version = "0.13", features = ["wgpu", "tokio", "advanced"] }
 
+# Database for catalog management (bundled = includes SQLite, no system dependency)
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# Standard library for paths and directories
+dirs = "5.0"
+
 [profile.release]
 # Maximum performance optimizations
 opt-level = 3
