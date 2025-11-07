@@ -103,6 +103,12 @@ impl Library {
             [],
         );
 
+        // Add preview_path column for full-size preview JPEGs
+        let _ = self.conn.execute(
+            "ALTER TABLE images ADD COLUMN preview_path TEXT",
+            [],
+        );
+
         // Create index for cache_status to quickly find pending thumbnails
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_images_cache_status 
@@ -152,7 +158,7 @@ impl Library {
     /// Returns a vector of Image structs ordered by import date (newest first)
     pub fn get_all_images(&self) -> SqlResult<Vec<Image>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, filename, path, thumbnail_path, COALESCE(file_status, 'exists') FROM images ORDER BY imported_at DESC"
+            "SELECT id, filename, path, thumbnail_path, preview_path, COALESCE(file_status, 'exists') FROM images ORDER BY imported_at DESC"
         )?;
 
         let image_iter = stmt.query_map([], |row| {
@@ -161,7 +167,8 @@ impl Library {
                 filename: row.get(1)?,
                 path: row.get(2)?,
                 thumbnail_path: row.get(3)?,
-                file_status: row.get(4)?,
+                preview_path: row.get(4)?,
+                file_status: row.get(5)?,
             })
         })?;
 
@@ -176,7 +183,7 @@ impl Library {
     /// Get images that need thumbnail generation (cache_status = 'pending')
     pub fn get_pending_thumbnails(&self, limit: usize) -> SqlResult<Vec<Image>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, filename, path, thumbnail_path, COALESCE(file_status, 'exists') 
+            "SELECT id, filename, path, thumbnail_path, preview_path, COALESCE(file_status, 'exists') 
              FROM images 
              WHERE cache_status = 'pending' 
              LIMIT ?1"
@@ -188,7 +195,8 @@ impl Library {
                 filename: row.get(1)?,
                 path: row.get(2)?,
                 thumbnail_path: row.get(3)?,
-                file_status: row.get(4)?,
+                preview_path: row.get(4)?,
+                file_status: row.get(5)?,
             })
         })?;
 
@@ -205,6 +213,15 @@ impl Library {
         self.conn.execute(
             "UPDATE images SET thumbnail_path = ?1, cache_status = 'cached' WHERE id = ?2",
             rusqlite::params![thumbnail_path, image_id],
+        )?;
+        Ok(())
+    }
+
+    /// Set an image's preview path (full-size embedded JPEG)
+    pub fn set_image_preview_path(&self, image_id: i64, path: &str) -> SqlResult<()> {
+        self.conn.execute(
+            "UPDATE images SET preview_path = ?1 WHERE id = ?2",
+            rusqlite::params![path, image_id],
         )?;
         Ok(())
     }

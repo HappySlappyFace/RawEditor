@@ -14,6 +14,8 @@ pub struct Image {
     pub path: String,
     /// Path to the cached thumbnail (None if not yet generated)
     pub thumbnail_path: Option<String>,
+    /// Path to the full-size preview JPEG (None if not yet generated)
+    pub preview_path: Option<String>,
     /// File status: 'exists' or 'deleted'
     pub file_status: String,
 }

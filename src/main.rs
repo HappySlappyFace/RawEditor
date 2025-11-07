@@ -29,6 +29,26 @@ struct ThumbnailResult {
     generated_count: usize,
 }
 
+/// Result of preview generation
+#[derive(Debug, Clone)]
+struct PreviewResult {
+    image_id: i64,
+    preview_path: Result<String, String>,
+}
+
+/// State of the editor pane
+#[derive(Debug, Clone, PartialEq)]
+enum EditorPaneState {
+    /// No image selected
+    NoSelection,
+    /// Image selected, loading preview
+    LoadingPreview(i64),
+    /// Image selected, preview loaded
+    PreviewLoaded(i64, String),
+    /// Image selected, preview failed to load
+    PreviewFailed(i64, String),
+}
+
 /// Main application state
 struct RawEditor {
     /// The catalog database
@@ -39,6 +59,10 @@ struct RawEditor {
     images: Vec<ImageData>,
     /// Currently selected image ID
     selected_image_id: Option<i64>,
+    /// State of the editor pane (preview loading)
+    editor_pane_state: EditorPaneState,
+    /// Cache directory for full-size previews
+    preview_cache_dir: PathBuf,
 }
 
 /// Application messages (events)
@@ -52,6 +76,8 @@ enum Message {
     ThumbnailGenerated(ThumbnailResult),
     /// User selected an image from the grid
     ImageSelected(i64),
+    /// Background preview generation completed
+    PreviewGenerated(PreviewResult),
 }
 
 impl RawEditor {
@@ -79,12 +105,17 @@ impl RawEditor {
         // Get database path for background thumbnail generation
         let db_path = library.path().clone();
         
+        // Initialize preview cache directory
+        let preview_cache_dir = raw::preview::get_preview_cache_dir();
+        
         (
             RawEditor { 
                 library, 
                 status, 
                 images,
                 selected_image_id: None,
+                editor_pane_state: EditorPaneState::NoSelection,
+                preview_cache_dir,
             },
             // Start thumbnail generation in the background
             Task::perform(
@@ -179,6 +210,58 @@ impl RawEditor {
                 // Update the selected image
                 self.selected_image_id = Some(image_id);
                 println!("🖼️  Selected image ID: {}", image_id);
+                
+                // Find the selected image
+                if let Some(img) = self.images.iter().find(|i| i.id == image_id) {
+                    // Check if preview already cached
+                    if let Some(ref preview_path) = img.preview_path {
+                        // Preview already exists
+                        self.editor_pane_state = EditorPaneState::PreviewLoaded(image_id, preview_path.clone());
+                        Task::none()
+                    } else {
+                        // Need to generate preview
+                        self.editor_pane_state = EditorPaneState::LoadingPreview(image_id);
+                        let raw_path = img.path.clone();
+                        let preview_cache_dir = self.preview_cache_dir.clone();
+                        
+                        // Spawn async task to generate preview
+                        Task::perform(
+                            async move {
+                                let result = raw::preview::generate_full_preview(
+                                    raw_path,
+                                    image_id,
+                                    preview_cache_dir
+                                ).await;
+                                PreviewResult {
+                                    image_id,
+                                    preview_path: result,
+                                }
+                            },
+                            Message::PreviewGenerated,
+                        )
+                    }
+                } else {
+                    Task::none()
+                }
+            }
+            Message::PreviewGenerated(result) => {
+                // Update database with preview path
+                if let Ok(ref path) = result.preview_path {
+                    let _ = self.library.set_image_preview_path(result.image_id, path);
+                    
+                    // Update in-memory image data
+                    if let Some(img) = self.images.iter_mut().find(|i| i.id == result.image_id) {
+                        img.preview_path = Some(path.clone());
+                    }
+                    
+                    // Update editor pane state
+                    self.editor_pane_state = EditorPaneState::PreviewLoaded(result.image_id, path.clone());
+                    println!("✅ Preview loaded for image {}", result.image_id);
+                } else if let Err(ref err) = result.preview_path {
+                    self.editor_pane_state = EditorPaneState::PreviewFailed(result.image_id, err.clone());
+                    eprintln!("❌ Preview failed for image {}: {}", result.image_id, err);
+                }
+                
                 Task::none()
             }
         }
@@ -266,45 +349,75 @@ impl RawEditor {
         
         // ========== RIGHT PANE: Editor View ==========
         
-        let editor_content = if let Some(selected_id) = self.selected_image_id {
-            // Find the selected image
-            if let Some(selected_img) = self.images.iter().find(|img| img.id == selected_id) {
+        let editor_content = match &self.editor_pane_state {
+            EditorPaneState::NoSelection => {
                 column![
-                    text("Selected Image").size(24),
-                    text("").size(10),
-                    text("Filename:").size(14),
-                    text(&selected_img.filename).size(16),
-                    text("").size(10),
-                    text("Path:").size(14),
-                    text(&selected_img.path).size(12),
-                    text("").size(10),
-                    text(format!("Status: {}", if selected_img.file_status == "deleted" { "❌ Deleted" } else { "✅ Exists" }))
-                        .size(14),
-                    text("").size(10),
-                    text(format!("Image ID: {}", selected_img.id)).size(12),
-                ]
-                .spacing(5)
-                .padding(20)
-            } else {
-                column![
-                    text("Image not found").size(18),
+                    text("No Image Selected").size(24),
+                    text("").size(20),
+                    text("← Click a thumbnail to select")
+                        .size(16)
+                        .style(|theme: &Theme| {
+                            text::Style {
+                                color: Some(theme.palette().text.scale_alpha(0.6)),
+                            }
+                        }),
                 ]
                 .padding(20)
+                .align_x(Alignment::Center)
             }
-        } else {
-            column![
-                text("No Image Selected").size(24),
-                text("").size(20),
-                text("← Click a thumbnail to select")
-                    .size(16)
-                    .style(|theme: &Theme| {
-                        text::Style {
-                            color: Some(theme.palette().text.scale_alpha(0.6)),
-                        }
-                    }),
-            ]
-            .padding(20)
-            .align_x(Alignment::Center)
+            EditorPaneState::LoadingPreview(image_id) => {
+                // Show loading state
+                if let Some(img) = self.images.iter().find(|i| i.id == *image_id) {
+                    column![
+                        text(&img.filename).size(20),
+                        text("").size(20),
+                        text("⌛ Loading preview...").size(16),
+                    ]
+                    .padding(20)
+                    .align_x(Alignment::Center)
+                } else {
+                    column![text("Loading...").size(18)].padding(20)
+                }
+            }
+            EditorPaneState::PreviewLoaded(image_id, preview_path) => {
+                // Show full-size preview
+                if let Some(img) = self.images.iter().find(|i| i.id == *image_id) {
+                    let handle = Handle::from_path(preview_path.clone());
+                    column![
+                        text(&img.filename).size(18),
+                        text("").size(10),
+                        // Full-size preview image
+                        scrollable(
+                            Image::new(handle)
+                                .width(Length::Fill)
+                        )
+                        .height(Length::Fill),
+                        text("").size(10),
+                        text(format!("Status: {}", if img.file_status == "deleted" { "❌ Deleted" } else { "✅ Exists" }))
+                            .size(12),
+                    ]
+                    .spacing(5)
+                    .padding(10)
+                } else {
+                    column![text("Image not found").size(18)].padding(20)
+                }
+            }
+            EditorPaneState::PreviewFailed(image_id, error) => {
+                // Show error state
+                if let Some(img) = self.images.iter().find(|i| i.id == *image_id) {
+                    column![
+                        text(&img.filename).size(18),
+                        text("").size(20),
+                        text("❌ Preview Failed").size(16),
+                        text("").size(10),
+                        text(error).size(12),
+                    ]
+                    .padding(20)
+                    .align_x(Alignment::Center)
+                } else {
+                    column![text("Error loading preview").size(18)].padding(20)
+                }
+            }
         };
         
         let editor_pane = container(editor_content)

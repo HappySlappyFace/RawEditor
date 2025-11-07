@@ -13,6 +13,9 @@ iced = { version = "0.13", features = ["wgpu", "tokio", "image", "advanced"] }
 # Additional widgets for iced (Wrap for grid layout)
 iced_aw = { version = "0.10", default-features = false, features = ["wrap"] }
 
+# Async runtime for background tasks
+tokio = { version = "1", features = ["rt", "fs"] }
+
 # Database for catalog management (bundled = includes SQLite, no system dependency)
 rusqlite = { version = "0.32", features = ["bundled"] }
 
