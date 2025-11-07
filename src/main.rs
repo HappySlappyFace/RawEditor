@@ -1,6 +1,7 @@
 use iced::{Element, Task, Theme};
-use iced::widget::{button, column, container, row, scrollable, text, Column};
+use iced::widget::{button, column, container, row, scrollable, text};
 use iced::{Alignment, Length};
+use iced_aw::Wrap;
 use rfd::FileDialog;
 use rusqlite::{Connection, ErrorCode};
 use std::path::PathBuf;
@@ -35,6 +36,8 @@ struct RawEditor {
     status: String,
     /// All images loaded from the database
     images: Vec<ImageData>,
+    /// Currently selected image ID
+    selected_image_id: Option<i64>,
 }
 
 /// Application messages (events)
@@ -46,6 +49,8 @@ enum Message {
     ImportComplete(ImportResult),
     /// Background thumbnail generation completed
     ThumbnailGenerated(ThumbnailResult),
+    /// User selected an image from the grid
+    ImageSelected(i64),
 }
 
 impl RawEditor {
@@ -59,6 +64,9 @@ impl RawEditor {
         // Verify thumbnails exist on disk (reset if deleted)
         let _ = library.verify_thumbnails();
         
+        // Verify RAW files exist on disk (mark as deleted if missing)
+        let _ = library.verify_files();
+        
         // Load all images from the database
         let images = library.get_all_images().unwrap_or_default();
         let image_count = images.len();
@@ -71,7 +79,12 @@ impl RawEditor {
         let db_path = library.path().clone();
         
         (
-            RawEditor { library, status, images },
+            RawEditor { 
+                library, 
+                status, 
+                images,
+                selected_image_id: None,
+            },
             // Start thumbnail generation in the background
             Task::perform(
                 generate_thumbnails_async(db_path),
@@ -161,64 +174,158 @@ impl RawEditor {
                     Task::none()
                 }
             }
+            Message::ImageSelected(image_id) => {
+                // Update the selected image
+                self.selected_image_id = Some(image_id);
+                println!("🖼️  Selected image ID: {}", image_id);
+                Task::none()
+            }
         }
     }
 
     /// Build the user interface
     fn view(&self) -> Element<Message> {
-        // Count thumbnails
+        // Count thumbnails and deleted files
         let cached_count = self.images.iter()
             .filter(|img| img.thumbnail_path.is_some())
             .count();
+        let deleted_count = self.images.iter()
+            .filter(|img| img.file_status == "deleted")
+            .count();
         let total_count = self.images.len();
         
-        // Create a column of image entries with status indicators
-        let image_list: Column<Message> = self.images.iter().fold(
-            column![].spacing(5),
-            |col, img| {
-                // Show status indicator based on thumbnail availability
-                let status_icon = if img.thumbnail_path.is_some() {
-                    "✅" // Checkmark for cached
+        // ========== LEFT PANE: Thumbnail Grid ==========
+        
+        // Header for grid pane
+        let grid_header = column![
+            text("RAW Editor v0.0.6 - Grid & Selection")
+                .size(24),
+            button("Import Folder")
+                .on_press(Message::ImportFolder)
+                .padding(8),
+            text(&self.status).size(12),
+            text(format!("Thumbnails: {}/{}  |  Deleted: {}", cached_count, total_count, deleted_count))
+                .size(11),
+        ]
+        .spacing(10)
+        .padding(10);
+        
+        // Create wrapping grid of clickable thumbnails
+        let thumbnail_grid = self.images.iter().fold(
+            Wrap::new().spacing(8.0).line_spacing(8.0),
+            |wrap, img| {
+                // Check if file is deleted
+                let is_deleted = img.file_status == "deleted";
+                
+                // Create thumbnail button - simplified to let Rust infer types
+                let thumbnail_widget = if is_deleted {
+                    // Show deleted file indicator
+                    button(
+                        column![
+                            text("❌").size(24),
+                            text(&img.filename).size(8),
+                            text("(deleted)").size(7),
+                        ]
+                        .align_x(Alignment::Center)
+                        .width(128)
+                        .height(128)
+                        .padding(5)
+                    )
+                    .on_press(Message::ImageSelected(img.id))
+                } else if let Some(ref _thumb_path) = img.thumbnail_path {
+                    // Temporary: Show filename as text thumbnail
+                    // TODO: Add actual image display once we figure out iced 0.13 image API
+                    button(
+                        column![
+                            text("✓").size(24),
+                            text(&img.filename).size(8),
+                        ]
+                        .align_x(Alignment::Center)
+                        .width(128)
+                        .height(128)
+                        .padding(5)
+                    )
+                    .on_press(Message::ImageSelected(img.id))
                 } else {
-                    "⏳" // Hourglass for pending
+                    // Show placeholder for pending thumbnails
+                    button(
+                        text("⏳").size(48)
+                    )
+                    .width(128)
+                    .height(128)
+                    .on_press(Message::ImageSelected(img.id))
                 };
                 
-                let row_content = row![
-                    text(status_icon).size(20),
-                    text(&img.filename).size(14),
-                ]
-                .spacing(10)
-                .align_y(Alignment::Center);
-                
-                col.push(row_content)
+                wrap.push(thumbnail_widget)
             },
         );
         
-        // Main content layout
-        let content: Column<Message> = column![
-            text("RAW Editor v0.0.5")
-                .size(48),
-            
-            button("Import Folder")
-                .on_press(Message::ImportFolder)
-                .padding(10),
-            
-            text(&self.status)
-                .size(16),
-            
-            text(format!("Thumbnails: {}/{}", cached_count, total_count))
-                .size(14),
-            
-            // Scrollable list of images with thumbnails
-            scrollable(image_list)
+        // Wrap grid in scrollable container
+        let grid_pane = column![
+            grid_header,
+            scrollable(thumbnail_grid)
                 .height(Length::Fill)
                 .width(Length::Fill),
         ]
-        .spacing(20)
-        .padding(40)
-        .align_x(Alignment::Center);
-
-        container(content)
+        .width(Length::FillPortion(2)); // 2/3 of screen
+        
+        // ========== RIGHT PANE: Editor View ==========
+        
+        let editor_content = if let Some(selected_id) = self.selected_image_id {
+            // Find the selected image
+            if let Some(selected_img) = self.images.iter().find(|img| img.id == selected_id) {
+                column![
+                    text("Selected Image").size(24),
+                    text("").size(10),
+                    text("Filename:").size(14),
+                    text(&selected_img.filename).size(16),
+                    text("").size(10),
+                    text("Path:").size(14),
+                    text(&selected_img.path).size(12),
+                    text("").size(10),
+                    text(format!("Status: {}", if selected_img.file_status == "deleted" { "❌ Deleted" } else { "✅ Exists" }))
+                        .size(14),
+                    text("").size(10),
+                    text(format!("Image ID: {}", selected_img.id)).size(12),
+                ]
+                .spacing(5)
+                .padding(20)
+            } else {
+                column![
+                    text("Image not found").size(18),
+                ]
+                .padding(20)
+            }
+        } else {
+            column![
+                text("No Image Selected").size(24),
+                text("").size(20),
+                text("← Click a thumbnail to select")
+                    .size(16)
+                    .style(|theme: &Theme| {
+                        text::Style {
+                            color: Some(theme.palette().text.scale_alpha(0.6)),
+                        }
+                    }),
+            ]
+            .padding(20)
+            .align_x(Alignment::Center)
+        };
+        
+        let editor_pane = container(editor_content)
+            .width(Length::FillPortion(1)) // 1/3 of screen
+            .height(Length::Fill)
+            .padding(10);
+        
+        // ========== Main Layout: Two-Pane Row ==========
+        
+        let main_row = row![
+            grid_pane,
+            editor_pane,
+        ]
+        .spacing(0);
+        
+        container(main_row)
             .width(Length::Fill)
             .height(Length::Fill)
             .into()

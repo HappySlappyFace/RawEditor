@@ -97,6 +97,12 @@ impl Library {
             [],
         );
 
+        // Add file_status column for tracking deleted files
+        let _ = self.conn.execute(
+            "ALTER TABLE images ADD COLUMN file_status TEXT DEFAULT 'exists'",
+            [],
+        );
+
         // Create index for cache_status to quickly find pending thumbnails
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_images_cache_status 
@@ -146,7 +152,7 @@ impl Library {
     /// Returns a vector of Image structs ordered by import date (newest first)
     pub fn get_all_images(&self) -> SqlResult<Vec<Image>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, filename, path, thumbnail_path FROM images ORDER BY imported_at DESC"
+            "SELECT id, filename, path, thumbnail_path, COALESCE(file_status, 'exists') FROM images ORDER BY imported_at DESC"
         )?;
 
         let image_iter = stmt.query_map([], |row| {
@@ -155,6 +161,7 @@ impl Library {
                 filename: row.get(1)?,
                 path: row.get(2)?,
                 thumbnail_path: row.get(3)?,
+                file_status: row.get(4)?,
             })
         })?;
 
@@ -169,7 +176,7 @@ impl Library {
     /// Get images that need thumbnail generation (cache_status = 'pending')
     pub fn get_pending_thumbnails(&self, limit: usize) -> SqlResult<Vec<Image>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, filename, path, thumbnail_path 
+            "SELECT id, filename, path, thumbnail_path, COALESCE(file_status, 'exists') 
              FROM images 
              WHERE cache_status = 'pending' 
              LIMIT ?1"
@@ -181,6 +188,7 @@ impl Library {
                 filename: row.get(1)?,
                 path: row.get(2)?,
                 thumbnail_path: row.get(3)?,
+                file_status: row.get(4)?,
             })
         })?;
 
@@ -233,6 +241,40 @@ impl Library {
         }
 
         Ok(reset_count)
+    }
+
+    /// Verify that RAW files still exist on disk
+    /// Mark as 'deleted' if file is missing
+    pub fn verify_files(&self) -> SqlResult<usize> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, path FROM images WHERE file_status = 'exists'"
+        )?;
+
+        let existing_images: Vec<(i64, String)> = stmt
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        let mut deleted_count = 0;
+        for (id, file_path) in existing_images {
+            // Check if file exists
+            if !std::path::Path::new(&file_path).exists() {
+                // Mark as deleted since file is missing
+                self.conn.execute(
+                    "UPDATE images SET file_status = 'deleted' WHERE id = ?1",
+                    rusqlite::params![id],
+                )?;
+                deleted_count += 1;
+            }
+        }
+
+        if deleted_count > 0 {
+            println!("⚠️  Marked {} missing files as deleted", deleted_count);
+        }
+
+        Ok(deleted_count)
     }
 }
 

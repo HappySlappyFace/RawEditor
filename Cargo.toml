@@ -10,6 +10,9 @@ license = "MIT"
 # GUI framework with native rendering via wgpu
 iced = { version = "0.13", features = ["wgpu", "tokio", "advanced"] }
 
+# Additional widgets for iced (Wrap for grid layout)
+iced_aw = { version = "0.10", default-features = false, features = ["wrap"] }
+
 # Database for catalog management (bundled = includes SQLite, no system dependency)
 rusqlite = { version = "0.32", features = ["bundled"] }
 

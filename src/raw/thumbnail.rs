@@ -54,6 +54,9 @@ pub fn generate_thumbnail(raw_path: &Path, image_id: i64) -> Option<PathBuf> {
     }
     
     eprintln!("❌ All methods failed for: {:?}", raw_path.file_name());
+    eprintln!("   File exists: {}", raw_path.exists());
+    eprintln!("   File size: {:?}", std::fs::metadata(raw_path).ok().map(|m| m.len()));
+    eprintln!("   Suggestion: File might be corrupted. Try re-importing or deleting it.");
     None
 }
 
