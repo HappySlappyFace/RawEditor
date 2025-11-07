@@ -125,6 +125,11 @@ impl Library {
     pub fn path(&self) -> &PathBuf {
         &self.db_path
     }
+    
+    /// Get a reference to the database connection
+    pub fn conn(&self) -> &Connection {
+        &self.conn
+    }
 
     /// Get a count of images in the library
     pub fn image_count(&self) -> SqlResult<i64> {

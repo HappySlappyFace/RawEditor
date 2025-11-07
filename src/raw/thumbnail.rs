@@ -21,9 +21,9 @@ pub fn get_thumbnail_cache_dir() -> PathBuf {
     path
 }
 
-/// Generate a thumbnail for a RAW file
-/// Returns the path to the saved thumbnail, or None if generation failed
-pub fn generate_thumbnail(raw_path: &Path, image_id: i64) -> Option<PathBuf> {
+/// Generate a thumbnail using FAST methods only (tiers 1-3: embedded JPEG extraction)
+/// Returns Some(path) if successful, None if image needs slow processing (tier 4)
+pub fn generate_thumbnail_fast(raw_path: &Path, image_id: i64) -> Option<PathBuf> {
     // Tier 1: Fast embedded JPEG search (256KB)
     if let Some(thumbnail_data) = extract_embedded_jpeg_fast(raw_path) {
         if let Some(path) = save_thumbnail(thumbnail_data, image_id) {
@@ -47,6 +47,13 @@ pub fn generate_thumbnail(raw_path: &Path, image_id: i64) -> Option<PathBuf> {
         }
     }
     
+    // Fast methods didn't work - needs slow tier 4 processing
+    None
+}
+
+/// Generate a thumbnail using SLOW method (tier 4: full RAW decode)
+/// This should only be called for images that failed fast methods
+pub fn generate_thumbnail_slow(raw_path: &Path, image_id: i64) -> Option<PathBuf> {
     // Tier 4: Decode actual RAW data (slowest but always works)
     if let Some(path) = decode_raw_to_thumbnail(raw_path, image_id) {
         println!("🔥 Generated thumbnail from RAW decode: {}", path.display());

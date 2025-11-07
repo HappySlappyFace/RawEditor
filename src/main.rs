@@ -1,4 +1,4 @@
-use iced::{Element, Task, Theme};
+use iced::{Background, Border, Color, Element, Task, Theme};
 use iced::widget::{button, column, container, row, scrollable, text, Image};
 use iced::advanced::image::Handle;
 use iced::{Alignment, Length};
@@ -173,33 +173,56 @@ impl RawEditor {
                 )
             }
             Message::ThumbnailGenerated(result) => {
-                // Always reload images to show updated thumbnail in the grid (even if count is 0)
+                // Always reload images to show updated thumbnail in the grid
                 self.images = self.library.get_all_images().unwrap_or_default();
                 
-                // Update status to show thumbnail generation progress
-                let pending_count = self.library.get_pending_thumbnails(1)
-                    .map(|imgs| imgs.len())
+                // Check both fast and slow queues
+                let fast_queue_count: i64 = self.library.conn()
+                    .query_row(
+                        "SELECT COUNT(*) FROM images WHERE cache_status = 'pending'",
+                        [],
+                        |row| row.get(0)
+                    )
                     .unwrap_or(0);
                 
-                if pending_count > 0 {
+                let slow_queue_count: i64 = self.library.conn()
+                    .query_row(
+                        "SELECT COUNT(*) FROM images WHERE cache_status = 'needs_slow'",
+                        [],
+                        |row| row.get(0)
+                    )
+                    .unwrap_or(0);
+                
+                if fast_queue_count > 0 {
+                    // Still processing fast queue (high priority)
                     self.status = format!(
-                        "Generating thumbnails... {} remaining",
-                        pending_count
+                        "⚡ Fast queue: {} remaining (slow queue: {})", 
+                        fast_queue_count, slow_queue_count
                     );
                     
-                    // Continue generating next thumbnail
                     let db_path = self.library.path().clone();
-                    Task::perform(
+                    return Task::perform(
                         generate_thumbnails_async(db_path),
                         Message::ThumbnailGenerated,
-                    )
-                } else {
-                    self.status = format!(
-                        "Ready. {} images in library. All thumbnails generated!",
-                        self.images.len()
                     );
-                    Task::none()
+                } else if slow_queue_count > 0 {
+                    // Fast queue empty, processing slow queue (low priority)
+                    self.status = format!(
+                        "🔥 Slow queue: {} remaining (RAW decode)", 
+                        slow_queue_count
+                    );
+                    
+                    let db_path = self.library.path().clone();
+                    return Task::perform(
+                        generate_thumbnails_async(db_path),
+                        Message::ThumbnailGenerated,
+                    );
+                } else {
+                    // Both queues empty - all done!
+                    self.status = format!("✅ All thumbnails generated! ({} images)", self.images.len());
                 }
+                
+                Task::none()
             }
             Message::ImageSelected(image_id) => {
                 // Update the selected image
@@ -290,44 +313,96 @@ impl RawEditor {
         .padding(10);
         
         // Create wrapping grid of clickable thumbnails
+        const THUMB_SIZE: u16 = 1; // Equal size for all squares
+        
         let thumbnail_grid = self.images.iter().fold(
             Wrap::new().spacing(8.0).line_spacing(8.0),
             |wrap, img| {
                 // Check if file is deleted
                 let is_deleted = img.file_status == "deleted";
                 
-                // Create thumbnail button - simplified to let Rust infer types
-                let thumbnail_widget = if is_deleted {
-                    // Show deleted file indicator
-                    button(
+                // Create thumbnail content
+                let thumbnail_content = if is_deleted {
+                    // Show deleted file indicator with grey background
+                    container(
                         column![
                             text("❌").size(24),
                             text(&img.filename).size(8),
                             text("(deleted)").size(7),
                         ]
                         .align_x(Alignment::Center)
-                        .width(128)
-                        .height(128)
-                        .padding(5)
+                        .spacing(4)
                     )
-                    .on_press(Message::ImageSelected(img.id))
+                    .width(THUMB_SIZE)
+                    .height(THUMB_SIZE)
+                    .center_x(iced::Length::Fixed(200.0))
+                    .center_y(iced::Length::Fixed(150.0))
+                    .style(|_theme| {
+                        container::Style {
+                            background: Some(Background::Color(Color::from_rgb(0.3, 0.3, 0.3))),
+                            border: Border {
+                                color: Color::from_rgb(0.5, 0.2, 0.2),
+                                width: 2.0,
+                                radius: 4.0.into(),
+                            },
+                            ..Default::default()
+                        }
+                    })
                 } else if let Some(ref thumb_path) = img.thumbnail_path {
+                    // Show thumbnail image with grey background, fit to square
                     let handle = Handle::from_path(thumb_path.clone());
-                    button(
+                    container(
                         Image::new(handle)
-                            .width(128)
-                            .height(128)
+                            .content_fit(iced::ContentFit::Contain) // Fit image inside square
                     )
-                    .on_press(Message::ImageSelected(img.id))
+                    .width(THUMB_SIZE)
+                    .height(THUMB_SIZE)
+                    .center_x(iced::Length::Fixed(200.0))
+                    .center_y(iced::Length::Fixed(150.0))
+                    .style(|_theme| {
+                        container::Style {
+                            background: Some(Background::Color(Color::from_rgb(0.25, 0.25, 0.25))),
+                            border: Border {
+                                color: Color::from_rgb(0.4, 0.4, 0.4),
+                                width: 1.0,
+                                radius: 4.0.into(),
+                            },
+                            ..Default::default()
+                        }
+                    })
                 } else {
-                    // Show placeholder for pending thumbnails
-                    button(
+                    // Show placeholder for pending thumbnails with grey background
+                    container(
                         text("⏳").size(48)
                     )
-                    .width(128)
-                    .height(128)
-                    .on_press(Message::ImageSelected(img.id))
+                    .width(THUMB_SIZE)
+                    .height(THUMB_SIZE)
+                    .center_x(iced::Length::Fixed(200.0))
+                    .center_y(iced::Length::Fixed(150.0))
+                    .style(|_theme| {
+                        container::Style {
+                            background: Some(Background::Color(Color::from_rgb(0.2, 0.2, 0.2))),
+                            border: Border {
+                                color: Color::from_rgb(0.3, 0.3, 0.3),
+                                width: 1.0,
+                                radius: 4.0.into(),
+                            },
+                            ..Default::default()
+                        }
+                    })
                 };
+                
+                // Wrap in clickable button
+                let thumbnail_widget = button(thumbnail_content)
+                    .on_press(Message::ImageSelected(img.id))
+                    .padding(0)
+                    .style(|theme, status| {
+                        button::Style {
+                            background: None,
+                            border: Border::default(),
+                            ..button::primary(theme, status)
+                        }
+                    });
                 
                 wrap.push(thumbnail_widget)
             },
@@ -539,59 +614,106 @@ async fn import_folder_async(folder_path: PathBuf, db_path: PathBuf) -> ImportRe
     }
 }
 
-/// Async function to generate thumbnails for pending images
-/// Processes ONE image at a time for immediate UI feedback
+/// Async function to generate thumbnails using two-tier queue system:
+/// - HIGH PRIORITY: Process 'pending' images with fast methods (tiers 1-3)
+/// - LOW PRIORITY: Process 'needs_slow' images with slow method (tier 4) AFTER fast queue is empty
 async fn generate_thumbnails_async(db_path: PathBuf) -> ThumbnailResult {
     let mut generated_count = 0;
-    const BATCH_SIZE: usize = 1; // Process 1 image at a time for per-image UI updates
     
-    // Open a separate database connection for this background thread
+    // Open database connection
     let conn = Connection::open(&db_path)
         .expect("Failed to open database connection for thumbnail generation");
     
-    // Get pending images that need thumbnails
-    // Prioritize 'pending' over 'failed' so fresh imports get processed first
+    // ========================================
+    // PHASE 1: HIGH PRIORITY - Fast Queue
+    // Process 'pending' images with fast methods (tiers 1-3)
+    // ========================================
+    let fast_batch_size = 5; // Process 5 at a time for efficiency
+    
     let mut stmt = conn.prepare(
         "SELECT id, path FROM images 
-         WHERE cache_status IN ('pending', 'failed') 
-         ORDER BY 
-           CASE cache_status 
-             WHEN 'pending' THEN 1 
-             WHEN 'failed' THEN 2 
-           END,
-           id 
+         WHERE cache_status = 'pending' 
+         ORDER BY id 
          LIMIT ?"
-    ).expect("Failed to prepare statement");
+    ).expect("Failed to prepare statement for fast queue");
     
     let pending_images: Vec<(i64, String)> = stmt
-        .query_map([BATCH_SIZE], |row| {
+        .query_map([fast_batch_size], |row| {
             Ok((row.get(0)?, row.get(1)?))
         })
         .expect("Failed to query pending images")
         .filter_map(|r| r.ok())
         .collect();
     
-    // Generate thumbnail for the image (batch size = 1 for per-image updates)
     for (image_id, raw_path_str) in pending_images {
         let raw_path = std::path::Path::new(&raw_path_str);
         
-        // Try to generate thumbnail
-        if let Some(thumbnail_path) = raw::thumbnail::generate_thumbnail(raw_path, image_id) {
-            // Update database with thumbnail path
+        // Try FAST methods only (tiers 1-3)
+        if let Some(thumbnail_path) = raw::thumbnail::generate_thumbnail_fast(raw_path, image_id) {
+            // Success! Update database
             let thumbnail_path_str = thumbnail_path.to_string_lossy().to_string();
             let _ = conn.execute(
                 "UPDATE images SET thumbnail_path = ?1, cache_status = 'cached' WHERE id = ?2",
                 rusqlite::params![thumbnail_path_str, image_id],
             );
-            
             generated_count += 1;
         } else {
-            // Mark as failed if thumbnail generation didn't work
+            // Fast methods failed - add to low-priority slow queue
             let _ = conn.execute(
-                "UPDATE images SET cache_status = 'failed' WHERE id = ?1",
+                "UPDATE images SET cache_status = 'needs_slow' WHERE id = ?1",
                 rusqlite::params![image_id],
             );
-            eprintln!("⚠️  Failed to generate thumbnail for image ID {}", image_id);
+        }
+    }
+    
+    // ========================================
+    // PHASE 2: LOW PRIORITY - Slow Queue
+    // Only process if fast queue is empty (no more 'pending' images)
+    // ========================================
+    let pending_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM images WHERE cache_status = 'pending'",
+        [],
+        |row| row.get(0)
+    ).unwrap_or(0);
+    
+    if pending_count == 0 {
+        // Fast queue is empty - process slow queue
+        let slow_batch_size = 1; // Process 1 at a time (slow operations)
+        
+        let mut stmt = conn.prepare(
+            "SELECT id, path FROM images 
+             WHERE cache_status = 'needs_slow' 
+             ORDER BY id 
+             LIMIT ?"
+        ).expect("Failed to prepare statement for slow queue");
+        
+        let slow_images: Vec<(i64, String)> = stmt
+            .query_map([slow_batch_size], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .expect("Failed to query slow images")
+            .filter_map(|r| r.ok())
+            .collect();
+        
+        for (image_id, raw_path_str) in slow_images {
+            let raw_path = std::path::Path::new(&raw_path_str);
+            
+            // Try SLOW method (tier 4)
+            if let Some(thumbnail_path) = raw::thumbnail::generate_thumbnail_slow(raw_path, image_id) {
+                // Success! Update database
+                let thumbnail_path_str = thumbnail_path.to_string_lossy().to_string();
+                let _ = conn.execute(
+                    "UPDATE images SET thumbnail_path = ?1, cache_status = 'cached' WHERE id = ?2",
+                    rusqlite::params![thumbnail_path_str, image_id],
+                );
+                generated_count += 1;
+            } else {
+                // All methods failed - mark as failed
+                let _ = conn.execute(
+                    "UPDATE images SET cache_status = 'failed' WHERE id = ?1",
+                    rusqlite::params![image_id],
+                );
+            }
         }
     }
     
