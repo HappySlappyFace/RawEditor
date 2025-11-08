@@ -29,6 +29,13 @@ struct ThumbnailResult {
     generated_count: usize,
 }
 
+/// Application tabs/modules
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AppTab {
+    Library,  // Browse, import, organize images
+    Develop,  // Edit selected image with full preview
+}
+
 /// Result of preview generation
 #[derive(Debug, Clone)]
 struct PreviewResult {
@@ -63,6 +70,8 @@ struct RawEditor {
     editor_pane_state: EditorPaneState,
     /// Cache directory for full-size previews
     preview_cache_dir: PathBuf,
+    /// Currently active tab
+    current_tab: AppTab,
 }
 
 /// Application messages (events)
@@ -78,6 +87,8 @@ enum Message {
     ImageSelected(i64),
     /// Background preview generation completed
     PreviewGenerated(PreviewResult),
+    /// User switched to a different tab
+    TabChanged(AppTab),
 }
 
 impl RawEditor {
@@ -116,6 +127,7 @@ impl RawEditor {
                 selected_image_id: None,
                 editor_pane_state: EditorPaneState::NoSelection,
                 preview_cache_dir,
+                current_tab: AppTab::Library, // Start in Library tab
             },
             // Start thumbnail generation in the background
             Task::perform(
@@ -282,11 +294,78 @@ impl RawEditor {
                 
                 Task::none()
             }
+            Message::TabChanged(tab) => {
+                // Switch to the selected tab
+                self.current_tab = tab;
+                
+                // When switching to Develop tab with a selected image, ensure preview is loaded
+                if tab == AppTab::Develop {
+                    if let Some(image_id) = self.selected_image_id {
+                        // Check if we need to load preview
+                        if let EditorPaneState::NoSelection = self.editor_pane_state {
+                            // Trigger preview loading
+                            return self.update(Message::ImageSelected(image_id));
+                        }
+                    }
+                }
+                
+                Task::none()
+            }
         }
     }
 
     /// Build the user interface
     fn view(&self) -> Element<Message> {
+        // Tab navigation bar
+        let library_button = button(
+            text("📚 Library")
+                .size(16)
+        )
+        .on_press(Message::TabChanged(AppTab::Library))
+        .padding(12);
+        
+        let library_button = if self.current_tab == AppTab::Library {
+            library_button.style(button::primary)
+        } else {
+            library_button.style(button::secondary)
+        };
+        
+        let develop_button = button(
+            text("🎨 Develop")
+                .size(16)
+        )
+        .on_press(Message::TabChanged(AppTab::Develop))
+        .padding(12);
+        
+        let develop_button = if self.current_tab == AppTab::Develop {
+            develop_button.style(button::primary)
+        } else {
+            develop_button.style(button::secondary)
+        };
+        
+        let tab_bar = row![
+            library_button,
+            develop_button,
+        ]
+        .spacing(8)
+        .padding(10);
+        
+        // Render content based on current tab
+        let content = match self.current_tab {
+            AppTab::Library => self.view_library(),
+            AppTab::Develop => self.view_develop(),
+        };
+        
+        // Main layout: tab bar + content
+        column![
+            tab_bar,
+            content,
+        ]
+        .into()
+    }
+    
+    /// Build the Library tab view (grid of thumbnails)
+    fn view_library(&self) -> Element<Message> {
         // Count thumbnails and deleted files
         let cached_count = self.images.iter()
             .filter(|img| img.thumbnail_path.is_some())
@@ -300,7 +379,7 @@ impl RawEditor {
         
         // Header for grid pane
         let grid_header = column![
-            text("RAW Editor v0.0.6 - Grid & Selection")
+            text("RAW Editor v0.0.8 - Different tabs")
                 .size(24),
             button("Import Folder")
                 .on_press(Message::ImportFolder)
@@ -507,6 +586,182 @@ impl RawEditor {
             .width(Length::Fill)
             .height(Length::Fill)
             .into()
+    }
+    
+    /// Build the Develop tab view (full-screen editor with preview)
+    fn view_develop(&self) -> Element<Message> {
+        match &self.editor_pane_state {
+            EditorPaneState::NoSelection => {
+                // No image selected - show prompt
+                container(
+                    column![
+                        text("No Image Selected").size(32),
+                        text("").size(20),
+                        text("← Switch to Library tab to select an image")
+                            .size(18)
+                            .style(|theme: &Theme| {
+                                text::Style {
+                                    color: Some(theme.palette().text.scale_alpha(0.6)),
+                                }
+                            }),
+                    ]
+                    .padding(40)
+                    .align_x(Alignment::Center)
+                )
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .center_x(Length::Fill)
+                .center_y(Length::Fill)
+                .into()
+            }
+            EditorPaneState::LoadingPreview(image_id) => {
+                // Show loading state
+                if let Some(img) = self.images.iter().find(|i| i.id == *image_id) {
+                    container(
+                        column![
+                            text(&img.filename).size(24),
+                            text("").size(30),
+                            text("⌛ Generating full preview...").size(20),
+                            text("").size(10),
+                            text("This may take a few seconds for large RAW files")
+                                .size(14)
+                                .style(|theme: &Theme| {
+                                    text::Style {
+                                        color: Some(theme.palette().text.scale_alpha(0.7)),
+                                    }
+                                }),
+                        ]
+                        .padding(40)
+                        .align_x(Alignment::Center)
+                    )
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .center_x(Length::Fill)
+                    .center_y(Length::Fill)
+                    .into()
+                } else {
+                    container(text("Loading...").size(24))
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .center_x(Length::Fill)
+                        .center_y(Length::Fill)
+                        .into()
+                }
+            }
+            EditorPaneState::PreviewLoaded(image_id, preview_path) => {
+                // Show full-screen preview with editing tools
+                if let Some(img) = self.images.iter().find(|i| i.id == *image_id) {
+                    let handle = Handle::from_path(preview_path.clone());
+                    
+                    // Header with image info
+                    let header = row![
+                        text(&img.filename).size(18),
+                    ]
+                    .spacing(5)
+                    .padding(10);
+                    
+                    // Full-size preview (centered, contained)
+                    let preview = container(
+                        Image::new(handle)
+                            .content_fit(iced::ContentFit::Contain)
+                    )
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .center_x(Length::Fill)
+                    .center_y(Length::Fill)
+                    .style(|_theme| {
+                        container::Style {
+                            background: Some(Background::Color(Color::from_rgb(0.1, 0.1, 0.1))),
+                            ..Default::default()
+                        }
+                    });
+                    
+                    // Right sidebar with editing controls (placeholder for future)
+                    let sidebar = container(
+                        column![
+                            text("Edit Controls").size(16),
+                            text("").size(10),
+                            text("Coming soon:").size(12),
+                            text("• Exposure").size(11),
+                            text("• Contrast").size(11),
+                            text("• Saturation").size(11),
+                            text("• White Balance").size(11),
+                            text("• Crop & Rotate").size(11),
+                        ]
+                        .spacing(5)
+                        .padding(15)
+                    )
+                    .width(Length::Fixed(200.0))
+                    .height(Length::Fill)
+                    .style(|_theme| {
+                        container::Style {
+                            background: Some(Background::Color(Color::from_rgb(0.15, 0.15, 0.15))),
+                            border: Border {
+                                color: Color::from_rgb(0.3, 0.3, 0.3),
+                                width: 1.0,
+                                radius: 0.0.into(),
+                            },
+                            ..Default::default()
+                        }
+                    });
+                    
+                    // Main layout: header + (preview + sidebar)
+                    column![
+                        header,
+                        row![
+                            preview,
+                            sidebar,
+                        ]
+                        .spacing(0)
+                        .height(Length::Fill),
+                    ]
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .into()
+                } else {
+                    container(text("Image not found").size(24))
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .center_x(Length::Fill)
+                        .center_y(Length::Fill)
+                        .into()
+                }
+            }
+            EditorPaneState::PreviewFailed(image_id, error) => {
+                // Show error state
+                if let Some(img) = self.images.iter().find(|i| i.id == *image_id) {
+                    container(
+                        column![
+                            text("❌ Preview Failed").size(24),
+                            text("").size(20),
+                            text(&img.filename).size(18),
+                            text("").size(15),
+                            text(error)
+                                .size(14)
+                                .style(|theme: &Theme| {
+                                    text::Style {
+                                        color: Some(theme.palette().danger),
+                                    }
+                                }),
+                        ]
+                        .padding(40)
+                        .align_x(Alignment::Center)
+                    )
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .center_x(Length::Fill)
+                    .center_y(Length::Fill)
+                    .into()
+                } else {
+                    container(text("Error loading preview").size(24))
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .center_x(Length::Fill)
+                        .center_y(Length::Fill)
+                        .into()
+                }
+            }
+        }
     }
 
     /// Set the application theme
