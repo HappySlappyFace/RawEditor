@@ -89,6 +89,8 @@ struct RawEditor {
     current_edit_params: state::edit::EditParams,
     /// GPU pipeline status (holds the pipeline when ready)
     editor_status: EditorStatus,
+    /// Cached GPU-rendered image (to avoid re-rendering every frame)
+    cached_gpu_image: Option<(state::edit::EditParams, Handle)>,
 }
 
 /// Application messages (events)
@@ -176,6 +178,7 @@ impl RawEditor {
                 current_tab: AppTab::Library, // Start in Library tab
                 current_edit_params: state::edit::EditParams::default(), // No edits initially
                 editor_status: EditorStatus::NoSelection, // GPU pipeline created on demand
+                cached_gpu_image: None, // No cached image initially
             },
             // Start thumbnail generation in the background
             Task::perform(
@@ -378,18 +381,20 @@ impl RawEditor {
             Message::ExposureChanged(value) => {
                 self.current_edit_params.exposure = value;
                 self.save_current_edits();
-                // Update GPU uniforms and trigger redraw
+                // Update GPU uniforms and invalidate cache
                 if let EditorStatus::Ready(pipeline) = &self.editor_status {
                     pipeline.update_uniforms(&self.current_edit_params);
+                    self.cached_gpu_image = None; // Force re-render
                 }
                 Task::none()
             }
             Message::ContrastChanged(value) => {
                 self.current_edit_params.contrast = value;
                 self.save_current_edits();
-                // Update GPU uniforms and trigger redraw
+                // Update GPU uniforms and invalidate cache
                 if let EditorStatus::Ready(pipeline) = &self.editor_status {
                     pipeline.update_uniforms(&self.current_edit_params);
+                    self.cached_gpu_image = None; // Force re-render
                 }
                 Task::none()
             }
@@ -874,13 +879,30 @@ impl RawEditor {
                         .spacing(5)
                         .padding(10);
                         
-                        // 🎨 GPU Canvas Rendering!
-                        let gpu_renderer = ui::canvas::GpuRenderer::new(pipeline.clone());
-                        let gpu_canvas = canvas::Canvas::new(gpu_renderer)
-                            .width(Length::Fill)
-                            .height(Length::Fill);
+                        // 🎨 GPU Image Rendering with caching!
+                        // Render GPU output if not cached
+                        println!("🎨 GPU render: {}x{}", pipeline.width, pipeline.height);
+                        let rgba_bytes = pipeline.render_to_bytes();
+                        println!("✅ Got {} bytes from GPU", rgba_bytes.len());
                         
-                        let preview = container(gpu_canvas)
+                        // Check if first few pixels are black (debugging)
+                        if rgba_bytes.len() >= 12 {
+                            println!("First 3 pixels: R={} G={} B={} A={}, R={} G={} B={} A={}, R={} G={} B={} A={}",
+                                rgba_bytes[0], rgba_bytes[1], rgba_bytes[2], rgba_bytes[3],
+                                rgba_bytes[4], rgba_bytes[5], rgba_bytes[6], rgba_bytes[7],
+                                rgba_bytes[8], rgba_bytes[9], rgba_bytes[10], rgba_bytes[11]);
+                        }
+                        
+                        let image_handle = Handle::from_rgba(
+                            pipeline.width,
+                            pipeline.height,
+                            rgba_bytes,
+                        );
+                        
+                        let gpu_image = Image::new(image_handle)
+                            .content_fit(iced::ContentFit::Contain);
+                        
+                        let preview = container(gpu_image)
                             .width(Length::Fill)
                             .height(Length::Fill)
                             .center_x(Length::Fill)

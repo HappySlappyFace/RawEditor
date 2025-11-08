@@ -1,31 +1,27 @@
-use iced::widget::canvas::{self, Cache, Frame, Geometry, Program};
+use iced::widget::canvas::{self, Frame, Geometry, Program};
 use iced::mouse::Cursor;
 use iced::{Rectangle, Renderer, Theme};
 use std::sync::Arc;
 
 use crate::gpu;
+use crate::state::edit::EditParams;
 use crate::Message;
 
 /// GPU-accelerated canvas renderer for RAW images
 pub struct GpuRenderer {
     /// The GPU rendering pipeline
     pub pipeline: Arc<gpu::RenderPipeline>,
-    /// Cache to avoid re-rendering every frame
-    cache: Cache,
+    /// Current edit parameters (for visual feedback)
+    pub params: EditParams,
 }
 
 impl GpuRenderer {
     /// Create a new GPU renderer
-    pub fn new(pipeline: Arc<gpu::RenderPipeline>) -> Self {
+    pub fn new(pipeline: Arc<gpu::RenderPipeline>, params: EditParams) -> Self {
         Self {
             pipeline,
-            cache: Cache::new(),
+            params,
         }
-    }
-    
-    /// Request a redraw (invalidate cache)
-    pub fn request_redraw(&mut self) {
-        self.cache.clear();
     }
 }
 
@@ -40,13 +36,13 @@ impl Program<Message> for GpuRenderer {
         bounds: Rectangle,
         _cursor: Cursor,
     ) -> Vec<Geometry> {
-        // Use cache to avoid redrawing every frame
-        let geometry = self.cache.draw(renderer, bounds.size(), |frame| {
-            // Render the GPU pipeline output to the canvas
-            self.pipeline.render(frame, bounds);
-        });
-
-        vec![geometry]
+        // Render every frame to show real-time updates
+        let mut frame = Frame::new(renderer, bounds.size());
+        
+        // Render the GPU pipeline output with current parameters
+        self.pipeline.render(&mut frame, bounds, &self.params);
+        
+        vec![frame.into_geometry()]
     }
 
     fn update(

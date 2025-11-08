@@ -24,13 +24,17 @@ struct VertexOutput {
 fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     var output: VertexOutput;
     
-    // Generate full-screen triangle from vertex index
-    // Triangle covers entire screen: (-1,-1) to (3,3)
-    let x = f32((vertex_index << 1u) & 2u);
-    let y = f32(vertex_index & 2u);
+    // Full-screen triangle using vertex index
+    // vertex 0: (-1, -1)  bottom-left
+    // vertex 1: ( 3, -1)  bottom-right (off-screen)
+    // vertex 2: (-1,  3)  top-left (off-screen)
+    let x = f32(i32(vertex_index) - 1) * 2.0;
+    let y = f32(i32(vertex_index & 1u) * 2 - 1) * 2.0;
     
-    output.clip_position = vec4<f32>(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
-    output.tex_coords = vec2<f32>(x, y);
+    output.clip_position = vec4<f32>(x, y, 0.0, 1.0);
+    
+    // Texture coordinates from clip space
+    output.tex_coords = vec2<f32>((x + 1.0) * 0.5, (1.0 - y) * 0.5);
     
     return output;
 }
@@ -67,7 +71,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // Sample the input texture
     var color = textureSample(input_texture, texture_sampler, input.tex_coords);
     
-    // Apply exposure (additive in linear space)
+    // Apply exposure (multiplicative in linear space)
     // Convert stops to multiplier: 2^exposure
     let exposure_multiplier = pow(2.0, params.exposure);
     color = vec4<f32>(color.rgb * exposure_multiplier, color.a);
