@@ -109,25 +109,23 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
         },
     ];
     
-    // Extract camera to sRGB color matrix (3x3)
-    // rawloader provides xyz_to_cam [3][4], but we need cam_to_xyz → sRGB
-    // For Phase 14, use identity matrix (white balance is the main correction)
-    // TODO Phase 15: Implement proper color matrix from xyz_to_cam
+    // Extract xyz_to_cam matrix (3x3) from camera metadata
+    // Phase 15: Return the actual matrix, will be converted to cam_to_srgb in main.rs
+    // rawloader provides xyz_to_cam as [3][4], we only need first 3 columns
     let xyz_cam = &raw_image.xyz_to_cam;
     let has_matrix = xyz_cam[0][0] != 0.0 || xyz_cam[1][1] != 0.0;
     
-    let color_matrix: [f32; 9] = if has_matrix {
-        // xyz_to_cam exists but needs inversion + sRGB conversion
-        // This is complex math, so for now use identity
-        println!("⚠️  Found xyz_to_cam matrix (will implement proper conversion in Phase 15)");
+    let xyz_to_cam_matrix: [f32; 9] = if has_matrix {
+        // Extract first 3 columns (4th column is usually white point info)
+        println!("🎨 Found xyz_to_cam matrix from camera");
         [
-            1.0, 0.0, 0.0,
-            0.0, 1.0, 0.0,
-            0.0, 0.0, 1.0,
+            xyz_cam[0][0], xyz_cam[0][1], xyz_cam[0][2],  // Row 0
+            xyz_cam[1][0], xyz_cam[1][1], xyz_cam[1][2],  // Row 1
+            xyz_cam[2][0], xyz_cam[2][1], xyz_cam[2][2],  // Row 2
         ]
     } else {
-        // No matrix available
-        println!("⚠️  No color matrix found, using identity matrix");
+        // No matrix available, use identity
+        println!("⚠️  No xyz_to_cam matrix found, using identity");
         [
             1.0, 0.0, 0.0,
             0.0, 1.0, 0.0,
@@ -137,19 +135,19 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
     
     println!("🎨 White Balance: R={:.3}, G={:.3}, B={:.3}, G2={:.3}", 
         wb_normalized[0], wb_normalized[1], wb_normalized[2], wb_normalized[3]);
-    println!("🎨 Color Matrix: [{:.3}, {:.3}, {:.3}]", 
-        color_matrix[0], color_matrix[1], color_matrix[2]);
-    println!("                [{:.3}, {:.3}, {:.3}]", 
-        color_matrix[3], color_matrix[4], color_matrix[5]);
-    println!("                [{:.3}, {:.3}, {:.3}]", 
-        color_matrix[6], color_matrix[7], color_matrix[8]);
+    println!("🎨 XYZ-to-CAM Matrix: [{:.3}, {:.3}, {:.3}]", 
+        xyz_to_cam_matrix[0], xyz_to_cam_matrix[1], xyz_to_cam_matrix[2]);
+    println!("                     [{:.3}, {:.3}, {:.3}]", 
+        xyz_to_cam_matrix[3], xyz_to_cam_matrix[4], xyz_to_cam_matrix[5]);
+    println!("                     [{:.3}, {:.3}, {:.3}]", 
+        xyz_to_cam_matrix[6], xyz_to_cam_matrix[7], xyz_to_cam_matrix[8]);
     
     Ok(RawDataResult {
         data,
         width,
         height,
         wb_multipliers: wb_normalized,
-        color_matrix,
+        color_matrix: xyz_to_cam_matrix,  // Return xyz_to_cam, will convert in main.rs
     })
 }
 

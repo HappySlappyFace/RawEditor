@@ -16,9 +16,13 @@ mod state;
 mod raw;
 mod gpu;
 mod ui;
+mod color;  // Phase 15: Color space conversion utilities
 
 // Import shared data structures (alias to avoid conflict with iced's image widget)
 use state::data::Image as ImageData;
+
+// Phase 15: Color space conversion
+use color::calculate_cam_to_srgb_matrix;
 
 /// Result of a folder import operation
 #[derive(Debug, Clone)]
@@ -495,10 +499,19 @@ impl RawEditor {
                     Ok(raw_data) => {
                         println!("📷 RAW data loaded: {}x{} pixels", raw_data.width, raw_data.height);
                         
+                        // Phase 15: Calculate proper cam-to-sRGB color matrix
+                        let xyz_to_cam = raw_data.color_matrix;
+                        let cam_to_srgb = calculate_cam_to_srgb_matrix(xyz_to_cam);
+                        println!("🎨 CAM-to-sRGB Matrix: [{:.3}, {:.3}, {:.3}]", 
+                            cam_to_srgb[0], cam_to_srgb[1], cam_to_srgb[2]);
+                        println!("                      [{:.3}, {:.3}, {:.3}]", 
+                            cam_to_srgb[3], cam_to_srgb[4], cam_to_srgb[5]);
+                        println!("                      [{:.3}, {:.3}, {:.3}]", 
+                            cam_to_srgb[6], cam_to_srgb[7], cam_to_srgb[8]);
+                        
                         // Create GPU pipeline with the RAW data + color metadata
                         let params = self.current_edit_params;
                         let wb = raw_data.wb_multipliers;
-                        let cm = raw_data.color_matrix;
                         
                         Task::perform(
                             async move {
@@ -507,8 +520,8 @@ impl RawEditor {
                                     raw_data.width,
                                     raw_data.height,
                                     &params,
-                                    wb,   // Phase 14: White balance from camera
-                                    cm,   // Phase 14: Color matrix from camera
+                                    wb,           // Phase 14: White balance from camera
+                                    cam_to_srgb,  // Phase 15: Camera-to-sRGB color matrix
                                 ).await
                             },
                             |result| Message::GpuPipelineReady(result.map(Arc::new)),
@@ -932,7 +945,11 @@ impl RawEditor {
                         text(format!("Contrast: {:.0}", self.current_edit_params.contrast)),
                         slider(-100.0..=100.0, self.current_edit_params.contrast, Message::ContrastChanged),
                         
-                        // ... repeat for all 10 parameters ...
+                        // Saturation (Phase 15: Color boost!)
+                        text(format!("Saturation: {:.0}", self.current_edit_params.saturation)),
+                        slider(-100.0..=100.0, self.current_edit_params.saturation, Message::SaturationChanged),
+                        
+                        // ... repeat for remaining parameters ...
                         
                         button("Reset All").on_press(Message::ResetEdits),
                     ]

@@ -45,6 +45,9 @@ rawloader = "0.37"
 # GPU rendering for real-time RAW processing (use iced's wgpu)
 bytemuck = { version = "1.14", features = ["derive"] }
 
+# Matrix math for color space conversions (Phase 15)
+cgmath = "0.18"
+
 # Image processing (decode, resize, save thumbnails)
 image = "0.25"
 

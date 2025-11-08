@@ -177,6 +177,14 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let contrast_factor = 1.0 + (params.contrast / 100.0);
     color = (color - 0.5) * contrast_factor + 0.5;
     
+    // 5.5. Apply Saturation (Phase 15 color boost)
+    // Calculate luminance using Rec. 709 coefficients
+    let luminance = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
+    // Saturation factor: -100 = grayscale, 0 = original, +100 = 2x saturation
+    let sat_factor = 1.0 + (params.saturation / 100.0);
+    // Mix between grayscale and original color
+    color = mix(vec3<f32>(luminance), color, sat_factor);
+    
     // 6. Apply sRGB Gamma Correction (linear → sRGB for display)
     // This is critical for proper brightness perception!
     color = pow(color, vec3<f32>(1.0 / 2.2));
