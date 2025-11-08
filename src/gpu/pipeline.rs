@@ -59,8 +59,10 @@ pub struct RenderPipeline {
     uniform_buffer: wgpu::Buffer,
     texture: wgpu::Texture,
     texture_view: wgpu::TextureView,
-    pub width: u32,
-    pub height: u32,
+    pub width: u32,           // Full resolution width
+    pub height: u32,          // Full resolution height
+    pub preview_width: u32,   // Preview resolution width (for fast rendering)
+    pub preview_height: u32,  // Preview resolution height (for fast rendering)
 }
 
 // Manual Debug implementation (wgpu types don't implement Debug)
@@ -81,6 +83,18 @@ impl RenderPipeline {
         height: u32,
         params: &EditParams,
     ) -> Result<Self, String> {
+        // Calculate preview dimensions for fast rendering
+        // Phase 13: Render to smaller texture to eliminate 1-2s lag
+        const MAX_PREVIEW_WIDTH: u32 = 2560;
+        let aspect_ratio = width as f32 / height as f32;
+        let preview_width = width.min(MAX_PREVIEW_WIDTH);
+        let preview_height = (preview_width as f32 / aspect_ratio) as u32;
+        
+        println!("📐 Full resolution: {}x{}", width, height);
+        println!("📐 Preview resolution: {}x{} ({:.1}% of full)", 
+            preview_width, preview_height,
+            (preview_width * preview_height) as f32 / (width * height) as f32 * 100.0);
+        
         // Request wgpu adapter
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
@@ -285,6 +299,8 @@ impl RenderPipeline {
             texture_view,
             width,
             height,
+            preview_width,
+            preview_height,
         })
     }
     
@@ -344,15 +360,15 @@ impl RenderPipeline {
         render_pass.draw(0..3, 0..1); // Full-screen triangle
     }
     
-    /// Temporary: Simplified render for Phase 12 transition
-    /// TODO Phase 13: Replace with full Canvas integration
+    /// Phase 13: Render to preview resolution for fast updates
+    /// Renders full RAW texture to smaller output (GPU downsamples automatically)
     pub fn render_to_bytes(&self) -> Vec<u8> {
-        // Create output texture
+        // Create PREVIEW-SIZED output texture (Phase 13 optimization!)
         let output_texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Output Texture"),
+            label: Some("Output Texture (Preview)"),
             size: wgpu::Extent3d {
-                width: self.width,
-                height: self.height,
+                width: self.preview_width,   // Preview size, not full!
+                height: self.preview_height,  // Preview size, not full!
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -368,13 +384,13 @@ impl RenderPipeline {
             label: Some("Render Encoder"),
         });
         
-        // Render to texture
-        self.render_to_target(&mut encoder, &output_view, (self.width, self.height));
+        // Render to PREVIEW texture (GPU rasterizer auto-downsamples from full res input)
+        self.render_to_target(&mut encoder, &output_view, (self.preview_width, self.preview_height));
         
-        // Readback (still slow, but now debayered!)
-        let bytes_per_row = self.width * 4;
+        // Readback from PREVIEW buffer (much smaller!)
+        let bytes_per_row = self.preview_width * 4;
         let padded_bytes_per_row = (bytes_per_row + 255) & !255;
-        let buffer_size = (padded_bytes_per_row * self.height) as u64;
+        let buffer_size = (padded_bytes_per_row * self.preview_height) as u64;
         
         let output_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Output Buffer"),
@@ -395,12 +411,12 @@ impl RenderPipeline {
                 layout: wgpu::ImageDataLayout {
                     offset: 0,
                     bytes_per_row: Some(padded_bytes_per_row),
-                    rows_per_image: Some(self.height),
+                    rows_per_image: Some(self.preview_height),  // Preview, not full!
                 },
             },
             wgpu::Extent3d {
-                width: self.width,
-                height: self.height,
+                width: self.preview_width,   // Preview, not full!
+                height: self.preview_height,  // Preview, not full!
                 depth_or_array_layers: 1,
             },
         );
@@ -416,10 +432,10 @@ impl RenderPipeline {
         rx.recv().unwrap().unwrap();
         
         let data = buffer_slice.get_mapped_range();
-        let mut output = Vec::with_capacity((self.width * self.height * 4) as usize);
-        for y in 0..self.height {
+        let mut output = Vec::with_capacity((self.preview_width * self.preview_height * 4) as usize);
+        for y in 0..self.preview_height {  // Preview, not full!
             let start = (y * padded_bytes_per_row) as usize;
-            let end = start + (self.width * 4) as usize;
+            let end = start + (self.preview_width * 4) as usize;  // Preview, not full!
             output.extend_from_slice(&data[start..end]);
         }
         

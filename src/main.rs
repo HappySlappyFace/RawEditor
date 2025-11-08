@@ -887,17 +887,17 @@ impl RawEditor {
                                 cached_handle.clone()
                             } else {
                                 // Params changed, render new with debayering
-                                println!("🎨 GPU rendering {}x{} with debayering...", pipeline.width, pipeline.height);
+                                println!("🎨 GPU rendering {}x{} preview...", pipeline.preview_width, pipeline.preview_height);
                                 let rgba_bytes = pipeline.render_to_bytes();
-                                println!("✅ Debayered {} bytes (now RGB color!)", rgba_bytes.len());
-                                Handle::from_rgba(pipeline.width, pipeline.height, rgba_bytes)
+                                println!("✅ Rendered {} bytes (preview)", rgba_bytes.len());
+                                Handle::from_rgba(pipeline.preview_width, pipeline.preview_height, rgba_bytes)
                             }
                         } else {
                             // First render
-                            println!("🎨 First GPU render with debayering...");
+                            println!("🎨 First GPU render (preview)...");
                             let rgba_bytes = pipeline.render_to_bytes();
-                            println!("✅ Debayered {} bytes", rgba_bytes.len());
-                            Handle::from_rgba(pipeline.width, pipeline.height, rgba_bytes)
+                            println!("✅ Rendered {} bytes (preview)", rgba_bytes.len());
+                            Handle::from_rgba(pipeline.preview_width, pipeline.preview_height, rgba_bytes)
                         };
                         
                         let gpu_image = Image::new(image_handle)
