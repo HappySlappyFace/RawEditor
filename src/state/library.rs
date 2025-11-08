@@ -298,6 +298,72 @@ impl Library {
 
         Ok(deleted_count)
     }
+    
+    // ========== Edit Parameters Management ==========
+    
+    /// Save edit parameters for an image to the database
+    /// Creates a new edit record or updates the most recent one
+    pub fn save_edit_params(&self, image_id: i64, params: &super::edit::EditParams) -> SqlResult<()> {
+        // Serialize params to JSON
+        let json = params.to_json()
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        
+        // Check if an edit record already exists for this image
+        let existing_id: Option<i64> = self.conn.query_row(
+            "SELECT id FROM edits WHERE image_id = ?1 ORDER BY id DESC LIMIT 1",
+            [image_id],
+            |row| row.get(0)
+        ).ok();
+        
+        if let Some(edit_id) = existing_id {
+            // Update existing edit
+            self.conn.execute(
+                "UPDATE edits SET settings_json = ?1 WHERE id = ?2",
+                rusqlite::params![json, edit_id],
+            )?;
+        } else {
+            // Create new edit
+            self.conn.execute(
+                "INSERT INTO edits (image_id, settings_json) VALUES (?1, ?2)",
+                rusqlite::params![image_id, json],
+            )?;
+        }
+        
+        Ok(())
+    }
+    
+    /// Load edit parameters for an image from the database
+    /// Returns Default if no edits exist for this image
+    pub fn load_edit_params(&self, image_id: i64) -> SqlResult<super::edit::EditParams> {
+        let json: String = self.conn.query_row(
+            "SELECT settings_json FROM edits WHERE image_id = ?1 ORDER BY id DESC LIMIT 1",
+            [image_id],
+            |row| row.get(0)
+        )?;
+        
+        // Parse JSON to EditParams
+        super::edit::EditParams::from_json(&json)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+    }
+    
+    /// Check if an image has any edits applied
+    pub fn has_edits(&self, image_id: i64) -> SqlResult<bool> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM edits WHERE image_id = ?1",
+            [image_id],
+            |row| row.get(0)
+        )?;
+        Ok(count > 0)
+    }
+    
+    /// Delete all edits for an image (reset to unedited)
+    pub fn delete_edits(&self, image_id: i64) -> SqlResult<()> {
+        self.conn.execute(
+            "DELETE FROM edits WHERE image_id = ?1",
+            [image_id],
+        )?;
+        Ok(())
+    }
 }
 
 // Implement Debug for better error messages

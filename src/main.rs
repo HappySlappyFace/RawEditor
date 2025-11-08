@@ -1,5 +1,5 @@
 use iced::{Background, Border, Color, Element, Task, Theme};
-use iced::widget::{button, column, container, row, scrollable, text, Image};
+use iced::widget::{button, column, container, row, scrollable, text, Image, slider};
 use iced::advanced::image::Handle;
 use iced::{Alignment, Length};
 use iced_aw::Wrap;
@@ -72,6 +72,8 @@ struct RawEditor {
     preview_cache_dir: PathBuf,
     /// Currently active tab
     current_tab: AppTab,
+    /// Current edit parameters for the selected image
+    current_edit_params: state::edit::EditParams,
 }
 
 /// Application messages (events)
@@ -89,6 +91,30 @@ enum Message {
     PreviewGenerated(PreviewResult),
     /// User switched to a different tab
     TabChanged(AppTab),
+    
+    // ========== Edit Parameter Changes ==========
+    /// User changed exposure slider
+    ExposureChanged(f32),
+    /// User changed contrast slider
+    ContrastChanged(f32),
+    /// User changed highlights slider
+    HighlightsChanged(f32),
+    /// User changed shadows slider
+    ShadowsChanged(f32),
+    /// User changed whites slider
+    WhitesChanged(f32),
+    /// User changed blacks slider
+    BlacksChanged(f32),
+    /// User changed vibrance slider
+    VibranceChanged(f32),
+    /// User changed saturation slider
+    SaturationChanged(f32),
+    /// User changed temperature slider
+    TemperatureChanged(i32),
+    /// User changed tint slider
+    TintChanged(i32),
+    /// User clicked Reset button to clear all edits
+    ResetEdits,
 }
 
 impl RawEditor {
@@ -128,6 +154,7 @@ impl RawEditor {
                 editor_pane_state: EditorPaneState::NoSelection,
                 preview_cache_dir,
                 current_tab: AppTab::Library, // Start in Library tab
+                current_edit_params: state::edit::EditParams::default(), // No edits initially
             },
             // Start thumbnail generation in the background
             Task::perform(
@@ -241,6 +268,14 @@ impl RawEditor {
                 self.selected_image_id = Some(image_id);
                 println!("🖼️  Selected image ID: {}", image_id);
                 
+                // Load edit parameters from database (or use default if no edits)
+                self.current_edit_params = self.library.load_edit_params(image_id)
+                    .unwrap_or_else(|_| state::edit::EditParams::default());
+                
+                if !self.current_edit_params.is_unedited() {
+                    println!("📝 Loaded existing edits for image {}", image_id);
+                }
+                
                 // Find the selected image
                 if let Some(img) = self.images.iter().find(|i| i.id == image_id) {
                     // Check if preview already cached
@@ -311,6 +346,82 @@ impl RawEditor {
                 
                 Task::none()
             }
+            
+            // ========== Edit Parameter Slider Handlers ==========
+            
+            Message::ExposureChanged(value) => {
+                self.current_edit_params.exposure = value;
+                self.save_current_edits();
+                Task::none()
+            }
+            Message::ContrastChanged(value) => {
+                self.current_edit_params.contrast = value;
+                self.save_current_edits();
+                Task::none()
+            }
+            Message::HighlightsChanged(value) => {
+                self.current_edit_params.highlights = value;
+                self.save_current_edits();
+                Task::none()
+            }
+            Message::ShadowsChanged(value) => {
+                self.current_edit_params.shadows = value;
+                self.save_current_edits();
+                Task::none()
+            }
+            Message::WhitesChanged(value) => {
+                self.current_edit_params.whites = value;
+                self.save_current_edits();
+                Task::none()
+            }
+            Message::BlacksChanged(value) => {
+                self.current_edit_params.blacks = value;
+                self.save_current_edits();
+                Task::none()
+            }
+            Message::VibranceChanged(value) => {
+                self.current_edit_params.vibrance = value;
+                self.save_current_edits();
+                Task::none()
+            }
+            Message::SaturationChanged(value) => {
+                self.current_edit_params.saturation = value;
+                self.save_current_edits();
+                Task::none()
+            }
+            Message::TemperatureChanged(value) => {
+                self.current_edit_params.temperature = value;
+                self.save_current_edits();
+                Task::none()
+            }
+            Message::TintChanged(value) => {
+                self.current_edit_params.tint = value;
+                self.save_current_edits();
+                Task::none()
+            }
+            Message::ResetEdits => {
+                // Reset all edit parameters to default
+                self.current_edit_params.reset();
+                
+                // Save to database (or delete the edit record)
+                if let Some(image_id) = self.selected_image_id {
+                    let _ = self.library.delete_edits(image_id);
+                    println!("♻️  Reset edits for image {}", image_id);
+                }
+                
+                Task::none()
+            }
+        }
+    }
+    
+    /// Helper to save current edit parameters to database
+    fn save_current_edits(&self) {
+        if let Some(image_id) = self.selected_image_id {
+            if let Err(e) = self.library.save_edit_params(image_id, &self.current_edit_params) {
+                eprintln!("⚠️  Failed to save edits for image {}: {:?}", image_id, e);
+            } else {
+                println!("💾 Saved edits for image {}", image_id);
+            }
         }
     }
 
@@ -379,7 +490,7 @@ impl RawEditor {
         
         // Header for grid pane
         let grid_header = column![
-            text("RAW Editor v0.0.8 - Different tabs")
+            text("RAW Editor v0.0.9 - EditParams")
                 .size(24),
             button("Import Folder")
                 .on_press(Message::ImportFolder)
@@ -677,33 +788,27 @@ impl RawEditor {
                     });
                     
                     // Right sidebar with editing controls (placeholder for future)
-                    let sidebar = container(
-                        column![
-                            text("Edit Controls").size(16),
-                            text("").size(10),
-                            text("Coming soon:").size(12),
-                            text("• Exposure").size(11),
-                            text("• Contrast").size(11),
-                            text("• Saturation").size(11),
-                            text("• White Balance").size(11),
-                            text("• Crop & Rotate").size(11),
-                        ]
-                        .spacing(5)
-                        .padding(15)
-                    )
+                    let sidebar = column![
+                        text("Edit Controls").size(16),
+                        
+                        // Exposure
+                        text(format!("Exposure: {:.2}", self.current_edit_params.exposure)),
+                        slider(-5.0..=5.0, self.current_edit_params.exposure, Message::ExposureChanged)
+                            .step(0.1),
+                        
+                        // Contrast  
+                        text(format!("Contrast: {:.0}", self.current_edit_params.contrast)),
+                        slider(-100.0..=100.0, self.current_edit_params.contrast, Message::ContrastChanged),
+                        
+                        // ... repeat for all 10 parameters ...
+                        
+                        button("Reset All").on_press(Message::ResetEdits),
+                    ]
+                    .spacing(10)
+                    .padding(15)
+
                     .width(Length::Fixed(200.0))
-                    .height(Length::Fill)
-                    .style(|_theme| {
-                        container::Style {
-                            background: Some(Background::Color(Color::from_rgb(0.15, 0.15, 0.15))),
-                            border: Border {
-                                color: Color::from_rgb(0.3, 0.3, 0.3),
-                                width: 1.0,
-                                radius: 0.0.into(),
-                            },
-                            ..Default::default()
-                        }
-                    });
+                    .height(Length::Fill);
                     
                     // Main layout: header + (preview + sidebar)
                     column![
