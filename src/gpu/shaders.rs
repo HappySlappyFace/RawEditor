@@ -53,6 +53,14 @@ struct EditParams {
     tint: f32,            // -100 to +100 (converted from i32)
     padding1: f32,        // Padding for 16-byte alignment
     padding2: f32,        // Padding for 16-byte alignment
+    // Phase 14: Color science metadata
+    wb_multipliers: vec4<f32>,  // White balance [R, G, B, G2]
+    color_matrix_0: vec3<f32>,  // Color matrix row 0
+    padding3: f32,               // Padding after vec3
+    color_matrix_1: vec3<f32>,  // Color matrix row 1
+    padding4: f32,               // Padding after vec3
+    color_matrix_2: vec3<f32>,  // Color matrix row 2
+    padding5: f32,               // Padding after vec3
 }
 
 @group(0) @binding(0)
@@ -144,20 +152,36 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         i32(input.tex_coords.y * f32(dimensions.y))
     );
     
-    // Debayer to get RGB color
+    // Phase 14: Color Science Pipeline (in correct order!)
+    
+    // 1. Debayer to get RAW RGB color (still in linear camera space)
     var color = debayer(pixel_coords, dimensions);
     
-    // Apply exposure (multiplicative in linear space)
-    // Convert stops to multiplier: 2^exposure
+    // 2. Apply White Balance (normalize sensor response)
+    color = color * params.wb_multipliers.rgb;
+    
+    // 3. Apply Color Matrix (camera RGB → sRGB color space)
+    // Reconstruct 3x3 matrix from padded vec3 rows
+    let color_matrix = mat3x3<f32>(
+        params.color_matrix_0,
+        params.color_matrix_1,
+        params.color_matrix_2
+    );
+    color = color_matrix * color;
+    
+    // 4. Apply Exposure (still in linear space)
     let exposure_multiplier = pow(2.0, params.exposure);
     color = color * exposure_multiplier;
     
-    // Apply contrast (around midpoint 0.5)
-    // Formula: (color - 0.5) * (1.0 + contrast/100.0) + 0.5
+    // 5. Apply Contrast (around midpoint 0.5)
     let contrast_factor = 1.0 + (params.contrast / 100.0);
     color = (color - 0.5) * contrast_factor + 0.5;
     
-    // Clamp to valid range
+    // 6. Apply sRGB Gamma Correction (linear → sRGB for display)
+    // This is critical for proper brightness perception!
+    color = pow(color, vec3<f32>(1.0 / 2.2));
+    
+    // 7. Clamp to valid range
     color = clamp(color, vec3<f32>(0.0), vec3<f32>(1.0));
     
     return vec4<f32>(color, 1.0);

@@ -1,5 +1,5 @@
 use iced::{Background, Border, Color, Element, Task, Theme};
-use iced::widget::{button, canvas, column, container, row, scrollable, text, Image, slider};
+use iced::widget::{button, column, container, row, scrollable, text, Image, slider};
 use iced::advanced::image::Handle;
 use iced::{Alignment, Length};
 use iced_aw::Wrap;
@@ -495,8 +495,10 @@ impl RawEditor {
                     Ok(raw_data) => {
                         println!("📷 RAW data loaded: {}x{} pixels", raw_data.width, raw_data.height);
                         
-                        // Create GPU pipeline with the RAW data
+                        // Create GPU pipeline with the RAW data + color metadata
                         let params = self.current_edit_params;
+                        let wb = raw_data.wb_multipliers;
+                        let cm = raw_data.color_matrix;
                         
                         Task::perform(
                             async move {
@@ -505,6 +507,8 @@ impl RawEditor {
                                     raw_data.width,
                                     raw_data.height,
                                     &params,
+                                    wb,   // Phase 14: White balance from camera
+                                    cm,   // Phase 14: Color matrix from camera
                                 ).await
                             },
                             |result| Message::GpuPipelineReady(result.map(Arc::new)),

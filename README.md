@@ -56,3 +56,6 @@ cargo run --release
 ## License
 
 MIT
+
+## Todo
+Hard coded 2560px previews for the develop panel, add a setting with more resolution options

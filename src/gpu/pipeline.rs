@@ -29,6 +29,15 @@ struct GpuEditParams {
     tint: f32,
     padding1: f32,  // For 16-byte alignment
     padding2: f32,
+    // Phase 14: Color science (must match WGSL layout!)
+    wb_multipliers: [f32; 4],   // White balance [R, G, B, G2] - vec4 in WGSL
+    // Color matrix split into 3 rows with padding (WGSL vec3 = 12 bytes + 4 padding)
+    color_matrix_0: [f32; 3],   // Row 0
+    _padding3: f32,
+    color_matrix_1: [f32; 3],   // Row 1
+    _padding4: f32,
+    color_matrix_2: [f32; 3],   // Row 2
+    _padding5: f32,
 }
 
 impl From<&EditParams> for GpuEditParams {
@@ -46,6 +55,14 @@ impl From<&EditParams> for GpuEditParams {
             tint: params.tint as f32,
             padding1: 0.0,
             padding2: 0.0,
+            // Default values (will be overwritten by set_color_metadata)
+            wb_multipliers: [1.0, 1.0, 1.0, 1.0],
+            color_matrix_0: [1.0, 0.0, 0.0],
+            _padding3: 0.0,
+            color_matrix_1: [0.0, 1.0, 0.0],
+            _padding4: 0.0,
+            color_matrix_2: [0.0, 0.0, 1.0],
+            _padding5: 0.0,
         }
     }
 }
@@ -63,6 +80,9 @@ pub struct RenderPipeline {
     pub height: u32,          // Full resolution height
     pub preview_width: u32,   // Preview resolution width (for fast rendering)
     pub preview_height: u32,  // Preview resolution height (for fast rendering)
+    // Phase 14: Color science metadata
+    wb_multipliers: [f32; 4],  // White balance from camera
+    color_matrix: [f32; 9],    // Color correction matrix
 }
 
 // Manual Debug implementation (wgpu types don't implement Debug)
@@ -82,6 +102,8 @@ impl RenderPipeline {
         width: u32,
         height: u32,
         params: &EditParams,
+        wb_multipliers: [f32; 4],
+        color_matrix: [f32; 9],
     ) -> Result<Self, String> {
         // Calculate preview dimensions for fast rendering
         // Phase 13: Render to smaller texture to eliminate 1-2s lag
@@ -175,8 +197,15 @@ impl RenderPipeline {
             ..Default::default()
         });
         
-        // Create uniform buffer
-        let gpu_params: GpuEditParams = params.into();
+        // Create uniform buffer with color metadata
+        let mut gpu_params: GpuEditParams = params.into();
+        // Phase 14: Set color science metadata from camera
+        gpu_params.wb_multipliers = wb_multipliers;
+        // Split flat color_matrix [9] into 3 rows with padding
+        gpu_params.color_matrix_0 = [color_matrix[0], color_matrix[1], color_matrix[2]];
+        gpu_params.color_matrix_1 = [color_matrix[3], color_matrix[4], color_matrix[5]];
+        gpu_params.color_matrix_2 = [color_matrix[6], color_matrix[7], color_matrix[8]];
+        
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Edit Params Uniform Buffer"),
             contents: bytemuck::cast_slice(&[gpu_params]),
@@ -301,12 +330,21 @@ impl RenderPipeline {
             height,
             preview_width,
             preview_height,
+            wb_multipliers,
+            color_matrix,
         })
     }
     
     /// Update uniform buffer with new edit parameters
     pub fn update_uniforms(&self, params: &EditParams) {
-        let gpu_params = GpuEditParams::from(params);
+        let mut gpu_params = GpuEditParams::from(params);
+        // Preserve color metadata (doesn't change with slider updates)
+        gpu_params.wb_multipliers = self.wb_multipliers;
+        // Convert flat matrix to split rows
+        let cm = &self.color_matrix;
+        gpu_params.color_matrix_0 = [cm[0], cm[1], cm[2]];
+        gpu_params.color_matrix_1 = [cm[3], cm[4], cm[5]];
+        gpu_params.color_matrix_2 = [cm[6], cm[7], cm[8]];
         
         println!("🎨 GPU Uniforms Updated:");
         println!("   Exposure: {:.2}, Contrast: {:.0}", gpu_params.exposure, gpu_params.contrast);
