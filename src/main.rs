@@ -1,5 +1,5 @@
 use iced::{Background, Border, Color, Element, Task, Theme};
-use iced::widget::{button, column, container, row, scrollable, text, Image, slider};
+use iced::widget::{button, canvas, column, container, row, scrollable, text, Image, slider};
 use iced::advanced::image::Handle;
 use iced::{Alignment, Length};
 use iced_aw::Wrap;
@@ -874,26 +874,20 @@ impl RawEditor {
                         .spacing(5)
                         .padding(10);
                         
-                        // GPU pipeline is ready! 
-                        // TODO: Render GPU output to texture and display as Image
-                        let preview = container(
-                            column![
-                                text("🎨 GPU Pipeline Ready!").size(24),
-                                text("").size(20),
-                                text("The GPU is processing your RAW image").size(16),
-                                text("with real-time adjustments.").size(16),
-                                text("").size(20),
-                                text(format!("Size: {}x{}", pipeline.width, pipeline.height)).size(14),
-                            ]
-                            .align_x(Alignment::Center)
-                        )
+                        // 🎨 GPU Canvas Rendering!
+                        let gpu_renderer = ui::canvas::GpuRenderer::new(pipeline.clone());
+                        let gpu_canvas = canvas::Canvas::new(gpu_renderer)
+                            .width(Length::Fill)
+                            .height(Length::Fill);
+                        
+                        let preview = container(gpu_canvas)
                             .width(Length::Fill)
                             .height(Length::Fill)
                             .center_x(Length::Fill)
                             .center_y(Length::Fill)
                             .style(|_theme| {
                                 container::Style {
-                                    background: Some(Background::Color(Color::from_rgb(0.1, 0.1, 0.1))),
+                                    background: Some(Background::Color(Color::from_rgb(0.0, 0.0, 0.0))),
                                     ..Default::default()
                                 }
                             });

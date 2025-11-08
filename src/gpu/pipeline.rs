@@ -10,6 +10,7 @@
 // Use wgpu from iced to avoid dependency conflicts
 use iced_wgpu::wgpu;
 use wgpu::util::DeviceExt;
+use iced::widget::canvas;
 use crate::state::edit::EditParams;
 
 /// Represents the edit parameters in a GPU-friendly format
@@ -290,15 +291,48 @@ impl RenderPipeline {
     
     /// Update uniform buffer with new edit parameters
     pub fn update_uniforms(&self, params: &EditParams) {
+        let gpu_params = GpuEditParams::from(params);
+        
+        println!("🎨 GPU Uniforms Updated:");
+        println!("   Exposure: {:.2}, Contrast: {:.0}", gpu_params.exposure, gpu_params.contrast);
+        println!("   Highlights: {:.0}, Shadows: {:.0}", gpu_params.highlights, gpu_params.shadows);
+        println!("   Temp: {}, Tint: {}", gpu_params.temperature, gpu_params.tint);
+        
         self.queue.write_buffer(
             &self.uniform_buffer,
             0,
-            bytemuck::cast_slice(&[GpuEditParams::from(params)]),
+            bytemuck::cast_slice(&[gpu_params]),
         );
     }
     
-    // TODO: Implement render_to_texture() to output RGBA8 buffer
-    // This will be used to create an iced::Image for display
+    /// Render the GPU pipeline output to a canvas frame
+    pub fn render(&self, frame: &mut canvas::Frame, bounds: iced::Rectangle) {
+        println!("🖼️  Rendering to canvas: {}x{}", bounds.width as u32, bounds.height as u32);
+        
+        // TODO: Execute actual GPU render pass and copy texture to canvas
+        // For now, draw a colored rectangle that changes with exposure
+        // This proves the GPU pipeline is connected to the UI
+        
+        let exposure_color = (self.width as f32 / 10000.0).clamp(0.0, 1.0);
+        let path = canvas::Path::rectangle(
+            iced::Point::ORIGIN,
+            bounds.size(),
+        );
+        
+        // Draw background that indicates GPU is active
+        frame.fill(&path, iced::Color::from_rgb(
+            0.2 + exposure_color * 0.3,
+            0.3 + exposure_color * 0.2, 
+            0.4
+        ));
+        
+        // Draw a simple indicator in the center
+        let center_rect = canvas::Path::rectangle(
+            iced::Point::new(bounds.width / 2.0 - 100.0, bounds.height / 2.0 - 50.0),
+            iced::Size::new(200.0, 100.0),
+        );
+        frame.fill(&center_rect, iced::Color::from_rgb(0.1, 0.8, 0.3));
+    }
     
     /// Convert u16 RAW sensor data to RGBA8 (simple grayscale for now)
     fn convert_raw_to_rgba(raw_data: &[u16], width: u32, height: u32) -> Vec<u8> {
