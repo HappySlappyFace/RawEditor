@@ -13,11 +13,7 @@
 /// 4. Returns the final color
 pub const PASSTHROUGH_SHADER: &str = r#"
 // ========== Vertex Shader ==========
-
-struct VertexInput {
-    @location(0) position: vec2<f32>,
-    @location(1) tex_coords: vec2<f32>,
-}
+// Full-screen triangle (no vertex buffers needed)
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
@@ -25,10 +21,17 @@ struct VertexOutput {
 }
 
 @vertex
-fn vs_main(input: VertexInput) -> VertexOutput {
+fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     var output: VertexOutput;
-    output.clip_position = vec4<f32>(input.position, 0.0, 1.0);
-    output.tex_coords = input.tex_coords;
+    
+    // Generate full-screen triangle from vertex index
+    // Triangle covers entire screen: (-1,-1) to (3,3)
+    let x = f32((vertex_index << 1u) & 2u);
+    let y = f32(vertex_index & 2u);
+    
+    output.clip_position = vec4<f32>(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
+    output.tex_coords = vec2<f32>(x, y);
+    
     return output;
 }
 

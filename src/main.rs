@@ -6,6 +6,7 @@ use iced_aw::Wrap;
 use rfd::FileDialog;
 use rusqlite::{Connection, ErrorCode};
 use std::path::PathBuf;
+use std::sync::Arc;
 use walkdir::WalkDir;
 use chrono::Utc;
 
@@ -75,6 +76,8 @@ struct RawEditor {
     current_tab: AppTab,
     /// Current edit parameters for the selected image
     current_edit_params: state::edit::EditParams,
+    /// GPU rendering pipeline for real-time RAW processing
+    gpu_pipeline: Option<Arc<gpu::RenderPipeline>>,
 }
 
 /// Application messages (events)
@@ -116,6 +119,12 @@ enum Message {
     TintChanged(i32),
     /// User clicked Reset button to clear all edits
     ResetEdits,
+    
+    // ========== GPU Pipeline Messages ==========
+    /// Background RAW data loading completed
+    RawDataLoaded(Result<raw::loader::RawDataResult, String>),
+    /// GPU pipeline initialization completed
+    GpuPipelineReady(Result<Arc<gpu::RenderPipeline>, String>),
 }
 
 impl RawEditor {
@@ -156,6 +165,7 @@ impl RawEditor {
                 preview_cache_dir,
                 current_tab: AppTab::Library, // Start in Library tab
                 current_edit_params: state::edit::EditParams::default(), // No edits initially
+                gpu_pipeline: None, // GPU pipeline created on demand
             },
             // Start thumbnail generation in the background
             Task::perform(
@@ -279,22 +289,18 @@ impl RawEditor {
                 
                 // Find the selected image
                 if let Some(img) = self.images.iter().find(|i| i.id == image_id) {
-                    // Check if preview already cached
-                    if let Some(ref preview_path) = img.preview_path {
-                        // Preview already exists
-                        self.editor_pane_state = EditorPaneState::PreviewLoaded(image_id, preview_path.clone());
-                        Task::none()
-                    } else {
-                        // Need to generate preview
-                        self.editor_pane_state = EditorPaneState::LoadingPreview(image_id);
-                        let raw_path = img.path.clone();
+                    let raw_path = img.path.clone();
+                    self.editor_pane_state = EditorPaneState::LoadingPreview(image_id);
+                    
+                    // Load BOTH preview (for UI) AND raw data (for GPU) in parallel
+                    let preview_task = if img.preview_path.is_none() {
+                        // Generate JPEG preview for UI thumbnails
+                        let raw_path_preview = raw_path.clone();
                         let preview_cache_dir = self.preview_cache_dir.clone();
-                        
-                        // Spawn async task to generate preview
                         Task::perform(
                             async move {
                                 let result = raw::preview::generate_full_preview(
-                                    raw_path,
+                                    raw_path_preview,
                                     image_id,
                                     preview_cache_dir
                                 ).await;
@@ -305,7 +311,18 @@ impl RawEditor {
                             },
                             Message::PreviewGenerated,
                         )
-                    }
+                    } else {
+                        Task::none()
+                    };
+                    
+                    // Load RAW sensor data for GPU processing
+                    let raw_task = Task::perform(
+                        raw::loader::load_raw_data(raw_path),
+                        Message::RawDataLoaded,
+                    );
+                    
+                    // Run both tasks
+                    Task::batch(vec![preview_task, raw_task])
                 } else {
                     Task::none()
                 }
@@ -353,51 +370,91 @@ impl RawEditor {
             Message::ExposureChanged(value) => {
                 self.current_edit_params.exposure = value;
                 self.save_current_edits();
+                // Update GPU uniforms in real-time
+                if let Some(pipeline) = &self.gpu_pipeline {
+                    pipeline.update_uniforms(&self.current_edit_params);
+                }
                 Task::none()
             }
             Message::ContrastChanged(value) => {
                 self.current_edit_params.contrast = value;
                 self.save_current_edits();
+                // Update GPU uniforms in real-time
+                if let Some(pipeline) = &self.gpu_pipeline {
+                    pipeline.update_uniforms(&self.current_edit_params);
+                }
                 Task::none()
             }
             Message::HighlightsChanged(value) => {
                 self.current_edit_params.highlights = value;
                 self.save_current_edits();
+                // Update GPU uniforms in real-time
+                if let Some(pipeline) = &self.gpu_pipeline {
+                    pipeline.update_uniforms(&self.current_edit_params);
+                }
                 Task::none()
             }
             Message::ShadowsChanged(value) => {
                 self.current_edit_params.shadows = value;
                 self.save_current_edits();
+                // Update GPU uniforms in real-time
+                if let Some(pipeline) = &self.gpu_pipeline {
+                    pipeline.update_uniforms(&self.current_edit_params);
+                }
                 Task::none()
             }
             Message::WhitesChanged(value) => {
                 self.current_edit_params.whites = value;
                 self.save_current_edits();
+                // Update GPU uniforms in real-time
+                if let Some(pipeline) = &self.gpu_pipeline {
+                    pipeline.update_uniforms(&self.current_edit_params);
+                }
                 Task::none()
             }
             Message::BlacksChanged(value) => {
                 self.current_edit_params.blacks = value;
                 self.save_current_edits();
+                // Update GPU uniforms in real-time
+                if let Some(pipeline) = &self.gpu_pipeline {
+                    pipeline.update_uniforms(&self.current_edit_params);
+                }
                 Task::none()
             }
             Message::VibranceChanged(value) => {
                 self.current_edit_params.vibrance = value;
                 self.save_current_edits();
+                // Update GPU uniforms in real-time
+                if let Some(pipeline) = &self.gpu_pipeline {
+                    pipeline.update_uniforms(&self.current_edit_params);
+                }
                 Task::none()
             }
             Message::SaturationChanged(value) => {
                 self.current_edit_params.saturation = value;
                 self.save_current_edits();
+                // Update GPU uniforms in real-time
+                if let Some(pipeline) = &self.gpu_pipeline {
+                    pipeline.update_uniforms(&self.current_edit_params);
+                }
                 Task::none()
             }
             Message::TemperatureChanged(value) => {
                 self.current_edit_params.temperature = value;
                 self.save_current_edits();
+                // Update GPU uniforms in real-time
+                if let Some(pipeline) = &self.gpu_pipeline {
+                    pipeline.update_uniforms(&self.current_edit_params);
+                }
                 Task::none()
             }
             Message::TintChanged(value) => {
                 self.current_edit_params.tint = value;
                 self.save_current_edits();
+                // Update GPU uniforms in real-time
+                if let Some(pipeline) = &self.gpu_pipeline {
+                    pipeline.update_uniforms(&self.current_edit_params);
+                }
                 Task::none()
             }
             Message::ResetEdits => {
@@ -410,7 +467,67 @@ impl RawEditor {
                     println!("♻️  Reset edits for image {}", image_id);
                 }
                 
+                // Update GPU uniforms if pipeline exists
+                if let Some(pipeline) = &self.gpu_pipeline {
+                    pipeline.update_uniforms(&self.current_edit_params);
+                }
+                
                 Task::none()
+            }
+            
+            // ========== GPU Pipeline Message Handlers ==========
+            
+            Message::RawDataLoaded(result) => {
+                match result {
+                    Ok(raw_data) => {
+                        println!("📷 RAW data loaded: {}x{} pixels", raw_data.width, raw_data.height);
+                        
+                        // Create GPU pipeline with the RAW data
+                        let params = self.current_edit_params;
+                        
+                        Task::perform(
+                            async move {
+                                gpu::RenderPipeline::new(
+                                    raw_data.data,
+                                    raw_data.width,
+                                    raw_data.height,
+                                    &params,
+                                ).await
+                            },
+                            |result| Message::GpuPipelineReady(result.map(Arc::new)),
+                        )
+                    }
+                    Err(err) => {
+                        eprintln!("⚠️  Failed to load RAW data: {}", err);
+                        self.editor_pane_state = EditorPaneState::PreviewFailed(
+                            self.selected_image_id.unwrap_or(0),
+                            err,
+                        );
+                        Task::none()
+                    }
+                }
+            }
+            
+            Message::GpuPipelineReady(result) => {
+                match result {
+                    Ok(pipeline) => {
+                        println!("🎨 GPU pipeline initialized!");
+                        self.gpu_pipeline = Some(pipeline);
+                        
+                        // Don't update editor_pane_state here - let PreviewGenerated handle UI
+                        // The GPU pipeline runs in parallel with preview generation
+                        
+                        Task::none()
+                    }
+                    Err(err) => {
+                        eprintln!("⚠️  Failed to initialize GPU pipeline: {}", err);
+                        self.editor_pane_state = EditorPaneState::PreviewFailed(
+                            self.selected_image_id.unwrap_or(0),
+                            err,
+                        );
+                        Task::none()
+                    }
+                }
             }
         }
     }

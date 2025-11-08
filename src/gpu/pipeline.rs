@@ -63,6 +63,16 @@ pub struct RenderPipeline {
     height: u32,
 }
 
+// Manual Debug implementation (wgpu types don't implement Debug)
+impl std::fmt::Debug for RenderPipeline {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RenderPipeline")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .finish_non_exhaustive()
+    }
+}
+
 impl RenderPipeline {
     /// Create a new render pipeline with the given RAW data
     pub async fn new(
