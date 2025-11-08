@@ -59,8 +59,8 @@ pub struct RenderPipeline {
     uniform_buffer: wgpu::Buffer,
     texture: wgpu::Texture,
     texture_view: wgpu::TextureView,
-    width: u32,
-    height: u32,
+    pub width: u32,
+    pub height: u32,
 }
 
 // Manual Debug implementation (wgpu types don't implement Debug)
@@ -290,13 +290,15 @@ impl RenderPipeline {
     
     /// Update uniform buffer with new edit parameters
     pub fn update_uniforms(&self, params: &EditParams) {
-        let gpu_params: GpuEditParams = params.into();
         self.queue.write_buffer(
             &self.uniform_buffer,
             0,
-            bytemuck::cast_slice(&[gpu_params]),
+            bytemuck::cast_slice(&[GpuEditParams::from(params)]),
         );
     }
+    
+    // TODO: Implement render_to_texture() to output RGBA8 buffer
+    // This will be used to create an iced::Image for display
     
     /// Convert u16 RAW sensor data to RGBA8 (simple grayscale for now)
     fn convert_raw_to_rgba(raw_data: &[u16], width: u32, height: u32) -> Vec<u8> {

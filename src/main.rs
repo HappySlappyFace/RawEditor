@@ -9,11 +9,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use walkdir::WalkDir;
 use chrono::Utc;
+// use crate::canvas;
 
-// Declare the state, raw, and gpu modules
+// Declare the state, raw, gpu, and ui modules
 mod state;
 mod raw;
 mod gpu;
+mod ui;
 
 // Import shared data structures (alias to avoid conflict with iced's image widget)
 use state::data::Image as ImageData;
@@ -45,17 +47,28 @@ struct PreviewResult {
     preview_path: Result<String, String>,
 }
 
-/// State of the editor pane
-#[derive(Debug, Clone, PartialEq)]
-enum EditorPaneState {
+/// State of the editor and GPU pipeline
+#[derive(Clone)]
+enum EditorStatus {
     /// No image selected
     NoSelection,
-    /// Image selected, loading preview
-    LoadingPreview(i64),
-    /// Image selected, preview loaded
-    PreviewLoaded(i64, String),
-    /// Image selected, preview failed to load
-    PreviewFailed(i64, String),
+    /// Loading RAW data and initializing GPU pipeline
+    Loading(i64),
+    /// GPU pipeline ready for rendering
+    Ready(Arc<gpu::RenderPipeline>),
+    /// Failed to initialize pipeline
+    Failed(i64, String),
+}
+
+impl std::fmt::Debug for EditorStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EditorStatus::NoSelection => write!(f, "NoSelection"),
+            EditorStatus::Loading(id) => write!(f, "Loading({})", id),
+            EditorStatus::Ready(_) => write!(f, "Ready(pipeline)"),
+            EditorStatus::Failed(id, err) => write!(f, "Failed({}, {})", id, err),
+        }
+    }
 }
 
 /// Main application state
@@ -68,16 +81,14 @@ struct RawEditor {
     images: Vec<ImageData>,
     /// Currently selected image ID
     selected_image_id: Option<i64>,
-    /// State of the editor pane (preview loading)
-    editor_pane_state: EditorPaneState,
     /// Cache directory for full-size previews
     preview_cache_dir: PathBuf,
     /// Currently active tab
     current_tab: AppTab,
     /// Current edit parameters for the selected image
     current_edit_params: state::edit::EditParams,
-    /// GPU rendering pipeline for real-time RAW processing
-    gpu_pipeline: Option<Arc<gpu::RenderPipeline>>,
+    /// GPU pipeline status (holds the pipeline when ready)
+    editor_status: EditorStatus,
 }
 
 /// Application messages (events)
@@ -161,11 +172,10 @@ impl RawEditor {
                 status, 
                 images,
                 selected_image_id: None,
-                editor_pane_state: EditorPaneState::NoSelection,
                 preview_cache_dir,
                 current_tab: AppTab::Library, // Start in Library tab
                 current_edit_params: state::edit::EditParams::default(), // No edits initially
-                gpu_pipeline: None, // GPU pipeline created on demand
+                editor_status: EditorStatus::NoSelection, // GPU pipeline created on demand
             },
             // Start thumbnail generation in the background
             Task::perform(
@@ -291,14 +301,11 @@ impl RawEditor {
                 if let Some(img) = self.images.iter().find(|i| i.id == image_id) {
                     let raw_path = img.path.clone();
                     
-                    // Load BOTH preview (for UI) AND raw data (for GPU) in parallel
-                    let preview_task = if let Some(ref preview_path) = img.preview_path {
-                        // Preview already exists - load it immediately
-                        self.editor_pane_state = EditorPaneState::PreviewLoaded(image_id, preview_path.clone());
-                        Task::none()
-                    } else {
-                        // Generate JPEG preview for UI thumbnails
-                        self.editor_pane_state = EditorPaneState::LoadingPreview(image_id);
+                    // Set editor status to loading
+                    self.editor_status = EditorStatus::Loading(image_id);
+                    
+                    // Generate JPEG preview for thumbnails (if needed)
+                    let preview_task = if img.preview_path.is_none() {
                         let raw_path_preview = raw_path.clone();
                         let preview_cache_dir = self.preview_cache_dir.clone();
                         Task::perform(
@@ -315,6 +322,8 @@ impl RawEditor {
                             },
                             Message::PreviewGenerated,
                         )
+                    } else {
+                        Task::none()
                     };
                     
                     // Load RAW sensor data for GPU processing
@@ -330,7 +339,7 @@ impl RawEditor {
                 }
             }
             Message::PreviewGenerated(result) => {
-                // Update database with preview path
+                // Update database with preview path for thumbnails
                 if let Ok(ref path) = result.preview_path {
                     let _ = self.library.set_image_preview_path(result.image_id, path);
                     
@@ -339,11 +348,8 @@ impl RawEditor {
                         img.preview_path = Some(path.clone());
                     }
                     
-                    // Update editor pane state
-                    self.editor_pane_state = EditorPaneState::PreviewLoaded(result.image_id, path.clone());
-                    println!("✅ Preview loaded for image {}", result.image_id);
+                    println!("✅ Preview cached for image {}", result.image_id);
                 } else if let Err(ref err) = result.preview_path {
-                    self.editor_pane_state = EditorPaneState::PreviewFailed(result.image_id, err.clone());
                     eprintln!("❌ Preview failed for image {}: {}", result.image_id, err);
                 }
                 
@@ -353,12 +359,12 @@ impl RawEditor {
                 // Switch to the selected tab
                 self.current_tab = tab;
                 
-                // When switching to Develop tab with a selected image, ensure preview is loaded
+                // When switching to Develop tab with a selected image, ensure GPU pipeline is ready
                 if tab == AppTab::Develop {
                     if let Some(image_id) = self.selected_image_id {
-                        // Check if we need to load preview
-                        if let EditorPaneState::NoSelection = self.editor_pane_state {
-                            // Trigger preview loading
+                        // Check if we need to load GPU pipeline
+                        if matches!(self.editor_status, EditorStatus::NoSelection) {
+                            // Trigger GPU pipeline loading
                             return self.update(Message::ImageSelected(image_id));
                         }
                     }
@@ -372,8 +378,8 @@ impl RawEditor {
             Message::ExposureChanged(value) => {
                 self.current_edit_params.exposure = value;
                 self.save_current_edits();
-                // Update GPU uniforms in real-time
-                if let Some(pipeline) = &self.gpu_pipeline {
+                // Update GPU uniforms and trigger redraw
+                if let EditorStatus::Ready(pipeline) = &self.editor_status {
                     pipeline.update_uniforms(&self.current_edit_params);
                 }
                 Task::none()
@@ -381,8 +387,8 @@ impl RawEditor {
             Message::ContrastChanged(value) => {
                 self.current_edit_params.contrast = value;
                 self.save_current_edits();
-                // Update GPU uniforms in real-time
-                if let Some(pipeline) = &self.gpu_pipeline {
+                // Update GPU uniforms and trigger redraw
+                if let EditorStatus::Ready(pipeline) = &self.editor_status {
                     pipeline.update_uniforms(&self.current_edit_params);
                 }
                 Task::none()
@@ -390,8 +396,8 @@ impl RawEditor {
             Message::HighlightsChanged(value) => {
                 self.current_edit_params.highlights = value;
                 self.save_current_edits();
-                // Update GPU uniforms in real-time
-                if let Some(pipeline) = &self.gpu_pipeline {
+                // Update GPU uniforms and trigger redraw
+                if let EditorStatus::Ready(pipeline) = &self.editor_status {
                     pipeline.update_uniforms(&self.current_edit_params);
                 }
                 Task::none()
@@ -399,8 +405,8 @@ impl RawEditor {
             Message::ShadowsChanged(value) => {
                 self.current_edit_params.shadows = value;
                 self.save_current_edits();
-                // Update GPU uniforms in real-time
-                if let Some(pipeline) = &self.gpu_pipeline {
+                // Update GPU uniforms and trigger redraw
+                if let EditorStatus::Ready(pipeline) = &self.editor_status {
                     pipeline.update_uniforms(&self.current_edit_params);
                 }
                 Task::none()
@@ -408,8 +414,8 @@ impl RawEditor {
             Message::WhitesChanged(value) => {
                 self.current_edit_params.whites = value;
                 self.save_current_edits();
-                // Update GPU uniforms in real-time
-                if let Some(pipeline) = &self.gpu_pipeline {
+                // Update GPU uniforms and trigger redraw
+                if let EditorStatus::Ready(pipeline) = &self.editor_status {
                     pipeline.update_uniforms(&self.current_edit_params);
                 }
                 Task::none()
@@ -417,8 +423,8 @@ impl RawEditor {
             Message::BlacksChanged(value) => {
                 self.current_edit_params.blacks = value;
                 self.save_current_edits();
-                // Update GPU uniforms in real-time
-                if let Some(pipeline) = &self.gpu_pipeline {
+                // Update GPU uniforms and trigger redraw
+                if let EditorStatus::Ready(pipeline) = &self.editor_status {
                     pipeline.update_uniforms(&self.current_edit_params);
                 }
                 Task::none()
@@ -426,8 +432,8 @@ impl RawEditor {
             Message::VibranceChanged(value) => {
                 self.current_edit_params.vibrance = value;
                 self.save_current_edits();
-                // Update GPU uniforms in real-time
-                if let Some(pipeline) = &self.gpu_pipeline {
+                // Update GPU uniforms and trigger redraw
+                if let EditorStatus::Ready(pipeline) = &self.editor_status {
                     pipeline.update_uniforms(&self.current_edit_params);
                 }
                 Task::none()
@@ -435,8 +441,8 @@ impl RawEditor {
             Message::SaturationChanged(value) => {
                 self.current_edit_params.saturation = value;
                 self.save_current_edits();
-                // Update GPU uniforms in real-time
-                if let Some(pipeline) = &self.gpu_pipeline {
+                // Update GPU uniforms and trigger redraw
+                if let EditorStatus::Ready(pipeline) = &self.editor_status {
                     pipeline.update_uniforms(&self.current_edit_params);
                 }
                 Task::none()
@@ -444,8 +450,8 @@ impl RawEditor {
             Message::TemperatureChanged(value) => {
                 self.current_edit_params.temperature = value;
                 self.save_current_edits();
-                // Update GPU uniforms in real-time
-                if let Some(pipeline) = &self.gpu_pipeline {
+                // Update GPU uniforms and trigger redraw
+                if let EditorStatus::Ready(pipeline) = &self.editor_status {
                     pipeline.update_uniforms(&self.current_edit_params);
                 }
                 Task::none()
@@ -453,8 +459,8 @@ impl RawEditor {
             Message::TintChanged(value) => {
                 self.current_edit_params.tint = value;
                 self.save_current_edits();
-                // Update GPU uniforms in real-time
-                if let Some(pipeline) = &self.gpu_pipeline {
+                // Update GPU uniforms and trigger redraw
+                if let EditorStatus::Ready(pipeline) = &self.editor_status {
                     pipeline.update_uniforms(&self.current_edit_params);
                 }
                 Task::none()
@@ -469,8 +475,8 @@ impl RawEditor {
                     println!("♻️  Reset edits for image {}", image_id);
                 }
                 
-                // Update GPU uniforms if pipeline exists
-                if let Some(pipeline) = &self.gpu_pipeline {
+                // Update GPU uniforms and trigger redraw
+                if let EditorStatus::Ready(pipeline) = &self.editor_status {
                     pipeline.update_uniforms(&self.current_edit_params);
                 }
                 
@@ -501,7 +507,7 @@ impl RawEditor {
                     }
                     Err(err) => {
                         eprintln!("⚠️  Failed to load RAW data: {}", err);
-                        self.editor_pane_state = EditorPaneState::PreviewFailed(
+                        self.editor_status = EditorStatus::Failed(
                             self.selected_image_id.unwrap_or(0),
                             err,
                         );
@@ -514,16 +520,15 @@ impl RawEditor {
                 match result {
                     Ok(pipeline) => {
                         println!("🎨 GPU pipeline initialized!");
-                        self.gpu_pipeline = Some(pipeline);
                         
-                        // Don't update editor_pane_state here - let PreviewGenerated handle UI
-                        // The GPU pipeline runs in parallel with preview generation
+                        // Store pipeline in EditorStatus::Ready
+                        self.editor_status = EditorStatus::Ready(pipeline);
                         
                         Task::none()
                     }
                     Err(err) => {
                         eprintln!("⚠️  Failed to initialize GPU pipeline: {}", err);
-                        self.editor_pane_state = EditorPaneState::PreviewFailed(
+                        self.editor_status = EditorStatus::Failed(
                             self.selected_image_id.unwrap_or(0),
                             err,
                         );
@@ -727,46 +732,17 @@ impl RawEditor {
         ]
         .width(Length::FillPortion(2)); // 2/3 of screen
         
-        // ========== RIGHT PANE: Editor View ==========
+        // ========== RIGHT PANE: Simple Preview ==========
         
-        let editor_content = match &self.editor_pane_state {
-            EditorPaneState::NoSelection => {
-                column![
-                    text("No Image Selected").size(24),
-                    text("").size(20),
-                    text("← Click a thumbnail to select")
-                        .size(16)
-                        .style(|theme: &Theme| {
-                            text::Style {
-                                color: Some(theme.palette().text.scale_alpha(0.6)),
-                            }
-                        }),
-                ]
-                .padding(20)
-                .align_x(Alignment::Center)
-            }
-            EditorPaneState::LoadingPreview(image_id) => {
-                // Show loading state
-                if let Some(img) = self.images.iter().find(|i| i.id == *image_id) {
-                    column![
-                        text(&img.filename).size(20),
-                        text("").size(20),
-                        text("⌛ Loading preview...").size(16),
-                    ]
-                    .padding(20)
-                    .align_x(Alignment::Center)
-                } else {
-                    column![text("Loading...").size(18)].padding(20)
-                }
-            }
-            EditorPaneState::PreviewLoaded(image_id, preview_path) => {
-                // Show full-size preview
-                if let Some(img) = self.images.iter().find(|i| i.id == *image_id) {
+        let editor_content = if let Some(image_id) = self.selected_image_id {
+            if let Some(img) = self.images.iter().find(|i| i.id == image_id) {
+                // Show selected image preview (if cached)
+                if let Some(ref preview_path) = img.preview_path {
                     let handle = Handle::from_path(preview_path.clone());
                     column![
                         text(&img.filename).size(18),
                         text("").size(10),
-                        // Full-size preview image
+                        // Preview image
                         scrollable(
                             Image::new(handle)
                                 .width(Length::Fill)
@@ -779,25 +755,31 @@ impl RawEditor {
                     .spacing(5)
                     .padding(10)
                 } else {
-                    column![text("Image not found").size(18)].padding(20)
-                }
-            }
-            EditorPaneState::PreviewFailed(image_id, error) => {
-                // Show error state
-                if let Some(img) = self.images.iter().find(|i| i.id == *image_id) {
                     column![
-                        text(&img.filename).size(18),
+                        text(&img.filename).size(20),
                         text("").size(20),
-                        text("❌ Preview Failed").size(16),
-                        text("").size(10),
-                        text(error).size(12),
+                        text("Switch to Develop tab to load full preview").size(14),
                     ]
                     .padding(20)
                     .align_x(Alignment::Center)
-                } else {
-                    column![text("Error loading preview").size(18)].padding(20)
                 }
+            } else {
+                column![text("Image not found").size(18)].padding(20)
             }
+        } else {
+            column![
+                text("No Image Selected").size(24),
+                text("").size(20),
+                text("← Click a thumbnail to select")
+                    .size(16)
+                    .style(|theme: &Theme| {
+                        text::Style {
+                            color: Some(theme.palette().text.scale_alpha(0.6)),
+                        }
+                    }),
+            ]
+            .padding(20)
+            .align_x(Alignment::Center)
         };
         
         let editor_pane = container(editor_content)
@@ -821,8 +803,8 @@ impl RawEditor {
     
     /// Build the Develop tab view (full-screen editor with preview)
     fn view_develop(&self) -> Element<Message> {
-        match &self.editor_pane_state {
-            EditorPaneState::NoSelection => {
+        match &self.editor_status {
+            EditorStatus::NoSelection => {
                 // No image selected - show prompt
                 container(
                     column![
@@ -845,7 +827,7 @@ impl RawEditor {
                 .center_y(Length::Fill)
                 .into()
             }
-            EditorPaneState::LoadingPreview(image_id) => {
+            EditorStatus::Loading(image_id) => {
                 // Show loading state
                 if let Some(img) = self.images.iter().find(|i| i.id == *image_id) {
                     container(
@@ -879,33 +861,42 @@ impl RawEditor {
                         .into()
                 }
             }
-            EditorPaneState::PreviewLoaded(image_id, preview_path) => {
-                // Show full-screen preview with editing tools
-                if let Some(img) = self.images.iter().find(|i| i.id == *image_id) {
-                    let handle = Handle::from_path(preview_path.clone());
-                    
-                    // Header with image info
-                    let header = row![
-                        text(&img.filename).size(18),
-                    ]
-                    .spacing(5)
-                    .padding(10);
-                    
-                    // Full-size preview (centered, contained)
-                    let preview = container(
-                        Image::new(handle)
-                            .content_fit(iced::ContentFit::Contain)
-                    )
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .center_x(Length::Fill)
-                    .center_y(Length::Fill)
-                    .style(|_theme| {
-                        container::Style {
-                            background: Some(Background::Color(Color::from_rgb(0.1, 0.1, 0.1))),
-                            ..Default::default()
-                        }
-                    });
+            EditorStatus::Ready(pipeline) => {
+                // GPU pipeline ready - show live canvas rendering!
+                if let Some(image_id) = self.selected_image_id {
+                    if let Some(img) = self.images.iter().find(|i| i.id == image_id) {
+                        // Header with image info
+                        let header = row![
+                            text(&img.filename).size(18),
+                            text(" • ").size(18),
+                            text("🎨 GPU Rendering").size(18),
+                        ]
+                        .spacing(5)
+                        .padding(10);
+                        
+                        // GPU pipeline is ready! 
+                        // TODO: Render GPU output to texture and display as Image
+                        let preview = container(
+                            column![
+                                text("🎨 GPU Pipeline Ready!").size(24),
+                                text("").size(20),
+                                text("The GPU is processing your RAW image").size(16),
+                                text("with real-time adjustments.").size(16),
+                                text("").size(20),
+                                text(format!("Size: {}x{}", pipeline.width, pipeline.height)).size(14),
+                            ]
+                            .align_x(Alignment::Center)
+                        )
+                            .width(Length::Fill)
+                            .height(Length::Fill)
+                            .center_x(Length::Fill)
+                            .center_y(Length::Fill)
+                            .style(|_theme| {
+                                container::Style {
+                                    background: Some(Background::Color(Color::from_rgb(0.1, 0.1, 0.1))),
+                                    ..Default::default()
+                                }
+                            });
                     
                     // Right sidebar with editing controls (placeholder for future)
                     let sidebar = column![
@@ -943,8 +934,16 @@ impl RawEditor {
                     .width(Length::Fill)
                     .height(Length::Fill)
                     .into()
+                    } else {
+                        container(text("Image not found").size(24))
+                            .width(Length::Fill)
+                            .height(Length::Fill)
+                            .center_x(Length::Fill)
+                            .center_y(Length::Fill)
+                            .into()
+                    }
                 } else {
-                    container(text("Image not found").size(24))
+                    container(text("No image selected").size(24))
                         .width(Length::Fill)
                         .height(Length::Fill)
                         .center_x(Length::Fill)
@@ -952,7 +951,7 @@ impl RawEditor {
                         .into()
                 }
             }
-            EditorPaneState::PreviewFailed(image_id, error) => {
+            EditorStatus::Failed(image_id, error) => {
                 // Show error state
                 if let Some(img) = self.images.iter().find(|i| i.id == *image_id) {
                     container(

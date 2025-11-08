@@ -8,7 +8,7 @@ license = "MIT"
 
 [dependencies]
 # GUI framework with native rendering via wgpu
-iced = { version = "0.13", features = ["wgpu", "tokio", "image", "advanced"] }
+iced = { version = "0.13", features = ["wgpu", "tokio", "image", "advanced", "canvas"] }
 iced_wgpu = "0.13"  # Direct access to wgpu types from iced
 
 # Additional widgets for iced (Wrap for grid layout)
