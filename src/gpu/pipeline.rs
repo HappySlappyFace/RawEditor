@@ -10,7 +10,6 @@
 // Use wgpu from iced to avoid dependency conflicts
 use iced_wgpu::wgpu;
 use wgpu::util::DeviceExt;
-use iced::widget::canvas;
 use crate::state::edit::EditParams;
 
 /// Represents the edit parameters in a GPU-friendly format
@@ -110,10 +109,7 @@ impl RenderPipeline {
             .await
             .map_err(|e| format!("Failed to create device: {:?}", e))?;
         
-        // Convert u16 RAW data to f32 RGBA (simple passthrough for now)
-        let rgba_data = Self::convert_raw_to_rgba(&raw_data, width, height);
-        
-        // Create texture
+        // Create texture for RAW u16 data (R16Uint format)
         let texture_size = wgpu::Extent3d {
             width,
             height,
@@ -121,18 +117,19 @@ impl RenderPipeline {
         };
         
         let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("RAW Input Texture"),
+            label: Some("RAW Input Texture (R16Uint)"),
             size: texture_size,
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
+            format: wgpu::TextureFormat::R16Uint,  // 16-bit unsigned integer for RAW data
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
         
-        // Upload texture data
-        println!("💾 Uploading {} bytes to GPU texture", rgba_data.len());
+        // Upload RAW u16 data directly (no conversion!)
+        let raw_bytes = bytemuck::cast_slice(&raw_data);
+        println!("💾 Uploading {} bytes of RAW u16 data to GPU", raw_bytes.len());
         queue.write_texture(
             wgpu::ImageCopyTexture {
                 texture: &texture,
@@ -140,15 +137,15 @@ impl RenderPipeline {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            &rgba_data,
+            raw_bytes,
             wgpu::ImageDataLayout {
                 offset: 0,
-                bytes_per_row: Some(4 * width),
+                bytes_per_row: Some(2 * width),  // 2 bytes per pixel (u16)
                 rows_per_image: Some(height),
             },
             texture_size,
         );
-        println!("✅ Texture uploaded to GPU!");
+        println!("✅ RAW texture uploaded to GPU!");
         
         let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         
@@ -176,12 +173,12 @@ impl RenderPipeline {
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Bind Group Layout"),
             entries: &[
-                // Texture
+                // Texture (R16Uint = unsigned integer texture)
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        sample_type: wgpu::TextureSampleType::Uint,  // Integer texture for RAW u16
                         view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
                     },
@@ -307,7 +304,48 @@ impl RenderPipeline {
         );
     }
     
-    /// Render GPU output to RGBA8 bytes that can be displayed
+    /// Render directly to an iced-provided texture view (Canvas integration)
+    /// This eliminates the GPU→CPU readback bottleneck!
+    pub fn render_to_target(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        viewport: (u32, u32),
+    ) {
+        // Create render pass that draws directly to iced's surface
+        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("RAW Render Pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        
+        // Set viewport to match canvas size
+        render_pass.set_viewport(
+            0.0,
+            0.0,
+            viewport.0 as f32,
+            viewport.1 as f32,
+            0.0,
+            1.0,
+        );
+        
+        // Execute our shader
+        render_pass.set_pipeline(&self.pipeline);
+        render_pass.set_bind_group(0, &self.bind_group, &[]);
+        render_pass.draw(0..3, 0..1); // Full-screen triangle
+    }
+    
+    /// Temporary: Simplified render for Phase 12 transition
+    /// TODO Phase 13: Replace with full Canvas integration
     pub fn render_to_bytes(&self) -> Vec<u8> {
         // Create output texture
         let output_texture = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -326,41 +364,16 @@ impl RenderPipeline {
         });
         
         let output_view = output_texture.create_view(&wgpu::TextureViewDescriptor::default());
-        
-        // Create command encoder
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Render Encoder"),
         });
         
-        // Run render pass with our shader
-        println!("🎬 Starting render pass...");
-        {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Main Render Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &output_view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            
-            println!("🔧 Setting pipeline and bind group...");
-            render_pass.set_pipeline(&self.pipeline);
-            render_pass.set_bind_group(0, &self.bind_group, &[]);
-            println!("✏️  Drawing 3 vertices (full-screen triangle)...");
-            render_pass.draw(0..3, 0..1); // Full-screen triangle
-            println!("✅ Render pass complete");
-        }
+        // Render to texture
+        self.render_to_target(&mut encoder, &output_view, (self.width, self.height));
         
-        // Create buffer to copy texture data to
-        let bytes_per_row = self.width * 4; // RGBA8 = 4 bytes per pixel
-        let padded_bytes_per_row = (bytes_per_row + 255) & !255; // Align to 256 bytes
+        // Readback (still slow, but now debayered!)
+        let bytes_per_row = self.width * 4;
+        let padded_bytes_per_row = (bytes_per_row + 255) & !255;
         let buffer_size = (padded_bytes_per_row * self.height) as u64;
         
         let output_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -370,7 +383,6 @@ impl RenderPipeline {
             mapped_at_creation: false,
         });
         
-        // Copy texture to buffer
         encoder.copy_texture_to_buffer(
             wgpu::ImageCopyTexture {
                 texture: &output_texture,
@@ -393,10 +405,8 @@ impl RenderPipeline {
             },
         );
         
-        // Submit commands
         self.queue.submit(Some(encoder.finish()));
         
-        // Map buffer and read data (blocking)
         let buffer_slice = output_buffer.slice(..);
         let (tx, rx) = std::sync::mpsc::channel();
         buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
@@ -406,8 +416,6 @@ impl RenderPipeline {
         rx.recv().unwrap().unwrap();
         
         let data = buffer_slice.get_mapped_range();
-        
-        // Remove padding if any
         let mut output = Vec::with_capacity((self.width * self.height * 4) as usize);
         for y in 0..self.height {
             let start = (y * padded_bytes_per_row) as usize;
@@ -417,74 +425,7 @@ impl RenderPipeline {
         
         drop(data);
         output_buffer.unmap();
-        
         output
-    }
-    
-    /// Render the GPU pipeline output to a canvas frame
-    pub fn render(&self, frame: &mut canvas::Frame, bounds: iced::Rectangle, params: &EditParams) {
-        // Get GPU-rendered image
-        let rgba_bytes = self.render_to_bytes();
-        
-        // For now, draw a colored rectangle based on whether we got data
-        let has_data = !rgba_bytes.is_empty();
-        
-        let background = canvas::Path::rectangle(
-            iced::Point::ORIGIN,
-            bounds.size(),
-        );
-        
-        if has_data {
-            // Show green to indicate GPU render succeeded
-            frame.fill(&background, iced::Color::from_rgb(0.1, 0.3, 0.1));
-            
-            // TODO: Convert rgba_bytes to iced::Image and display
-            // For now, show size indicator
-            let text_bg = canvas::Path::rectangle(
-                iced::Point::new(bounds.width / 2.0 - 150.0, bounds.height / 2.0 - 30.0),
-                iced::Size::new(300.0, 60.0),
-            );
-            frame.fill(&text_bg, iced::Color::from_rgb(0.2, 0.6, 0.3));
-        } else {
-            frame.fill(&background, iced::Color::from_rgb(0.3, 0.1, 0.1));
-        }
-        
-        println!("🎨 GPU rendered {}x{} image ({} bytes)", self.width, self.height, rgba_bytes.len());
-    }
-    
-    /// Convert u16 RAW sensor data to RGBA8 (simple grayscale for now)
-    fn convert_raw_to_rgba(raw_data: &[u16], width: u32, height: u32) -> Vec<u8> {
-        let mut rgba = Vec::with_capacity((width * height * 4) as usize);
-        
-        // Debug: Check first few RAW values
-        println!("📷 Converting RAW data: {} pixels", raw_data.len());
-        if raw_data.len() >= 10 {
-            println!("First 10 RAW values: {:?}", &raw_data[0..10]);
-        }
-        
-        // Find max value to determine bit depth
-        let max_value = raw_data.iter().copied().max().unwrap_or(1) as f32;
-        println!("🔍 Max RAW value: {} (bit depth: ~{} bits)", max_value, (max_value.log2().ceil() as u32));
-        
-        for &pixel in raw_data.iter() {
-            // Scale RAW value (typically 10-12 bit: 0-1023 or 0-4095) to 0-255
-            // Use the max value we found to scale properly
-            let normalized = (pixel as f32 / max_value * 255.0).clamp(0.0, 255.0);
-            let value = normalized as u8;
-            
-            rgba.push(value); // R
-            rgba.push(value); // G
-            rgba.push(value); // B
-            rgba.push(255);   // A
-        }
-        
-        // Debug: Check first few RGBA values
-        if rgba.len() >= 12 {
-            println!("First 3 RGBA pixels: R={} G={} B={}, R={} G={} B={}, R={} G={} B={}",
-                rgba[0], rgba[1], rgba[2], rgba[4], rgba[5], rgba[6], rgba[8], rgba[9], rgba[10]);
-        }
-        
-        rgba
     }
     
     /// Get the texture dimensions

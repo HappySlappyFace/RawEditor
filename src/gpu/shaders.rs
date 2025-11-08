@@ -56,36 +56,111 @@ struct EditParams {
 }
 
 @group(0) @binding(0)
-var input_texture: texture_2d<f32>;
+var input_texture: texture_2d<u32>;  // RAW u16 data stored as u32
 
 @group(0) @binding(1)
-var texture_sampler: sampler;
+var texture_sampler: sampler;  // Not used for integer textures, but kept for compatibility
 
 @group(0) @binding(2)
 var<uniform> params: EditParams;
 
+// Simple nearest-neighbor debayering
+// Assumes RGGB Bayer pattern (most common)
+fn debayer(coords: vec2<i32>, dimensions: vec2<u32>) -> vec3<f32> {
+    // Load RAW pixel value (12-bit in u16, stored as u32)
+    let raw_value = textureLoad(input_texture, coords, 0).r;
+    
+    // Convert to normalized float (0.0 - 1.0)
+    // 12-bit max = 4096
+    let normalized = f32(raw_value) / 4096.0;
+    
+    // Determine position in Bayer pattern
+    // Some cameras start at (1,1) instead of (0,0) - uncomment next 2 lines if colors are still wrong:
+    let x = coords.x;  // Try uncommenting this
+    let y = coords.y + 1;  // Try uncommenting this
+    let is_even_row = (y % 2) == 0;
+    let is_even_col = (x % 2) == 0;
+    
+    var rgb: vec3<f32>;
+    
+    // GBRG pattern (Green-Blue-Red-Green):
+    // G B G B ...
+    // R G R G ...
+    // G B G B ...
+    // Alternative Nikon pattern (trying this one)
+    
+    if is_even_row {
+        if is_even_col {
+            // Green pixel (blue row) - sample blue right, red below
+            let g = normalized;
+            let b = get_neighbor(coords + vec2<i32>(1, 0), dimensions);  // Blue to the right
+            let r = get_neighbor(coords + vec2<i32>(0, 1), dimensions);  // Red below
+            rgb = vec3<f32>(r, g, b);
+        } else {
+            // Blue pixel - sample green from neighbors, red from diagonal
+            let b = normalized;
+            let g = get_neighbor(coords - vec2<i32>(1, 0), dimensions);  // Green to the left
+            let r = get_neighbor(coords + vec2<i32>(-1, 1), dimensions);  // Red diagonal
+            rgb = vec3<f32>(r, g, b);
+        }
+    } else {
+        if is_even_col {
+            // Red pixel - sample green from neighbors, blue from diagonal
+            let r = normalized;
+            let g = get_neighbor(coords + vec2<i32>(1, 0), dimensions); // Green to the right
+            let b = get_neighbor(coords + vec2<i32>(0, -1), dimensions);  // Blue above
+            rgb = vec3<f32>(r, g, b);
+        } else {
+            // Green pixel (red row) - sample red left, blue above
+            let g = normalized;
+            let r = get_neighbor(coords - vec2<i32>(1, 0), dimensions);  // Red to the left
+            let b = get_neighbor(coords + vec2<i32>(0, -1), dimensions);  // Blue above
+            rgb = vec3<f32>(r, g, b);
+        }
+    }
+    
+    return rgb;
+}
+
+// Helper to safely load neighbor pixel
+fn get_neighbor(coords: vec2<i32>, dimensions: vec2<u32>) -> f32 {
+    // Clamp to texture bounds
+    let clamped = vec2<i32>(
+        clamp(coords.x, 0, i32(dimensions.x) - 1),
+        clamp(coords.y, 0, i32(dimensions.y) - 1)
+    );
+    let raw_value = textureLoad(input_texture, clamped, 0).r;
+    return f32(raw_value) / 4096.0;
+}
+
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    // Sample the input texture
-    var color = textureSample(input_texture, texture_sampler, input.tex_coords);
+    // Get texture dimensions
+    let dimensions = textureDimensions(input_texture);
+    
+    // Convert normalized texture coordinates to pixel coordinates
+    let pixel_coords = vec2<i32>(
+        i32(input.tex_coords.x * f32(dimensions.x)),
+        i32(input.tex_coords.y * f32(dimensions.y))
+    );
+    
+    // Debayer to get RGB color
+    var color = debayer(pixel_coords, dimensions);
     
     // Apply exposure (multiplicative in linear space)
     // Convert stops to multiplier: 2^exposure
     let exposure_multiplier = pow(2.0, params.exposure);
-    color = vec4<f32>(color.rgb * exposure_multiplier, color.a);
+    color = color * exposure_multiplier;
     
     // Apply contrast (around midpoint 0.5)
     // Formula: (color - 0.5) * (1.0 + contrast/100.0) + 0.5
     let contrast_factor = 1.0 + (params.contrast / 100.0);
-    color = vec4<f32>(
-        (color.rgb - 0.5) * contrast_factor + 0.5,
-        color.a
-    );
+    color = (color - 0.5) * contrast_factor + 0.5;
     
     // Clamp to valid range
-    color = clamp(color, vec4<f32>(0.0), vec4<f32>(1.0));
+    color = clamp(color, vec3<f32>(0.0), vec3<f32>(1.0));
     
-    return color;
+    return vec4<f32>(color, 1.0);
 }
 "#;
 

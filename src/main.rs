@@ -874,30 +874,31 @@ impl RawEditor {
                         let header = row![
                             text(&img.filename).size(18),
                             text(" • ").size(18),
-                            text("🎨 GPU Rendering").size(18),
+                            text("🎨 GPU Rendering + Debayering").size(18),
                         ]
                         .spacing(5)
                         .padding(10);
                         
-                        // 🎨 GPU Image Rendering with caching!
-                        // Render GPU output if not cached
-                        println!("🎨 GPU render: {}x{}", pipeline.width, pipeline.height);
-                        let rgba_bytes = pipeline.render_to_bytes();
-                        println!("✅ Got {} bytes from GPU", rgba_bytes.len());
-                        
-                        // Check if first few pixels are black (debugging)
-                        if rgba_bytes.len() >= 12 {
-                            println!("First 3 pixels: R={} G={} B={} A={}, R={} G={} B={} A={}, R={} G={} B={} A={}",
-                                rgba_bytes[0], rgba_bytes[1], rgba_bytes[2], rgba_bytes[3],
-                                rgba_bytes[4], rgba_bytes[5], rgba_bytes[6], rgba_bytes[7],
-                                rgba_bytes[8], rgba_bytes[9], rgba_bytes[10], rgba_bytes[11]);
-                        }
-                        
-                        let image_handle = Handle::from_rgba(
-                            pipeline.width,
-                            pipeline.height,
-                            rgba_bytes,
-                        );
+                        // 🎨 Phase 12: GPU Rendering with Debayering + Smart Caching
+                        let image_handle = if let Some((cached_params, cached_handle)) = &self.cached_gpu_image {
+                            if cached_params == &self.current_edit_params {
+                                // Use cached image (no re-render!)
+                                println!("⚡ Using cached GPU image");
+                                cached_handle.clone()
+                            } else {
+                                // Params changed, render new with debayering
+                                println!("🎨 GPU rendering {}x{} with debayering...", pipeline.width, pipeline.height);
+                                let rgba_bytes = pipeline.render_to_bytes();
+                                println!("✅ Debayered {} bytes (now RGB color!)", rgba_bytes.len());
+                                Handle::from_rgba(pipeline.width, pipeline.height, rgba_bytes)
+                            }
+                        } else {
+                            // First render
+                            println!("🎨 First GPU render with debayering...");
+                            let rgba_bytes = pipeline.render_to_bytes();
+                            println!("✅ Debayered {} bytes", rgba_bytes.len());
+                            Handle::from_rgba(pipeline.width, pipeline.height, rgba_bytes)
+                        };
                         
                         let gpu_image = Image::new(image_handle)
                             .content_fit(iced::ContentFit::Contain);
