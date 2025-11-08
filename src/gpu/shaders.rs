@@ -24,17 +24,15 @@ struct VertexOutput {
 fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     var output: VertexOutput;
     
-    // Full-screen triangle using vertex index
-    // vertex 0: (-1, -1)  bottom-left
-    // vertex 1: ( 3, -1)  bottom-right (off-screen)
-    // vertex 2: (-1,  3)  top-left (off-screen)
-    let x = f32(i32(vertex_index) - 1) * 2.0;
-    let y = f32(i32(vertex_index & 1u) * 2 - 1) * 2.0;
+    // Full-screen triangle covering entire viewport
+    // Vertex 0: (-1, -1) -> tex (0, 1)
+    // Vertex 1: ( 3, -1) -> tex (2, 1) 
+    // Vertex 2: (-1,  3) -> tex (0, -1)
+    let x = f32(i32(vertex_index & 1u) * 4 - 1);
+    let y = f32(i32(vertex_index >> 1u) * 4 - 1);
     
-    output.clip_position = vec4<f32>(x, y, 0.0, 1.0);
-    
-    // Texture coordinates from clip space
-    output.tex_coords = vec2<f32>((x + 1.0) * 0.5, (1.0 - y) * 0.5);
+    output.clip_position = vec4<f32>(x, -y, 0.0, 1.0);
+    output.tex_coords = vec2<f32>((x + 1.0) * 0.5, (y + 1.0) * 0.5);
     
     return output;
 }
