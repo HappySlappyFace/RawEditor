@@ -290,11 +290,15 @@ impl RawEditor {
                 // Find the selected image
                 if let Some(img) = self.images.iter().find(|i| i.id == image_id) {
                     let raw_path = img.path.clone();
-                    self.editor_pane_state = EditorPaneState::LoadingPreview(image_id);
                     
                     // Load BOTH preview (for UI) AND raw data (for GPU) in parallel
-                    let preview_task = if img.preview_path.is_none() {
+                    let preview_task = if let Some(ref preview_path) = img.preview_path {
+                        // Preview already exists - load it immediately
+                        self.editor_pane_state = EditorPaneState::PreviewLoaded(image_id, preview_path.clone());
+                        Task::none()
+                    } else {
                         // Generate JPEG preview for UI thumbnails
+                        self.editor_pane_state = EditorPaneState::LoadingPreview(image_id);
                         let raw_path_preview = raw_path.clone();
                         let preview_cache_dir = self.preview_cache_dir.clone();
                         Task::perform(
@@ -311,8 +315,6 @@ impl RawEditor {
                             },
                             Message::PreviewGenerated,
                         )
-                    } else {
-                        Task::none()
                     };
                     
                     // Load RAW sensor data for GPU processing
