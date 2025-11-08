@@ -9,6 +9,7 @@ license = "MIT"
 [dependencies]
 # GUI framework with native rendering via wgpu
 iced = { version = "0.13", features = ["wgpu", "tokio", "image", "advanced"] }
+iced_wgpu = "0.13"  # Direct access to wgpu types from iced
 
 # Additional widgets for iced (Wrap for grid layout)
 iced_aw = { version = "0.10", default-features = false, features = ["wrap"] }
@@ -38,8 +39,11 @@ chrono = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
-# RAW image decoding (extract embedded JPEGs)
+# RAW image decoding - raw sensor data access
 rawloader = "0.37"
+
+# GPU rendering for real-time RAW processing (use iced's wgpu)
+bytemuck = { version = "1.14", features = ["derive"] }
 
 # Image processing (decode, resize, save thumbnails)
 image = "0.25"

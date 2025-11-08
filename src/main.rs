@@ -9,9 +9,10 @@ use std::path::PathBuf;
 use walkdir::WalkDir;
 use chrono::Utc;
 
-// Declare the state and raw modules
+// Declare the state, raw, and gpu modules
 mod state;
 mod raw;
+mod gpu;
 
 // Import shared data structures (alias to avoid conflict with iced's image widget)
 use state::data::Image as ImageData;
@@ -490,7 +491,7 @@ impl RawEditor {
         
         // Header for grid pane
         let grid_header = column![
-            text("RAW Editor v0.0.9 - EditParams")
+            text("RAW Editor v0.0.10A - GPU Pipeline libraries")
                 .size(24),
             button("Import Folder")
                 .on_press(Message::ImportFolder)
