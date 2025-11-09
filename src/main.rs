@@ -941,6 +941,16 @@ impl RawEditor {
                         slider(-5.0..=5.0, self.current_edit_params.exposure, Message::ExposureChanged)
                             .step(0.1),
                         
+                        // Highlights (Phase 17: Smart Tone - Detail Recovery)
+                        text(format!("Highlights: {:.0}", self.current_edit_params.highlights * 100.0)),
+                        slider(-1.0..=1.0, self.current_edit_params.highlights, Message::HighlightsChanged)
+                            .step(0.01),
+                        
+                        // Shadows (Phase 17: Smart Tone - Shadow Lift)
+                        text(format!("Shadows: {:.0}", self.current_edit_params.shadows * 100.0)),
+                        slider(-1.0..=1.0, self.current_edit_params.shadows, Message::ShadowsChanged)
+                            .step(0.01),
+                        
                         // Contrast  
                         text(format!("Contrast: {:.0}", self.current_edit_params.contrast)),
                         slider(-100.0..=100.0, self.current_edit_params.contrast, Message::ContrastChanged),

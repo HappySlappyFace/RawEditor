@@ -173,16 +173,28 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let exposure_multiplier = pow(2.0, params.exposure);
     color = color * exposure_multiplier;
     
-    // 5. Apply Contrast (around midpoint 0.5)
+    // 5. Apply Highlights & Shadows (Phase 17: Smart Tone - Luminance-weighted adjustments)
+    // Calculate luminance to determine which pixels are bright vs dark
+    let lum_for_tone = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
+    
+    // Highlights: Affects bright pixels more (lum=1.0 gets full effect, lum=0.0 gets none)
+    // Negative values recover blown highlights, positive values boost them
+    color = color * (1.0 + (lum_for_tone * params.highlights));
+    
+    // Shadows: Affects dark pixels more (lum=0.0 gets full effect, lum=1.0 gets none)
+    // Positive values lift shadows, negative values crush them
+    color = color * (1.0 + ((1.0 - lum_for_tone) * params.shadows));
+    
+    // 6. Apply Contrast (around midpoint 0.5)
     let contrast_factor = 1.0 + (params.contrast / 100.0);
     color = (color - 0.5) * contrast_factor + 0.5;
     
-    // 5.5. Apply Levels (Phase 16: Whites & Blacks tone control)
+    // 7. Apply Levels (Phase 16: Whites & Blacks tone control)
     // Standard levels formula: (color - black_point) / (white_point - black_point)
     // This controls the dynamic range by remapping black and white points
     color = (color - vec3<f32>(params.blacks)) / (vec3<f32>(params.whites - params.blacks + 0.0001));
     
-    // 6. Apply Saturation (Phase 15 color boost)
+    // 8. Apply Saturation (Phase 15 color boost)
     // Calculate luminance using Rec. 709 coefficients
     let luminance = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
     // Saturation factor: -100 = grayscale, 0 = original, +100 = 2x saturation
@@ -190,11 +202,11 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // Mix between grayscale and original color
     color = mix(vec3<f32>(luminance), color, sat_factor);
     
-    // 7. Apply sRGB Gamma Correction (linear → sRGB for display)
+    // 9. Apply sRGB Gamma Correction (linear → sRGB for display)
     // This is critical for proper brightness perception!
     color = pow(color, vec3<f32>(1.0 / 2.2));
     
-    // 8. Clamp to valid range
+    // 10. Clamp to valid range
     color = clamp(color, vec3<f32>(0.0), vec3<f32>(1.0));
     
     return vec4<f32>(color, 1.0);
