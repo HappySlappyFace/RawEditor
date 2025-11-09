@@ -85,8 +85,8 @@ impl Default for EditParams {
             contrast: 0.0,
             highlights: 0.0,
             shadows: 0.0,
-            whites: 0.0,
-            blacks: 0.0,
+            whites: 1.0,   // Phase 16: Default white point (no adjustment)
+            blacks: 0.0,   // Phase 16: Default black point (no adjustment)
             vibrance: 0.0,
             saturation: 0.0,
             temperature: 0,

@@ -949,6 +949,16 @@ impl RawEditor {
                         text(format!("Saturation: {:.0}", self.current_edit_params.saturation)),
                         slider(-100.0..=100.0, self.current_edit_params.saturation, Message::SaturationChanged),
                         
+                        // Whites (Phase 16: Tone Controls)
+                        text(format!("Whites: {:.2}", self.current_edit_params.whites)),
+                        slider(0.8..=1.2, self.current_edit_params.whites, Message::WhitesChanged)
+                            .step(0.01),
+                        
+                        // Blacks (Phase 16: Tone Controls)
+                        text(format!("Blacks: {:.3}", self.current_edit_params.blacks)),
+                        slider(0.0..=0.2, self.current_edit_params.blacks, Message::BlacksChanged)
+                            .step(0.005),
+                        
                         // ... repeat for remaining parameters ...
                         
                         button("Reset All").on_press(Message::ResetEdits),

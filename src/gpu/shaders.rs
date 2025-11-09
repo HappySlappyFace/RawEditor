@@ -177,7 +177,12 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let contrast_factor = 1.0 + (params.contrast / 100.0);
     color = (color - 0.5) * contrast_factor + 0.5;
     
-    // 5.5. Apply Saturation (Phase 15 color boost)
+    // 5.5. Apply Levels (Phase 16: Whites & Blacks tone control)
+    // Standard levels formula: (color - black_point) / (white_point - black_point)
+    // This controls the dynamic range by remapping black and white points
+    color = (color - vec3<f32>(params.blacks)) / (vec3<f32>(params.whites - params.blacks + 0.0001));
+    
+    // 6. Apply Saturation (Phase 15 color boost)
     // Calculate luminance using Rec. 709 coefficients
     let luminance = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
     // Saturation factor: -100 = grayscale, 0 = original, +100 = 2x saturation
@@ -185,11 +190,11 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // Mix between grayscale and original color
     color = mix(vec3<f32>(luminance), color, sat_factor);
     
-    // 6. Apply sRGB Gamma Correction (linear → sRGB for display)
+    // 7. Apply sRGB Gamma Correction (linear → sRGB for display)
     // This is critical for proper brightness perception!
     color = pow(color, vec3<f32>(1.0 / 2.2));
     
-    // 7. Clamp to valid range
+    // 8. Clamp to valid range
     color = clamp(color, vec3<f32>(0.0), vec3<f32>(1.0));
     
     return vec4<f32>(color, 1.0);
