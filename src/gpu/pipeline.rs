@@ -80,6 +80,7 @@ pub struct RenderPipeline {
     pub height: u32,          // Full resolution height
     pub preview_width: u32,   // Preview resolution width (for fast rendering)
     pub preview_height: u32,  // Preview resolution height (for fast rendering)
+    pub image_id: i64,        // Phase 20: Track which image this pipeline is for
     // Phase 14: Color science metadata
     wb_multipliers: [f32; 4],  // White balance from camera
     color_matrix: [f32; 9],    // Color correction matrix
@@ -98,6 +99,7 @@ impl std::fmt::Debug for RenderPipeline {
 impl RenderPipeline {
     /// Create a new render pipeline with the given RAW data
     pub async fn new(
+        image_id: i64,        // Phase 20: Track which image this pipeline is for
         raw_data: Vec<u16>,
         width: u32,
         height: u32,
@@ -330,6 +332,7 @@ impl RenderPipeline {
             height,
             preview_width,
             preview_height,
+            image_id,          // Phase 20: Track which image this pipeline is for
             wb_multipliers,
             color_matrix,
         })

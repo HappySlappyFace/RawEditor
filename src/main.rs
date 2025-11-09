@@ -298,11 +298,12 @@ impl RawEditor {
                 Task::none()
             }
             Message::ImageSelected(image_id) => {
-                // Update the selected image
+                // Phase 20: INSTANT selection - just update state, don't load anything!
+                // Loading is deferred until user switches to Develop tab
                 self.selected_image_id = Some(image_id);
-                println!("🖼️  Selected image ID: {}", image_id);
+                println!("✨ Selected image ID: {} (instant!)", image_id);
                 
-                // Load edit parameters from database (or use default if no edits)
+                // Load edit parameters from database (fast operation)
                 self.current_edit_params = self.library.load_edit_params(image_id)
                     .unwrap_or_else(|_| state::edit::EditParams::default());
                 
@@ -310,46 +311,7 @@ impl RawEditor {
                     println!("📝 Loaded existing edits for image {}", image_id);
                 }
                 
-                // Find the selected image
-                if let Some(img) = self.images.iter().find(|i| i.id == image_id) {
-                    let raw_path = img.path.clone();
-                    
-                    // Set editor status to loading
-                    self.editor_status = EditorStatus::Loading(image_id);
-                    
-                    // Generate JPEG preview for thumbnails (if needed)
-                    let preview_task = if img.preview_path.is_none() {
-                        let raw_path_preview = raw_path.clone();
-                        let preview_cache_dir = self.preview_cache_dir.clone();
-                        Task::perform(
-                            async move {
-                                let result = raw::preview::generate_full_preview(
-                                    raw_path_preview,
-                                    image_id,
-                                    preview_cache_dir
-                                ).await;
-                                PreviewResult {
-                                    image_id,
-                                    preview_path: result,
-                                }
-                            },
-                            Message::PreviewGenerated,
-                        )
-                    } else {
-                        Task::none()
-                    };
-                    
-                    // Load RAW sensor data for GPU processing
-                    let raw_task = Task::perform(
-                        raw::loader::load_raw_data(raw_path),
-                        Message::RawDataLoaded,
-                    );
-                    
-                    // Run both tasks
-                    Task::batch(vec![preview_task, raw_task])
-                } else {
-                    Task::none()
-                }
+                Task::none()
             }
             Message::PreviewGenerated(result) => {
                 // Update database with preview path for thumbnails
@@ -369,16 +331,37 @@ impl RawEditor {
                 Task::none()
             }
             Message::TabChanged(tab) => {
-                // Switch to the selected tab
+                // Phase 20: Deferred loading trigger!
                 self.current_tab = tab;
                 
-                // When switching to Develop tab with a selected image, ensure GPU pipeline is ready
+                // Only load when switching TO Develop tab (not FROM it)
                 if tab == AppTab::Develop {
                     if let Some(image_id) = self.selected_image_id {
-                        // Check if we need to load GPU pipeline
-                        if matches!(self.editor_status, EditorStatus::NoSelection) {
-                            // Trigger GPU pipeline loading
-                            return self.update(Message::ImageSelected(image_id));
+                        // Check if pipeline is already loaded for THIS specific image
+                        let needs_load = match &self.editor_status {
+                            EditorStatus::Ready(pipeline) => pipeline.image_id != image_id,
+                            EditorStatus::Loading(id) => *id != image_id,
+                            _ => true,  // NoSelection or Failed
+                        };
+                        
+                        if needs_load {
+                            println!("🔄 Switching to Develop tab - loading image {}...", image_id);
+                            
+                            // Find the image and start loading
+                            if let Some(img) = self.images.iter().find(|i| i.id == image_id) {
+                                let raw_path = img.path.clone();
+                                
+                                // Set editor status to loading
+                                self.editor_status = EditorStatus::Loading(image_id);
+                                
+                                // Load RAW sensor data for GPU processing (this is the slow 3-second operation)
+                                return Task::perform(
+                                    raw::loader::load_raw_data(raw_path),
+                                    Message::RawDataLoaded,
+                                );
+                            }
+                        } else {
+                            println!("⚡ Pipeline already loaded for image {}", image_id);
                         }
                     }
                 }
@@ -518,10 +501,12 @@ impl RawEditor {
                         // Create GPU pipeline with the RAW data + color metadata
                         let params = self.current_edit_params;
                         let wb = raw_data.wb_multipliers;
+                        let image_id = self.selected_image_id.unwrap_or(0);  // Phase 20: Track which image
                         
                         Task::perform(
                             async move {
                                 gpu::RenderPipeline::new(
+                                    image_id,         // Phase 20: Track which image this pipeline is for
                                     raw_data.data,
                                     raw_data.width,
                                     raw_data.height,
@@ -788,79 +773,16 @@ impl RawEditor {
             },
         );
         
+        // Phase 20: Full-screen thumbnail grid (no preview pane)
         // Wrap grid in scrollable container
-        let grid_pane = column![
+        let content = column![
             grid_header,
             scrollable(thumbnail_grid)
                 .height(Length::Fill)
                 .width(Length::Fill),
-        ]
-        .width(Length::FillPortion(2)); // 2/3 of screen
+        ];
         
-        // ========== RIGHT PANE: Simple Preview ==========
-        
-        let editor_content = if let Some(image_id) = self.selected_image_id {
-            if let Some(img) = self.images.iter().find(|i| i.id == image_id) {
-                // Show selected image preview (if cached)
-                if let Some(ref preview_path) = img.preview_path {
-                    let handle = Handle::from_path(preview_path.clone());
-                    column![
-                        text(&img.filename).size(18),
-                        text("").size(10),
-                        // Preview image
-                        scrollable(
-                            Image::new(handle)
-                                .width(Length::Fill)
-                        )
-                        .height(Length::Fill),
-                        text("").size(10),
-                        text(format!("Status: {}", if img.file_status == "deleted" { "❌ Deleted" } else { "✅ Exists" }))
-                            .size(12),
-                    ]
-                    .spacing(5)
-                    .padding(10)
-                } else {
-                    column![
-                        text(&img.filename).size(20),
-                        text("").size(20),
-                        text("Switch to Develop tab to load full preview").size(14),
-                    ]
-                    .padding(20)
-                    .align_x(Alignment::Center)
-                }
-            } else {
-                column![text("Image not found").size(18)].padding(20)
-            }
-        } else {
-            column![
-                text("No Image Selected").size(24),
-                text("").size(20),
-                text("← Click a thumbnail to select")
-                    .size(16)
-                    .style(|theme: &Theme| {
-                        text::Style {
-                            color: Some(theme.palette().text.scale_alpha(0.6)),
-                        }
-                    }),
-            ]
-            .padding(20)
-            .align_x(Alignment::Center)
-        };
-        
-        let editor_pane = container(editor_content)
-            .width(Length::FillPortion(1)) // 1/3 of screen
-            .height(Length::Fill)
-            .padding(10);
-        
-        // ========== Main Layout: Two-Pane Row ==========
-        
-        let main_row = row![
-            grid_pane,
-            editor_pane,
-        ]
-        .spacing(0);
-        
-        container(main_row)
+        container(content)
             .width(Length::Fill)
             .height(Length::Fill)
             .into()
