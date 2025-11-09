@@ -142,6 +142,12 @@ enum Message {
     RawDataLoaded(Result<raw::loader::RawDataResult, String>),
     /// GPU pipeline initialization completed
     GpuPipelineReady(Result<Arc<gpu::RenderPipeline>, String>),
+    
+    // ========== Export Messages (Phase 19) ==========
+    /// User clicked Export button
+    ExportImage,
+    /// Background export completed
+    ExportComplete(Result<std::path::PathBuf, String>),
 }
 
 impl RawEditor {
@@ -558,6 +564,43 @@ impl RawEditor {
                     }
                 }
             }
+            
+            Message::ExportImage => {
+                // Phase 19: Export full-resolution image
+                if let EditorStatus::Ready(pipeline) = &self.editor_status {
+                    // Show file save dialog
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("JPEG Image", &["jpg", "jpeg"])
+                        .add_filter("PNG Image", &["png"])
+                        .set_file_name("export.jpg")
+                        .save_file()
+                    {
+                        println!("📤 Exporting to: {:?}", path);
+                        let pipeline_clone = Arc::clone(pipeline);
+                        
+                        // Run export in background to avoid freezing UI
+                        return Task::perform(
+                            export_image_async(pipeline_clone, path),
+                            Message::ExportComplete
+                        );
+                    }
+                }
+                Task::none()
+            }
+            
+            Message::ExportComplete(result) => {
+                match result {
+                    Ok(path) => {
+                        println!("✅ Export complete: {:?}", path);
+                        // TODO: Show status message to user
+                    }
+                    Err(err) => {
+                        eprintln!("❌ Export failed: {}", err);
+                        // TODO: Show error message to user
+                    }
+                }
+                Task::none()
+            }
         }
     }
     
@@ -637,7 +680,7 @@ impl RawEditor {
         
         // Header for grid pane
         let grid_header = column![
-            text("RAW Editor v0.0.10A - GPU Pipeline libraries")
+            text("RAW Editor v0.1.0 - Exporting")
                 .size(24),
             button("Import Folder")
                 .on_press(Message::ImportFolder)
@@ -982,6 +1025,9 @@ impl RawEditor {
                         // ... repeat for remaining parameters ...
                         
                         button("Reset All").on_press(Message::ResetEdits),
+                        
+                        // Export (Phase 19: Save full-resolution image)
+                        button("Export").on_press(Message::ExportImage),
                     ]
                     .spacing(10)
                     .padding(15)
@@ -1060,6 +1106,65 @@ impl RawEditor {
     fn theme(&self) -> Theme {
         Theme::Dark
     }
+}
+
+/// Phase 19: Async export function that renders full resolution and saves to disk
+/// This runs in a background thread to avoid freezing the UI
+async fn export_image_async(
+    pipeline: Arc<gpu::RenderPipeline>,
+    save_path: std::path::PathBuf,
+) -> Result<std::path::PathBuf, String> {
+    // Run the heavy rendering work in a blocking task
+    tokio::task::spawn_blocking(move || {
+        println!("🖼️  Starting full-resolution export...");
+        
+        // Render at FULL resolution (24MP for 6016x4016 image)
+        // This will take 1-2 seconds - that's why we're async!
+        let rgba_bytes = pipeline.render_full_res_to_bytes();
+        println!("✅ Rendered {} bytes at full resolution", rgba_bytes.len());
+        
+        // Determine format from file extension
+        let extension = save_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("jpg")
+            .to_lowercase();
+        
+        // Save using image crate
+        let result = match extension.as_str() {
+            "png" => {
+                image::save_buffer(
+                    &save_path,
+                    &rgba_bytes,
+                    pipeline.width,
+                    pipeline.height,
+                    image::ColorType::Rgba8,
+                )
+            }
+            _ => {
+                // Default to JPEG
+                // Convert RGBA to RGB (JPEG doesn't support alpha)
+                let rgb_bytes: Vec<u8> = rgba_bytes
+                    .chunks_exact(4)
+                    .flat_map(|rgba| [rgba[0], rgba[1], rgba[2]])
+                    .collect();
+                
+                image::save_buffer(
+                    &save_path,
+                    &rgb_bytes,
+                    pipeline.width,
+                    pipeline.height,
+                    image::ColorType::Rgb8,
+                )
+            }
+        };
+        
+        result
+            .map(|_| save_path.clone())
+            .map_err(|e| format!("Failed to save image: {}", e))
+    })
+    .await
+    .map_err(|e| format!("Export task failed: {}", e))?
 }
 
 fn main() -> iced::Result {
