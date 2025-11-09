@@ -96,6 +96,10 @@ struct RawEditor {
     /// Cached GPU-rendered image (to avoid re-rendering every frame)
     /// Phase 20: Using RefCell for interior mutability - allows caching even in immutable view()
     cached_gpu_image: std::cell::RefCell<Option<(state::edit::EditParams, Handle)>>,
+    /// Phase 21: Histogram data [R[256], G[256], B[256]]
+    histogram_data: std::cell::RefCell<[[u32; 256]; 3]>,
+    /// Phase 21: Histogram canvas cache
+    histogram_cache: iced::widget::canvas::Cache,
 }
 
 /// Application messages (events)
@@ -190,6 +194,8 @@ impl RawEditor {
                 current_edit_params: state::edit::EditParams::default(), // No edits initially
                 editor_status: EditorStatus::NoSelection, // GPU pipeline created on demand
                 cached_gpu_image: std::cell::RefCell::new(None), // No cached image initially
+                histogram_data: std::cell::RefCell::new([[0; 256]; 3]), // Phase 21: Empty histogram
+                histogram_cache: iced::widget::canvas::Cache::default(), // Phase 21: Canvas cache
             },
             // Start thumbnail generation in the background
             Task::perform(
@@ -892,6 +898,12 @@ impl RawEditor {
                             println!("🎨 GPU rendering {}x{} preview...", pipeline.preview_width, pipeline.preview_height);
                             let rgba_bytes = pipeline.render_to_bytes();
                             println!("✅ Rendered {} bytes (preview)", rgba_bytes.len());
+                            
+                            // Phase 21: Calculate histogram from rendered bytes
+                            let histogram = pipeline.calculate_histogram(&rgba_bytes);
+                            *self.histogram_data.borrow_mut() = histogram;
+                            self.histogram_cache.clear(); // Force histogram redraw
+                            
                             let handle = Handle::from_rgba(pipeline.preview_width, pipeline.preview_height, rgba_bytes);
                             // Cache it immediately!
                             *self.cached_gpu_image.borrow_mut() = Some((self.current_edit_params.clone(), handle.clone()));
@@ -917,9 +929,33 @@ impl RawEditor {
                                 }
                             });
                     
-                    // Right sidebar with editing controls (placeholder for future)
+                    // Right sidebar with editing controls
+                    // Phase 21: Histogram widget
+                    let histogram_widget = iced::widget::canvas::Canvas::new(
+                        crate::ui::histogram::Histogram {
+                            data: self.histogram_data.borrow().clone(),
+                        }
+                    )
+                    .width(iced::Length::Fill)
+                    .height(iced::Length::Fixed(120.0));
+                    
                     let sidebar = column![
                         text("Edit Controls").size(16),
+                        
+                        // Histogram display
+                        container(histogram_widget)
+                            .padding(5)
+                            .style(|_theme| {
+                                iced::widget::container::Style {
+                                    background: Some(iced::Background::Color(iced::Color::from_rgb(0.1, 0.1, 0.1))),
+                                    border: iced::Border {
+                                        color: iced::Color::from_rgb(0.3, 0.3, 0.3),
+                                        width: 1.0,
+                                        radius: 4.0.into(),
+                                    },
+                                    ..Default::default()
+                                }
+                            }),
                         
                         // Exposure
                         text(format!("Exposure: {:.2}", self.current_edit_params.exposure)),

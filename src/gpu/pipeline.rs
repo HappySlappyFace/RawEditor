@@ -573,4 +573,24 @@ impl RenderPipeline {
     pub fn dimensions(&self) -> (u32, u32) {
         (self.width, self.height)
     }
+    
+    /// Phase 21: Calculate RGB histogram from rendered RGBA bytes
+    /// Returns [R[256], G[256], B[256]] histogram data
+    pub fn calculate_histogram(&self, rgba_bytes: &[u8]) -> [[u32; 256]; 3] {
+        let mut histograms = [[0u32; 256]; 3];
+        
+        // Process pixels in chunks of 4 (RGBA)
+        for pixel in rgba_bytes.chunks_exact(4) {
+            let r = pixel[0] as usize;
+            let g = pixel[1] as usize;
+            let b = pixel[2] as usize;
+            // pixel[3] is alpha, ignore it
+            
+            histograms[0][r] += 1; // Red channel
+            histograms[1][g] += 1; // Green channel
+            histograms[2][b] += 1; // Blue channel
+        }
+        
+        histograms
+    }
 }
