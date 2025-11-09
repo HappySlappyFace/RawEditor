@@ -100,6 +100,8 @@ struct RawEditor {
     histogram_data: std::cell::RefCell<[[u32; 256]; 3]>,
     /// Phase 21: Histogram canvas cache
     histogram_cache: iced::widget::canvas::Cache,
+    /// Phase 21: Histogram enabled toggle (performance)
+    histogram_enabled: bool,
 }
 
 /// Application messages (events)
@@ -153,6 +155,10 @@ enum Message {
     ExportImage,
     /// Background export completed
     ExportComplete(Result<std::path::PathBuf, String>),
+    
+    // ========== Histogram Messages (Phase 21) ==========
+    /// User toggled histogram on/off
+    HistogramToggled(bool),
 }
 
 impl RawEditor {
@@ -196,6 +202,7 @@ impl RawEditor {
                 cached_gpu_image: std::cell::RefCell::new(None), // No cached image initially
                 histogram_data: std::cell::RefCell::new([[0; 256]; 3]), // Phase 21: Empty histogram
                 histogram_cache: iced::widget::canvas::Cache::default(), // Phase 21: Canvas cache
+                histogram_enabled: false, // Phase 21: Off by default for performance
             },
             // Start thumbnail generation in the background
             Task::perform(
@@ -608,6 +615,18 @@ impl RawEditor {
                 }
                 Task::none()
             }
+            
+            Message::HistogramToggled(enabled) => {
+                self.histogram_enabled = enabled;
+                println!("📊 Histogram {}", if enabled { "enabled" } else { "disabled" });
+                
+                // If enabling, force recalculation on next render
+                if enabled {
+                    *self.cached_gpu_image.borrow_mut() = None;
+                }
+                
+                Task::none()
+            }
         }
     }
     
@@ -899,10 +918,12 @@ impl RawEditor {
                             let rgba_bytes = pipeline.render_to_bytes();
                             println!("✅ Rendered {} bytes (preview)", rgba_bytes.len());
                             
-                            // Phase 21: Calculate histogram from rendered bytes
-                            let histogram = pipeline.calculate_histogram(&rgba_bytes);
-                            *self.histogram_data.borrow_mut() = histogram;
-                            self.histogram_cache.clear(); // Force histogram redraw
+                            // Phase 21: Calculate histogram ONLY if enabled (expensive operation!)
+                            if self.histogram_enabled {
+                                let histogram = pipeline.calculate_histogram(&rgba_bytes);
+                                *self.histogram_data.borrow_mut() = histogram;
+                                self.histogram_cache.clear(); // Force histogram redraw
+                            }
                             
                             let handle = Handle::from_rgba(pipeline.preview_width, pipeline.preview_height, rgba_bytes);
                             // Cache it immediately!
@@ -930,20 +951,24 @@ impl RawEditor {
                             });
                     
                     // Right sidebar with editing controls
-                    // Phase 21: Histogram widget
-                    let histogram_widget = iced::widget::canvas::Canvas::new(
-                        crate::ui::histogram::Histogram {
-                            data: self.histogram_data.borrow().clone(),
-                        }
+                    // Phase 21: Histogram toggle
+                    let histogram_toggle = iced::widget::checkbox(
+                        "Show Histogram",
+                        self.histogram_enabled
                     )
-                    .width(iced::Length::Fill)
-                    .height(iced::Length::Fixed(120.0));
+                    .on_toggle(Message::HistogramToggled);
                     
-                    let sidebar = column![
-                        text("Edit Controls").size(16),
+                    // Build histogram widget only if enabled
+                    let histogram_section = if self.histogram_enabled {
+                        let histogram_widget = iced::widget::canvas::Canvas::new(
+                            crate::ui::histogram::Histogram {
+                                data: self.histogram_data.borrow().clone(),
+                            }
+                        )
+                        .width(iced::Length::Fill)
+                        .height(iced::Length::Fixed(120.0));
                         
-                        // Histogram display
-                        container(histogram_widget)
+                        Some(container(histogram_widget)
                             .padding(5)
                             .style(|_theme| {
                                 iced::widget::container::Style {
@@ -955,58 +980,57 @@ impl RawEditor {
                                     },
                                     ..Default::default()
                                 }
-                            }),
-                        
+                            }))
+                    } else {
+                        None
+                    };
+                    
+                    let mut sidebar = column![
+                        text("Edit Controls").size(16),
+                        histogram_toggle,
+                    ];
+                    
+                    if let Some(hist) = histogram_section {
+                        sidebar = sidebar.push(hist);
+                    }
+                    
+                    let sidebar = sidebar
                         // Exposure
-                        text(format!("Exposure: {:.2}", self.current_edit_params.exposure)),
-                        slider(-5.0..=5.0, self.current_edit_params.exposure, Message::ExposureChanged)
-                            .step(0.1),
-                        
-                        // Highlights (Phase 17: Smart Tone - Detail Recovery)
-                        text(format!("Highlights: {:.0}", self.current_edit_params.highlights * 100.0)),
-                        slider(-1.0..=1.0, self.current_edit_params.highlights, Message::HighlightsChanged)
-                            .step(0.01),
-                        
-                        // Shadows (Phase 17: Smart Tone - Shadow Lift)
-                        text(format!("Shadows: {:.0}", self.current_edit_params.shadows * 100.0)),
-                        slider(-1.0..=1.0, self.current_edit_params.shadows, Message::ShadowsChanged)
-                            .step(0.01),
-                        
-                        // Contrast  
-                        text(format!("Contrast: {:.0}", self.current_edit_params.contrast)),
-                        slider(-100.0..=100.0, self.current_edit_params.contrast, Message::ContrastChanged),
-                        
-                        // Saturation (Phase 15: Color boost!)
-                        text(format!("Saturation: {:.0}", self.current_edit_params.saturation)),
-                        slider(-100.0..=100.0, self.current_edit_params.saturation, Message::SaturationChanged),
-                        
-                        // Temperature (Phase 18: Manual White Balance)
-                        text(format!("Temperature: {:.0}", self.current_edit_params.temperature * 100.0)),
-                        slider(-1.0..=1.0, self.current_edit_params.temperature, Message::TemperatureChanged)
-                            .step(0.01),
-                        
-                        // Tint (Phase 18: Manual White Balance)
-                        text(format!("Tint: {:.0}", self.current_edit_params.tint * 100.0)),
-                        slider(-1.0..=1.0, self.current_edit_params.tint, Message::TintChanged)
-                            .step(0.01),
-                        
-                        // Whites (Phase 16: Tone Controls)
-                        text(format!("Whites: {:.2}", self.current_edit_params.whites)),
-                        slider(0.8..=1.2, self.current_edit_params.whites, Message::WhitesChanged)
-                            .step(0.01),
-                        
-                        // Blacks (Phase 16: Tone Controls)
-                        text(format!("Blacks: {:.3}", self.current_edit_params.blacks)),
-                        slider(0.0..=0.2, self.current_edit_params.blacks, Message::BlacksChanged)
-                            .step(0.005),
-                        
-                        // ... repeat for remaining parameters ...
-                        
-                        button("Reset All").on_press(Message::ResetEdits),
-                        
-                        // Export (Phase 19: Save full-resolution image)
-                        button("Export").on_press(Message::ExportImage),
-                    ]
+                        .push(text(format!("Exposure: {:.2}", self.current_edit_params.exposure)))
+                        .push(slider(-5.0..=5.0, self.current_edit_params.exposure, Message::ExposureChanged)
+                            .step(0.1))
+                        // Highlights
+                        .push(text(format!("Highlights: {:.0}", self.current_edit_params.highlights * 100.0)))
+                        .push(slider(-1.0..=1.0, self.current_edit_params.highlights, Message::HighlightsChanged)
+                            .step(0.01))
+                        // Shadows
+                        .push(text(format!("Shadows: {:.0}", self.current_edit_params.shadows * 100.0)))
+                        .push(slider(-1.0..=1.0, self.current_edit_params.shadows, Message::ShadowsChanged)
+                            .step(0.01))
+                        // Contrast
+                        .push(text(format!("Contrast: {:.0}", self.current_edit_params.contrast)))
+                        .push(slider(-100.0..=100.0, self.current_edit_params.contrast, Message::ContrastChanged))
+                        // Saturation
+                        .push(text(format!("Saturation: {:.0}", self.current_edit_params.saturation)))
+                        .push(slider(-100.0..=100.0, self.current_edit_params.saturation, Message::SaturationChanged))
+                        // Temperature
+                        .push(text(format!("Temperature: {:.0}", self.current_edit_params.temperature * 100.0)))
+                        .push(slider(-1.0..=1.0, self.current_edit_params.temperature, Message::TemperatureChanged)
+                            .step(0.01))
+                        // Tint
+                        .push(text(format!("Tint: {:.0}", self.current_edit_params.tint * 100.0)))
+                        .push(slider(-1.0..=1.0, self.current_edit_params.tint, Message::TintChanged)
+                            .step(0.01))
+                        // Whites
+                        .push(text(format!("Whites: {:.2}", self.current_edit_params.whites)))
+                        .push(slider(0.8..=1.2, self.current_edit_params.whites, Message::WhitesChanged)
+                            .step(0.01))
+                        // Blacks
+                        .push(text(format!("Blacks: {:.3}", self.current_edit_params.blacks)))
+                        .push(slider(0.0..=0.2, self.current_edit_params.blacks, Message::BlacksChanged)
+                            .step(0.005))
+                        .push(button("Reset All").on_press(Message::ResetEdits))
+                        .push(button("Export").on_press(Message::ExportImage))
                     .spacing(10)
                     .padding(15)
 
