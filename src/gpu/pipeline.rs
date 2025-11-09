@@ -81,6 +81,9 @@ pub struct RenderPipeline {
     pub preview_width: u32,   // Preview resolution width (for fast rendering)
     pub preview_height: u32,  // Preview resolution height (for fast rendering)
     pub image_id: i64,        // Phase 20: Track which image this pipeline is for
+    // Phase 22: Histogram optimization - tiny render for instant histogram
+    pub histogram_width: u32,  // Histogram resolution width (256px)
+    pub histogram_height: u32, // Histogram resolution height (maintains aspect)
     // Phase 14: Color science metadata
     wb_multipliers: [f32; 4],  // White balance from camera
     color_matrix: [f32; 9],    // Color correction matrix
@@ -109,15 +112,23 @@ impl RenderPipeline {
     ) -> Result<Self, String> {
         // Calculate preview dimensions for fast rendering
         // Phase 13: Render to smaller texture to eliminate 1-2s lag
-        const MAX_PREVIEW_WIDTH: u32 = 2560;
+        const MAX_PREVIEW_WIDTH: u32 = 1280;
         let aspect_ratio = width as f32 / height as f32;
         let preview_width = width.min(MAX_PREVIEW_WIDTH);
         let preview_height = (preview_width as f32 / aspect_ratio) as u32;
+        
+        // Phase 22: Calculate tiny histogram dimensions for instant calculation
+        const HISTOGRAM_WIDTH: u32 = 128;
+        let histogram_width = HISTOGRAM_WIDTH;
+        let histogram_height = (histogram_width as f32 / aspect_ratio) as u32;
         
         println!("📐 Full resolution: {}x{}", width, height);
         println!("📐 Preview resolution: {}x{} ({:.1}% of full)", 
             preview_width, preview_height,
             (preview_width * preview_height) as f32 / (width * height) as f32 * 100.0);
+        println!("📐 Histogram resolution: {}x{} ({:.3}% of full)", 
+            histogram_width, histogram_height,
+            (histogram_width * histogram_height) as f32 / (width * height) as f32 * 100.0);
         
         // Request wgpu adapter
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -333,6 +344,8 @@ impl RenderPipeline {
             preview_width,
             preview_height,
             image_id,          // Phase 20: Track which image this pipeline is for
+            histogram_width,   // Phase 22: Tiny render for histogram
+            histogram_height,  // Phase 22: Tiny render for histogram
             wb_multipliers,
             color_matrix,
         })
@@ -572,6 +585,111 @@ impl RenderPipeline {
     /// Get the texture dimensions
     pub fn dimensions(&self) -> (u32, u32) {
         (self.width, self.height)
+    }
+    
+    /// Phase 22: Render to tiny histogram-sized bytes (256px wide)
+    /// This is ~100x faster than rendering full preview for histogram calculation
+    pub fn render_to_histogram_bytes(&self) -> Vec<u8> {
+        // Create tiny output texture for histogram (256px wide)
+        let output_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Histogram Output Texture"),
+            size: wgpu::Extent3d {
+                width: self.histogram_width,
+                height: self.histogram_height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        
+        let output_view = output_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        
+        // Create command encoder and render pass
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Histogram Render Encoder"),
+        });
+        
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Histogram Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &output_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            
+            render_pass.set_pipeline(&self.pipeline);
+            render_pass.set_bind_group(0, &self.bind_group, &[]);
+            render_pass.draw(0..3, 0..1);
+        }
+        
+        // Read back the tiny rendered image
+        let bytes_per_pixel = 4;
+        let unpadded_bytes_per_row = self.histogram_width * bytes_per_pixel;
+        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let padded_bytes_per_row = (unpadded_bytes_per_row + align - 1) / align * align;
+        let buffer_size = (padded_bytes_per_row * self.histogram_height) as u64;
+        
+        let output_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Histogram Output Buffer"),
+            size: buffer_size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        
+        encoder.copy_texture_to_buffer(
+            wgpu::ImageCopyTexture {
+                texture: &output_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::ImageCopyBuffer {
+                buffer: &output_buffer,
+                layout: wgpu::ImageDataLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_bytes_per_row),
+                    rows_per_image: Some(self.histogram_height),
+                },
+            },
+            wgpu::Extent3d {
+                width: self.histogram_width,
+                height: self.histogram_height,
+                depth_or_array_layers: 1,
+            },
+        );
+        
+        self.queue.submit(Some(encoder.finish()));
+        
+        // Read the data
+        let buffer_slice = output_buffer.slice(..);
+        buffer_slice.map_async(wgpu::MapMode::Read, |_| {});
+        self.device.poll(wgpu::Maintain::Wait);
+        
+        let data = buffer_slice.get_mapped_range();
+        
+        // Copy to output vector (remove padding)
+        let mut output = Vec::with_capacity((self.histogram_width * self.histogram_height * 4) as usize);
+        for row in 0..self.histogram_height {
+            let start = (row * padded_bytes_per_row) as usize;
+            let end = start + unpadded_bytes_per_row as usize;
+            output.extend_from_slice(&data[start..end]);
+        }
+        
+        drop(data);
+        output_buffer.unmap();
+        output
     }
     
     /// Phase 21: Calculate RGB histogram from rendered RGBA bytes

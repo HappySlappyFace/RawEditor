@@ -100,8 +100,6 @@ struct RawEditor {
     histogram_data: std::cell::RefCell<[[u32; 256]; 3]>,
     /// Phase 21: Histogram canvas cache
     histogram_cache: iced::widget::canvas::Cache,
-    /// Phase 21: Histogram enabled toggle (performance)
-    histogram_enabled: bool,
 }
 
 /// Application messages (events)
@@ -155,10 +153,6 @@ enum Message {
     ExportImage,
     /// Background export completed
     ExportComplete(Result<std::path::PathBuf, String>),
-    
-    // ========== Histogram Messages (Phase 21) ==========
-    /// User toggled histogram on/off
-    HistogramToggled(bool),
 }
 
 impl RawEditor {
@@ -202,7 +196,6 @@ impl RawEditor {
                 cached_gpu_image: std::cell::RefCell::new(None), // No cached image initially
                 histogram_data: std::cell::RefCell::new([[0; 256]; 3]), // Phase 21: Empty histogram
                 histogram_cache: iced::widget::canvas::Cache::default(), // Phase 21: Canvas cache
-                histogram_enabled: false, // Phase 21: Off by default for performance
             },
             // Start thumbnail generation in the background
             Task::perform(
@@ -615,18 +608,6 @@ impl RawEditor {
                 }
                 Task::none()
             }
-            
-            Message::HistogramToggled(enabled) => {
-                self.histogram_enabled = enabled;
-                println!("📊 Histogram {}", if enabled { "enabled" } else { "disabled" });
-                
-                // If enabling, force recalculation on next render
-                if enabled {
-                    *self.cached_gpu_image.borrow_mut() = None;
-                }
-                
-                Task::none()
-            }
         }
     }
     
@@ -918,12 +899,11 @@ impl RawEditor {
                             let rgba_bytes = pipeline.render_to_bytes();
                             println!("✅ Rendered {} bytes (preview)", rgba_bytes.len());
                             
-                            // Phase 21: Calculate histogram ONLY if enabled (expensive operation!)
-                            if self.histogram_enabled {
-                                let histogram = pipeline.calculate_histogram(&rgba_bytes);
-                                *self.histogram_data.borrow_mut() = histogram;
-                                self.histogram_cache.clear(); // Force histogram redraw
-                            }
+                            // Phase 22: Calculate histogram from TINY 256px render (100x faster!)
+                            let histogram_bytes = pipeline.render_to_histogram_bytes();
+                            let histogram = pipeline.calculate_histogram(&histogram_bytes);
+                            *self.histogram_data.borrow_mut() = histogram;
+                            self.histogram_cache.clear(); // Force histogram redraw
                             
                             let handle = Handle::from_rgba(pipeline.preview_width, pipeline.preview_height, rgba_bytes);
                             // Cache it immediately!
@@ -951,50 +931,33 @@ impl RawEditor {
                             });
                     
                     // Right sidebar with editing controls
-                    // Phase 21: Histogram toggle
-                    let histogram_toggle = iced::widget::checkbox(
-                        "Show Histogram",
-                        self.histogram_enabled
+                    // Phase 22: Histogram always visible (now fast enough!)
+                    let histogram_widget = iced::widget::canvas::Canvas::new(
+                        crate::ui::histogram::Histogram {
+                            data: self.histogram_data.borrow().clone(),
+                        }
                     )
-                    .on_toggle(Message::HistogramToggled);
+                    .width(iced::Length::Fill)
+                    .height(iced::Length::Fixed(120.0));
                     
-                    // Build histogram widget only if enabled
-                    let histogram_section = if self.histogram_enabled {
-                        let histogram_widget = iced::widget::canvas::Canvas::new(
-                            crate::ui::histogram::Histogram {
-                                data: self.histogram_data.borrow().clone(),
+                    let histogram_section = container(histogram_widget)
+                        .padding(5)
+                        .style(|_theme| {
+                            iced::widget::container::Style {
+                                background: Some(iced::Background::Color(iced::Color::from_rgb(0.1, 0.1, 0.1))),
+                                border: iced::Border {
+                                    color: iced::Color::from_rgb(0.3, 0.3, 0.3),
+                                    width: 1.0,
+                                    radius: 4.0.into(),
+                                },
+                                ..Default::default()
                             }
-                        )
-                        .width(iced::Length::Fill)
-                        .height(iced::Length::Fixed(120.0));
-                        
-                        Some(container(histogram_widget)
-                            .padding(5)
-                            .style(|_theme| {
-                                iced::widget::container::Style {
-                                    background: Some(iced::Background::Color(iced::Color::from_rgb(0.1, 0.1, 0.1))),
-                                    border: iced::Border {
-                                        color: iced::Color::from_rgb(0.3, 0.3, 0.3),
-                                        width: 1.0,
-                                        radius: 4.0.into(),
-                                    },
-                                    ..Default::default()
-                                }
-                            }))
-                    } else {
-                        None
-                    };
+                        });
                     
-                    let mut sidebar = column![
+                    let sidebar = column![
                         text("Edit Controls").size(16),
-                        histogram_toggle,
-                    ];
-                    
-                    if let Some(hist) = histogram_section {
-                        sidebar = sidebar.push(hist);
-                    }
-                    
-                    let sidebar = sidebar
+                        histogram_section,
+                    ]
                         // Exposure
                         .push(text(format!("Exposure: {:.2}", self.current_edit_params.exposure)))
                         .push(slider(-5.0..=5.0, self.current_edit_params.exposure, Message::ExposureChanged)
