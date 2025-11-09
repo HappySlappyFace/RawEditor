@@ -94,7 +94,8 @@ struct RawEditor {
     /// GPU pipeline status (holds the pipeline when ready)
     editor_status: EditorStatus,
     /// Cached GPU-rendered image (to avoid re-rendering every frame)
-    cached_gpu_image: Option<(state::edit::EditParams, Handle)>,
+    /// Phase 20: Using RefCell for interior mutability - allows caching even in immutable view()
+    cached_gpu_image: std::cell::RefCell<Option<(state::edit::EditParams, Handle)>>,
 }
 
 /// Application messages (events)
@@ -188,7 +189,7 @@ impl RawEditor {
                 current_tab: AppTab::Library, // Start in Library tab
                 current_edit_params: state::edit::EditParams::default(), // No edits initially
                 editor_status: EditorStatus::NoSelection, // GPU pipeline created on demand
-                cached_gpu_image: None, // No cached image initially
+                cached_gpu_image: std::cell::RefCell::new(None), // No cached image initially
             },
             // Start thumbnail generation in the background
             Task::perform(
@@ -303,6 +304,9 @@ impl RawEditor {
                 self.selected_image_id = Some(image_id);
                 println!("✨ Selected image ID: {} (instant!)", image_id);
                 
+                // Clear cache since we're switching to a different image
+                *self.cached_gpu_image.borrow_mut() = None;
+                
                 // Load edit parameters from database (fast operation)
                 self.current_edit_params = self.library.load_edit_params(image_id)
                     .unwrap_or_else(|_| state::edit::EditParams::default());
@@ -377,7 +381,7 @@ impl RawEditor {
                 // Update GPU uniforms and invalidate cache
                 if let EditorStatus::Ready(pipeline) = &self.editor_status {
                     pipeline.update_uniforms(&self.current_edit_params);
-                    self.cached_gpu_image = None; // Force re-render
+                    *self.cached_gpu_image.borrow_mut() = None;
                 }
                 Task::none()
             }
@@ -387,79 +391,87 @@ impl RawEditor {
                 // Update GPU uniforms and invalidate cache
                 if let EditorStatus::Ready(pipeline) = &self.editor_status {
                     pipeline.update_uniforms(&self.current_edit_params);
-                    self.cached_gpu_image = None; // Force re-render
+                    *self.cached_gpu_image.borrow_mut() = None;
                 }
                 Task::none()
             }
             Message::HighlightsChanged(value) => {
                 self.current_edit_params.highlights = value;
                 self.save_current_edits();
-                // Update GPU uniforms and trigger redraw
+                // Update GPU uniforms and invalidate cache
                 if let EditorStatus::Ready(pipeline) = &self.editor_status {
                     pipeline.update_uniforms(&self.current_edit_params);
+                    *self.cached_gpu_image.borrow_mut() = None;
                 }
                 Task::none()
             }
             Message::ShadowsChanged(value) => {
                 self.current_edit_params.shadows = value;
                 self.save_current_edits();
-                // Update GPU uniforms and trigger redraw
+                // Update GPU uniforms and invalidate cache
                 if let EditorStatus::Ready(pipeline) = &self.editor_status {
                     pipeline.update_uniforms(&self.current_edit_params);
+                    *self.cached_gpu_image.borrow_mut() = None;
                 }
                 Task::none()
             }
             Message::WhitesChanged(value) => {
                 self.current_edit_params.whites = value;
                 self.save_current_edits();
-                // Update GPU uniforms and trigger redraw
+                // Update GPU uniforms and invalidate cache
                 if let EditorStatus::Ready(pipeline) = &self.editor_status {
                     pipeline.update_uniforms(&self.current_edit_params);
+                    *self.cached_gpu_image.borrow_mut() = None;
                 }
                 Task::none()
             }
             Message::BlacksChanged(value) => {
                 self.current_edit_params.blacks = value;
                 self.save_current_edits();
-                // Update GPU uniforms and trigger redraw
+                // Update GPU uniforms and invalidate cache
                 if let EditorStatus::Ready(pipeline) = &self.editor_status {
                     pipeline.update_uniforms(&self.current_edit_params);
+                    *self.cached_gpu_image.borrow_mut() = None;
                 }
                 Task::none()
             }
             Message::VibranceChanged(value) => {
                 self.current_edit_params.vibrance = value;
                 self.save_current_edits();
-                // Update GPU uniforms and trigger redraw
+                // Update GPU uniforms and invalidate cache
                 if let EditorStatus::Ready(pipeline) = &self.editor_status {
                     pipeline.update_uniforms(&self.current_edit_params);
+                    *self.cached_gpu_image.borrow_mut() = None;
                 }
                 Task::none()
             }
             Message::SaturationChanged(value) => {
                 self.current_edit_params.saturation = value;
                 self.save_current_edits();
-                // Update GPU uniforms and trigger redraw
+                // Update GPU uniforms and invalidate cache
                 if let EditorStatus::Ready(pipeline) = &self.editor_status {
                     pipeline.update_uniforms(&self.current_edit_params);
+                    *self.cached_gpu_image.borrow_mut() = None;
                 }
                 Task::none()
             }
             Message::TemperatureChanged(value) => {
                 self.current_edit_params.temperature = value;
                 self.save_current_edits();
-                // Update GPU uniforms and trigger redraw
+                // Update GPU uniforms and invalidate cache
                 if let EditorStatus::Ready(pipeline) = &self.editor_status {
                     pipeline.update_uniforms(&self.current_edit_params);
+                    *self.cached_gpu_image.borrow_mut() = None;
                 }
                 Task::none()
             }
             Message::TintChanged(value) => {
                 self.current_edit_params.tint = value;
                 self.save_current_edits();
-                // Update GPU uniforms and trigger redraw
+                // Update GPU uniforms and invalidate cache
                 if let EditorStatus::Ready(pipeline) = &self.editor_status {
                     pipeline.update_uniforms(&self.current_edit_params);
+                    *self.cached_gpu_image.borrow_mut() = None;
                 }
                 Task::none()
             }
@@ -473,9 +485,10 @@ impl RawEditor {
                     println!("♻️  Reset edits for image {}", image_id);
                 }
                 
-                // Update GPU uniforms and trigger redraw
+                // Update GPU uniforms and invalidate cache
                 if let EditorStatus::Ready(pipeline) = &self.editor_status {
                     pipeline.update_uniforms(&self.current_edit_params);
+                    *self.cached_gpu_image.borrow_mut() = None;
                 }
                 
                 Task::none()
@@ -533,6 +546,9 @@ impl RawEditor {
                 match result {
                     Ok(pipeline) => {
                         println!("🎨 GPU pipeline initialized!");
+                        
+                        // Clear cache since this is a new pipeline for a new image
+                        *self.cached_gpu_image.borrow_mut() = None;
                         
                         // Store pipeline in EditorStatus::Ready
                         self.editor_status = EditorStatus::Ready(pipeline);
@@ -861,25 +877,29 @@ impl RawEditor {
                         .spacing(5)
                         .padding(10);
                         
-                        // 🎨 Phase 12: GPU Rendering with Debayering + Smart Caching
-                        let image_handle = if let Some((cached_params, cached_handle)) = &self.cached_gpu_image {
-                            if cached_params == &self.current_edit_params {
-                                // Use cached image (no re-render!)
-                                println!("⚡ Using cached GPU image");
-                                cached_handle.clone()
-                            } else {
-                                // Params changed, render new with debayering
-                                println!("🎨 GPU rendering {}x{} preview...", pipeline.preview_width, pipeline.preview_height);
-                                let rgba_bytes = pipeline.render_to_bytes();
-                                println!("✅ Rendered {} bytes (preview)", rgba_bytes.len());
-                                Handle::from_rgba(pipeline.preview_width, pipeline.preview_height, rgba_bytes)
+                        // 🎨 Phase 12: GPU Rendering with Debayering + Smart Caching (Phase 20: Fixed with RefCell!)
+                        // Check cache first (must drop borrow before rendering)
+                        let needs_render = {
+                            let cache = self.cached_gpu_image.borrow();
+                            match cache.as_ref() {
+                                Some((cached_params, _)) => cached_params != &self.current_edit_params,
+                                None => true,
                             }
-                        } else {
-                            // First render
-                            println!("🎨 First GPU render (preview)...");
+                        };
+                        
+                        let image_handle = if needs_render {
+                            // Need to render
+                            println!("🎨 GPU rendering {}x{} preview...", pipeline.preview_width, pipeline.preview_height);
                             let rgba_bytes = pipeline.render_to_bytes();
                             println!("✅ Rendered {} bytes (preview)", rgba_bytes.len());
-                            Handle::from_rgba(pipeline.preview_width, pipeline.preview_height, rgba_bytes)
+                            let handle = Handle::from_rgba(pipeline.preview_width, pipeline.preview_height, rgba_bytes);
+                            // Cache it immediately!
+                            *self.cached_gpu_image.borrow_mut() = Some((self.current_edit_params.clone(), handle.clone()));
+                            handle
+                        } else {
+                            // Use cached image
+                            println!("⚡ Using cached GPU image");
+                            self.cached_gpu_image.borrow().as_ref().unwrap().1.clone()
                         };
                         
                         let gpu_image = Image::new(image_handle)
