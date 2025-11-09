@@ -160,6 +160,16 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // 2. Apply White Balance (normalize sensor response)
     color = color * params.wb_multipliers.rgb;
     
+    // 2.5. Apply Manual White Balance (Phase 18: Temperature & Tint)
+    // Temperature: Blue/Yellow axis (cooler/warmer)
+    // Scale by 0.3 for noticeable but not extreme adjustments
+    color.r = color.r * (1.0 + params.temperature * 0.3);  // More yellow when positive
+    color.b = color.b * (1.0 - params.temperature * 0.3);  // Less blue when positive
+    
+    // Tint: Green/Magenta axis
+    // Positive = more green, Negative = more magenta (less green)
+    color.g = color.g * (1.0 + params.tint * 0.3);
+    
     // 3. Apply Color Matrix (camera RGB → sRGB color space)
     // Reconstruct 3x3 matrix from padded vec3 rows
     let color_matrix = mat3x3<f32>(

@@ -63,17 +63,17 @@ pub struct EditParams {
     
     // ========== White Balance ==========
     
-    /// Temperature adjustment in Kelvin offset (-100 to +100)
+    /// Temperature adjustment (-1.0 to +1.0, displayed as -100 to +100)
     /// - Negative values = cooler (more blue)
     /// - Positive values = warmer (more yellow/orange)
-    /// - 0 = as-shot white balance
-    pub temperature: i32,
+    /// - 0.0 = as-shot white balance
+    pub temperature: f32,
     
-    /// Tint adjustment (-100 to +100)
-    /// - Negative values = more green
-    /// - Positive values = more magenta
-    /// - 0 = as-shot
-    pub tint: i32,
+    /// Tint adjustment (-1.0 to +1.0, displayed as -100 to +100)
+    /// - Negative values = more magenta
+    /// - Positive values = more green
+    /// - 0.0 = as-shot
+    pub tint: f32,
 }
 
 impl Default for EditParams {
@@ -89,8 +89,8 @@ impl Default for EditParams {
             blacks: 0.0,   // Phase 16: Default black point (no adjustment)
             vibrance: 0.0,
             saturation: 0.0,
-            temperature: 0,
-            tint: 0,
+            temperature: 0.0,  // Phase 18: Manual white balance (as-shot)
+            tint: 0.0,         // Phase 18: Manual white balance (as-shot)
         }
     }
 }

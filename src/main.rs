@@ -130,10 +130,10 @@ enum Message {
     VibranceChanged(f32),
     /// User changed saturation slider
     SaturationChanged(f32),
-    /// User changed temperature slider
-    TemperatureChanged(i32),
-    /// User changed tint slider
-    TintChanged(i32),
+    /// User changed temperature slider (Phase 18)
+    TemperatureChanged(f32),
+    /// User changed tint slider (Phase 18)
+    TintChanged(f32),
     /// User clicked Reset button to clear all edits
     ResetEdits,
     
@@ -958,6 +958,16 @@ impl RawEditor {
                         // Saturation (Phase 15: Color boost!)
                         text(format!("Saturation: {:.0}", self.current_edit_params.saturation)),
                         slider(-100.0..=100.0, self.current_edit_params.saturation, Message::SaturationChanged),
+                        
+                        // Temperature (Phase 18: Manual White Balance)
+                        text(format!("Temperature: {:.0}", self.current_edit_params.temperature * 100.0)),
+                        slider(-1.0..=1.0, self.current_edit_params.temperature, Message::TemperatureChanged)
+                            .step(0.01),
+                        
+                        // Tint (Phase 18: Manual White Balance)
+                        text(format!("Tint: {:.0}", self.current_edit_params.tint * 100.0)),
+                        slider(-1.0..=1.0, self.current_edit_params.tint, Message::TintChanged)
+                            .step(0.01),
                         
                         // Whites (Phase 16: Tone Controls)
                         text(format!("Whites: {:.2}", self.current_edit_params.whites)),
