@@ -1,7 +1,7 @@
-use iced::{Background, Border, Color, Element, Task, Theme};
-use iced::widget::{button, column, container, row, scrollable, text, Image, slider};
-use iced::advanced::image::Handle;
+use iced::{Background, Border, Color, Element, Task, Theme, Point};
+use iced::widget::{button, column, container, row, scrollable, text, Image, slider, canvas};
 use iced::{Alignment, Length};
+use iced::widget::image::Handle;
 use iced_aw::Wrap;
 use iced::window;
 use rfd::FileDialog;
@@ -94,9 +94,6 @@ struct RawEditor {
     current_edit_params: state::edit::EditParams,
     /// GPU pipeline status (holds the pipeline when ready)
     editor_status: EditorStatus,
-    /// Cached GPU-rendered image (to avoid re-rendering every frame)
-    /// Phase 20: Using RefCell for interior mutability - allows caching even in immutable view()
-    cached_gpu_image: std::cell::RefCell<Option<(state::edit::EditParams, Handle)>>,
     /// Phase 21: Histogram data [R[256], G[256], B[256]]
     histogram_data: std::cell::RefCell<[[u32; 256]; 3]>,
     /// Phase 21: Histogram canvas cache
@@ -105,6 +102,12 @@ struct RawEditor {
     histogram_enabled: bool,
     /// Phase 24: Before/After toggle (show original vs edited)
     show_before: bool,
+    /// Phase 25: Zoom level (1.0 = 100%, 2.0 = 200%, etc.)
+    zoom: f32,
+    /// Phase 25: Pan offset in normalized coordinates
+    pan_offset: cgmath::Vector2<f32>,
+    /// Phase 25: Canvas cache for main image rendering
+    canvas_cache: iced::widget::canvas::Cache,
 }
 
 /// Application messages (events)
@@ -159,6 +162,12 @@ enum Message {
     SelectNextImage,
     /// Select previous image (Left arrow)
     SelectPreviousImage,
+    
+    // ========== Phase 25: Zoom & Pan Messages ==========
+    /// User zoomed with mouse wheel (delta)
+    Zoom(f32),
+    /// User panned with mouse drag (delta in screen space)
+    Pan(cgmath::Vector2<f32>),
     
     // ========== GPU Pipeline Messages ==========
     /// Background RAW data loading completed
@@ -224,11 +233,13 @@ impl RawEditor {
                 current_tab: AppTab::Library,
                 current_edit_params: state::edit::EditParams::default(),
                 editor_status: EditorStatus::NoSelection,
-                cached_gpu_image: std::cell::RefCell::new(None),
                 histogram_data: std::cell::RefCell::new([[0; 256]; 3]),
                 histogram_cache: iced::widget::canvas::Cache::default(),
                 histogram_enabled: false, // Phase 22: Off by default
                 show_before: false, // Phase 24: Show edited version by default
+                zoom: 1.0, // Phase 25: Start at 100% zoom
+                pan_offset: cgmath::Vector2::new(0.0, 0.0), // Phase 25: Centered
+                canvas_cache: iced::widget::canvas::Cache::default(), // Phase 25: Canvas cache
             },
             // Phase 23: Load database in background
             Task::perform(
@@ -404,8 +415,8 @@ impl RawEditor {
                 self.selected_image_id = Some(image_id);
                 println!("✨ Selected image ID: {} (instant!)", image_id);
                 
-                // Clear cache since we're switching to a different image
-                *self.cached_gpu_image.borrow_mut() = None;
+                // Phase 25: Clear canvas cache since we're switching to a different image
+                self.canvas_cache.clear();
                 
                 // Phase 23: Load edit parameters from database (only if loaded)
                 if let Some(library) = &self.library {
@@ -512,100 +523,100 @@ impl RawEditor {
             Message::ExposureChanged(value) => {
                 self.current_edit_params.exposure = value;
                 self.save_current_edits();
-                // Update GPU uniforms and invalidate cache
+                // Phase 25: Update GPU uniforms and invalidate canvas cache
                 if let EditorStatus::Ready(pipeline) = &self.editor_status {
                     pipeline.update_uniforms(&self.current_edit_params);
-                    *self.cached_gpu_image.borrow_mut() = None;
+                    self.canvas_cache.clear();
                 }
                 Task::none()
             }
             Message::ContrastChanged(value) => {
                 self.current_edit_params.contrast = value;
                 self.save_current_edits();
-                // Update GPU uniforms and invalidate cache
+                // Phase 25: Update GPU uniforms and invalidate canvas cache
                 if let EditorStatus::Ready(pipeline) = &self.editor_status {
                     pipeline.update_uniforms(&self.current_edit_params);
-                    *self.cached_gpu_image.borrow_mut() = None;
+                    self.canvas_cache.clear();
                 }
                 Task::none()
             }
             Message::HighlightsChanged(value) => {
                 self.current_edit_params.highlights = value;
                 self.save_current_edits();
-                // Update GPU uniforms and invalidate cache
+                // Phase 25: Update GPU uniforms and invalidate canvas cache
                 if let EditorStatus::Ready(pipeline) = &self.editor_status {
                     pipeline.update_uniforms(&self.current_edit_params);
-                    *self.cached_gpu_image.borrow_mut() = None;
+                    self.canvas_cache.clear();
                 }
                 Task::none()
             }
             Message::ShadowsChanged(value) => {
                 self.current_edit_params.shadows = value;
                 self.save_current_edits();
-                // Update GPU uniforms and invalidate cache
+                // Phase 25: Update GPU uniforms and invalidate canvas cache
                 if let EditorStatus::Ready(pipeline) = &self.editor_status {
                     pipeline.update_uniforms(&self.current_edit_params);
-                    *self.cached_gpu_image.borrow_mut() = None;
+                    self.canvas_cache.clear();
                 }
                 Task::none()
             }
             Message::WhitesChanged(value) => {
                 self.current_edit_params.whites = value;
                 self.save_current_edits();
-                // Update GPU uniforms and invalidate cache
+                // Phase 25: Update GPU uniforms and invalidate canvas cache
                 if let EditorStatus::Ready(pipeline) = &self.editor_status {
                     pipeline.update_uniforms(&self.current_edit_params);
-                    *self.cached_gpu_image.borrow_mut() = None;
+                    self.canvas_cache.clear();
                 }
                 Task::none()
             }
             Message::BlacksChanged(value) => {
                 self.current_edit_params.blacks = value;
                 self.save_current_edits();
-                // Update GPU uniforms and invalidate cache
+                // Phase 25: Update GPU uniforms and invalidate canvas cache
                 if let EditorStatus::Ready(pipeline) = &self.editor_status {
                     pipeline.update_uniforms(&self.current_edit_params);
-                    *self.cached_gpu_image.borrow_mut() = None;
+                    self.canvas_cache.clear();
                 }
                 Task::none()
             }
             Message::VibranceChanged(value) => {
                 self.current_edit_params.vibrance = value;
                 self.save_current_edits();
-                // Update GPU uniforms and invalidate cache
+                // Phase 25: Update GPU uniforms and invalidate canvas cache
                 if let EditorStatus::Ready(pipeline) = &self.editor_status {
                     pipeline.update_uniforms(&self.current_edit_params);
-                    *self.cached_gpu_image.borrow_mut() = None;
+                    self.canvas_cache.clear();
                 }
                 Task::none()
             }
             Message::SaturationChanged(value) => {
                 self.current_edit_params.saturation = value;
                 self.save_current_edits();
-                // Update GPU uniforms and invalidate cache
+                // Phase 25: Update GPU uniforms and invalidate canvas cache
                 if let EditorStatus::Ready(pipeline) = &self.editor_status {
                     pipeline.update_uniforms(&self.current_edit_params);
-                    *self.cached_gpu_image.borrow_mut() = None;
+                    self.canvas_cache.clear();
                 }
                 Task::none()
             }
             Message::TemperatureChanged(value) => {
                 self.current_edit_params.temperature = value;
                 self.save_current_edits();
-                // Update GPU uniforms and invalidate cache
+                // Phase 25: Update GPU uniforms and invalidate canvas cache
                 if let EditorStatus::Ready(pipeline) = &self.editor_status {
                     pipeline.update_uniforms(&self.current_edit_params);
-                    *self.cached_gpu_image.borrow_mut() = None;
+                    self.canvas_cache.clear();
                 }
                 Task::none()
             }
             Message::TintChanged(value) => {
                 self.current_edit_params.tint = value;
                 self.save_current_edits();
-                // Update GPU uniforms and invalidate cache
+                // Phase 25: Update GPU uniforms and invalidate canvas cache
                 if let EditorStatus::Ready(pipeline) = &self.editor_status {
                     pipeline.update_uniforms(&self.current_edit_params);
-                    *self.cached_gpu_image.borrow_mut() = None;
+                    self.canvas_cache.clear();
                 }
                 Task::none()
             }
@@ -621,10 +632,10 @@ impl RawEditor {
                     }
                 }
                 
-                // Update GPU uniforms and invalidate cache
+                // Phase 25: Update GPU uniforms and invalidate canvas cache
                 if let EditorStatus::Ready(pipeline) = &self.editor_status {
                     pipeline.update_uniforms(&self.current_edit_params);
-                    *self.cached_gpu_image.borrow_mut() = None;
+                    self.canvas_cache.clear();
                     self.histogram_cache.clear(); // Phase 24: Clear histogram cache
                 }
                 
@@ -667,6 +678,32 @@ impl RawEditor {
                         return self.update(Message::ImageSelected(prev_id));
                     }
                 }
+                Task::none()
+            }
+            
+            // ========== Phase 25: Zoom & Pan Message Handlers ==========
+            
+            Message::Zoom(delta) => {
+                // Apply zoom delta (mouse wheel scroll)
+                // Clamp between 0.1x (10%) and 10x (1000%)
+                self.zoom = (self.zoom + delta).clamp(0.1, 10.0);
+                println!("🔍 Zoom: {:.1}%", self.zoom * 100.0);
+                
+                // Invalidate canvas cache to trigger redraw
+                self.canvas_cache.clear();
+                
+                Task::none()
+            }
+            
+            Message::Pan(delta) => {
+                // Apply pan delta (mouse drag)
+                self.pan_offset.x += delta.x;
+                self.pan_offset.y += delta.y;
+                println!("🖐️  Pan: ({:.2}, {:.2})", self.pan_offset.x, self.pan_offset.y);
+                
+                // Invalidate canvas cache to trigger redraw
+                self.canvas_cache.clear();
+                
                 Task::none()
             }
             
@@ -723,8 +760,8 @@ impl RawEditor {
                     Ok(pipeline) => {
                         println!("🎨 GPU pipeline initialized!");
                         
-                        // Clear cache since this is a new pipeline for a new image
-                        *self.cached_gpu_image.borrow_mut() = None;
+                        // Phase 25: Clear canvas cache since this is a new pipeline for a new image
+                        self.canvas_cache.clear();
                         
                         // Store pipeline in EditorStatus::Ready
                         self.editor_status = EditorStatus::Ready(pipeline);
@@ -783,9 +820,9 @@ impl RawEditor {
                 self.histogram_enabled = enabled;
                 println!("📊 Histogram {}", if enabled { "enabled" } else { "disabled" });
                 
-                // If enabling, force recalculation on next render
+                // Phase 25: If enabling, clear canvas cache to force recalculation
                 if enabled {
-                    *self.cached_gpu_image.borrow_mut() = None;
+                    self.canvas_cache.clear();
                 }
                 
                 Task::none()
@@ -1204,7 +1241,7 @@ impl RawEditor {
                         .spacing(5)
                         .padding(10);
                         
-                        // 🎨 Phase 24: Smart Caching with Before/After Support
+                        // 🎨 Phase 25: GPU-Accelerated Zoom & Pan (with smart caching)
                         // Determine which params to render based on show_before toggle
                         let params_to_render = if self.show_before {
                             state::edit::EditParams::default() // Show original (no edits)
@@ -1212,48 +1249,54 @@ impl RawEditor {
                             self.current_edit_params.clone() // Show edited version
                         };
                         
-                        // Check cache: needs render if cache empty OR params don't match
-                        let needs_render = {
-                            let cache = self.cached_gpu_image.borrow();
-                            match cache.as_ref() {
-                                Some((cached_params, _)) => cached_params != &params_to_render,
-                                None => true,
-                            }
-                        };
+                        // Phase 25: Update GPU uniforms with correct params + zoom/pan
+                        // This updates the shader uniforms (very fast, no readback)
+                        pipeline.update_uniforms_with_zoom(&params_to_render, self.zoom, self.pan_offset.x, self.pan_offset.y);
                         
-                        let image_handle = if needs_render {
-                            // Need to render with correct params
-                            pipeline.update_uniforms(&params_to_render);
-                            println!("🎨 GPU rendering {}x{} preview ({})", 
-                                pipeline.preview_width, 
-                                pipeline.preview_height,
-                                if self.show_before { "BEFORE" } else { "AFTER" }
-                            );
-                            let rgba_bytes = pipeline.render_to_bytes();
-                            println!("✅ Rendered {} bytes (preview)", rgba_bytes.len());
-                            
-                            // Phase 22: Calculate histogram from TINY 256px render (only if enabled)
-                            if self.histogram_enabled {
-                                let histogram_bytes = pipeline.render_to_histogram_bytes();
-                                let histogram = pipeline.calculate_histogram(&histogram_bytes);
-                                *self.histogram_data.borrow_mut() = histogram;
-                                self.histogram_cache.clear(); // Force histogram redraw
-                            }
-                            
-                            let handle = Handle::from_rgba(pipeline.preview_width, pipeline.preview_height, rgba_bytes);
-                            // Cache it with the params we rendered!
-                            *self.cached_gpu_image.borrow_mut() = Some((params_to_render, handle.clone()));
-                            handle
-                        } else {
-                            // Use cached image
-                            println!("⚡ Using cached GPU image");
-                            self.cached_gpu_image.borrow().as_ref().unwrap().1.clone()
-                        };
+                        // Phase 25: Render with zoom/pan applied in shader
+                        println!("🎨 GPU rendering {}x{} preview (zoom: {:.1}%, pan: {:.3}, {:.3})", 
+                            pipeline.preview_width, 
+                            pipeline.preview_height,
+                            self.zoom * 100.0,
+                            self.pan_offset.x,
+                            self.pan_offset.y
+                        );
+                        let rgba_bytes = pipeline.render_to_bytes();
+                        println!("✅ Rendered {} bytes (preview with zoom/pan)", rgba_bytes.len());
                         
-                        let gpu_image = Image::new(image_handle)
+                        // Phase 22: Calculate histogram from TINY 256px render (only if enabled)
+                        if self.histogram_enabled {
+                            let histogram_bytes = pipeline.render_to_histogram_bytes();
+                            let histogram = pipeline.calculate_histogram(&histogram_bytes);
+                            *self.histogram_data.borrow_mut() = histogram;
+                            self.histogram_cache.clear(); // Force histogram redraw
+                        }
+                        
+                        // Create Image handle from rendered bytes
+                        let image_handle = iced::widget::image::Handle::from_rgba(
+                            pipeline.preview_width,
+                            pipeline.preview_height,
+                            rgba_bytes
+                        );
+                        
+                        // Phase 25: Image widget with zoom/pan already applied in GPU shader!
+                        let gpu_image = iced::widget::Image::new(image_handle)
                             .content_fit(iced::ContentFit::Contain);
                         
-                        let preview = container(gpu_image)
+                        // Phase 25: Wrap in mouse_area to capture zoom/pan events
+                        use iced::widget::mouse_area;
+                        use iced::mouse::{self, ScrollDelta};
+                        
+                        let interactive_image = mouse_area(gpu_image)
+                            .on_scroll(|delta| {
+                                let zoom_delta = match delta {
+                                    ScrollDelta::Lines { y, .. } => y * 0.1,
+                                    ScrollDelta::Pixels { y, .. } => y * 0.01,
+                                };
+                                Message::Zoom(zoom_delta)
+                            });
+                        
+                        let preview = container(interactive_image)
                             .width(Length::Fill)
                             .height(Length::Fill)
                             .center_x(Length::Fill)

@@ -32,7 +32,29 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     let y = f32(i32(vertex_index >> 1u) * 4 - 1);
     
     output.clip_position = vec4<f32>(x, -y, 0.0, 1.0);
-    output.tex_coords = vec2<f32>((x + 1.0) * 0.5, (y + 1.0) * 0.5);
+    
+    // Phase 25: Apply zoom and pan transformations
+    // Base tex coords (0-1)
+    var tex_x = (x + 1.0) * 0.5;
+    var tex_y = (y + 1.0) * 0.5;
+    
+    // Center coordinates around (0.5, 0.5)
+    tex_x -= 0.5;
+    tex_y -= 0.5;
+    
+    // Apply zoom (divide by zoom to zoom in)
+    tex_x /= params.zoom;
+    tex_y /= params.zoom;
+    
+    // Apply pan offset
+    tex_x -= params.pan_x;
+    tex_y -= params.pan_y;
+    
+    // Move back to (0,0) origin
+    tex_x += 0.5;
+    tex_y += 0.5;
+    
+    output.tex_coords = vec2<f32>(tex_x, tex_y);
     
     return output;
 }
@@ -61,6 +83,11 @@ struct EditParams {
     padding4: f32,               // Padding after vec3
     color_matrix_2: vec3<f32>,  // Color matrix row 2
     padding5: f32,               // Padding after vec3
+    // Phase 25: Zoom & Pan
+    zoom: f32,                   // Zoom level (1.0 = 100%)
+    pan_x: f32,                  // Pan offset X
+    pan_y: f32,                  // Pan offset Y
+    padding6: f32,               // Padding for alignment
 }
 
 @group(0) @binding(0)

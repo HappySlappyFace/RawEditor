@@ -58,4 +58,5 @@ cargo run --release
 MIT
 
 ## Todo
-Hard coded 2560px previews for the develop panel, add a setting with more resolution options
+Hard coded 1280px previews for the develop panel, add a setting with more resolution options
+Implement iced's Multi-Window API instead of Single-Window API

@@ -38,6 +38,11 @@ struct GpuEditParams {
     _padding4: f32,
     color_matrix_2: [f32; 3],   // Row 2
     _padding5: f32,
+    // Phase 25: Zoom & Pan
+    zoom: f32,                  // Zoom level (1.0 = 100%)
+    pan_x: f32,                 // Pan offset X
+    pan_y: f32,                 // Pan offset Y
+    _padding6: f32,             // Padding for alignment
 }
 
 impl From<&EditParams> for GpuEditParams {
@@ -63,6 +68,11 @@ impl From<&EditParams> for GpuEditParams {
             _padding4: 0.0,
             color_matrix_2: [0.0, 0.0, 1.0],
             _padding5: 0.0,
+            // Phase 25: Default zoom and pan (no zoom, no pan)
+            zoom: 1.0,
+            pan_x: 0.0,
+            pan_y: 0.0,
+            _padding6: 0.0,
         }
     }
 }
@@ -248,9 +258,10 @@ impl RenderPipeline {
                     count: None,
                 },
                 // Uniform buffer
+                // Phase 25: VERTEX visibility added for zoom/pan in vertex shader
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -352,7 +363,14 @@ impl RenderPipeline {
     }
     
     /// Update uniform buffer with new edit parameters
+    /// Phase 25: Now includes zoom and pan for Canvas rendering
     pub fn update_uniforms(&self, params: &EditParams) {
+        self.update_uniforms_with_zoom(params, 1.0, 0.0, 0.0);
+    }
+    
+    /// Update uniform buffer with zoom and pan
+    /// Phase 25: Full control over all uniforms including zoom/pan
+    pub fn update_uniforms_with_zoom(&self, params: &EditParams, zoom: f32, pan_x: f32, pan_y: f32) {
         let mut gpu_params = GpuEditParams::from(params);
         // Preserve color metadata (doesn't change with slider updates)
         gpu_params.wb_multipliers = self.wb_multipliers;
@@ -361,11 +379,16 @@ impl RenderPipeline {
         gpu_params.color_matrix_0 = [cm[0], cm[1], cm[2]];
         gpu_params.color_matrix_1 = [cm[3], cm[4], cm[5]];
         gpu_params.color_matrix_2 = [cm[6], cm[7], cm[8]];
+        // Phase 25: Set zoom and pan
+        gpu_params.zoom = zoom;
+        gpu_params.pan_x = pan_x;
+        gpu_params.pan_y = pan_y;
         
         println!("🎨 GPU Uniforms Updated:");
         println!("   Exposure: {:.2}, Contrast: {:.0}", gpu_params.exposure, gpu_params.contrast);
         println!("   Highlights: {:.0}, Shadows: {:.0}", gpu_params.highlights, gpu_params.shadows);
         println!("   Temp: {}, Tint: {}", gpu_params.temperature, gpu_params.tint);
+        println!("   Zoom: {:.1}%, Pan: ({:.3}, {:.3})", zoom * 100.0, pan_x, pan_y);
         
         self.queue.write_buffer(
             &self.uniform_buffer,
