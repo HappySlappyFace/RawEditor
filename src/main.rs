@@ -77,8 +77,8 @@ impl std::fmt::Debug for EditorStatus {
 
 /// Main application state
 struct RawEditor {
-    /// The catalog database
-    library: state::library::Library,
+    /// The catalog database (Phase 23: Optional during startup)
+    library: Option<state::library::Library>,
     /// Status message to display to the user
     status: String,
     /// All images loaded from the database
@@ -100,13 +100,18 @@ struct RawEditor {
     histogram_data: std::cell::RefCell<[[u32; 256]; 3]>,
     /// Phase 21: Histogram canvas cache
     histogram_cache: iced::widget::canvas::Cache,
-    /// Phase 21: Histogram enabled toggle (performance)
+    /// Phase 22: Histogram toggle (keep for user control)
     histogram_enabled: bool,
 }
 
 /// Application messages (events)
 #[derive(Debug, Clone)]
 enum Message {
+    // ========== Startup Messages (Phase 23) ==========
+    /// Database loading completed (async background task)
+    /// Phase 23: Only send images Vec, Library created on main thread (not Send)
+    DatabaseLoaded(Result<Vec<ImageData>, String>),
+    
     /// User clicked the "Import Folder" button
     ImportFolder,
     /// Background import completed with results
@@ -156,18 +161,20 @@ enum Message {
     /// Background export completed
     ExportComplete(Result<std::path::PathBuf, String>),
     
-    // ========== Histogram Messages (Phase 21) ==========
+    // ========== Histogram Messages (Phase 22) ==========
     /// User toggled histogram on/off
     HistogramToggled(bool),
 }
 
-impl RawEditor {
-    /// Create a new instance of the application
-    fn new() -> (Self, Task<Message>) {
+/// Phase 23: Async database loading
+/// Loads the database and images in the background to avoid blocking the UI
+/// Returns only the images Vec - Library will be created on main thread
+async fn load_database_async() -> Result<Vec<ImageData>, String> {
+    // Use spawn_blocking because rusqlite is synchronous
+    tokio::task::spawn_blocking(|| {
         // Initialize the database
-        // If this fails, we panic because the app cannot function without its database
         let library = state::library::Library::new()
-            .expect("Failed to initialize database. Check permissions and disk space.");
+            .map_err(|e| format!("Failed to initialize database: {:?}", e))?;
         
         // Verify thumbnails exist on disk (reset if deleted)
         let _ = library.verify_thumbnails();
@@ -176,38 +183,45 @@ impl RawEditor {
         let _ = library.verify_files();
         
         // Load all images from the database
-        let images = library.get_all_images().unwrap_or_default();
-        let image_count = images.len();
+        let images = library.get_all_images()
+            .map_err(|e| format!("Failed to load images: {:?}", e))?;
         
-        println!("🎨 RAW Editor initialized with {} images", image_count);
+        println!("🎨 RAW Editor initialized with {} images", images.len());
         
-        let status = format!("Loaded {} images.", image_count);
+        Ok(images)
+    })
+    .await
+    .map_err(|e| format!("Database task failed: {:?}", e))?
+}
+
+impl RawEditor {
+    /// Phase 23: Create a new instance of the application (INSTANT!)
+    /// The database now loads in the background to show splash screen immediately
+    fn new() -> (Self, Task<Message>) {
+        println!("🚀 RAW Editor starting (instant splash screen)...");
         
-        // Get database path for background thumbnail generation
-        let db_path = library.path().clone();
-        
-        // Initialize preview cache directory
+        // Initialize preview cache directory (fast)
         let preview_cache_dir = raw::preview::get_preview_cache_dir();
         
         (
             RawEditor { 
-                library, 
-                status, 
-                images,
+                library: None, // Phase 23: Database loads in background
+                status: "Loading database...".to_string(),
+                images: Vec::new(), // Empty until database loads
                 selected_image_id: None,
                 preview_cache_dir,
-                current_tab: AppTab::Library, // Start in Library tab
-                current_edit_params: state::edit::EditParams::default(), // No edits initially
-                editor_status: EditorStatus::NoSelection, // GPU pipeline created on demand
-                cached_gpu_image: std::cell::RefCell::new(None), // No cached image initially
-                histogram_data: std::cell::RefCell::new([[0; 256]; 3]), // Phase 21: Empty histogram
-                histogram_cache: iced::widget::canvas::Cache::default(), // Phase 21: Canvas cache
-                histogram_enabled: false, // Phase 21: Off by default for performance
+                current_tab: AppTab::Library,
+                current_edit_params: state::edit::EditParams::default(),
+                editor_status: EditorStatus::NoSelection,
+                cached_gpu_image: std::cell::RefCell::new(None),
+                histogram_data: std::cell::RefCell::new([[0; 256]; 3]),
+                histogram_cache: iced::widget::canvas::Cache::default(),
+                histogram_enabled: false, // Phase 22: Off by default
             },
-            // Start thumbnail generation in the background
+            // Phase 23: Load database in background
             Task::perform(
-                generate_thumbnails_async(db_path),
-                Message::ThumbnailGenerated,
+                load_database_async(),
+                Message::DatabaseLoaded,
             ),
         )
     }
@@ -215,83 +229,128 @@ impl RawEditor {
     /// Handle application messages and update state
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            // Phase 23: Handle database loading completion
+            Message::DatabaseLoaded(result) => {
+                match result {
+                    Ok(images) => {
+                        // Create Library on main thread (can't be sent across threads)
+                        match state::library::Library::new() {
+                            Ok(library) => {
+                                let image_count = images.len();
+                                self.library = Some(library);
+                                self.images = images;
+                                self.status = format!("Loaded {} images.", image_count);
+                                println!("✅ Database loaded successfully ({} images)", image_count);
+                                
+                                // Start thumbnail generation now that database is ready
+                                if let Some(lib) = &self.library {
+                                    let db_path = lib.path().clone();
+                                    return Task::perform(
+                                        generate_thumbnails_async(db_path),
+                                        Message::ThumbnailGenerated,
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                self.status = format!("Failed to create library: {:?}", e);
+                                eprintln!("❌ Failed to create library: {:?}", e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        self.status = format!("Failed to load database: {}", e);
+                        eprintln!("❌ Database loading failed: {}", e);
+                    }
+                }
+                Task::none()
+            }
+            
             Message::ImportFolder => {
-                // Show the native folder picker dialog
-                let folder = FileDialog::new()
-                    .set_title("Select Folder with RAW Photos")
-                    .pick_folder();
-                
-                if let Some(folder_path) = folder {
-                    // Update status to show we're importing
-                    self.status = format!("Importing from {}...", folder_path.display());
+                // Phase 23: Only allow imports if database is loaded
+                if let Some(library) = &self.library {
+                    // Show the native folder picker dialog
+                    let folder = FileDialog::new()
+                        .set_title("Select Folder with RAW Photos")
+                        .pick_folder();
                     
-                    // Get the database path for the background thread
-                    let db_path = self.library.path().clone();
-                    
-                    // Launch async import task
-                    return Task::perform(
-                        import_folder_async(folder_path, db_path),
-                        Message::ImportComplete,
-                    );
+                    if let Some(folder_path) = folder {
+                        // Update status to show we're importing
+                        self.status = format!("Importing from {}...", folder_path.display());
+                        
+                        // Get the database path for the background thread
+                        let db_path = library.path().clone();
+                        
+                        // Launch async import task
+                        return Task::perform(
+                            import_folder_async(folder_path, db_path),
+                            Message::ImportComplete,
+                        );
+                    }
                 }
                 
                 Task::none()
             }
             Message::ImportComplete(result) => {
-                // Reload images from database to show newly imported files
-                self.images = self.library.get_all_images().unwrap_or_default();
-                
-                // Update status with import results
-                self.status = format!(
-                    "✅ Import complete! Added {} images, skipped {} duplicates. Total: {} images.",
-                    result.imported_count, result.skipped_count, self.images.len()
-                );
-                
-                println!(
-                    "📊 Import summary: {} new, {} skipped, {} total",
-                    result.imported_count, result.skipped_count, self.images.len()
-                );
-                
-                // Start thumbnail generation for newly imported images
-                let db_path = self.library.path().clone();
-                Task::perform(
-                    generate_thumbnails_async(db_path),
-                    Message::ThumbnailGenerated,
-                )
-            }
-            Message::ThumbnailGenerated(result) => {
-                // Always reload images to show updated thumbnail in the grid
-                self.images = self.library.get_all_images().unwrap_or_default();
-                
-                // Check both fast and slow queues
-                let fast_queue_count: i64 = self.library.conn()
-                    .query_row(
-                        "SELECT COUNT(*) FROM images WHERE cache_status = 'pending'",
-                        [],
-                        |row| row.get(0)
-                    )
-                    .unwrap_or(0);
-                
-                let slow_queue_count: i64 = self.library.conn()
-                    .query_row(
-                        "SELECT COUNT(*) FROM images WHERE cache_status = 'needs_slow'",
-                        [],
-                        |row| row.get(0)
-                    )
-                    .unwrap_or(0);
-                
-                if fast_queue_count > 0 {
-                    // Still processing fast queue (high priority)
+                // Phase 23: Only process if database is loaded
+                if let Some(library) = &self.library {
+                    // Reload images from database to show newly imported files
+                    self.images = library.get_all_images().unwrap_or_default();
+                    
+                    // Update status with import results
                     self.status = format!(
-                        "⚡ Fast queue: {} remaining (slow queue: {})", 
-                        fast_queue_count, slow_queue_count
+                        "✅ Import complete! Added {} images, skipped {} duplicates. Total: {} images.",
+                        result.imported_count, result.skipped_count, self.images.len()
                     );
                     
-                    let db_path = self.library.path().clone();
+                    println!(
+                        "📊 Import summary: {} new, {} skipped, {} total",
+                        result.imported_count, result.skipped_count, self.images.len()
+                    );
+                    
+                    // Start thumbnail generation for newly imported images
+                    let db_path = library.path().clone();
                     return Task::perform(
                         generate_thumbnails_async(db_path),
                         Message::ThumbnailGenerated,
                     );
+                }
+                Task::none()
+            }
+            Message::ThumbnailGenerated(result) => {
+                // Phase 23: Only process if database is loaded
+                if let Some(library) = &self.library {
+                    // Always reload images to show updated thumbnail in the grid
+                    self.images = library.get_all_images().unwrap_or_default();
+                    
+                    // Check both fast and slow queues
+                    let fast_queue_count: i64 = library.conn()
+                        .query_row(
+                            "SELECT COUNT(*) FROM images WHERE cache_status = 'pending'",
+                            [],
+                            |row| row.get(0)
+                        )
+                        .unwrap_or(0);
+                    
+                    let slow_queue_count: i64 = library.conn()
+                        .query_row(
+                            "SELECT COUNT(*) FROM images WHERE cache_status = 'needs_slow'",
+                            [],
+                            |row| row.get(0)
+                        )
+                        .unwrap_or(0);
+                    
+                    if fast_queue_count > 0 {
+                        // Still processing fast queue (high priority)
+                        self.status = format!(
+                            "⚡ Fast queue: {} remaining (slow queue: {})", 
+                            fast_queue_count, slow_queue_count
+                        );
+                        
+                        let db_path = library.path().clone();
+                        return Task::perform(
+                            generate_thumbnails_async(db_path),
+                            Message::ThumbnailGenerated,
+                        );
                 } else if slow_queue_count > 0 {
                     // Fast queue empty, processing slow queue (low priority)
                     self.status = format!(
@@ -299,14 +358,15 @@ impl RawEditor {
                         slow_queue_count
                     );
                     
-                    let db_path = self.library.path().clone();
-                    return Task::perform(
-                        generate_thumbnails_async(db_path),
-                        Message::ThumbnailGenerated,
-                    );
-                } else {
-                    // Both queues empty - all done!
-                    self.status = format!("✅ All thumbnails generated! ({} images)", self.images.len());
+                        let db_path = library.path().clone();
+                        return Task::perform(
+                            generate_thumbnails_async(db_path),
+                            Message::ThumbnailGenerated,
+                        );
+                    } else {
+                        // Both queues empty - all done!
+                        self.status = format!("✅ All thumbnails generated! ({} images)", self.images.len());
+                    }
                 }
                 
                 Task::none()
@@ -320,29 +380,33 @@ impl RawEditor {
                 // Clear cache since we're switching to a different image
                 *self.cached_gpu_image.borrow_mut() = None;
                 
-                // Load edit parameters from database (fast operation)
-                self.current_edit_params = self.library.load_edit_params(image_id)
-                    .unwrap_or_else(|_| state::edit::EditParams::default());
-                
-                if !self.current_edit_params.is_unedited() {
-                    println!("📝 Loaded existing edits for image {}", image_id);
+                // Phase 23: Load edit parameters from database (only if loaded)
+                if let Some(library) = &self.library {
+                    self.current_edit_params = library.load_edit_params(image_id)
+                        .unwrap_or_else(|_| state::edit::EditParams::default());
+                    
+                    if !self.current_edit_params.is_unedited() {
+                        println!("📝 Loaded existing edits for image {}", image_id);
+                    }
                 }
                 
                 Task::none()
             }
             Message::PreviewGenerated(result) => {
-                // Update database with preview path for thumbnails
-                if let Ok(ref path) = result.preview_path {
-                    let _ = self.library.set_image_preview_path(result.image_id, path);
-                    
-                    // Update in-memory image data
-                    if let Some(img) = self.images.iter_mut().find(|i| i.id == result.image_id) {
-                        img.preview_path = Some(path.clone());
+                // Phase 23: Update database with preview path for thumbnails (only if loaded)
+                if let Some(library) = &self.library {
+                    if let Ok(ref path) = result.preview_path {
+                        let _ = library.set_image_preview_path(result.image_id, path);
+                        
+                        // Update in-memory image data
+                        if let Some(img) = self.images.iter_mut().find(|i| i.id == result.image_id) {
+                            img.preview_path = Some(path.clone());
+                        }
+                        
+                        println!("✅ Preview cached for image {}", result.image_id);
+                    } else if let Err(ref err) = result.preview_path {
+                        eprintln!("❌ Preview failed for image {}: {}", result.image_id, err);
                     }
-                    
-                    println!("✅ Preview cached for image {}", result.image_id);
-                } else if let Err(ref err) = result.preview_path {
-                    eprintln!("❌ Preview failed for image {}: {}", result.image_id, err);
                 }
                 
                 Task::none()
@@ -492,10 +556,12 @@ impl RawEditor {
                 // Reset all edit parameters to default
                 self.current_edit_params.reset();
                 
-                // Save to database (or delete the edit record)
-                if let Some(image_id) = self.selected_image_id {
-                    let _ = self.library.delete_edits(image_id);
-                    println!("♻️  Reset edits for image {}", image_id);
+                // Phase 23: Save to database (or delete the edit record, only if loaded)
+                if let Some(library) = &self.library {
+                    if let Some(image_id) = self.selected_image_id {
+                        let _ = library.delete_edits(image_id);
+                        println!("♻️  Reset edits for image {}", image_id);
+                    }
                 }
                 
                 // Update GPU uniforms and invalidate cache
@@ -632,17 +698,128 @@ impl RawEditor {
     
     /// Helper to save current edit parameters to database
     fn save_current_edits(&self) {
-        if let Some(image_id) = self.selected_image_id {
-            if let Err(e) = self.library.save_edit_params(image_id, &self.current_edit_params) {
-                eprintln!("⚠️  Failed to save edits for image {}: {:?}", image_id, e);
-            } else {
-                println!("💾 Saved edits for image {}", image_id);
+        // Phase 23: Only save if database is loaded
+        if let Some(library) = &self.library {
+            if let Some(image_id) = self.selected_image_id {
+                if let Err(e) = library.save_edit_params(image_id, &self.current_edit_params) {
+                    eprintln!("⚠️  Failed to save edits for image {}: {:?}", image_id, e);
+                } else {
+                    println!("💾 Saved edits for image {}", image_id);
+                }
             }
         }
     }
 
     /// Build the user interface
     fn view(&self) -> Element<Message> {
+        // Phase 23: Show splash screen if database is still loading
+        match &self.library {
+            None => self.view_splash(),
+            Some(_) => self.view_main(),
+        }
+    }
+    
+    /// Phase 23: Splash screen shown during database loading
+    fn view_splash(&self) -> Element<Message> {
+        use iced::widget::Space;
+        
+        // Left half: Branding/image
+        // To add your custom splash image:
+        // 1. Create an "assets" folder in your project root
+        // 2. Add your image: assets/splash.png (or .jpg)
+        // 3. Uncomment the image widget below and comment out the emoji
+        
+        let left_content = column![
+            Space::with_height(Length::Fill),
+            // Option 1: Use emoji placeholder (current)
+            // text("📸").size(120).center(),
+            
+            // Option 2: Use your custom image (uncomment this):
+            iced::widget::image("assets/splash.jpg")
+                .width(400)
+                .height(400),
+            
+            Space::with_height(Length::Fill),
+        ]
+        .align_x(iced::Alignment::Center);
+        
+        let left_panel = container(left_content)
+        .width(Length::FillPortion(1))
+        .height(Length::Fill)
+        .center_x(Length::Fill)
+        .center_y(Length::Fill)
+        .style(|_theme| {
+            container::Style {
+                background: Some(Background::Color(Color::from_rgb(0.08, 0.08, 0.10))), // Darker, more Adobe-like
+                ..Default::default()
+            }
+        });
+        
+        // Right half: Loading message
+        let right_panel = container(
+            column![
+                Space::with_height(Length::Fill),
+                text("RAW Editor")
+                    .size(56)
+                    .center()
+                    .style(|_theme| text::Style {
+                        color: Some(Color::from_rgb(0.9, 0.9, 0.9)),
+                    }),
+                Space::with_height(10.0),
+                text("Professional RAW Photo Editor")
+                    .size(14)
+                    .center()
+                    .style(|_theme| text::Style {
+                        color: Some(Color::from_rgb(0.6, 0.6, 0.6)),
+                    }),
+                Space::with_height(40.0),
+                text(&self.status)
+                    .size(16)
+                    .center()
+                    .style(|_theme| text::Style {
+                        color: Some(Color::from_rgb(0.8, 0.8, 0.8)),
+                    }),
+                Space::with_height(15.0),
+                text("⏳")
+                    .size(32)
+                    .center()
+                    .style(|_theme| text::Style {
+                        color: Some(Color::from_rgb(0.5, 0.7, 1.0)),
+                    }),
+                Space::with_height(Length::Fill),
+                text("Version 0.1.0")
+                    .size(11)
+                    .center()
+                    .style(|_theme| text::Style {
+                        color: Some(Color::from_rgb(0.4, 0.4, 0.4)),
+                    }),
+                Space::with_height(20.0),
+            ]
+            .align_x(iced::Alignment::Center)
+        )
+        .width(Length::FillPortion(1))
+        .height(Length::Fill)
+        .center_x(Length::Fill)
+        .center_y(Length::Fill)
+        .style(|_theme| {
+            container::Style {
+                background: Some(Background::Color(Color::from_rgb(0.12, 0.12, 0.14))), // Slightly lighter gray
+                ..Default::default()
+            }
+        });
+        
+        // Full-screen splash layout
+        row![
+            left_panel,
+            right_panel,
+        ]
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+    }
+    
+    /// Phase 23: Main application UI (shown after database loads)
+    fn view_main(&self) -> Element<Message> {
         // Tab navigation bar
         let library_button = button(
             text("📚 Library")
@@ -918,11 +1095,13 @@ impl RawEditor {
                             let rgba_bytes = pipeline.render_to_bytes();
                             println!("✅ Rendered {} bytes (preview)", rgba_bytes.len());
                             
-                            // Phase 22: Calculate histogram from TINY 256px render (100x faster!)
-                            let histogram_bytes = pipeline.render_to_histogram_bytes();
-                            let histogram = pipeline.calculate_histogram(&histogram_bytes);
-                            *self.histogram_data.borrow_mut() = histogram;
-                            self.histogram_cache.clear(); // Force histogram redraw
+                            // Phase 22: Calculate histogram from TINY 256px render (only if enabled)
+                            if self.histogram_enabled {
+                                let histogram_bytes = pipeline.render_to_histogram_bytes();
+                                let histogram = pipeline.calculate_histogram(&histogram_bytes);
+                                *self.histogram_data.borrow_mut() = histogram;
+                                self.histogram_cache.clear(); // Force histogram redraw
+                            }
                             
                             let handle = Handle::from_rgba(pipeline.preview_width, pipeline.preview_height, rgba_bytes);
                             // Cache it immediately!
@@ -1168,6 +1347,22 @@ async fn export_image_async(
     .map_err(|e| format!("Export task failed: {}", e))?
 }
 
+/// Phase 23: Application entry point
+/// 
+/// To customize the splash screen window (Adobe-style borderless window):
+/// 1. Use iced::window::Settings to set decorations: false
+/// 2. Set a fixed size (e.g., 800x600) for splash
+/// 3. Center the window
+/// Example:
+/// ```
+/// .window(iced::window::Settings {
+///     size: iced::Size::new(900.0, 600.0),
+///     decorations: false,  // Remove title bar during splash
+///     ..Default::default()
+/// })
+/// ```
+/// Note: You'll need to manually add decorations back after loading,
+/// or keep the app borderless throughout (like some Adobe products)
 fn main() -> iced::Result {
     iced::application(
         "RAW Editor",
@@ -1175,6 +1370,15 @@ fn main() -> iced::Result {
         RawEditor::view,
     )
     .theme(RawEditor::theme)
+    // Phase 23: Window settings - start with normal window (has title bar)
+    // Note: iced::application() uses a single window throughout
+    // To have a separate splash window, you'd need the multi-window API
+    .window(iced::window::Settings {
+        size: iced::Size::new(1280.0, 800.0),  // Main app size
+        min_size: Some(iced::Size::new(900.0, 600.0)),
+        decorations: true,  // Keep title bar for usability
+        ..Default::default()
+    })
     .centered()
     .run_with(RawEditor::new)
 }
