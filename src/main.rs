@@ -1579,8 +1579,13 @@ impl RawEditor {
                         .push(slider(-1.0..=1.0, self.current_edit_params.shadows, Message::ShadowsChanged)
                             .step(0.01))
                         // Contrast
-                        .push(text(format!("Contrast: {:.0}", self.current_edit_params.contrast)))
-                        .push(slider(-100.0..=100.0, self.current_edit_params.contrast, Message::ContrastChanged))
+                        .push(text(format!("Contrast: {:.2}", self.current_edit_params.contrast)))
+                        .push(slider(-10.0..=10.0, self.current_edit_params.contrast, Message::ContrastChanged)
+                            .step(0.005))
+                        // Vibrance (Phase 27: Smart saturation protecting skin tones)
+                        .push(text(format!("Vibrance: {:.0}", self.current_edit_params.vibrance * 100.0)))
+                        .push(slider(-1.0..=1.0, self.current_edit_params.vibrance, Message::VibranceChanged)
+                            .step(0.01))
                         // Saturation
                         .push(text(format!("Saturation: {:.0}", self.current_edit_params.saturation)))
                         .push(slider(-100.0..=100.0, self.current_edit_params.saturation, Message::SaturationChanged))

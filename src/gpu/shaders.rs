@@ -240,17 +240,27 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     
     // 8. Apply Saturation (Phase 15 color boost)
     // Calculate luminance using Rec. 709 coefficients
-    let luminance = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
+    var luma = dot(color.rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
     // Saturation factor: -100 = grayscale, 0 = original, +100 = 2x saturation
     let sat_factor = 1.0 + (params.saturation / 100.0);
     // Mix between grayscale and original color
-    color = mix(vec3<f32>(luminance), color, sat_factor);
+    color = mix(vec3<f32>(luma), color, sat_factor);
     
-    // 9. Apply sRGB Gamma Correction (linear → sRGB for display)
+    // 9. Apply Vibrance (Phase 27: Smart saturation protecting skin tones)
+    // Calculate pixel's saturation (max(r,g,b) - min(r,g,b))
+    let sat = max(color.r, max(color.g, color.b)) - min(color.r, min(color.g, color.b));
+    // Calculate vibrance amount, weighted by (1.0 - saturation)
+    // This applies *less* vibrance to *more* saturated pixels (protects skin tones)
+    let vibrance_amount = params.vibrance * (1.0 - sat);
+    // Apply vibrance (mix from grayscale)
+    luma = dot(color.rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+    color = mix(vec3<f32>(luma), color, 1.0 + vibrance_amount);
+    
+    // 10. Apply sRGB Gamma Correction (linear → sRGB for display)
     // This is critical for proper brightness perception!
     color = pow(color, vec3<f32>(1.0 / 2.2));
     
-    // 10. Clamp to valid range
+    // 11. Clamp to valid range
     color = clamp(color, vec3<f32>(0.0), vec3<f32>(1.0));
     
     return vec4<f32>(color, 1.0);
