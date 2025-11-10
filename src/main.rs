@@ -108,6 +108,9 @@ struct RawEditor {
     pan_offset: cgmath::Vector2<f32>,
     /// Phase 25: Canvas cache for main image rendering
     canvas_cache: iced::widget::canvas::Cache,
+    /// Phase 25: Drag state for panning
+    is_dragging: bool,
+    last_cursor_position: Option<Point>,
 }
 
 /// Application messages (events)
@@ -168,6 +171,12 @@ enum Message {
     Zoom(f32),
     /// User panned with mouse drag (delta in screen space)
     Pan(cgmath::Vector2<f32>),
+    /// Mouse button pressed - start dragging
+    MousePressed,
+    /// Mouse button released - stop dragging
+    MouseReleased,
+    /// Mouse moved - track for panning
+    MouseMoved(Point),
     
     // ========== GPU Pipeline Messages ==========
     /// Background RAW data loading completed
@@ -240,6 +249,8 @@ impl RawEditor {
                 zoom: 1.0, // Phase 25: Start at 100% zoom
                 pan_offset: cgmath::Vector2::new(0.0, 0.0), // Phase 25: Centered
                 canvas_cache: iced::widget::canvas::Cache::default(), // Phase 25: Canvas cache
+                is_dragging: false, // Phase 25: Not dragging initially
+                last_cursor_position: None, // Phase 25: No cursor position yet
             },
             // Phase 23: Load database in background
             Task::perform(
@@ -704,6 +715,48 @@ impl RawEditor {
                 // Invalidate canvas cache to trigger redraw
                 self.canvas_cache.clear();
                 
+                Task::none()
+            }
+            
+            Message::MousePressed => {
+                // Start dragging for panning
+                self.is_dragging = true;
+                // Position will be updated by next MouseMoved event
+                Task::none()
+            }
+            
+            Message::MouseReleased => {
+                // Stop dragging
+                self.is_dragging = false;
+                self.last_cursor_position = None;
+                Task::none()
+            }
+            
+            Message::MouseMoved(current_position) => {
+                // If dragging, calculate pan delta and send Pan message
+                if self.is_dragging {
+                    if let Some(last_pos) = self.last_cursor_position {
+                        // Calculate delta in screen pixels
+                        let delta_x = current_position.x - last_pos.x;
+                        let delta_y = current_position.y - last_pos.y;
+                        
+                        // Convert to normalized coordinates (sensitivity factor)
+                        let delta = cgmath::Vector2::new(
+                            -delta_x * 0.001, // Negative for natural panning direction
+                            -delta_y * 0.001,
+                        );
+                        
+                        // Send Pan message
+                        self.last_cursor_position = Some(current_position);
+                        return self.update(Message::Pan(delta));
+                    } else {
+                        // First move after press - just store position
+                        self.last_cursor_position = Some(current_position);
+                    }
+                } else {
+                    // Not dragging, just update position for potential future drag
+                    self.last_cursor_position = Some(current_position);
+                }
                 Task::none()
             }
             
@@ -1294,7 +1347,10 @@ impl RawEditor {
                                     ScrollDelta::Pixels { y, .. } => y * 0.01,
                                 };
                                 Message::Zoom(zoom_delta)
-                            });
+                            })
+                            .on_press(Message::MousePressed)
+                            .on_release(Message::MouseReleased)
+                            .on_move(|position| Message::MouseMoved(position));
                         
                         let preview = container(interactive_image)
                             .width(Length::Fill)
