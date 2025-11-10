@@ -131,6 +131,9 @@ enum Message {
     ImportComplete(ImportResult),
     /// Background thumbnail generation completed
     ThumbnailGenerated(ThumbnailResult),
+    /// Phase 28: Multi-tier cache processing completed
+    /// Result is (image_id, thumb_path, instant_path, working_path) or (image_id, error)
+    CacheProcessed(Result<(i64, String, String, String), (i64, String)>),
     /// User selected an image from the grid
     ImageSelected(i64),
     /// Background preview generation completed
@@ -366,11 +369,11 @@ impl RawEditor {
                         result.imported_count, result.skipped_count, self.images.len()
                     );
                     
-                    // Start thumbnail generation for newly imported images
+                    // Phase 28: Start multi-tier cache processing for newly imported images
                     let db_path = library.path().clone();
                     return Task::perform(
-                        generate_thumbnails_async(db_path),
-                        Message::ThumbnailGenerated,
+                        process_cache_async(db_path),
+                        Message::CacheProcessed,
                     );
                 }
                 Task::none()
@@ -430,6 +433,70 @@ impl RawEditor {
                 
                 Task::none()
             }
+            Message::CacheProcessed(result) => {
+                // Phase 28: Multi-tier cache processing completed
+                if let Some(library) = &self.library {
+                    match result {
+                        Ok((image_id, thumb_path, instant_path, working_path)) => {
+                            // Save all 3 cache paths to database
+                            if let Err(e) = library.set_image_cache_paths(
+                                image_id,
+                                &thumb_path,
+                                &instant_path,
+                                &working_path,
+                            ) {
+                                eprintln!("❌ Failed to save cache paths for image {}: {:?}", image_id, e);
+                            } else {
+                                println!("✅ Cached 3 tiers for image {}", image_id);
+                                println!("   📁 Thumb: {}", thumb_path);
+                                println!("   📁 Instant: {}", instant_path);
+                                println!("   📁 Working: {}", working_path);
+                            }
+                        },
+                        Err((image_id, error)) => {
+                            // Only log real errors (not "No pending images")
+                            if image_id != 0 {
+                                eprintln!("❌ Cache processing failed for image {}: {}", image_id, error);
+                                // Mark as failed in database
+                                let _ = library.conn().execute(
+                                    "UPDATE images SET cache_status = 'failed' WHERE id = ?1",
+                                    [image_id],
+                                );
+                            }
+                        },
+                    }
+                    
+                    // Reload images to update UI
+                    self.images = library.get_all_images().unwrap_or_default();
+                    
+                    // Check if there are more pending images
+                    let pending_count: i64 = library.conn()
+                        .query_row(
+                            "SELECT COUNT(*) FROM images WHERE cache_status = 'pending'",
+                            [],
+                            |row| row.get(0)
+                        )
+                        .unwrap_or(0);
+                    
+                    if pending_count > 0 {
+                        // Update status with progress
+                        self.status = format!("📦 Processing cache: {} remaining", pending_count);
+                        
+                        // Trigger next cache processing job
+                        let db_path = library.path().clone();
+                        return Task::perform(
+                            process_cache_async(db_path),
+                            Message::CacheProcessed,
+                        );
+                    } else {
+                        // All done!
+                        self.status = format!("✅ All cache tiers generated! ({} images)", self.images.len());
+                        println!("🎉 Phase 28: All images cached with 3 tiers!");
+                    }
+                }
+                
+                Task::none()
+            }
             Message::ImageSelected(image_id) => {
                 // Phase 20: INSTANT selection - just update state, don't load anything!
                 // Loading is deferred until user switches to Develop tab
@@ -481,23 +548,9 @@ impl RawEditor {
                 
                 Task::none()
             }
-            Message::PreviewGenerated(result) => {
-                // Phase 23: Update database with preview path for thumbnails (only if loaded)
-                if let Some(library) = &self.library {
-                    if let Ok(ref path) = result.preview_path {
-                        let _ = library.set_image_preview_path(result.image_id, path);
-                        
-                        // Update in-memory image data
-                        if let Some(img) = self.images.iter_mut().find(|i| i.id == result.image_id) {
-                            img.preview_path = Some(path.clone());
-                        }
-                        
-                        println!("✅ Preview cached for image {}", result.image_id);
-                    } else if let Err(ref err) = result.preview_path {
-                        eprintln!("❌ Preview failed for image {}: {}", result.image_id, err);
-                    }
-                }
-                
+            Message::PreviewGenerated(_result) => {
+                // Phase 28: DEPRECATED - Old preview system replaced by multi-tier cache
+                // This message is never sent anymore, kept for compilation compatibility
                 Task::none()
             }
             Message::TabChanged(tab) => {
@@ -1242,7 +1295,7 @@ impl RawEditor {
     fn view_library(&self) -> Element<Message> {
         // Count thumbnails and deleted files
         let cached_count = self.images.iter()
-            .filter(|img| img.thumbnail_path.is_some())
+            .filter(|img| img.cache_path_thumb.is_some())
             .count();
         let deleted_count = self.images.iter()
             .filter(|img| img.file_status == "deleted")
@@ -1301,8 +1354,8 @@ impl RawEditor {
                             ..Default::default()
                         }
                     })
-                } else if let Some(ref thumb_path) = img.thumbnail_path {
-                    // Show thumbnail image with grey background, fit to square
+                } else if let Some(ref thumb_path) = img.cache_path_thumb {
+                    // Phase 28: Show 256px thumbnail tier
                     let handle = Handle::from_path(thumb_path.clone());
                     container(
                         Image::new(handle)
@@ -1975,5 +2028,44 @@ async fn generate_thumbnails_async(db_path: PathBuf) -> ThumbnailResult {
     
     ThumbnailResult {
         generated_count,
+    }
+}
+
+/// Phase 28: Async function to process one multi-tier cache job
+/// Processes one 'pending' image and generates all 3 cache tiers
+async fn process_cache_async(db_path: PathBuf) -> Result<(i64, String, String, String), (i64, String)> {
+    // Open database connection
+    let conn = Connection::open(&db_path)
+        .map_err(|e| (0, format!("Failed to open database: {}", e)))?;
+    
+    // Find one pending image
+    let pending_image: Option<(i64, String)> = conn
+        .query_row(
+            "SELECT id, path FROM images WHERE cache_status = 'pending' LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .ok();
+    
+    if let Some((image_id, raw_path_str)) = pending_image {
+        // Process in blocking task (image decoding is CPU-intensive)
+        let result = tokio::task::spawn_blocking(move || {
+            let cache_dir = std::path::PathBuf::from("/tmp"); // Not used by processor
+            raw::processor::process_image(
+                std::path::Path::new(&raw_path_str),
+                image_id,
+                &cache_dir,
+            )
+        })
+        .await
+        .map_err(|e| (image_id, format!("Task join error: {}", e)))?;
+        
+        match result {
+            Ok((thumb, instant, working)) => Ok((image_id, thumb, instant, working)),
+            Err(e) => Err((image_id, e)),
+        }
+    } else {
+        // No pending images
+        Err((0, "No pending images".to_string()))
     }
 }

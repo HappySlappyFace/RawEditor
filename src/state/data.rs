@@ -12,10 +12,12 @@ pub struct Image {
     pub filename: String,
     /// Full path to the RAW file
     pub path: String,
-    /// Path to the cached thumbnail (None if not yet generated)
-    pub thumbnail_path: Option<String>,
-    /// Path to the full-size preview JPEG (None if not yet generated)
-    pub preview_path: Option<String>,
+    /// Phase 28: Path to 256px thumbnail tier (None if not yet generated)
+    pub cache_path_thumb: Option<String>,
+    /// Phase 28: Path to 384px instant preview tier (None if not yet generated)
+    pub cache_path_instant: Option<String>,
+    /// Phase 28: Path to 1280px working preview tier (None if not yet generated)
+    pub cache_path_working: Option<String>,
     /// File status: 'exists' or 'deleted'
     pub file_status: String,
 }

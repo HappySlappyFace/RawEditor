@@ -90,22 +90,24 @@ impl Library {
             [],
         )?;
 
-        // Add thumbnail_path column if it doesn't exist (for existing databases)
-        // This is safe - if the column exists, the ALTER will be silently ignored
+        // Phase 28: Multi-tier cache system
+        // Add 3 cache path columns for different resolution tiers
         let _ = self.conn.execute(
-            "ALTER TABLE images ADD COLUMN thumbnail_path TEXT",
+            "ALTER TABLE images ADD COLUMN cache_path_thumb TEXT",  // 256px
+            [],
+        );
+        let _ = self.conn.execute(
+            "ALTER TABLE images ADD COLUMN cache_path_instant TEXT",  // 384px
+            [],
+        );
+        let _ = self.conn.execute(
+            "ALTER TABLE images ADD COLUMN cache_path_working TEXT",  // 1280px
             [],
         );
 
         // Add file_status column for tracking deleted files
         let _ = self.conn.execute(
             "ALTER TABLE images ADD COLUMN file_status TEXT DEFAULT 'exists'",
-            [],
-        );
-
-        // Add preview_path column for full-size preview JPEGs
-        let _ = self.conn.execute(
-            "ALTER TABLE images ADD COLUMN preview_path TEXT",
             [],
         );
 
@@ -163,7 +165,7 @@ impl Library {
     /// Returns a vector of Image structs ordered by import date (newest first)
     pub fn get_all_images(&self) -> SqlResult<Vec<Image>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, filename, path, thumbnail_path, preview_path, COALESCE(file_status, 'exists') FROM images ORDER BY imported_at DESC"
+            "SELECT id, filename, path, cache_path_thumb, cache_path_instant, cache_path_working, COALESCE(file_status, 'exists') FROM images ORDER BY imported_at DESC"
         )?;
 
         let image_iter = stmt.query_map([], |row| {
@@ -171,9 +173,10 @@ impl Library {
                 id: row.get(0)?,
                 filename: row.get(1)?,
                 path: row.get(2)?,
-                thumbnail_path: row.get(3)?,
-                preview_path: row.get(4)?,
-                file_status: row.get(5)?,
+                cache_path_thumb: row.get(3)?,
+                cache_path_instant: row.get(4)?,
+                cache_path_working: row.get(5)?,
+                file_status: row.get(6)?,
             })
         })?;
 
@@ -188,7 +191,7 @@ impl Library {
     /// Get images that need thumbnail generation (cache_status = 'pending')
     pub fn get_pending_thumbnails(&self, limit: usize) -> SqlResult<Vec<Image>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, filename, path, thumbnail_path, preview_path, COALESCE(file_status, 'exists') 
+            "SELECT id, filename, path, cache_path_thumb, cache_path_instant, cache_path_working, COALESCE(file_status, 'exists') 
              FROM images 
              WHERE cache_status = 'pending' 
              LIMIT ?1"
@@ -199,9 +202,10 @@ impl Library {
                 id: row.get(0)?,
                 filename: row.get(1)?,
                 path: row.get(2)?,
-                thumbnail_path: row.get(3)?,
-                preview_path: row.get(4)?,
-                file_status: row.get(5)?,
+                cache_path_thumb: row.get(3)?,
+                cache_path_instant: row.get(4)?,
+                cache_path_working: row.get(5)?,
+                file_status: row.get(6)?,
             })
         })?;
 
@@ -361,6 +365,27 @@ impl Library {
         self.conn.execute(
             "DELETE FROM edits WHERE image_id = ?1",
             [image_id],
+        )?;
+        Ok(())
+    }
+    
+    /// Phase 28: Set all 3 cache tier paths for an image
+    /// Updates cache_status to 'cached' and stores paths for thumb, instant, and working tiers
+    pub fn set_image_cache_paths(
+        &self,
+        image_id: i64,
+        thumb_path: &str,
+        instant_path: &str,
+        working_path: &str,
+    ) -> SqlResult<()> {
+        self.conn.execute(
+            "UPDATE images 
+             SET cache_status = 'cached',
+                 cache_path_thumb = ?1,
+                 cache_path_instant = ?2,
+                 cache_path_working = ?3
+             WHERE id = ?4",
+            rusqlite::params![thumb_path, instant_path, working_path, image_id],
         )?;
         Ok(())
     }
