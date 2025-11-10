@@ -731,7 +731,7 @@ impl RawEditor {
                     let image_cursor_y = cursor_pos.y - y_offset;
                     
                     // Debug: Show offset calculation (helpful for diagnosing drift)
-                    if true {  // Set to false to disable
+                    if false {  // Set to true for debugging
                         println!("📐 Zoom @ cursor: Viewport={:.0}x{:.0} Image={:.0}x{:.0} Offset=({:.1},{:.1})",
                             viewport_width, viewport_height, image_width, image_height, x_offset, y_offset);
                     }
