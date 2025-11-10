@@ -103,6 +103,8 @@ struct RawEditor {
     histogram_cache: iced::widget::canvas::Cache,
     /// Phase 22: Histogram toggle (keep for user control)
     histogram_enabled: bool,
+    /// Phase 24: Before/After toggle (show original vs edited)
+    show_before: bool,
 }
 
 /// Application messages (events)
@@ -149,6 +151,14 @@ enum Message {
     TintChanged(f32),
     /// User clicked Reset button to clear all edits
     ResetEdits,
+    
+    // ========== Phase 24: Workflow Messages ==========
+    /// Toggle Before/After view (Spacebar)
+    ToggleBeforeAfter,
+    /// Select next image (Right arrow)
+    SelectNextImage,
+    /// Select previous image (Left arrow)
+    SelectPreviousImage,
     
     // ========== GPU Pipeline Messages ==========
     /// Background RAW data loading completed
@@ -218,6 +228,7 @@ impl RawEditor {
                 histogram_data: std::cell::RefCell::new([[0; 256]; 3]),
                 histogram_cache: iced::widget::canvas::Cache::default(),
                 histogram_enabled: false, // Phase 22: Off by default
+                show_before: false, // Phase 24: Show edited version by default
             },
             // Phase 23: Load database in background
             Task::perform(
@@ -584,8 +595,48 @@ impl RawEditor {
                 if let EditorStatus::Ready(pipeline) = &self.editor_status {
                     pipeline.update_uniforms(&self.current_edit_params);
                     *self.cached_gpu_image.borrow_mut() = None;
+                    self.histogram_cache.clear(); // Phase 24: Clear histogram cache
                 }
                 
+                Task::none()
+            }
+            
+            // ========== Phase 24: Workflow Message Handlers ==========
+            
+            Message::ToggleBeforeAfter => {
+                // Toggle between edited and original (default params)
+                self.show_before = !self.show_before;
+                self.histogram_cache.clear(); // Histogram must update
+                println!("{} {}", 
+                    if self.show_before { "👁️  Showing" } else { "✏️  Showing" },
+                    if self.show_before { "BEFORE (original)" } else { "AFTER (edited)" }
+                );
+                Task::none()
+            }
+            
+            Message::SelectNextImage => {
+                // Find current image index and select next
+                if let Some(current_id) = self.selected_image_id {
+                    if let Some(current_idx) = self.images.iter().position(|img| img.id == current_id) {
+                        let next_idx = (current_idx + 1) % self.images.len();
+                        let next_id = self.images[next_idx].id;
+                        println!("⏭️  Next image: {} ({}/{})", next_id, next_idx + 1, self.images.len());
+                        return self.update(Message::ImageSelected(next_id));
+                    }
+                }
+                Task::none()
+            }
+            
+            Message::SelectPreviousImage => {
+                // Find current image index and select previous
+                if let Some(current_id) = self.selected_image_id {
+                    if let Some(current_idx) = self.images.iter().position(|img| img.id == current_id) {
+                        let prev_idx = if current_idx == 0 { self.images.len() - 1 } else { current_idx - 1 };
+                        let prev_id = self.images[prev_idx].id;
+                        println!("⏮️  Previous image: {} ({}/{})", prev_id, prev_idx + 1, self.images.len());
+                        return self.update(Message::ImageSelected(prev_id));
+                    }
+                }
                 Task::none()
             }
             
@@ -724,6 +775,26 @@ impl RawEditor {
                 }
             }
         }
+    }
+    
+    /// Phase 24: Keyboard shortcuts subscription
+    fn subscription(&self) -> iced::Subscription<Message> {
+        use iced::keyboard;
+        use iced::keyboard::key::Named;
+        
+        iced::event::listen_with(|event, _status, _window| {
+            if let iced::Event::Keyboard(keyboard::Event::KeyPressed { key, .. }) = event {
+                match key.as_ref() {
+                    keyboard::Key::Named(Named::Space) => Some(Message::ToggleBeforeAfter),
+                    keyboard::Key::Character("r") | keyboard::Key::Character("R") => Some(Message::ResetEdits),
+                    keyboard::Key::Named(Named::ArrowRight) => Some(Message::SelectNextImage),
+                    keyboard::Key::Named(Named::ArrowLeft) => Some(Message::SelectPreviousImage),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        })
     }
 
     /// Build the user interface
@@ -1103,19 +1174,31 @@ impl RawEditor {
                         .spacing(5)
                         .padding(10);
                         
-                        // 🎨 Phase 12: GPU Rendering with Debayering + Smart Caching (Phase 20: Fixed with RefCell!)
-                        // Check cache first (must drop borrow before rendering)
+                        // 🎨 Phase 24: Smart Caching with Before/After Support
+                        // Determine which params to render based on show_before toggle
+                        let params_to_render = if self.show_before {
+                            state::edit::EditParams::default() // Show original (no edits)
+                        } else {
+                            self.current_edit_params.clone() // Show edited version
+                        };
+                        
+                        // Check cache: needs render if cache empty OR params don't match
                         let needs_render = {
                             let cache = self.cached_gpu_image.borrow();
                             match cache.as_ref() {
-                                Some((cached_params, _)) => cached_params != &self.current_edit_params,
+                                Some((cached_params, _)) => cached_params != &params_to_render,
                                 None => true,
                             }
                         };
                         
                         let image_handle = if needs_render {
-                            // Need to render
-                            println!("🎨 GPU rendering {}x{} preview...", pipeline.preview_width, pipeline.preview_height);
+                            // Need to render with correct params
+                            pipeline.update_uniforms(&params_to_render);
+                            println!("🎨 GPU rendering {}x{} preview ({})", 
+                                pipeline.preview_width, 
+                                pipeline.preview_height,
+                                if self.show_before { "BEFORE" } else { "AFTER" }
+                            );
                             let rgba_bytes = pipeline.render_to_bytes();
                             println!("✅ Rendered {} bytes (preview)", rgba_bytes.len());
                             
@@ -1128,8 +1211,8 @@ impl RawEditor {
                             }
                             
                             let handle = Handle::from_rgba(pipeline.preview_width, pipeline.preview_height, rgba_bytes);
-                            // Cache it immediately!
-                            *self.cached_gpu_image.borrow_mut() = Some((self.current_edit_params.clone(), handle.clone()));
+                            // Cache it with the params we rendered!
+                            *self.cached_gpu_image.borrow_mut() = Some((params_to_render, handle.clone()));
                             handle
                         } else {
                             // Use cached image
@@ -1394,6 +1477,7 @@ fn main() -> iced::Result {
         RawEditor::view,
     )
     .theme(RawEditor::theme)
+    .subscription(RawEditor::subscription) // Phase 24: Enable keyboard shortcuts
     // Phase 23: Window settings - start with normal window (has title bar)
     // Note: iced::application() uses a single window throughout
     // To have a separate splash window, you'd need the multi-window API
