@@ -417,6 +417,36 @@ impl RawEditor {
                     }
                 }
                 
+                // Phase 24: If already on Develop tab, reload RAW data for new image
+                if self.current_tab == AppTab::Develop {
+                    // Check if pipeline needs to be loaded for this image
+                    let needs_load = match &self.editor_status {
+                        EditorStatus::Ready(pipeline) => pipeline.image_id != image_id,
+                        EditorStatus::Loading(id) => *id != image_id,
+                        _ => true,  // NoSelection or Failed
+                    };
+                    
+                    if needs_load {
+                        println!("🔄 Loading RAW data for image {}...", image_id);
+                        
+                        // Find the image and start loading
+                        if let Some(img) = self.images.iter().find(|i| i.id == image_id) {
+                            let raw_path = img.path.clone();
+                            
+                            // Set editor status to loading
+                            self.editor_status = EditorStatus::Loading(image_id);
+                            
+                            // Load RAW sensor data for GPU processing
+                            return Task::perform(
+                                raw::loader::load_raw_data(raw_path),
+                                Message::RawDataLoaded,
+                            );
+                        }
+                    } else {
+                        println!("⚡ Pipeline already loaded for image {}", image_id);
+                    }
+                }
+                
                 Task::none()
             }
             Message::PreviewGenerated(result) => {
