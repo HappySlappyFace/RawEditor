@@ -750,11 +750,23 @@ impl RawEditor {
                         let delta_x = current_position.x - last_pos.x;
                         let delta_y = current_position.y - last_pos.y;
                         
-                        // Phase 25: Convert to normalized coordinates (proper sensitivity)
-                        // Positive delta = drag right/down = pan image left/up (natural direction)
+                        // Phase 25: Viewport-aware pan sensitivity
+                        // Scale based on preview dimensions for resolution-independent feel
+                        let (sensitivity_x, sensitivity_y) = if let EditorStatus::Ready(pipeline) = &self.editor_status {
+                            // Use preview dimensions separately for X and Y
+                            // This handles aspect ratio correctly
+                            (
+                                1.0 / (pipeline.preview_width as f32),
+                                1.0 / (pipeline.preview_height as f32),
+                            )
+                        } else {
+                            // Fallback if no pipeline loaded
+                            (0.001, 0.001)
+                        };
+                        
                         let delta = cgmath::Vector2::new(
-                            delta_x * 0.00125, // Reduced sensitivity for 1:1 feel
-                            delta_y * 0.00125, // Reduced sensitivity for 1:1 feel
+                            delta_x * sensitivity_x,
+                            delta_y * sensitivity_y,
                         );
                         
                         // Send Pan message
