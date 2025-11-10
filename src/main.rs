@@ -111,6 +111,10 @@ struct RawEditor {
     /// Phase 25: Drag state for panning
     is_dragging: bool,
     last_cursor_position: Option<Point>,
+    /// Phase 26: Double-click detection
+    last_click_time: Option<std::time::Instant>,
+    /// Phase 26: Viewport size for zoom-to-cursor calculations (actual displayed size)
+    viewport_size: (f32, f32),  // (width, height) in screen pixels
 }
 
 /// Application messages (events)
@@ -167,8 +171,8 @@ enum Message {
     SelectPreviousImage,
     
     // ========== Phase 25: Zoom & Pan Messages ==========
-    /// User zoomed with mouse wheel (delta)
-    Zoom(f32),
+    /// User zoomed with mouse wheel (delta, cursor position)
+    Zoom(f32, Point),
     /// User panned with mouse drag (delta in screen space)
     Pan(cgmath::Vector2<f32>),
     /// Mouse button pressed - start dragging
@@ -177,6 +181,10 @@ enum Message {
     MouseReleased,
     /// Mouse moved - track for panning
     MouseMoved(Point),
+    
+    // ========== Phase 26: Advanced Zoom Polish ==========
+    /// Reset zoom and pan to default (1.0, 0.0)
+    ResetView,
     
     // ========== GPU Pipeline Messages ==========
     /// Background RAW data loading completed
@@ -251,6 +259,8 @@ impl RawEditor {
                 canvas_cache: iced::widget::canvas::Cache::default(), // Phase 25: Canvas cache
                 is_dragging: false, // Phase 25: Not dragging initially
                 last_cursor_position: None, // Phase 25: No cursor position yet
+                last_click_time: None, // Phase 26: No click yet
+                viewport_size: (1280.0, 854.0), // Phase 26: Default viewport size (will be updated)
             },
             // Phase 23: Load database in background
             Task::perform(
@@ -694,22 +704,107 @@ impl RawEditor {
             
             // ========== Phase 25: Zoom & Pan Message Handlers ==========
 
-            Message::Zoom(delta) => {
-                // Phase 25: Exponential zoom (multiply/divide for consistent feel)
-                // Positive delta = zoom in, negative = zoom out
-                if delta > 0.0 {
-                    self.zoom *= 1.0 + (delta * 0.8); // Zoom in: faster response
-                } else {
-                    self.zoom /= 1.0 + (-delta * 0.8); // Zoom out: faster response
+            Message::Zoom(delta, mut cursor_pos) => {
+                // Phase 26: Zoom to cursor position (not center)
+                
+                // Get cursor position (use last known if sentinel value)
+                if cursor_pos.x < 0.0 || cursor_pos.y < 0.0 {
+                    cursor_pos = self.last_cursor_position.unwrap_or(Point::ORIGIN);
                 }
                 
-                // Clamp zoom to reasonable limits (10% to 1000%)
-                self.zoom = self.zoom.clamp(0.1, 10.0);
-                println!("🔍 Zoom: {:.1}%", self.zoom * 100.0);
+                // Get pipeline dimensions for calculations
+                if let EditorStatus::Ready(pipeline) = &self.editor_status {
+                    let old_zoom = self.zoom;
+                    
+                    // Phase 26: Calculate actual image position in viewport (centered)
+                    let image_width = pipeline.preview_width as f32;
+                    let image_height = pipeline.preview_height as f32;
+                    let viewport_width = self.viewport_size.0;
+                    let viewport_height = self.viewport_size.1;
+                    
+                    // Image is centered in viewport, calculate offsets
+                    let x_offset = (viewport_width - image_width) / 2.0;
+                    let y_offset = (viewport_height - image_height) / 2.0;
+                    
+                    // Convert viewport cursor position to image-relative position
+                    let image_cursor_x = cursor_pos.x - x_offset;
+                    let image_cursor_y = cursor_pos.y - y_offset;
+                    
+                    // Skip if cursor is outside the image
+                    if image_cursor_x < 0.0 || image_cursor_y < 0.0 || 
+                       image_cursor_x > image_width || image_cursor_y > image_height {
+                        println!("⚠️  Cursor outside image, skipping zoom-to-cursor");
+                        // Just do regular zoom without pan adjustment
+                        if delta > 0.0 {
+                            self.zoom *= 1.0 + (delta * 0.8);
+                        } else {
+                            self.zoom /= 1.0 + (-delta * 0.8);
+                        }
+                        self.zoom = self.zoom.clamp(0.1, 10.0);
+                        self.canvas_cache.clear();
+                        return Task::none();
+                    }
+                    
+                    // Calculate new zoom (exponential scaling)
+                    let new_zoom = if delta > 0.0 {
+                        old_zoom * (1.0 + delta * 0.8)  // Zoom in
+                    } else {
+                        old_zoom / (1.0 + (-delta * 0.8))  // Zoom out
+                    };
+                    self.zoom = new_zoom.clamp(0.1, 10.0);
+                    
+                    // Zoom-to-cursor math (matching shader transformation):
+                    // Shader: tex = ((screen - 0.5) / zoom - pan) + 0.5
+                    
+                    // 1. Convert cursor position to normalized image coordinates (0-1)
+                    let norm_cursor_x = image_cursor_x / image_width;
+                    let norm_cursor_y = image_cursor_y / image_height;
+                    
+                    // 2. Find texture point under cursor BEFORE zoom
+                    // tex = ((cursor - 0.5) / old_zoom - old_pan) + 0.5
+                    let tex_x = ((norm_cursor_x - 0.5) / old_zoom - self.pan_offset.x) + 0.5;
+                    let tex_y = ((norm_cursor_y - 0.5) / old_zoom - self.pan_offset.y) + 0.5;
+                    
+                    // 3. Calculate new pan so same texture point appears under cursor AFTER zoom
+                    // We want: cursor = ((tex - 0.5) / new_zoom - new_pan) + 0.5
+                    // Rearranging: new_pan = (tex - 0.5) / new_zoom - (cursor - 0.5)
+                    // Wait, that's wrong. Let me rederive:
+                    // cursor = ((tex - 0.5 - new_pan * new_zoom) / new_zoom) + 0.5
+                    // No wait, the shader is: tex = ((screen - 0.5) / zoom - pan) + 0.5
+                    // So inverse: screen = (tex - 0.5 + pan) * zoom + 0.5
+                    // We want: cursor = (tex - 0.5 + new_pan) * new_zoom + 0.5
+                    // Solving for new_pan:
+                    // cursor - 0.5 = (tex - 0.5 + new_pan) * new_zoom
+                    // (cursor - 0.5) / new_zoom = tex - 0.5 + new_pan
+                    // new_pan = (cursor - 0.5) / new_zoom - tex + 0.5
+                    
+                    self.pan_offset.x = (norm_cursor_x - 0.5) / self.zoom - tex_x + 0.5;
+                    self.pan_offset.y = (norm_cursor_y - 0.5) / self.zoom - tex_y + 0.5;
+                    
+                    println!("🔍 Zoom: {:.1}% (at cursor)", self.zoom * 100.0);
+                } else {
+                    // No pipeline loaded, just do simple zoom
+                    if delta > 0.0 {
+                        self.zoom *= 1.0 + (delta * 0.8);
+                    } else {
+                        self.zoom /= 1.0 + (-delta * 0.8);
+                    }
+                    self.zoom = self.zoom.clamp(0.1, 10.0);
+                    println!("🔍 Zoom: {:.1}%", self.zoom * 100.0);
+                }
                 
                 // Invalidate canvas cache to trigger redraw
                 self.canvas_cache.clear();
                 
+                Task::none()
+            }
+            
+            Message::ResetView => {
+                // Phase 26: Reset zoom and pan to default
+                self.zoom = 1.0;
+                self.pan_offset = cgmath::Vector2::new(0.0, 0.0);
+                self.canvas_cache.clear();
+                println!("🔄 View reset: 100% zoom, centered");
                 Task::none()
             }
             
@@ -729,7 +824,23 @@ impl RawEditor {
             }
             
             Message::MousePressed => {
-                // Start dragging for panning
+                // Phase 26: Detect double-click for reset view
+                let now = std::time::Instant::now();
+                let is_double_click = if let Some(last_click) = self.last_click_time {
+                    now.duration_since(last_click).as_millis() < 300  // 300ms threshold
+                } else {
+                    false
+                };
+                
+                self.last_click_time = Some(now);
+                
+                if is_double_click {
+                    // Double-click detected - reset view
+                    println!("👆 Double-click detected!");
+                    return self.update(Message::ResetView);
+                }
+                
+                // Single click - start dragging for panning
                 self.is_dragging = true;
                 // Position will be updated by next MouseMoved event
                 Task::none()
@@ -743,6 +854,13 @@ impl RawEditor {
             }
             
             Message::MouseMoved(current_position) => {
+                // Store cursor position for zoom-to-cursor
+                self.last_cursor_position = Some(current_position);
+                
+                // Phase 26: Update viewport size estimate
+                self.viewport_size.0 = self.viewport_size.0.max(current_position.x * 1.05);
+                self.viewport_size.1 = self.viewport_size.1.max(current_position.y * 1.05);
+                
                 // If dragging, calculate pan delta and send Pan message
                 if self.is_dragging {
                     if let Some(last_pos) = self.last_cursor_position {
@@ -750,19 +868,11 @@ impl RawEditor {
                         let delta_x = current_position.x - last_pos.x;
                         let delta_y = current_position.y - last_pos.y;
                         
-                        // Phase 25: Viewport-aware pan sensitivity
-                        // Scale based on preview dimensions for resolution-independent feel
-                        let (sensitivity_x, sensitivity_y) = if let EditorStatus::Ready(pipeline) = &self.editor_status {
-                            // Use preview dimensions separately for X and Y
-                            // This handles aspect ratio correctly
-                            (
-                                1.0 / (pipeline.preview_width as f32),
-                                1.0 / (pipeline.preview_height as f32),
-                            )
-                        } else {
-                            // Fallback if no pipeline loaded
-                            (0.001, 0.001)
-                        };
+                        // Phase 26: Viewport-aware pan sensitivity using actual viewport size
+                        let (sensitivity_x, sensitivity_y) = (
+                            1.0 / self.viewport_size.0,
+                            1.0 / self.viewport_size.1,
+                        );
                         
                         let delta = cgmath::Vector2::new(
                             delta_x * sensitivity_x,
@@ -770,15 +880,8 @@ impl RawEditor {
                         );
                         
                         // Send Pan message
-                        self.last_cursor_position = Some(current_position);
                         return self.update(Message::Pan(delta));
-                    } else {
-                        // First move after press - just store position
-                        self.last_cursor_position = Some(current_position);
                     }
-                } else {
-                    // Not dragging, just update position for potential future drag
-                    self.last_cursor_position = Some(current_position);
                 }
                 Task::none()
             }
@@ -1027,7 +1130,7 @@ impl RawEditor {
                         color: Some(Color::from_rgb(0.5, 0.7, 1.0)),
                     }),
                 Space::with_height(Length::Fill),
-                text("Version 0.1.0")
+                text("Version 0.1.5")
                     .size(11)
                     .center()
                     .style(|_theme| text::Style {
@@ -1121,7 +1224,7 @@ impl RawEditor {
         
         // Header for grid pane
         let grid_header = column![
-            text("RAW Editor v0.1.0 - Exporting")
+            text("RAW Editor v0.1.5 - Zoom and panning")
                 .size(24),
             button("Import Folder")
                 .on_press(Message::ImportFolder)
@@ -1369,7 +1472,9 @@ impl RawEditor {
                                     ScrollDelta::Lines { y, .. } => y * 0.1,
                                     ScrollDelta::Pixels { y, .. } => y * 0.01,
                                 };
-                                Message::Zoom(zoom_delta)
+                                // Phase 26: Pass sentinel value (-1, -1) for cursor
+                                // Actual position will be retrieved from last_cursor_position in handler
+                                Message::Zoom(zoom_delta, Point::new(-1.0, -1.0))
                             })
                             .on_press(Message::MousePressed)
                             .on_release(Message::MouseReleased)

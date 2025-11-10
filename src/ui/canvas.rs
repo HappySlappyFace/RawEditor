@@ -57,7 +57,9 @@ impl Program<Message> for GpuRenderer {
                     mouse::ScrollDelta::Lines { y, .. } => y * 0.1,
                     mouse::ScrollDelta::Pixels { y, .. } => y * 0.01,
                 };
-                return (canvas::event::Status::Captured, Some(Message::Zoom(zoom_delta)));
+                // Phase 26: Include cursor position for zoom-to-cursor
+                let cursor_pos = cursor.position().unwrap_or(iced::Point::ORIGIN);
+                return (canvas::event::Status::Captured, Some(Message::Zoom(zoom_delta, cursor_pos)));
             }
             
             // Mouse button press - start dragging
