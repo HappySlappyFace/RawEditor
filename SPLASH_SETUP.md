@@ -29,11 +29,12 @@ iced::widget::image("assets/splash.png")
 
 ## Current Splash Screen Features
 
-✅ **Borderless window** - No title bar during splash (Adobe-style)
+✅ **Auto-maximize** - Window maximizes after database loads
 ✅ **Centered on screen** - Opens in the center
-✅ **900x600 window size** - Optimized for splash
+✅ **1280x800 startup size** - Comfortable initial window size
 ✅ **Dark theme** - Professional appearance
 ✅ **Instant loading** - Shows immediately, database loads in background
+✅ **Image fitting** - Two modes: Contain (no crop) or Cover (full bleed)
 
 ## Customization Options
 
@@ -57,9 +58,33 @@ In `view_splash()`, modify the RGB values:
 background: Some(Background::Color(Color::from_rgb(0.08, 0.08, 0.10))),
 ```
 
+## Image Transparency & Blending
+
+### For smooth blending with background:
+
+1. **Use PNG with alpha channel**
+   - Iced natively supports PNG transparency
+   - Image will blend with dark background (#141418)
+
+2. **Add gradient alpha in your editor** (Photoshop/GIMP/Figma)
+   - Create a radial gradient mask
+   - Center: 100% opacity
+   - Edges: Fade to 0% opacity
+   - Result: Image blends smoothly into background
+
+3. **Choose image fit mode:**
+   ```rust
+   // Maintain aspect ratio, no cropping
+   .content_fit(iced::ContentFit::Contain)
+   
+   // Fill entire space, may crop edges
+   .content_fit(iced::ContentFit::Cover)
+   ```
+
 ## Recommended Splash Image Specs
 
-- **Format**: PNG (with transparency) or JPG
-- **Size**: 400x400px to 600x600px
+- **Format**: PNG (with alpha channel for transparency)
+- **Size**: 800x800px or larger (will scale to fit)
 - **Style**: Logo, brand mark, or hero image
 - **Colors**: Works best with dark theme (current bg: #141418)
+- **Alpha**: Add gradient fade at edges for smooth blending

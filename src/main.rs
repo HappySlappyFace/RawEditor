@@ -3,6 +3,7 @@ use iced::widget::{button, column, container, row, scrollable, text, Image, slid
 use iced::advanced::image::Handle;
 use iced::{Alignment, Length};
 use iced_aw::Wrap;
+use iced::window;
 use rfd::FileDialog;
 use rusqlite::{Connection, ErrorCode};
 use std::path::PathBuf;
@@ -242,14 +243,29 @@ impl RawEditor {
                                 self.status = format!("Loaded {} images.", image_count);
                                 println!("✅ Database loaded successfully ({} images)", image_count);
                                 
+                                // Phase 23: Maximize window using native OS maximize
+                                use iced::window;
+                                // let maximize_window = window::get_latest()
+                                //     .and_then(|id| window::change_mode(id, window::Mode::Maximized));
+                                let maximize_window =window::get_latest()
+                                    .and_then(|id| window::maximize(id, true));
+
+                                println!("🔲 Maximizing window...");
+                                
                                 // Start thumbnail generation now that database is ready
                                 if let Some(lib) = &self.library {
                                     let db_path = lib.path().clone();
-                                    return Task::perform(
-                                        generate_thumbnails_async(db_path),
-                                        Message::ThumbnailGenerated,
-                                    );
+                                    return Task::batch(vec![
+                                        maximize_window,
+                                        Task::perform(
+                                            generate_thumbnails_async(db_path),
+                                            Message::ThumbnailGenerated,
+                                        ),
+                                    ]);
                                 }
+                                
+                                // Just maximize if no thumbnails to generate
+                                return maximize_window;
                             }
                             Err(e) => {
                                 self.status = format!("Failed to create library: {:?}", e);
@@ -726,28 +742,38 @@ impl RawEditor {
         // Left half: Branding/image
         // To add your custom splash image:
         // 1. Create an "assets" folder in your project root
-        // 2. Add your image: assets/splash.png (or .jpg)
+        // 2. Add your image: assets/splash.png (PNG with transparency recommended)
         // 3. Uncomment the image widget below and comment out the emoji
+        //
+        // For transparency/blending:
+        // - Use PNG format with alpha channel
+        // - The image will blend naturally with the dark background (#141418)
+        // - For edge blending, add a gradient alpha in your image editor
         
         let left_content = column![
             Space::with_height(Length::Fill),
             // Option 1: Use emoji placeholder (current)
             // text("📸").size(120).center(),
             
-            // Option 2: Use your custom image (uncomment this):
+            // Option 2: Use your custom image (fills container, maintains aspect ratio):
+            // iced::widget::image("assets/splash.jpg")
+            //     .width(Length::Fill)
+            //     .height(Length::Fill)
+            //     .content_fit(iced::ContentFit::Contain),  // Maintains aspect ratio
+            // 
+            // OR for full bleed (image fills entire space, may crop):
             iced::widget::image("assets/splash.jpg")
-                .width(400)
-                .height(400),
+                .width(Length::Fill)
+                // .height(Length::Fill)
+                .content_fit(iced::ContentFit::Cover),  // Fills space, crops if needed
             
             Space::with_height(Length::Fill),
         ]
         .align_x(iced::Alignment::Center);
         
         let left_panel = container(left_content)
-        .width(Length::FillPortion(1))
+        .width(Length::FillPortion(7))  // 70% of width (7/10)
         .height(Length::Fill)
-        .center_x(Length::Fill)
-        .center_y(Length::Fill)
         .style(|_theme| {
             container::Style {
                 background: Some(Background::Color(Color::from_rgb(0.08, 0.08, 0.10))), // Darker, more Adobe-like
@@ -793,14 +819,12 @@ impl RawEditor {
                     .style(|_theme| text::Style {
                         color: Some(Color::from_rgb(0.4, 0.4, 0.4)),
                     }),
-                Space::with_height(20.0),
+                Space::with_height(10.0),
             ]
             .align_x(iced::Alignment::Center)
         )
-        .width(Length::FillPortion(1))
+        .width(Length::FillPortion(3))  // 30% of width (3/10)
         .height(Length::Fill)
-        .center_x(Length::Fill)
-        .center_y(Length::Fill)
         .style(|_theme| {
             container::Style {
                 background: Some(Background::Color(Color::from_rgb(0.12, 0.12, 0.14))), // Slightly lighter gray
@@ -1374,8 +1398,8 @@ fn main() -> iced::Result {
     // Note: iced::application() uses a single window throughout
     // To have a separate splash window, you'd need the multi-window API
     .window(iced::window::Settings {
-        size: iced::Size::new(1280.0, 800.0),  // Main app size
-        min_size: Some(iced::Size::new(900.0, 600.0)),
+        size: iced::Size::new(900.0, 400.0),  // Main app size
+        min_size: Some(iced::Size::new(600.0, 400.0)),
         decorations: true,  // Keep title bar for usability
         ..Default::default()
     })
