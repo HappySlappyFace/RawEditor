@@ -762,7 +762,7 @@ impl RawEditor {
             //     .content_fit(iced::ContentFit::Contain),  // Maintains aspect ratio
             // 
             // OR for full bleed (image fills entire space, may crop):
-            iced::widget::image("assets/splash.jpg")
+            iced::widget::image("assets/splash.png")
                 .width(Length::Fill)
                 // .height(Length::Fill)
                 .content_fit(iced::ContentFit::Cover),  // Fills space, crops if needed
@@ -827,7 +827,7 @@ impl RawEditor {
         .height(Length::Fill)
         .style(|_theme| {
             container::Style {
-                background: Some(Background::Color(Color::from_rgb(0.12, 0.12, 0.14))), // Slightly lighter gray
+                background: Some(Background::Color(Color::from_rgb(0.08, 0.08, 0.10))), // Match left panel for seamless look
                 ..Default::default()
             }
         });
