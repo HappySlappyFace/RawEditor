@@ -730,9 +730,10 @@ impl RawEditor {
                     let image_cursor_x = cursor_pos.x - x_offset;
                     let image_cursor_y = cursor_pos.y - y_offset;
                     
-                    // Skip if cursor is outside the image
-                    if image_cursor_x < 0.0 || image_cursor_y < 0.0 || 
-                       image_cursor_x > image_width || image_cursor_y > image_height {
+                    // Skip if cursor is far outside the image (allow small margins for edge precision)
+                    let margin = 5.0; // Small margin in pixels
+                    if image_cursor_x < -margin || image_cursor_y < -margin || 
+                       image_cursor_x > image_width + margin || image_cursor_y > image_height + margin {
                         println!("⚠️  Cursor outside image, skipping zoom-to-cursor");
                         // Just do regular zoom without pan adjustment
                         if delta > 0.0 {
@@ -744,6 +745,10 @@ impl RawEditor {
                         self.canvas_cache.clear();
                         return Task::none();
                     }
+                    
+                    // Clamp cursor to image bounds for calculation
+                    let image_cursor_x = image_cursor_x.clamp(0.0, image_width);
+                    let image_cursor_y = image_cursor_y.clamp(0.0, image_height);
                     
                     // Calculate new zoom (exponential scaling)
                     let new_zoom = if delta > 0.0 {
@@ -854,9 +859,6 @@ impl RawEditor {
             }
             
             Message::MouseMoved(current_position) => {
-                // Store cursor position for zoom-to-cursor
-                self.last_cursor_position = Some(current_position);
-                
                 // Phase 26: Update viewport size estimate
                 self.viewport_size.0 = self.viewport_size.0.max(current_position.x * 1.05);
                 self.viewport_size.1 = self.viewport_size.1.max(current_position.y * 1.05);
@@ -868,21 +870,32 @@ impl RawEditor {
                         let delta_x = current_position.x - last_pos.x;
                         let delta_y = current_position.y - last_pos.y;
                         
-                        // Phase 26: Viewport-aware pan sensitivity using actual viewport size
-                        let (sensitivity_x, sensitivity_y) = (
-                            1.0 / self.viewport_size.0,
-                            1.0 / self.viewport_size.1,
-                        );
+                        // Phase 26: Pan sensitivity using image dimensions (not viewport)
+                        // Pan offset is in normalized image coordinates
+                        let (sensitivity_x, sensitivity_y) = if let EditorStatus::Ready(pipeline) = &self.editor_status {
+                            (
+                                1.0 / pipeline.preview_width as f32,
+                                1.0 / pipeline.preview_height as f32,
+                            )
+                        } else {
+                            (0.001, 0.001)
+                        };
                         
                         let delta = cgmath::Vector2::new(
                             delta_x * sensitivity_x,
                             delta_y * sensitivity_y,
                         );
                         
+                        // Update cursor position AFTER calculating delta
+                        self.last_cursor_position = Some(current_position);
+                        
                         // Send Pan message
                         return self.update(Message::Pan(delta));
                     }
                 }
+                
+                // Store cursor position for zoom-to-cursor (if not dragging)
+                self.last_cursor_position = Some(current_position);
                 Task::none()
             }
             
