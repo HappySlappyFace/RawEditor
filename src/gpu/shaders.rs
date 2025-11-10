@@ -170,6 +170,13 @@ fn get_neighbor(coords: vec2<i32>, dimensions: vec2<u32>) -> f32 {
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    // Phase 25: Discard fragments outside texture bounds (when zoomed out)
+    if input.tex_coords.x < 0.0 || input.tex_coords.x > 1.0 ||
+       input.tex_coords.y < 0.0 || input.tex_coords.y > 1.0 {
+        // Return black for areas outside the image
+        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    }
+    
     // Get texture dimensions
     let dimensions = textureDimensions(input_texture);
     
