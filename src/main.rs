@@ -730,6 +730,12 @@ impl RawEditor {
                     let image_cursor_x = cursor_pos.x - x_offset;
                     let image_cursor_y = cursor_pos.y - y_offset;
                     
+                    // Debug: Show offset calculation (helpful for diagnosing drift)
+                    if true {  // Set to false to disable
+                        println!("📐 Zoom @ cursor: Viewport={:.0}x{:.0} Image={:.0}x{:.0} Offset=({:.1},{:.1})",
+                            viewport_width, viewport_height, image_width, image_height, x_offset, y_offset);
+                    }
+                    
                     // Skip if cursor is far outside the image (allow small margins for edge precision)
                     let margin = 5.0; // Small margin in pixels
                     if image_cursor_x < -margin || image_cursor_y < -margin || 
@@ -860,8 +866,18 @@ impl RawEditor {
             
             Message::MouseMoved(current_position) => {
                 // Phase 26: Update viewport size estimate
-                self.viewport_size.0 = self.viewport_size.0.max(current_position.x * 1.05);
-                self.viewport_size.1 = self.viewport_size.1.max(current_position.y * 1.05);
+                // Learn the viewport size by tracking the maximum mouse coordinates
+                // But don't let it shrink (only grow when we see larger coordinates)
+                let new_viewport_w = (current_position.x * 1.01).max(self.viewport_size.0);
+                let new_viewport_h = (current_position.y * 1.01).max(self.viewport_size.1);
+                
+                // Only update if change is significant (avoid tiny fluctuations)
+                if (new_viewport_w - self.viewport_size.0).abs() > 10.0 {
+                    self.viewport_size.0 = new_viewport_w;
+                }
+                if (new_viewport_h - self.viewport_size.1).abs() > 10.0 {
+                    self.viewport_size.1 = new_viewport_h;
+                }
                 
                 // If dragging, calculate pan delta and send Pan message
                 if self.is_dragging {
