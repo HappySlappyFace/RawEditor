@@ -693,11 +693,18 @@ impl RawEditor {
             }
             
             // ========== Phase 25: Zoom & Pan Message Handlers ==========
-            
+
             Message::Zoom(delta) => {
-                // Apply zoom delta (mouse wheel scroll)
-                // Clamp between 0.1x (10%) and 10x (1000%)
-                self.zoom = (self.zoom + delta).clamp(0.1, 10.0);
+                // Phase 25: Exponential zoom (multiply/divide for consistent feel)
+                // Positive delta = zoom in, negative = zoom out
+                if delta > 0.0 {
+                    self.zoom *= 1.0 + (delta * 0.8); // Zoom in: faster response
+                } else {
+                    self.zoom /= 1.0 + (-delta * 0.8); // Zoom out: faster response
+                }
+                
+                // Clamp zoom to reasonable limits (10% to 1000%)
+                self.zoom = self.zoom.clamp(0.1, 10.0);
                 println!("🔍 Zoom: {:.1}%", self.zoom * 100.0);
                 
                 // Invalidate canvas cache to trigger redraw
@@ -707,10 +714,13 @@ impl RawEditor {
             }
             
             Message::Pan(delta) => {
-                // Apply pan delta (mouse drag)
-                self.pan_offset.x += delta.x;
-                self.pan_offset.y += delta.y;
-                println!("🖐️  Pan: ({:.2}, {:.2})", self.pan_offset.x, self.pan_offset.y);
+                // Phase 25: Apply pan delta scaled by zoom (so panning speed feels consistent)
+                // Scale by 1/zoom so panning at high zoom feels same speed as low zoom
+                let scale = 1.0 / self.zoom;
+                self.pan_offset.x += delta.x * scale;
+                self.pan_offset.y += delta.y * scale;
+                println!("🖐️  Pan: ({:.3}, {:.3}) at zoom {:.1}%", 
+                    self.pan_offset.x, self.pan_offset.y, self.zoom * 100.0);
                 
                 // Invalidate canvas cache to trigger redraw
                 self.canvas_cache.clear();
@@ -740,10 +750,11 @@ impl RawEditor {
                         let delta_x = current_position.x - last_pos.x;
                         let delta_y = current_position.y - last_pos.y;
                         
-                        // Convert to normalized coordinates (sensitivity factor)
+                        // Phase 25: Convert to normalized coordinates (proper sensitivity)
+                        // Positive delta = drag right/down = pan image left/up (natural direction)
                         let delta = cgmath::Vector2::new(
-                            -delta_x * 0.001, // Negative for natural panning direction
-                            -delta_y * 0.001,
+                            delta_x * 0.00125, // Reduced sensitivity for 1:1 feel
+                            delta_y * 0.00125, // Reduced sensitivity for 1:1 feel
                         );
                         
                         // Send Pan message
