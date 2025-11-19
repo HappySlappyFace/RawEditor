@@ -298,14 +298,14 @@ impl RawEditor {
 
                                 println!("🔲 Maximizing window...");
                                 
-                                // Start thumbnail generation now that database is ready
+                                // Phase 28: Start multi-tier cache processing for any pending images
                                 if let Some(lib) = &self.library {
                                     let db_path = lib.path().clone();
                                     return Task::batch(vec![
                                         maximize_window,
                                         Task::perform(
-                                            generate_thumbnails_async(db_path),
-                                            Message::ThumbnailGenerated,
+                                            process_cache_async(db_path),
+                                            Message::CacheProcessed,
                                         ),
                                     ]);
                                 }
@@ -378,59 +378,9 @@ impl RawEditor {
                 }
                 Task::none()
             }
-            Message::ThumbnailGenerated(result) => {
-                // Phase 23: Only process if database is loaded
-                if let Some(library) = &self.library {
-                    // Always reload images to show updated thumbnail in the grid
-                    self.images = library.get_all_images().unwrap_or_default();
-                    
-                    // Check both fast and slow queues
-                    let fast_queue_count: i64 = library.conn()
-                        .query_row(
-                            "SELECT COUNT(*) FROM images WHERE cache_status = 'pending'",
-                            [],
-                            |row| row.get(0)
-                        )
-                        .unwrap_or(0);
-                    
-                    let slow_queue_count: i64 = library.conn()
-                        .query_row(
-                            "SELECT COUNT(*) FROM images WHERE cache_status = 'needs_slow'",
-                            [],
-                            |row| row.get(0)
-                        )
-                        .unwrap_or(0);
-                    
-                    if fast_queue_count > 0 {
-                        // Still processing fast queue (high priority)
-                        self.status = format!(
-                            "⚡ Fast queue: {} remaining (slow queue: {})", 
-                            fast_queue_count, slow_queue_count
-                        );
-                        
-                        let db_path = library.path().clone();
-                        return Task::perform(
-                            generate_thumbnails_async(db_path),
-                            Message::ThumbnailGenerated,
-                        );
-                } else if slow_queue_count > 0 {
-                    // Fast queue empty, processing slow queue (low priority)
-                    self.status = format!(
-                        "🔥 Slow queue: {} remaining (RAW decode)", 
-                        slow_queue_count
-                    );
-                    
-                        let db_path = library.path().clone();
-                        return Task::perform(
-                            generate_thumbnails_async(db_path),
-                            Message::ThumbnailGenerated,
-                        );
-                    } else {
-                        // Both queues empty - all done!
-                        self.status = format!("✅ All thumbnails generated! ({} images)", self.images.len());
-                    }
-                }
-                
+            Message::ThumbnailGenerated(_result) => {
+                // Phase 28: DEPRECATED - Old thumbnail system completely disabled
+                // Phase 28 multi-tier cache processor handles all cache generation now
                 Task::none()
             }
             Message::CacheProcessed(result) => {
@@ -479,8 +429,20 @@ impl RawEditor {
                         .unwrap_or(0);
                     
                     if pending_count > 0 {
+                        // Calculate progress
+                        let total_count = self.images.len() as i64;
+                        let cached_count = total_count - pending_count;
+                        let progress_pct = if total_count > 0 {
+                            (cached_count * 100) / total_count
+                        } else {
+                            0
+                        };
+                        
                         // Update status with progress
-                        self.status = format!("📦 Processing cache: {} remaining", pending_count);
+                        self.status = format!(
+                            "📦 Caching: {}/{} ({}%) - {} remaining",
+                            cached_count, total_count, progress_pct, pending_count
+                        );
                         
                         // Trigger next cache processing job
                         let db_path = library.path().clone();
