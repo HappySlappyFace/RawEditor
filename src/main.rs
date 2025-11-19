@@ -115,6 +115,8 @@ struct RawEditor {
     last_click_time: Option<std::time::Instant>,
     /// Phase 26: Viewport size for zoom-to-cursor calculations (actual displayed size)
     viewport_size: (f32, f32),  // (width, height) in screen pixels
+    /// Phase 29: Instant preview handle (displayed while RAW loads)
+    working_preview: Option<Handle>,
 }
 
 /// Application messages (events)
@@ -264,6 +266,7 @@ impl RawEditor {
                 last_cursor_position: None, // Phase 25: No cursor position yet
                 last_click_time: None, // Phase 26: No click yet
                 viewport_size: (1280.0, 854.0), // Phase 26: Default viewport size (will be updated)
+                working_preview: None, // Phase 29: No preview initially
             },
             // Phase 23: Load database in background
             Task::perform(
@@ -490,6 +493,15 @@ impl RawEditor {
                     if needs_load {
                         println!("🔄 Loading RAW data for image {}...", image_id);
                         
+                        // Phase 29: Load working preview immediately!
+                        self.working_preview = None;
+                        if let Some(img) = self.images.iter().find(|i| i.id == image_id) {
+                            if let Some(path) = &img.cache_path_working {
+                                println!("⚡ Loading instant preview from: {}", path);
+                                self.working_preview = Some(Handle::from_path(path.clone()));
+                            }
+                        }
+
                         // Find the image and start loading
                         if let Some(img) = self.images.iter().find(|i| i.id == image_id) {
                             let raw_path = img.path.clone();
@@ -989,6 +1001,9 @@ impl RawEditor {
                         // Store pipeline in EditorStatus::Ready
                         self.editor_status = EditorStatus::Ready(pipeline);
                         
+                        // Phase 29: Clear working preview now that full pipeline is ready
+                        self.working_preview = None;
+                        
                         Task::none()
                     }
                     Err(err) => {
@@ -1393,9 +1408,124 @@ impl RawEditor {
     
     /// Build the Develop tab view (full-screen editor with preview)
     fn view_develop(&self) -> Element<Message> {
-        match &self.editor_status {
+        // 1. Determine which image we are looking at (if any)
+        let current_image = self.selected_image_id
+            .and_then(|id| self.images.iter().find(|i| i.id == id));
+
+        // 2. Build the Header (always visible if image selected)
+        let header = if let Some(img) = current_image {
+            let status_text = match &self.editor_status {
+                EditorStatus::Ready(_) => "🎨 GPU Rendering + Debayering",
+                EditorStatus::Loading(_) => "⌛ Loading RAW Data...",
+                EditorStatus::Failed(_, _) => "❌ Error Loading Image",
+                _ => "",
+            };
+
+            row![
+                text(&img.filename).size(18),
+                text(" • ").size(18),
+                text(status_text).size(18),
+            ]
+            .spacing(5)
+            .padding(10)
+        } else {
+            row![text("No Image Selected").size(18)].padding(10)
+        };
+
+        // 3. Build the Sidebar (always visible, disabled if not ready)
+        // Phase 21: Histogram toggle
+        let histogram_toggle = iced::widget::checkbox(
+            "Show Histogram",
+            self.histogram_enabled
+        )
+        .on_toggle(Message::HistogramToggled);
+        
+        // Build histogram widget only if enabled
+        let histogram_section = if self.histogram_enabled {
+            let histogram_widget = iced::widget::canvas::Canvas::new(
+                crate::ui::histogram::Histogram {
+                    data: self.histogram_data.borrow().clone(),
+                }
+            )
+            .width(iced::Length::Fill)
+            .height(iced::Length::Fixed(120.0));
+            
+            Some(container(histogram_widget)
+                .padding(5)
+                .style(|_theme| {
+                    iced::widget::container::Style {
+                        background: Some(iced::Background::Color(iced::Color::from_rgb(0.1, 0.1, 0.1))),
+                        border: iced::Border {
+                            color: iced::Color::from_rgb(0.3, 0.3, 0.3),
+                            width: 1.0,
+                            radius: 4.0.into(),
+                        },
+                        ..Default::default()
+                    }
+                }))
+        } else {
+            None
+        };
+        
+        let mut sidebar = column![
+            text("Edit Controls").size(16),
+            histogram_toggle,
+        ];
+        
+        if let Some(hist) = histogram_section {
+            sidebar = sidebar.push(hist);
+        }
+        
+        let sidebar = sidebar
+            // Exposure
+            .push(text(format!("Exposure: {:.2}", self.current_edit_params.exposure)))
+            .push(slider(-5.0..=5.0, self.current_edit_params.exposure, Message::ExposureChanged)
+                .step(0.1))
+            // Highlights
+            .push(text(format!("Highlights: {:.0}", self.current_edit_params.highlights * 100.0)))
+            .push(slider(-1.0..=1.0, self.current_edit_params.highlights, Message::HighlightsChanged)
+                .step(0.01))
+            // Shadows
+            .push(text(format!("Shadows: {:.0}", self.current_edit_params.shadows * 100.0)))
+            .push(slider(-1.0..=1.0, self.current_edit_params.shadows, Message::ShadowsChanged)
+                .step(0.01))
+            // Contrast
+            .push(text(format!("Contrast: {:.2}", self.current_edit_params.contrast)))
+            .push(slider(-10.0..=10.0, self.current_edit_params.contrast, Message::ContrastChanged)
+                .step(0.005))
+            // Vibrance (Phase 27: Smart saturation protecting skin tones)
+            .push(text(format!("Vibrance: {:.0}", self.current_edit_params.vibrance * 100.0)))
+            .push(slider(-1.0..=1.0, self.current_edit_params.vibrance, Message::VibranceChanged)
+                .step(0.01))
+            // Saturation
+            .push(text(format!("Saturation: {:.0}", self.current_edit_params.saturation)))
+            .push(slider(-100.0..=100.0, self.current_edit_params.saturation, Message::SaturationChanged))
+            // Temperature
+            .push(text(format!("Temperature: {:.0}", self.current_edit_params.temperature * 100.0)))
+            .push(slider(-1.0..=1.0, self.current_edit_params.temperature, Message::TemperatureChanged)
+                .step(0.01))
+            // Tint
+            .push(text(format!("Tint: {:.0}", self.current_edit_params.tint * 100.0)))
+            .push(slider(-1.0..=1.0, self.current_edit_params.tint, Message::TintChanged)
+                .step(0.01))
+            // Whites
+            .push(text(format!("Whites: {:.2}", self.current_edit_params.whites)))
+            .push(slider(0.8..=1.2, self.current_edit_params.whites, Message::WhitesChanged)
+                .step(0.01))
+            // Blacks
+            .push(text(format!("Blacks: {:.3}", self.current_edit_params.blacks)))
+            .push(slider(0.0..=0.2, self.current_edit_params.blacks, Message::BlacksChanged)
+                .step(0.005))
+            .push(button("Reset All").on_press(Message::ResetEdits))
+            .push(button("Export").on_press(Message::ExportImage))
+        .spacing(10)
+        .padding(15)
+        .width(Length::Fixed(200.0))
+        .height(Length::Fill);
+
+        // 4. Build the Main Content Area based on state
+        let main_content: Element<Message> = match &self.editor_status {
             EditorStatus::NoSelection => {
-                // No image selected - show prompt
                 container(
                     column![
                         text("No Image Selected").size(32),
@@ -1417,13 +1547,57 @@ impl RawEditor {
                 .center_y(Length::Fill)
                 .into()
             }
-            EditorStatus::Loading(image_id) => {
-                // Show loading state
-                if let Some(img) = self.images.iter().find(|i| i.id == *image_id) {
+            EditorStatus::Loading(_) => {
+                // Phase 29: Show working preview if available, otherwise show loading text
+                if let Some(handle) = &self.working_preview {
+                    // Show the preview image
+                    container(
+                        iced::widget::stack![
+                            Image::new(handle.clone())
+                                .width(Length::Fill)
+                                .height(Length::Fill)
+                                .content_fit(iced::ContentFit::Contain),
+                            
+                            // Overlay loading indicator
+                            container(
+                                column![
+                                    text("⌛ Loading RAW...").size(14)
+                                        .style(|theme: &Theme| {
+                                            text::Style {
+                                                color: Some(Color::WHITE),
+                                            }
+                                        }),
+                                ]
+                                .padding(8)
+                            )
+                            .style(|_theme| {
+                                container::Style {
+                                    background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.5))),
+                                    border: Border {
+                                        radius: 4.0.into(),
+                                        ..Default::default()
+                                    },
+                                    ..Default::default()
+                                }
+                            })
+                            .padding(20)
+                            .align_x(iced::Alignment::End)
+                            .align_y(iced::Alignment::End)
+                        ]
+                    )
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .style(|_theme| {
+                        container::Style {
+                            background: Some(Background::Color(Color::BLACK)),
+                            ..Default::default()
+                        }
+                    })
+                    .into()
+                } else {
+                    // Show standard loading text
                     container(
                         column![
-                            text(&img.filename).size(24),
-                            text("").size(30),
                             text("⌛ Generating full preview...").size(20),
                             text("").size(10),
                             text("This may take a few seconds for large RAW files")
@@ -1442,258 +1616,123 @@ impl RawEditor {
                     .center_x(Length::Fill)
                     .center_y(Length::Fill)
                     .into()
-                } else {
-                    container(text("Loading...").size(24))
-                        .width(Length::Fill)
-                        .height(Length::Fill)
-                        .center_x(Length::Fill)
-                        .center_y(Length::Fill)
-                        .into()
                 }
             }
             EditorStatus::Ready(pipeline) => {
                 // GPU pipeline ready - show live canvas rendering!
-                if let Some(image_id) = self.selected_image_id {
-                    if let Some(img) = self.images.iter().find(|i| i.id == image_id) {
-                        // Header with image info
-                        let header = row![
-                            text(&img.filename).size(18),
-                            text(" • ").size(18),
-                            text("🎨 GPU Rendering + Debayering").size(18),
-                        ]
-                        .spacing(5)
-                        .padding(10);
-                        
-                        // 🎨 Phase 25: GPU-Accelerated Zoom & Pan (with smart caching)
-                        // Determine which params to render based on show_before toggle
-                        let params_to_render = if self.show_before {
-                            state::edit::EditParams::default() // Show original (no edits)
-                        } else {
-                            self.current_edit_params.clone() // Show edited version
-                        };
-                        
-                        // Phase 25: Update GPU uniforms with correct params + zoom/pan
-                        // This updates the shader uniforms (very fast, no readback)
-                        pipeline.update_uniforms_with_zoom(&params_to_render, self.zoom, self.pan_offset.x, self.pan_offset.y);
-                        
-                        // Phase 25: Render with zoom/pan applied in shader
-                        println!("🎨 GPU rendering {}x{} preview (zoom: {:.1}%, pan: {:.3}, {:.3})", 
-                            pipeline.preview_width, 
-                            pipeline.preview_height,
-                            self.zoom * 100.0,
-                            self.pan_offset.x,
-                            self.pan_offset.y
-                        );
-                        let rgba_bytes = pipeline.render_to_bytes();
-                        println!("✅ Rendered {} bytes (preview with zoom/pan)", rgba_bytes.len());
-                        
-                        // Phase 22: Calculate histogram from TINY 256px render (only if enabled)
-                        if self.histogram_enabled {
-                            let histogram_bytes = pipeline.render_to_histogram_bytes();
-                            let histogram = pipeline.calculate_histogram(&histogram_bytes);
-                            *self.histogram_data.borrow_mut() = histogram;
-                            self.histogram_cache.clear(); // Force histogram redraw
-                        }
-                        
-                        // Create Image handle from rendered bytes
-                        let image_handle = iced::widget::image::Handle::from_rgba(
-                            pipeline.preview_width,
-                            pipeline.preview_height,
-                            rgba_bytes
-                        );
-                        
-                        // Phase 25: Image widget with zoom/pan already applied in GPU shader!
-                        let gpu_image = iced::widget::Image::new(image_handle)
-                            .content_fit(iced::ContentFit::Contain);
-                        
-                        // Phase 25: Wrap in mouse_area to capture zoom/pan events
-                        use iced::widget::mouse_area;
-                        use iced::mouse::{self, ScrollDelta};
-                        
-                        let interactive_image = mouse_area(gpu_image)
-                            .on_scroll(|delta| {
-                                let zoom_delta = match delta {
-                                    ScrollDelta::Lines { y, .. } => y * 0.1,
-                                    ScrollDelta::Pixels { y, .. } => y * 0.01,
-                                };
-                                // Phase 26: Pass sentinel value (-1, -1) for cursor
-                                // Actual position will be retrieved from last_cursor_position in handler
-                                Message::Zoom(zoom_delta, Point::new(-1.0, -1.0))
-                            })
-                            .on_press(Message::MousePressed)
-                            .on_release(Message::MouseReleased)
-                            .on_move(|position| Message::MouseMoved(position));
-                        
-                        let preview = container(interactive_image)
-                            .width(Length::Fill)
-                            .height(Length::Fill)
-                            .center_x(Length::Fill)
-                            .center_y(Length::Fill)
-                            .style(|_theme| {
-                                container::Style {
-                                    background: Some(Background::Color(Color::from_rgb(0.0, 0.0, 0.0))),
-                                    ..Default::default()
-                                }
-                            });
-                    
-                    // Right sidebar with editing controls
-                    // Phase 21: Histogram toggle
-                    let histogram_toggle = iced::widget::checkbox(
-                        "Show Histogram",
-                        self.histogram_enabled
-                    )
-                    .on_toggle(Message::HistogramToggled);
-                    
-                    // Build histogram widget only if enabled
-                    let histogram_section = if self.histogram_enabled {
-                        let histogram_widget = iced::widget::canvas::Canvas::new(
-                            crate::ui::histogram::Histogram {
-                                data: self.histogram_data.borrow().clone(),
-                            }
-                        )
-                        .width(iced::Length::Fill)
-                        .height(iced::Length::Fixed(120.0));
-                        
-                        Some(container(histogram_widget)
-                            .padding(5)
-                            .style(|_theme| {
-                                iced::widget::container::Style {
-                                    background: Some(iced::Background::Color(iced::Color::from_rgb(0.1, 0.1, 0.1))),
-                                    border: iced::Border {
-                                        color: iced::Color::from_rgb(0.3, 0.3, 0.3),
-                                        width: 1.0,
-                                        radius: 4.0.into(),
-                                    },
-                                    ..Default::default()
-                                }
-                            }))
-                    } else {
-                        None
-                    };
-                    
-                    let mut sidebar = column![
-                        text("Edit Controls").size(16),
-                        histogram_toggle,
-                    ];
-                    
-                    if let Some(hist) = histogram_section {
-                        sidebar = sidebar.push(hist);
-                    }
-                    
-                    let sidebar = sidebar
-                        // Exposure
-                        .push(text(format!("Exposure: {:.2}", self.current_edit_params.exposure)))
-                        .push(slider(-5.0..=5.0, self.current_edit_params.exposure, Message::ExposureChanged)
-                            .step(0.1))
-                        // Highlights
-                        .push(text(format!("Highlights: {:.0}", self.current_edit_params.highlights * 100.0)))
-                        .push(slider(-1.0..=1.0, self.current_edit_params.highlights, Message::HighlightsChanged)
-                            .step(0.01))
-                        // Shadows
-                        .push(text(format!("Shadows: {:.0}", self.current_edit_params.shadows * 100.0)))
-                        .push(slider(-1.0..=1.0, self.current_edit_params.shadows, Message::ShadowsChanged)
-                            .step(0.01))
-                        // Contrast
-                        .push(text(format!("Contrast: {:.2}", self.current_edit_params.contrast)))
-                        .push(slider(-10.0..=10.0, self.current_edit_params.contrast, Message::ContrastChanged)
-                            .step(0.005))
-                        // Vibrance (Phase 27: Smart saturation protecting skin tones)
-                        .push(text(format!("Vibrance: {:.0}", self.current_edit_params.vibrance * 100.0)))
-                        .push(slider(-1.0..=1.0, self.current_edit_params.vibrance, Message::VibranceChanged)
-                            .step(0.01))
-                        // Saturation
-                        .push(text(format!("Saturation: {:.0}", self.current_edit_params.saturation)))
-                        .push(slider(-100.0..=100.0, self.current_edit_params.saturation, Message::SaturationChanged))
-                        // Temperature
-                        .push(text(format!("Temperature: {:.0}", self.current_edit_params.temperature * 100.0)))
-                        .push(slider(-1.0..=1.0, self.current_edit_params.temperature, Message::TemperatureChanged)
-                            .step(0.01))
-                        // Tint
-                        .push(text(format!("Tint: {:.0}", self.current_edit_params.tint * 100.0)))
-                        .push(slider(-1.0..=1.0, self.current_edit_params.tint, Message::TintChanged)
-                            .step(0.01))
-                        // Whites
-                        .push(text(format!("Whites: {:.2}", self.current_edit_params.whites)))
-                        .push(slider(0.8..=1.2, self.current_edit_params.whites, Message::WhitesChanged)
-                            .step(0.01))
-                        // Blacks
-                        .push(text(format!("Blacks: {:.3}", self.current_edit_params.blacks)))
-                        .push(slider(0.0..=0.2, self.current_edit_params.blacks, Message::BlacksChanged)
-                            .step(0.005))
-                        .push(button("Reset All").on_press(Message::ResetEdits))
-                        .push(button("Export").on_press(Message::ExportImage))
-                    .spacing(10)
-                    .padding(15)
-
-                    .width(Length::Fixed(200.0))
-                    .height(Length::Fill);
-                    
-                    // Main layout: header + (preview + sidebar)
-                    column![
-                        header,
-                        row![
-                            preview,
-                            sidebar,
-                        ]
-                        .spacing(0)
-                        .height(Length::Fill),
-                    ]
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .into()
-                    } else {
-                        container(text("Image not found").size(24))
-                            .width(Length::Fill)
-                            .height(Length::Fill)
-                            .center_x(Length::Fill)
-                            .center_y(Length::Fill)
-                            .into()
-                    }
+                
+                // 🎨 Phase 25: GPU-Accelerated Zoom & Pan (with smart caching)
+                // Determine which params to render based on show_before toggle
+                let params_to_render = if self.show_before {
+                    state::edit::EditParams::default() // Show original (no edits)
                 } else {
-                    container(text("No image selected").size(24))
-                        .width(Length::Fill)
-                        .height(Length::Fill)
-                        .center_x(Length::Fill)
-                        .center_y(Length::Fill)
-                        .into()
+                    self.current_edit_params.clone() // Show edited version
+                };
+                
+                // Phase 25: Update GPU uniforms with correct params + zoom/pan
+                // This updates the shader uniforms (very fast, no readback)
+                pipeline.update_uniforms_with_zoom(&params_to_render, self.zoom, self.pan_offset.x, self.pan_offset.y);
+                
+                // Phase 25: Render with zoom/pan applied in shader
+                // (Logging removed to reduce spam)
+                let rgba_bytes = pipeline.render_to_bytes();
+                
+                // Phase 22: Calculate histogram from TINY 256px render (only if enabled)
+                if self.histogram_enabled {
+                    let histogram_bytes = pipeline.render_to_histogram_bytes();
+                    let histogram = pipeline.calculate_histogram(&histogram_bytes);
+                    *self.histogram_data.borrow_mut() = histogram;
+                    self.histogram_cache.clear(); // Force histogram redraw
                 }
-            }
-            EditorStatus::Failed(image_id, error) => {
-                // Show error state
-                if let Some(img) = self.images.iter().find(|i| i.id == *image_id) {
-                    container(
-                        column![
-                            text("❌ Preview Failed").size(24),
-                            text("").size(20),
-                            text(&img.filename).size(18),
-                            text("").size(15),
-                            text(error)
-                                .size(14)
-                                .style(|theme: &Theme| {
-                                    text::Style {
-                                        color: Some(theme.palette().danger),
-                                    }
-                                }),
-                        ]
-                        .padding(40)
-                        .align_x(Alignment::Center)
-                    )
+                
+                // Create Image handle from rendered bytes
+                let image_handle = iced::widget::image::Handle::from_rgba(
+                    pipeline.preview_width,
+                    pipeline.preview_height,
+                    rgba_bytes
+                );
+                
+                // Phase 25: Image widget with zoom/pan already applied in GPU shader!
+                let gpu_image = iced::widget::Image::new(image_handle)
+                    .content_fit(iced::ContentFit::Contain);
+                
+                // Phase 25: Wrap in mouse_area to capture zoom/pan events
+                use iced::widget::mouse_area;
+                use iced::mouse::{self, ScrollDelta};
+                
+                let interactive_image = mouse_area(gpu_image)
+                    .on_scroll(|delta| {
+                        let zoom_delta = match delta {
+                            ScrollDelta::Lines { y, .. } => y * 0.1,
+                            ScrollDelta::Pixels { y, .. } => y * 0.01,
+                        };
+                        // Phase 26: Pass sentinel value (-1, -1) for cursor
+                        // Actual position will be retrieved from last_cursor_position in handler
+                        Message::Zoom(zoom_delta, Point::new(-1.0, -1.0))
+                    })
+                    .on_press(Message::MousePressed)
+                    .on_release(Message::MouseReleased)
+                    .on_move(|position| Message::MouseMoved(position));
+                
+                container(interactive_image)
                     .width(Length::Fill)
                     .height(Length::Fill)
                     .center_x(Length::Fill)
                     .center_y(Length::Fill)
+                    .style(|_theme| {
+                        container::Style {
+                            background: Some(Background::Color(Color::from_rgb(0.0, 0.0, 0.0))),
+                            ..Default::default()
+                        }
+                    })
                     .into()
-                } else {
-                    container(text("Error loading preview").size(24))
-                        .width(Length::Fill)
-                        .height(Length::Fill)
-                        .center_x(Length::Fill)
-                        .center_y(Length::Fill)
-                        .into()
-                }
             }
+            EditorStatus::Failed(image_id, error) => {
+                // Show error state
+                container(
+                    column![
+                        text("❌ Preview Failed").size(24),
+                        text("").size(20),
+                        text(error)
+                            .size(14)
+                            .style(|theme: &Theme| {
+                                text::Style {
+                                    color: Some(theme.palette().danger),
+                                }
+                            }),
+                    ]
+                    .padding(40)
+                    .align_x(Alignment::Center)
+                )
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .center_x(Length::Fill)
+                .center_y(Length::Fill)
+                .into()
+            }
+        };
+
+        // 5. Assemble the final layout
+        // If no image selected, just show main content (prompt)
+        if matches!(self.editor_status, EditorStatus::NoSelection) {
+            return main_content;
         }
+
+        // Otherwise, show Header + (Main | Sidebar)
+        column![
+            header,
+            row![
+                main_content,
+                sidebar,
+            ]
+            .spacing(0)
+            .height(Length::Fill),
+        ]
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
     }
+
 
     /// Set the application theme
     fn theme(&self) -> Theme {
