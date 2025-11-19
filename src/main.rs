@@ -206,6 +206,10 @@ enum Message {
     // ========== Histogram Messages (Phase 22) ==========
     /// User toggled histogram on/off
     HistogramToggled(bool),
+    
+    // ========== Phase 30: Multi-Tier Preview Loading ==========
+    /// Background loading of 1280px working preview completed
+    WorkingPreviewReady(iced::widget::image::Handle),
 }
 
 /// Phase 23: Async database loading
@@ -492,28 +496,45 @@ impl RawEditor {
                     
                     if needs_load {
                         println!("🔄 Loading RAW data for image {}...", image_id);
-                        
-                        // Phase 29: Load working preview immediately!
+                        // Phase 30: Multi-Tier Preview Loading
+                        // 1. Clear current preview
                         self.working_preview = None;
+                        
                         if let Some(img) = self.images.iter().find(|i| i.id == image_id) {
-                            if let Some(path) = &img.cache_path_working {
+                            // 2. Try to load "Instant" (384px) preview IMMEDIATELY (synchronous)
+                            // This is small enough to load on main thread without blocking
+                            if let Some(path) = &img.cache_path_instant {
                                 println!("⚡ Loading instant preview from: {}", path);
                                 self.working_preview = Some(Handle::from_path(path.clone()));
+                            } else if let Some(path) = &img.cache_path_working {
+                                // Fallback to working if instant missing
+                                println!("⚡ Loading working preview (fallback) from: {}", path);
+                                self.working_preview = Some(Handle::from_path(path.clone()));
                             }
-                        }
-
-                        // Find the image and start loading
-                        if let Some(img) = self.images.iter().find(|i| i.id == image_id) {
-                            let raw_path = img.path.clone();
                             
                             // Set editor status to loading
                             self.editor_status = EditorStatus::Loading(image_id);
+
+                            let mut tasks = Vec::new();
                             
-                            // Load RAW sensor data for GPU processing
-                            return Task::perform(
+                            // 3. Spawn background task to load "Working" (1280px) preview
+                            // This upgrades the quality while RAW loads
+                            if let Some(path) = &img.cache_path_working {
+                                let path_clone = path.clone();
+                                tasks.push(Task::perform(
+                                    load_image_handle(path_clone),
+                                    Message::WorkingPreviewReady
+                                ));
+                            }
+                            
+                            // 4. Spawn background task to load full RAW data
+                            let raw_path = img.path.clone();
+                            tasks.push(Task::perform(
                                 raw::loader::load_raw_data(raw_path),
                                 Message::RawDataLoaded,
-                            );
+                            ));
+                            
+                            return Task::batch(tasks);
                         }
                     } else {
                         println!("⚡ Pipeline already loaded for image {}", image_id);
@@ -995,8 +1016,9 @@ impl RawEditor {
                     Ok(pipeline) => {
                         println!("🎨 GPU pipeline initialized!");
                         
-                        // Phase 25: Clear canvas cache since this is a new pipeline for a new image
-                        self.canvas_cache.clear();
+                        // Phase 25: Apply current edit params to new pipeline
+                        // This ensures edits persist when switching images or reloading
+                        pipeline.update_uniforms(&self.current_edit_params);
                         
                         // Store pipeline in EditorStatus::Ready
                         self.editor_status = EditorStatus::Ready(pipeline);
@@ -1015,6 +1037,15 @@ impl RawEditor {
                         Task::none()
                     }
                 }
+            }
+            
+            Message::WorkingPreviewReady(handle) => {
+                // Phase 30: Upgrade to higher resolution preview if still loading
+                if let EditorStatus::Loading(_) = self.editor_status {
+                    println!("✨ Upgraded to 1280px working preview");
+                    self.working_preview = Some(handle);
+                }
+                Task::none()
             }
             
             Message::ExportImage => {
@@ -2069,4 +2100,11 @@ async fn process_cache_async(db_path: PathBuf) -> Result<(i64, String, String, S
         // No pending images
         Err((0, "No pending images".to_string()))
     }
+}
+
+/// Phase 30: Async helper to load an image handle from disk
+/// Used to load the 1280px working preview in the background
+async fn load_image_handle(path: String) -> iced::widget::image::Handle {
+    // This runs in a background thread via Task::perform
+    iced::widget::image::Handle::from_path(path)
 }
