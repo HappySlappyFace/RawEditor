@@ -1555,176 +1555,80 @@ impl RawEditor {
         .height(Length::Fill);
 
         // 4. Build the Main Content Area based on state
-        let main_content: Element<Message> = match &self.editor_status {
-            EditorStatus::NoSelection => {
-                container(
+        // 4. Build the Main Content Area with Unified Container
+        // Phase 31: Unified Image Container for seamless transitions
+        
+        // Determine the image handle and overlay based on state
+        let (image_handle, overlay_content) = match &self.editor_status {
+            EditorStatus::NoSelection => (None, Option::<Element<Message>>::None),
+            EditorStatus::Loading(_) => {
+                // Use working preview if available, otherwise None
+                let handle = self.working_preview.clone();
+                
+                // Create loading overlay
+                let overlay = container(
                     column![
-                        text("No Image Selected").size(32),
-                        text("").size(20),
-                        text("← Switch to Library tab to select an image")
-                            .size(18)
+                        text("⌛ Loading RAW...").size(14)
                             .style(|theme: &Theme| {
                                 text::Style {
-                                    color: Some(theme.palette().text.scale_alpha(0.6)),
+                                    color: Some(Color::WHITE),
                                 }
                             }),
                     ]
-                    .padding(40)
-                    .align_x(Alignment::Center)
+                    .padding(8)
                 )
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .center_x(Length::Fill)
-                .center_y(Length::Fill)
-                .into()
-            }
-            EditorStatus::Loading(_) => {
-                // Phase 29: Show working preview if available, otherwise show loading text
-                if let Some(handle) = &self.working_preview {
-                    // Show the preview image
-                    container(
-                        iced::widget::stack![
-                            Image::new(handle.clone())
-                                .width(Length::Fill)
-                                .height(Length::Fill)
-                                .content_fit(iced::ContentFit::Contain),
-                            
-                            // Overlay loading indicator
-                            container(
-                                column![
-                                    text("⌛ Loading RAW...").size(14)
-                                        .style(|theme: &Theme| {
-                                            text::Style {
-                                                color: Some(Color::WHITE),
-                                            }
-                                        }),
-                                ]
-                                .padding(8)
-                            )
-                            .style(|_theme| {
-                                container::Style {
-                                    background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.5))),
-                                    border: Border {
-                                        radius: 4.0.into(),
-                                        ..Default::default()
-                                    },
-                                    ..Default::default()
-                                }
-                            })
-                            .padding(20)
-                            .align_x(iced::Alignment::End)
-                            .align_y(iced::Alignment::End)
-                        ]
-                    )
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .style(|_theme| {
-                        container::Style {
-                            background: Some(Background::Color(Color::BLACK)),
+                .style(|_theme| {
+                    container::Style {
+                        background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.5))),
+                        border: Border {
+                            radius: 4.0.into(),
                             ..Default::default()
-                        }
-                    })
-                    .into()
-                } else {
-                    // Show standard loading text
-                    container(
-                        column![
-                            text("⌛ Generating full preview...").size(20),
-                            text("").size(10),
-                            text("This may take a few seconds for large RAW files")
-                                .size(14)
-                                .style(|theme: &Theme| {
-                                    text::Style {
-                                        color: Some(theme.palette().text.scale_alpha(0.7)),
-                                    }
-                                }),
-                        ]
-                        .padding(40)
-                        .align_x(Alignment::Center)
-                    )
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .center_x(Length::Fill)
-                    .center_y(Length::Fill)
-                    .into()
-                }
+                        },
+                        ..Default::default()
+                    }
+                })
+                .padding(20)
+                .align_x(iced::Alignment::End)
+                .align_y(iced::Alignment::End);
+                
+                (handle, Some(overlay.into()))
             }
             EditorStatus::Ready(pipeline) => {
-                // GPU pipeline ready - show live canvas rendering!
+                // GPU pipeline ready - render frame
                 
-                // 🎨 Phase 25: GPU-Accelerated Zoom & Pan (with smart caching)
-                // Determine which params to render based on show_before toggle
+                // Phase 25: GPU-Accelerated Zoom & Pan
                 let params_to_render = if self.show_before {
-                    state::edit::EditParams::default() // Show original (no edits)
+                    state::edit::EditParams::default()
                 } else {
-                    self.current_edit_params.clone() // Show edited version
+                    self.current_edit_params.clone()
                 };
                 
-                // Phase 25: Update GPU uniforms with correct params + zoom/pan
-                // This updates the shader uniforms (very fast, no readback)
                 pipeline.update_uniforms_with_zoom(&params_to_render, self.zoom, self.pan_offset.x, self.pan_offset.y);
-                
-                // Phase 25: Render with zoom/pan applied in shader
-                // (Logging removed to reduce spam)
                 let rgba_bytes = pipeline.render_to_bytes();
                 
-                // Phase 22: Calculate histogram from TINY 256px render (only if enabled)
+                // Phase 22: Histogram
                 if self.histogram_enabled {
                     let histogram_bytes = pipeline.render_to_histogram_bytes();
                     let histogram = pipeline.calculate_histogram(&histogram_bytes);
                     *self.histogram_data.borrow_mut() = histogram;
-                    self.histogram_cache.clear(); // Force histogram redraw
+                    self.histogram_cache.clear();
                 }
                 
-                // Create Image handle from rendered bytes
-                let image_handle = iced::widget::image::Handle::from_rgba(
+                let handle = iced::widget::image::Handle::from_rgba(
                     pipeline.preview_width,
                     pipeline.preview_height,
                     rgba_bytes
                 );
                 
-                // Phase 25: Image widget with zoom/pan already applied in GPU shader!
-                let gpu_image = iced::widget::Image::new(image_handle)
-                    .content_fit(iced::ContentFit::Contain);
-                
-                // Phase 25: Wrap in mouse_area to capture zoom/pan events
-                use iced::widget::mouse_area;
-                use iced::mouse::{self, ScrollDelta};
-                
-                let interactive_image = mouse_area(gpu_image)
-                    .on_scroll(|delta| {
-                        let zoom_delta = match delta {
-                            ScrollDelta::Lines { y, .. } => y * 0.1,
-                            ScrollDelta::Pixels { y, .. } => y * 0.01,
-                        };
-                        // Phase 26: Pass sentinel value (-1, -1) for cursor
-                        // Actual position will be retrieved from last_cursor_position in handler
-                        Message::Zoom(zoom_delta, Point::new(-1.0, -1.0))
-                    })
-                    .on_press(Message::MousePressed)
-                    .on_release(Message::MouseReleased)
-                    .on_move(|position| Message::MouseMoved(position));
-                
-                container(interactive_image)
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .center_x(Length::Fill)
-                    .center_y(Length::Fill)
-                    .style(|_theme| {
-                        container::Style {
-                            background: Some(Background::Color(Color::from_rgb(0.0, 0.0, 0.0))),
-                            ..Default::default()
-                        }
-                    })
-                    .into()
+                (Some(handle), None)
             }
-            EditorStatus::Failed(image_id, error) => {
-                // Show error state
-                container(
+            EditorStatus::Failed(_, error) => {
+                // For failed state, we return None handle and an error overlay
+                let overlay = container(
                     column![
                         text("❌ Preview Failed").size(24),
                         text("").size(20),
-                        text(error)
+                        text(error.clone())
                             .size(14)
                             .style(|theme: &Theme| {
                                 text::Style {
@@ -1734,13 +1638,93 @@ impl RawEditor {
                     ]
                     .padding(40)
                     .align_x(Alignment::Center)
-                )
+                );
+                (None, Some(overlay.into()))
+            }
+        };
+
+        // Construct the Unified Container
+        let main_content: Element<Message> = if let EditorStatus::NoSelection = self.editor_status {
+            // Special case for NoSelection (keep existing design)
+            container(
+                column![
+                    text("No Image Selected").size(32),
+                    text("").size(20),
+                    text("← Switch to Library tab to select an image")
+                        .size(18)
+                        .style(|theme: &Theme| {
+                            text::Style {
+                                color: Some(theme.palette().text.scale_alpha(0.6)),
+                            }
+                        }),
+                ]
+                .padding(40)
+                .align_x(Alignment::Center)
+            )
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
+        } else {
+            // Unified container for Loading, Ready, and Failed states
+            
+            // 1. The Image Widget (or spacer if None)
+            let image_widget = if let Some(handle) = image_handle {
+                Image::new(handle)
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .content_fit(iced::ContentFit::Contain)
+            } else {
+                // Placeholder if no image yet (e.g. loading without preview)
+                Image::new(iced::widget::image::Handle::from_rgba(1, 1, vec![0, 0, 0, 255]))
+                     .width(Length::Fill)
+                     .height(Length::Fill)
+                     .content_fit(iced::ContentFit::Contain)
+                     .opacity(0.0) // Invisible
+            };
+            
+            // 2. Wrap in Mouse Area (ALWAYS present to capture events)
+            use iced::widget::mouse_area;
+            use iced::mouse::{self, ScrollDelta};
+            
+            let interactive_image = mouse_area(image_widget)
+                .on_scroll(|delta| {
+                    let zoom_delta = match delta {
+                        ScrollDelta::Lines { y, .. } => y * 0.1,
+                        ScrollDelta::Pixels { y, .. } => y * 0.01,
+                    };
+                    Message::Zoom(zoom_delta, Point::new(-1.0, -1.0))
+                })
+                .on_press(Message::MousePressed)
+                .on_release(Message::MouseReleased)
+                .on_move(|position| Message::MouseMoved(position));
+                
+            // 3. Stack with Overlay (if any)
+            let content_stack = if let Some(overlay) = overlay_content {
+                iced::widget::stack![
+                    interactive_image,
+                    overlay
+                ]
+            } else {
+                iced::widget::stack![
+                    interactive_image
+                ]
+            };
+            
+            // 4. Final Container (Consistent styling)
+            container(content_stack)
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .center_x(Length::Fill)
                 .center_y(Length::Fill)
+                .style(|_theme| {
+                    container::Style {
+                        background: Some(Background::Color(Color::BLACK)),
+                        ..Default::default()
+                    }
+                })
                 .into()
-            }
         };
 
         // 5. Assemble the final layout
