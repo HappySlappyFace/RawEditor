@@ -63,10 +63,12 @@ impl Program<Message> for PreviewRenderer {
         let zoomed_width = fitted_width * self.zoom;
         let zoomed_height = fitted_height * self.zoom;
 
-        // Apply pan offset (in normalized coordinates, scale by viewport size)
-        // The offset matches the GPU renderer's coordinate system
-        let pan_x = self.offset.x * viewport_width;
-        let pan_y = self.offset.y * viewport_height;
+        // Apply pan offset
+        // CRITICAL: Pan offset in GPU shader is in texture coordinate space (relative to image)
+        // So we scale by the FITTED image dimensions, not viewport dimensions
+        // This matches how the GPU shader interprets pan_x/pan_y relative to the image
+        let pan_x = self.offset.x * fitted_width;
+        let pan_y = self.offset.y * fitted_height;
 
         // Calculate final image bounds
         let image_x = center_x - (zoomed_width / 2.0) + pan_x;

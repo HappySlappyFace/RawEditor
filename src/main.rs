@@ -1669,24 +1669,45 @@ impl RawEditor {
         } else {
             // Unified container for Loading, Ready, and Failed states
             
-            // 1. The Image Widget - now using Canvas for previews (Phase 32)
+            // 1. The Image Widget - different rendering for preview vs RAW
             let image_widget: Element<Message> = if let Some(handle) = image_handle {
-                // Phase 32: Use Canvas-based preview renderer instead of Image widget
-                // This ensures zoom/pan state transfers seamlessly to GPU RAW render
-                use iced::widget::canvas::Canvas;
-                use crate::ui::preview_renderer::PreviewRenderer;
-                
-                Canvas::new(PreviewRenderer {
-                    handle,
-                    zoom: self.zoom,
-                    offset: self.pan_offset,
-                })
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .into()
+                // Check if we're showing a preview (Loading) or RAW (Ready)
+                match &self.editor_status {
+                    EditorStatus::Loading(_) => {
+                        // Phase 32: Use Canvas-based preview renderer for JPEG previews
+                        // This applies zoom/pan to match what the RAW will show
+                        use iced::widget::canvas::Canvas;
+                        use crate::ui::preview_renderer::PreviewRenderer;
+                        
+                        Canvas::new(PreviewRenderer {
+                            handle,
+                            zoom: self.zoom,
+                            offset: self.pan_offset,
+                        })
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .into()
+                    }
+                    EditorStatus::Ready(_) => {
+                        // RAW image: Pan/zoom already baked into pixels by GPU shader
+                        // Use plain Image widget WITHOUT any transformation
+                        Image::new(handle)
+                            .width(Length::Fill)
+                            .height(Length::Fill)
+                            .content_fit(iced::ContentFit::Contain)
+                            .into()
+                    }
+                    _ => {
+                        // Fallback for other states (shouldn't happen with current logic)
+                        Image::new(handle)
+                            .width(Length::Fill)
+                            .height(Length::Fill)
+                            .content_fit(iced::ContentFit::Contain)
+                            .into()
+                    }
+                }
             } else {
                 // Placeholder if no image yet (e.g. loading without preview)
-                // Use a transparent canvas or empty space
                 iced::widget::Space::new(Length::Fill, Length::Fill).into()
             };
             
@@ -1718,12 +1739,14 @@ impl RawEditor {
                 ]
             };
             
-            // 4. Final Container (Consistent styling)
+            // 4. Final Container (Consistent styling + CLIPPING)
+            // Phase 32: Add clip to prevent canvas from drawing outside bounds
             container(content_stack)
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .center_x(Length::Fill)
                 .center_y(Length::Fill)
+                .clip(true) // ← CRITICAL: Clip content to prevent overflow
                 .style(|_theme| {
                     container::Style {
                         background: Some(Background::Color(Color::BLACK)),
