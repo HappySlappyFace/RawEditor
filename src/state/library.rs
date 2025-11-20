@@ -37,7 +37,7 @@ impl Library {
     }
 
     /// Get the path where the database should be stored
-    fn get_db_path() -> PathBuf {
+    pub fn get_db_path() -> PathBuf {
         let mut path = dirs::data_dir()
             .or_else(|| dirs::home_dir())
             .expect("Could not determine user data directory");
@@ -165,9 +165,11 @@ impl Library {
     /// Returns a vector of Image structs ordered by import date (newest first)
     pub fn get_all_images(&self) -> SqlResult<Vec<Image>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, filename, path, cache_path_thumb, cache_path_instant, cache_path_working, COALESCE(file_status, 'exists') FROM images ORDER BY imported_at DESC"
+            "SELECT id, filename, path, cache_path_thumb, cache_path_instant, cache_path_working, COALESCE(file_status, 'exists') 
+             FROM images 
+             ORDER BY imported_at DESC"
         )?;
-
+        
         let image_iter = stmt.query_map([], |row| {
             Ok(Image {
                 id: row.get(0)?,
@@ -179,12 +181,12 @@ impl Library {
                 file_status: row.get(6)?,
             })
         })?;
-
+        
         let mut images = Vec::new();
         for image in image_iter {
             images.push(image?);
         }
-
+        
         Ok(images)
     }
 
@@ -397,5 +399,20 @@ impl std::fmt::Debug for Library {
         f.debug_struct("Library")
             .field("db_path", &self.db_path)
             .finish()
+    }
+}
+
+/// Async helper to load the database
+pub async fn load_database(_path: String) -> Result<Vec<super::data::Image>, String> {
+    // In a real app, we might want to pass the path, but Library::new() determines it automatically.
+    // We'll just use Library::new() here.
+    match Library::new() {
+        Ok(lib) => {
+            match lib.get_all_images() {
+                Ok(images) => Ok(images),
+                Err(e) => Err(format!("Failed to load images: {}", e)),
+            }
+        },
+        Err(e) => Err(format!("Failed to initialize library: {}", e)),
     }
 }

@@ -43,7 +43,40 @@ struct GpuEditParams {
     pan_x: f32,                 // Pan offset X
     pan_y: f32,                 // Pan offset Y
     // Phase 34: CFA Pattern
-    cfa_pattern: u32,           // 0=RGGB, 1=GRBG, 2=GBRG, 3=BGGR
+    cfa_pattern: u32,           // Offset 128. Ends at 132.
+    
+    // Padding to align black_levels to 16 bytes (Offset 144)
+    _pad_cfa_1: f32,            // 136 (Wait, 124+4=128. So this is 128)
+    // Let's recount offsets:
+    // cfa_pattern: 124. Ends 128.
+    // pad1: 128. Ends 132.
+    // pad2: 132. Ends 136.
+    // pad3: 136. Ends 140.
+    // pad4: 140. Ends 144.
+    _pad_cfa_2: f32,
+    _pad_cfa_3: f32,
+    _pad_cfa_4: f32,            // 144
+    
+    // Phase 36: Per-channel Black Levels (vec4 alignment = 16 bytes)
+    black_levels: [u32; 4],     // Offset 144. Ends at 160.
+    
+    white_level: u32,           // Offset 160. Ends at 164.
+    
+    // Padding to reach 176 bytes (16-byte alignment for struct)
+    _pad_end_1: f32,            // 168
+    _pad_end_2: f32,            // 172
+    _pad_end_3: f32,            // 176
+    
+    // Phase 38: Manual Black Level Offsets (vec4 alignment = 16 bytes)
+    black_offsets: [f32; 4],    // Offset 176. Ends at 192.
+    
+    // Phase 39: Black Level Phase Correction
+    black_phase_x: u32,         // Offset 192. Ends at 196.
+    black_phase_y: u32,         // Offset 196. Ends at 200.
+    
+    // Padding to reach 208 bytes (16-byte alignment for struct)
+    _pad_phase_1: f32,          // 204
+    _pad_phase_2: f32,          // 208
 }
 
 impl From<&EditParams> for GpuEditParams {
@@ -74,6 +107,20 @@ impl From<&EditParams> for GpuEditParams {
             pan_x: 0.0,
             pan_y: 0.0,
             cfa_pattern: 0,
+            _pad_cfa_1: 0.0,
+            _pad_cfa_2: 0.0,
+            _pad_cfa_3: 0.0,
+            _pad_cfa_4: 0.0,
+            black_levels: [0, 0, 0, 0],
+            white_level: 65535,
+            _pad_end_1: 0.0,
+            _pad_end_2: 0.0,
+            _pad_end_3: 0.0,
+            black_offsets: params.black_offsets,
+            black_phase_x: params.black_phase_x,
+            black_phase_y: params.black_phase_y,
+            _pad_phase_1: 0.0,
+            _pad_phase_2: 0.0,
         }
     }
 }
@@ -99,6 +146,8 @@ pub struct RenderPipeline {
     wb_multipliers: [f32; 4],  // White balance from camera
     color_matrix: [f32; 9],    // Color correction matrix
     cfa_pattern: u32,          // Phase 34: CFA Pattern
+    black_levels: [u32; 4],    // Phase 36: Per-channel Black Levels
+    white_level: u32,          // Phase 35: White Level
 }
 
 // Manual Debug implementation (wgpu types don't implement Debug)
@@ -122,6 +171,8 @@ impl RenderPipeline {
         wb_multipliers: [f32; 4],
         color_matrix: [f32; 9],
         cfa_pattern: u32,
+        black_levels: [u32; 4],
+        white_level: u32,
     ) -> Result<Self, String> {
         // Calculate preview dimensions for fast rendering
         // Phase 13: Render to smaller texture to eliminate 1-2s lag
@@ -232,6 +283,8 @@ impl RenderPipeline {
         gpu_params.color_matrix_1 = [color_matrix[3], color_matrix[4], color_matrix[5]];
         gpu_params.color_matrix_2 = [color_matrix[6], color_matrix[7], color_matrix[8]];
         gpu_params.cfa_pattern = cfa_pattern;
+        gpu_params.black_levels = black_levels;
+        gpu_params.white_level = white_level;
         
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Edit Params Uniform Buffer"),
@@ -364,6 +417,8 @@ impl RenderPipeline {
             wb_multipliers,
             color_matrix,
             cfa_pattern,
+            black_levels,
+            white_level,
         })
     }
     
@@ -389,6 +444,8 @@ impl RenderPipeline {
         gpu_params.pan_x = pan_x;
         gpu_params.pan_y = pan_y;
         gpu_params.cfa_pattern = self.cfa_pattern;
+        gpu_params.black_levels = self.black_levels;
+        gpu_params.white_level = self.white_level;
         
         crate::debug_log!(crate::debug::DEBUG_GPU, "🎨 GPU Uniforms Updated:");
         crate::debug_log!(crate::debug::DEBUG_GPU, "   Exposure: {:.2}, Contrast: {:.0}", gpu_params.exposure, gpu_params.contrast);

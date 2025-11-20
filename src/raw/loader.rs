@@ -18,6 +18,14 @@ pub struct RawDataResult {
     pub color_matrix: [f32; 9],
     /// CFA Pattern (0=RGGB, 1=GRBG, 2=GBRG, 3=BGGR)
     pub cfa_pattern: u32,
+    /// Black Levels (optical black) [R, G, B, G2] or similar
+    pub black_levels: [u32; 4],
+    /// White Level (saturation point)
+    pub white_level: u32,
+    /// Crop Margins [Top, Right, Bottom, Left]
+    pub crops: [usize; 4],
+    /// CFA Pattern Name (e.g. "RGGB")
+    pub cfa_name: String,
 }
 
 /// Load raw sensor data from a RAW file
@@ -55,13 +63,9 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
     let raw_image = decoder.decode_file(path)
         .map_err(|e| format!("Failed to decode RAW: {:?}", e))?;
     
-    // Get dimensions
-    let width = raw_image.width as u32;
-    let height = raw_image.height as u32;
-    
-    // Extract raw sensor data
+    // Extract raw sensor data (full buffer)
     // rawloader returns data in different formats, we need to normalize to u16
-    let data: Vec<u16> = match &raw_image.data {
+    let full_data: Vec<u16> = match &raw_image.data {
         rawloader::RawImageData::Integer(values) => {
             // Already u16, perfect!
             values.clone()
@@ -72,6 +76,50 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
                 .map(|&v| (v * 65535.0).clamp(0.0, 65535.0) as u16)
                 .collect()
         }
+    };
+    
+    // Phase 40: Apply Crop (Active Area)
+    // rawloader.crops is [top, right, bottom, left] in pixels to be removed
+    let (data, width, height) = if raw_image.crops.len() == 4 {
+        let top = raw_image.crops[0];
+        let right = raw_image.crops[1];
+        let bottom = raw_image.crops[2];
+        let left = raw_image.crops[3];
+        
+        println!("✂️  Applying crop margins: top={}, right={}, bottom={}, left={}", top, right, bottom, left);
+        
+        let full_width = raw_image.width;
+        let full_height = raw_image.height;
+        
+        // Calculate active area dimensions
+        // Ensure we don't underflow if margins are larger than image (unlikely but safe)
+        let crop_width = full_width.saturating_sub(left + right);
+        let crop_height = full_height.saturating_sub(top + bottom);
+        
+        if crop_width == 0 || crop_height == 0 {
+            println!("⚠️  Crop resulted in empty image, using full sensor dump");
+            (full_data, full_width as u32, full_height as u32)
+        } else {
+            let mut cropped_data = Vec::with_capacity(crop_width * crop_height);
+            
+            for y in 0..crop_height {
+                let src_y = top + y;
+                if src_y >= full_height { break; }
+                
+                let src_start = src_y * full_width + left;
+                let src_end = src_start + crop_width;
+                
+                if src_end <= full_data.len() {
+                    cropped_data.extend_from_slice(&full_data[src_start..src_end]);
+                }
+            }
+            
+            (cropped_data, crop_width as u32, crop_height as u32)
+        }
+    } else {
+        // No crop, use full image
+        println!("⚠️  No crop data found, using full sensor dump");
+        (full_data, raw_image.width as u32, raw_image.height as u32)
     };
     
     println!("📷 Loaded RAW data: {}x{} ({} pixels)", width, height, data.len());
@@ -165,6 +213,34 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
     
     println!("🎨 CFA Pattern: {} (Index: {})", cfa_name, cfa_pattern);
     
+    // Extract Black and White Levels
+    // Extract Black and White Levels
+    // rawloader provides these as u16 arrays (per channel)
+    let black_levels: [u32; 4] = if raw_image.blacklevels.len() >= 4 {
+        [
+            raw_image.blacklevels[0] as u32,
+            raw_image.blacklevels[1] as u32,
+            raw_image.blacklevels[2] as u32,
+            raw_image.blacklevels[3] as u32,
+        ]
+    } else if !raw_image.blacklevels.is_empty() {
+        // If fewer than 4, repeat the first one
+        let val = raw_image.blacklevels[0] as u32;
+        [val, val, val, val]
+    } else {
+        [0, 0, 0, 0]
+    };
+    
+    let white_level = if !raw_image.whitelevels.is_empty() {
+        raw_image.whitelevels[0] as u32
+    } else {
+        65535 // Default to full 16-bit range if unknown
+    };
+    
+    println!("⚫ Black Levels: [{}, {}, {}, {}]", 
+        black_levels[0], black_levels[1], black_levels[2], black_levels[3]);
+    println!("⚪ White Level: {}", white_level);
+    
     Ok(RawDataResult {
         data,
         width,
@@ -172,6 +248,14 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
         wb_multipliers: wb_normalized,
         color_matrix: xyz_to_cam_matrix,  // Return xyz_to_cam, will convert in main.rs
         cfa_pattern,
+        black_levels,
+        white_level,
+        crops: if raw_image.crops.len() == 4 {
+            [raw_image.crops[0], raw_image.crops[1], raw_image.crops[2], raw_image.crops[3]]
+        } else {
+            [0, 0, 0, 0]
+        },
+        cfa_name,
     })
 }
 

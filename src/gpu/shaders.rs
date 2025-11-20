@@ -88,7 +88,35 @@ struct EditParams {
     pan_x: f32,                  // Pan offset X
     pan_y: f32,                  // Pan offset Y
     // Phase 34: CFA Pattern
-    cfa_pattern: u32,            // 0=RGGB, 1=GRBG, 2=GBRG, 3=BGGR
+    cfa_pattern: u32,            // Offset 128
+    
+    // Padding to align black_levels to 16 bytes
+    // Padding to align black_levels to 16 bytes
+    pad_cfa_1: f32,              // 128
+    pad_cfa_2: f32,              // 132
+    pad_cfa_3: f32,              // 136
+    pad_cfa_4: f32,              // 140
+    
+    // Phase 36: Per-channel Black Levels (vec4 alignment = 16 bytes)
+    black_levels: vec4<u32>,     // Offset 144
+    
+    white_level: u32,            // Offset 160
+    
+    // Padding to reach 176 bytes
+    pad_end_1: f32,              // 164
+    pad_end_2: f32,              // 168
+    pad_end_3: f32,              // 172
+    
+    // Phase 38: Manual Black Level Offsets
+    black_offsets: vec4<f32>,    // Offset 176
+    
+    // Phase 39: Black Level Phase Correction
+    black_phase_x: u32,          // Offset 192
+    black_phase_y: u32,          // Offset 196
+    
+    // Padding to reach 208 bytes
+    pad_phase_1: f32,            // 200
+    pad_phase_2: f32,            // 204
 }
 
 @group(0) @binding(0)
@@ -108,9 +136,26 @@ fn debayer(coords: vec2<i32>, dimensions: vec2<u32>) -> vec3<f32> {
     // Load RAW pixel value (12-bit in u16, stored as u32)
     let raw_value = textureLoad(input_texture, coords, 0).r;
     
-    // Convert to normalized float (0.0 - 1.0)
-    // 12-bit max = 4096
-    let normalized = f32(raw_value) / 4096.0;
+    // Phase 39: Black Level Phase Correction
+    // We revert to spatial indexing but add a user-controllable phase shift.
+    // This allows the user to align the black level grid to the pixel grid manually.
+    // (0,0) -> index 0 (TL)
+    // (1,0) -> index 1 (TR)
+    // (0,1) -> index 2 (BL)
+    // (1,1) -> index 3 (BR)
+    
+    let bl_index = ((u32(coords.y) + params.black_phase_y) & 1u) * 2u + ((u32(coords.x) + params.black_phase_x) & 1u);
+    
+    // Apply manual offset to the base black level
+    // Note: black_offsets is vec4<f32>, so we can add directly
+    let black = f32(params.black_levels[bl_index]) + params.black_offsets[bl_index];
+    let white = f32(params.white_level);
+    
+    // Avoid division by zero
+    let range = max(1.0, white - black);
+    
+    // (val - black) / (white - black)
+    let normalized = max(0.0, (f32(raw_value) - black) / range);
     
     // Determine position in Bayer pattern based on CFA type
     // We shift the coordinates logically so that the pattern always looks like RGGB

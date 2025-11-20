@@ -49,6 +49,17 @@ pub struct EditParams {
     /// - 0.0 = no adjustment
     pub blacks: f32,
     
+    /// Manual black level offsets per channel [R, G1, G2, B]
+    /// - Range: -50.0 to +50.0
+    /// - Used to fix incorrect black levels in metadata
+    pub black_offsets: [f32; 4],
+    
+    /// Black level grid phase shift X (0 or 1)
+    pub black_phase_x: u32,
+    
+    /// Black level grid phase shift Y (0 or 1)
+    pub black_phase_y: u32,
+    
     // ========== Color ==========
     
     /// Vibrance adjustment (-100.0 to +100.0)
@@ -87,6 +98,9 @@ impl Default for EditParams {
             shadows: 0.0,
             whites: 1.0,   // Phase 16: Default white point (no adjustment)
             blacks: 0.0,   // Phase 16: Default black point (no adjustment)
+            black_offsets: [0.0, 0.0, 0.0, 0.0], // Phase 38: Manual black level tuning
+            black_phase_x: 0, // Phase 39: Black level phase correction
+            black_phase_y: 0, // Phase 39: Black level phase correction
             vibrance: 0.0,
             saturation: 0.0,
             temperature: 0.0,  // Phase 18: Manual white balance (as-shot)

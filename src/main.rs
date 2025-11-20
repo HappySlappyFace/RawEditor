@@ -1,5 +1,5 @@
 use iced::{Background, Border, Color, Element, Task, Theme, Point};
-use iced::widget::{button, column, container, row, scrollable, text, Image, slider, canvas};
+use iced::widget::{button, column, container, row, scrollable, text, Image, slider, canvas, checkbox};
 use iced::{Alignment, Length};
 use iced::widget::image::Handle;
 use iced_aw::Wrap;
@@ -12,7 +12,7 @@ use walkdir::WalkDir;
 use chrono::Utc;
 // use crate::canvas;
 
-// Declare the state, raw, gpu, and ui mod color;
+// Declare the state, raw, gpu, and ui modules
 mod debug;
 mod gpu;
 mod raw;
@@ -118,6 +118,13 @@ struct RawEditor {
     viewport_size: (f32, f32),  // (width, height) in screen pixels
     /// Phase 29: Instant preview handle (displayed while RAW loads)
     working_preview: Option<Handle>,
+    /// Phase 41: Current image metadata for inspection
+    current_metadata: Option<raw::loader::RawDataResult>,
+    
+    // WGPU Device and Queue for GPU processing
+    // Note: We'll need to get these from Iced's context, not create our own
+    device: Arc<iced_wgpu::wgpu::Device>,
+    queue: Arc<iced_wgpu::wgpu::Queue>,
 }
 
 /// Application messages (events)
@@ -157,6 +164,12 @@ enum Message {
     WhitesChanged(f32),
     /// User changed blacks slider
     BlacksChanged(f32),
+    /// User changed manual black level offset (channel_index, value)
+    BlackOffsetChanged(usize, f32),
+    /// User changed black level phase (is_y, value)
+    BlackPhaseChanged(bool, u32),
+    
+    // ========== Color Messages ==========
     /// User changed vibrance slider
     VibranceChanged(f32),
     /// User changed saturation slider
@@ -250,34 +263,48 @@ impl RawEditor {
         // Initialize preview cache directory (fast)
         let preview_cache_dir = raw::preview::get_preview_cache_dir();
         
+        // TODO: Phase 41: WGPU device/queue initialization
+        // We need to get these from Iced's WGPU context instead of creating our own
+        // For now, using placeholder values - this will need proper Iced integration
+        // The app will panic when trying to use these, but that's okay for showing metadata
+        
+        // Determine the database path (e.g., in the application's data directory)
+        let db_path = state::library::Library::get_db_path();
+
         (
             RawEditor { 
                 library: None, // Phase 23: Database loads in background
-                status: "Loading database...".to_string(),
+                current_metadata: None,
+                status: "Initializing...".to_string(),
                 images: Vec::new(), // Empty until database loads
                 selected_image_id: None,
                 preview_cache_dir,
-                current_tab: AppTab::Library,
+                current_tab: AppTab::Library, // Start in Library view
                 current_edit_params: state::edit::EditParams::default(),
                 editor_status: EditorStatus::NoSelection,
                 histogram_data: std::cell::RefCell::new([[0; 256]; 3]),
                 histogram_cache: iced::widget::canvas::Cache::default(),
-                histogram_enabled: false, // Phase 22: Off by default
-                show_before: false, // Phase 24: Show edited version by default
-                zoom: 1.0, // Phase 25: Start at 100% zoom
-                pan_offset: cgmath::Vector2::new(0.0, 0.0), // Phase 25: Centered
-                canvas_cache: iced::widget::canvas::Cache::default(), // Phase 25: Canvas cache
-                is_dragging: false, // Phase 25: Not dragging initially
-                last_cursor_position: None, // Phase 25: No cursor position yet
-                last_click_time: None, // Phase 26: No click yet
-                viewport_size: (1280.0, 854.0), // Phase 26: Default viewport size (will be updated)
-                working_preview: None, // Phase 29: No preview initially
+                histogram_enabled: true,
+                show_before: false,
+                zoom: 1.0,
+                pan_offset: cgmath::Vector2::new(0.0, 0.0),
+                canvas_cache: iced::widget::canvas::Cache::default(),
+                is_dragging: false,
+                last_cursor_position: None,
+                last_click_time: None,
+                viewport_size: (800.0, 600.0), // Default fallback
+                working_preview: None,
+                // TODO Phase 41: Placeholder device/queue - need proper Iced integration
+                // Using unsafe transmute to create dummy Arc values
+                // This will crash if actually used, but allows showing metadata
+                device: unsafe { std::mem::transmute(Arc::new(())) },
+                queue: unsafe { std::mem::transmute(Arc::new(())) },
             },
-            // Phase 23: Load database in background
+            // Phase 23: Trigger database loading in background
             Task::perform(
-                load_database_async(),
-                Message::DatabaseLoaded,
-            ),
+                state::library::load_database(db_path.display().to_string()), 
+                Message::DatabaseLoaded
+            )
         )
     }
 
@@ -650,6 +677,31 @@ impl RawEditor {
                 }
                 Task::none()
             }
+            Message::BlackOffsetChanged(index, value) => {
+                if index < 4 {
+                    self.current_edit_params.black_offsets[index] = value;
+                    self.save_current_edits();
+                    // Phase 25: Update GPU uniforms and invalidate canvas cache
+                    if let EditorStatus::Ready(pipeline) = &self.editor_status {
+                        pipeline.update_uniforms(&self.current_edit_params);
+                        self.canvas_cache.clear();
+                    }
+                }
+                Task::none()
+            }
+            Message::BlackPhaseChanged(is_y, value) => {
+                if is_y {
+                    self.current_edit_params.black_phase_y = value;
+                } else {
+                    self.current_edit_params.black_phase_x = value;
+                }
+                self.save_current_edits();
+                if let EditorStatus::Ready(pipeline) = &self.editor_status {
+                    pipeline.update_uniforms(&self.current_edit_params);
+                    self.canvas_cache.clear();
+                }
+                Task::none()
+            }
             Message::VibranceChanged(value) => {
                 self.current_edit_params.vibrance = value;
                 self.save_current_edits();
@@ -969,45 +1021,43 @@ impl RawEditor {
             Message::RawDataLoaded(result) => {
                 match result {
                     Ok(raw_data) => {
-                        println!("📷 RAW data loaded: {}x{} pixels", raw_data.width, raw_data.height);
+                        println!("✅ RAW data loaded successfully: {}x{} pixels", raw_data.width, raw_data.height);
+                        
+                        // Phase 41: Store metadata for inspection
+                        self.current_metadata = Some(raw_data.clone());
                         
                         // Phase 15: Calculate proper cam-to-sRGB color matrix
                         let xyz_to_cam = raw_data.color_matrix;
                         let cam_to_srgb = color::calculate_cam_to_srgb(xyz_to_cam);
-                        println!("🎨 CAM-to-sRGB Matrix: [{:.3}, {:.3}, {:.3}]", 
-                            cam_to_srgb[0], cam_to_srgb[1], cam_to_srgb[2]);
-                        println!("                      [{:.3}, {:.3}, {:.3}]", 
-                            cam_to_srgb[3], cam_to_srgb[4], cam_to_srgb[5]);
-                        println!("                      [{:.3}, {:.3}, {:.3}]", 
-                            cam_to_srgb[6], cam_to_srgb[7], cam_to_srgb[8]);
                         
                         // Create GPU pipeline with the RAW data + color metadata
                         let params = self.current_edit_params;
                         let wb = raw_data.wb_multipliers;
-                        let image_id = self.selected_image_id.unwrap_or(0);  // Phase 20: Track which image
+                        let image_id = self.selected_image_id.unwrap_or(0);
                         
                         Task::perform(
                             async move {
                                 gpu::RenderPipeline::new(
-                                    image_id,         // Phase 20: Track which image this pipeline is for
+                                    image_id,
                                     raw_data.data,
                                     raw_data.width,
                                     raw_data.height,
                                     &params,
-                                    wb,           // Phase 14: White balance from camera
-                                    cam_to_srgb,  // Phase 15: Camera-to-sRGB color matrix
-                                    raw_data.cfa_pattern, // Phase 34: CFA Pattern
+                                    wb,
+                                    cam_to_srgb,
+                                    raw_data.cfa_pattern,
+                                    raw_data.black_levels,
+                                    raw_data.white_level,
                                 ).await
                             },
                             |result| Message::GpuPipelineReady(result.map(Arc::new)),
                         )
                     }
-                    Err(err) => {
-                        eprintln!("⚠️  Failed to load RAW data: {}", err);
-                        self.editor_status = EditorStatus::Failed(
-                            self.selected_image_id.unwrap_or(0),
-                            err,
-                        );
+                    Err(e) => {
+                        let err_msg = format!("Failed to load RAW data: {}", e);
+                        eprintln!("❌ {}", err_msg);
+                        self.editor_status = EditorStatus::Failed(0, err_msg.clone());
+                        self.status = err_msg;
                         Task::none()
                     }
                 }
@@ -1550,14 +1600,61 @@ impl RawEditor {
             .push(slider(0.0..=0.2, self.current_edit_params.blacks, Message::BlacksChanged)
                 .step(0.005))
             .push(button("Reset All").on_press(Message::ResetEdits))
+            
+            // Phase 38: Sensor Correction (Manual Black Levels)
+            .push(text("Sensor Correction").size(14))
+            .push(checkbox("Shift Grid X", self.current_edit_params.black_phase_x != 0)
+                .on_toggle(|checked| Message::BlackPhaseChanged(false, if checked { 1 } else { 0 })))
+            .push(checkbox("Shift Grid Y", self.current_edit_params.black_phase_y != 0)
+                .on_toggle(|checked| Message::BlackPhaseChanged(true, if checked { 1 } else { 0 })))
+            
+            .push(text(format!("Black TL (Red): {:.1}", self.current_edit_params.black_offsets[0])).size(12))
+            .push(slider(-50.0..=50.0, self.current_edit_params.black_offsets[0], |v| Message::BlackOffsetChanged(0, v)).step(0.1))
+            
+            .push(text(format!("Black TR (Green): {:.1}", self.current_edit_params.black_offsets[1])).size(12))
+            .push(slider(-50.0..=50.0, self.current_edit_params.black_offsets[1], |v| Message::BlackOffsetChanged(1, v)).step(0.1))
+            
+            .push(text(format!("Black BL (Green): {:.1}", self.current_edit_params.black_offsets[2])).size(12))
+            .push(slider(-50.0..=50.0, self.current_edit_params.black_offsets[2], |v| Message::BlackOffsetChanged(2, v)).step(0.1))
+            
+            .push(text(format!("Black BR (Blue): {:.1}", self.current_edit_params.black_offsets[3])).size(12))
+            .push(slider(-50.0..=50.0, self.current_edit_params.black_offsets[3], |v| Message::BlackOffsetChanged(3, v)).step(0.1))
+            
             .push(button("Export").on_press(Message::ExportImage))
+            
+            // Phase 41: Metadata Info
+            .push(text("Image Info").size(14))
+            .push(if let Some(meta) = &self.current_metadata {
+                column![
+                    text(format!("Size: {}x{}", meta.width, meta.height)).size(12),
+                    text(format!("CFA: {} ({})", meta.cfa_name, meta.cfa_pattern)).size(12),
+                    text(format!("Blacks: [{}, {}, {}, {}]", 
+                        meta.black_levels[0], meta.black_levels[1], meta.black_levels[2], meta.black_levels[3])).size(12),
+                    text(format!("White: {}", meta.white_level)).size(12),
+                    text(format!("Crops: [T:{}, R:{}, B:{}, L:{}]", 
+                        meta.crops[0], meta.crops[1], meta.crops[2], meta.crops[3])).size(12),
+                ].spacing(2)
+            } else {
+                column![text("No metadata loaded").size(12)]
+            })
         .spacing(10)
-        .padding(15)
-        .width(Length::Fixed(200.0))
-        .height(Length::Fill);
+        .padding(15);
+        
+        // Wrap sidebar in scrollable to allow access to all controls
+        let sidebar_scrollable = scrollable(sidebar)
+            .width(Length::Fixed(200.0))
+            .height(Length::Fill);
+        
+        let sidebar_container = container(sidebar_scrollable)
+            .style(|_theme| {
+                container::Style {
+                    background: Some(Background::Color(Color::from_rgb(0.15, 0.15, 0.15))),
+                    ..Default::default()
+                }
+            });
+
 
         // 4. Build the Main Content Area based on state
-        // 4. Build the Main Content Area with Unified Container
         // Phase 31: Unified Image Container for seamless transitions
         
         // Determine the image handle and overlay based on state
@@ -1769,7 +1866,7 @@ impl RawEditor {
             header,
             row![
                 main_content,
-                sidebar,
+                sidebar_container,
             ]
             .spacing(0)
             .height(Length::Fill),
