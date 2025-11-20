@@ -12,10 +12,11 @@ use walkdir::WalkDir;
 use chrono::Utc;
 // use crate::canvas;
 
-// Declare the state, raw, gpu, and ui modules
-mod state;
-mod raw;
+// Declare the state, raw, gpu, and ui mod color;
+mod debug;
 mod gpu;
+mod raw;
+mod state;
 mod ui;
 mod color;  // Phase 15: Color space conversion utilities
 

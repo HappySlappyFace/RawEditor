@@ -384,11 +384,11 @@ impl RenderPipeline {
         gpu_params.pan_x = pan_x;
         gpu_params.pan_y = pan_y;
         
-        println!("🎨 GPU Uniforms Updated:");
-        println!("   Exposure: {:.2}, Contrast: {:.0}", gpu_params.exposure, gpu_params.contrast);
-        println!("   Highlights: {:.0}, Shadows: {:.0}", gpu_params.highlights, gpu_params.shadows);
-        println!("   Temp: {}, Tint: {}", gpu_params.temperature, gpu_params.tint);
-        println!("   Zoom: {:.1}%, Pan: ({:.3}, {:.3})", zoom * 100.0, pan_x, pan_y);
+        crate::debug_log!(crate::debug::DEBUG_GPU, "🎨 GPU Uniforms Updated:");
+        crate::debug_log!(crate::debug::DEBUG_GPU, "   Exposure: {:.2}, Contrast: {:.0}", gpu_params.exposure, gpu_params.contrast);
+        crate::debug_log!(crate::debug::DEBUG_GPU, "   Highlights: {:.0}, Shadows: {:.0}", gpu_params.highlights, gpu_params.shadows);
+        crate::debug_log!(crate::debug::DEBUG_GPU, "   Temp: {}, Tint: {}", gpu_params.temperature, gpu_params.tint);
+        crate::debug_log!(crate::debug::DEBUG_GPU, "   Zoom: {:.1}%, Pan: ({:.3}, {:.3})", zoom * 100.0, pan_x, pan_y);
         
         self.queue.write_buffer(
             &self.uniform_buffer,

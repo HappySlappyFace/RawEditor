@@ -64,11 +64,20 @@ impl Program<Message> for PreviewRenderer {
         let zoomed_height = fitted_height * self.zoom;
 
         // Apply pan offset
-        // CRITICAL: Pan offset in GPU shader is in texture coordinate space (relative to image)
-        // So we scale by the FITTED image dimensions, not viewport dimensions
-        // This matches how the GPU shader interprets pan_x/pan_y relative to the image
-        let pan_x = self.offset.x * fitted_width;
-        let pan_y = self.offset.y * fitted_height;
+        // CRITICAL: Pan offset must account for zoom!
+        // GPU shader applies pan in texture space AFTER zoom division
+        // In screen space, same texture pan = less screen movement when zoomed
+        // So we divide by zoom to match the shader's coordinate system
+        let pan_x = (self.offset.x * fitted_width) / self.zoom;
+        let pan_y = (self.offset.y * fitted_height) / self.zoom;
+        
+        // Debug: Print coordinate calculations
+        crate::debug_log!(crate::debug::DEBUG_PREVIEW, "PreviewRenderer DEBUG:");
+        crate::debug_log!(crate::debug::DEBUG_PREVIEW, "  viewport: {}x{}", viewport_width, viewport_height);
+        crate::debug_log!(crate::debug::DEBUG_PREVIEW, "  fitted: {}x{}", fitted_width, fitted_height);
+        crate::debug_log!(crate::debug::DEBUG_PREVIEW, "  zoom: {}", self.zoom);
+        crate::debug_log!(crate::debug::DEBUG_PREVIEW, "  offset: ({}, {})", self.offset.x, self.offset.y);
+        crate::debug_log!(crate::debug::DEBUG_PREVIEW, "  pan: ({}, {}) [scaled by fitted/zoom]", pan_x, pan_y);
 
         // Calculate final image bounds
         let image_x = center_x - (zoomed_width / 2.0) + pan_x;
