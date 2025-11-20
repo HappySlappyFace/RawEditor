@@ -32,140 +32,94 @@ const XYZ_TO_SRGB: [[f32; 3]; 3] = [
 /// 2. Invert to get cam_to_xyz: cam_to_xyz = inverse(xyz_to_cam)
 /// 3. Multiply: cam_to_srgb = XYZ_TO_SRGB × cam_to_xyz
 /// 4. Return as flat array for GPU upload
-pub fn calculate_cam_to_srgb_matrix(xyz_to_cam: [f32; 9]) -> [f32; 9] {
-    // DECISION: Camera color matrix math is too complex and camera-specific
-    // Phase 14 colors (WB only) are VERY close to correct, just slightly desaturated
-    // Return identity matrix = Phase 14 quality
-    // TODO: Add simple saturation boost slider instead of complex matrix math
-    println!("🎨 Phase 15: Using identity matrix (bypassing color matrix calculation)");
-    println!("🎨 Reason: Phase 14 white balance gives 95% correct colors");
-    println!("🎨 Next: Add saturation slider for final 5% color boost");
-    return [
-        1.0, 0.0, 0.0,
-        0.0, 1.0, 0.0,
-        0.0, 0.0, 1.0,
-    ];
+/// Calculate the camera-to-sRGB color conversion matrix
+///
+/// This function converts a camera's XYZ-to-camera matrix into a camera-to-sRGB matrix
+/// by inverting it and multiplying with the standard XYZ-to-sRGB matrix.
+/// It also performs row normalization to prevent color casts (pink tint).
+///
+/// # Arguments
+/// * `raw_matrix` - The camera's XYZ to camera RGB matrix (from RAW metadata)
+///
+/// # Returns
+/// * Camera-to-sRGB conversion matrix as a flat [f32; 9] array (row-major)
+pub fn calculate_cam_to_srgb(raw_matrix: [f32; 9]) -> [f32; 9] {
+    crate::debug_log!(crate::debug::DEBUG_APP, "🎨 Calculating Cam-to-sRGB matrix...");
+
+    // Step 1: Load raw_matrix into Matrix3 (XYZ_to_Cam)
+    // raw_matrix is usually row-major from the loader, but cgmath expects column-major arguments for new()
+    // However, if we treat the input array as row-major, we need to transpose it or load it carefully.
+    // Let's assume the input `raw_matrix` is row-major: [r0c0, r0c1, r0c2, r1c0, ...]
+    // Matrix3::new takes c0r0, c0r1, c0r2, c1r0...
     
-    /* DISABLED - matrix math causes pink tint
-    println!("\n🔧 Phase 15: Calculating cam-to-sRGB matrix...");
-    println!("Input xyz_to_cam (row-major): [{:.3}, {:.3}, {:.3}]", xyz_to_cam[0], xyz_to_cam[1], xyz_to_cam[2]);
-    println!("                               [{:.3}, {:.3}, {:.3}]", xyz_to_cam[3], xyz_to_cam[4], xyz_to_cam[5]);
-    println!("                               [{:.3}, {:.3}, {:.3}]", xyz_to_cam[6], xyz_to_cam[7], xyz_to_cam[8]);
+    // Let's load it as is and see. Usually these 3x3 matrices are provided as flat lists.
+    // If raw_matrix is [a, b, c, d, e, f, g, h, i]
+    // We want a matrix:
+    // | a b c |
+    // | d e f |
+    // | g h i |
+    //
+    // Matrix3::new(c0r0, c0r1, c0r2, c1r0, c1r1, c1r2, c2r0, c2r1, c2r2)
+    // c0r0 = a, c0r1 = d, c0r2 = g
+    // c1r0 = b, c1r1 = e, c1r2 = h
+    // c2r0 = c, c2r1 = f, c2r2 = i
     
-    // Check if it's identity - if so, return identity (no conversion needed)
-    if is_identity_matrix(&xyz_to_cam) {
-        println!("⚠️  Input is identity matrix, returning identity (no color conversion)");
-        return xyz_to_cam;
-    }
-    
-    // Camera matrices are often scaled by 10000 in RAW metadata
-    // Normalize them to proper range (check if values are > 10, indicating scaling)
-    let needs_normalization = xyz_to_cam.iter().any(|&x| x.abs() > 10.0);
-    let normalized_matrix = if needs_normalization {
-        println!("🔧 Normalizing matrix (dividing by 10000)...");
-        [
-            xyz_to_cam[0] / 10000.0, xyz_to_cam[1] / 10000.0, xyz_to_cam[2] / 10000.0,
-            xyz_to_cam[3] / 10000.0, xyz_to_cam[4] / 10000.0, xyz_to_cam[5] / 10000.0,
-            xyz_to_cam[6] / 10000.0, xyz_to_cam[7] / 10000.0, xyz_to_cam[8] / 10000.0,
-        ]
-    } else {
-        xyz_to_cam
-    };
-    
-    println!("Normalized matrix: [{:.4}, {:.4}, {:.4}]", normalized_matrix[0], normalized_matrix[1], normalized_matrix[2]);
-    println!("                   [{:.4}, {:.4}, {:.4}]", normalized_matrix[3], normalized_matrix[4], normalized_matrix[5]);
-    println!("                   [{:.4}, {:.4}, {:.4}]", normalized_matrix[6], normalized_matrix[7], normalized_matrix[8]);
-    
-    // Convert flat array to cgmath Matrix3 (column-major in cgmath)
-    // Use the NORMALIZED matrix!
-    let xyz_to_cam_matrix = Matrix3::new(
-        normalized_matrix[0], normalized_matrix[3], normalized_matrix[6],  // Column 0
-        normalized_matrix[1], normalized_matrix[4], normalized_matrix[7],  // Column 1
-        normalized_matrix[2], normalized_matrix[5], normalized_matrix[8],  // Column 2
+    let xyz_to_cam = Matrix3::new(
+        raw_matrix[0], raw_matrix[3], raw_matrix[6], // Column 0
+        raw_matrix[1], raw_matrix[4], raw_matrix[7], // Column 1
+        raw_matrix[2], raw_matrix[5], raw_matrix[8], // Column 2
     );
-    
-    // Invert to get cam_to_xyz
-    let cam_to_xyz = match xyz_to_cam_matrix.invert() {
-        Some(inverted) => {
-            println!("✅ Matrix inverted successfully");
-            // Debug: print cam_to_xyz
-            println!("cam_to_xyz (col-major): [{:.4}, {:.4}, {:.4}]", inverted[0][0], inverted[0][1], inverted[0][2]);
-            println!("                        [{:.4}, {:.4}, {:.4}]", inverted[1][0], inverted[1][1], inverted[1][2]);
-            println!("                        [{:.4}, {:.4}, {:.4}]", inverted[2][0], inverted[2][1], inverted[2][2]);
-            inverted
-        },
+
+    // Step 2: Invert it to get Cam_to_XYZ
+    let cam_to_xyz = match xyz_to_cam.invert() {
+        Some(m) => m,
         None => {
-            eprintln!("⚠️  Failed to invert xyz_to_cam matrix, using identity");
-            return [
-                1.0, 0.0, 0.0,
-                0.0, 1.0, 0.0,
-                0.0, 0.0, 1.0,
-            ];
+            crate::debug_log!(crate::debug::DEBUG_APP, "⚠️ Failed to invert XYZ-to-Cam matrix, using identity");
+            return [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
         }
     };
-    
-    // Convert XYZ_TO_SRGB to cgmath Matrix3
-    let xyz_to_srgb_matrix = Matrix3::new(
-        XYZ_TO_SRGB[0][0], XYZ_TO_SRGB[1][0], XYZ_TO_SRGB[2][0],  // Column 0
-        XYZ_TO_SRGB[0][1], XYZ_TO_SRGB[1][1], XYZ_TO_SRGB[2][1],  // Column 1
-        XYZ_TO_SRGB[0][2], XYZ_TO_SRGB[1][2], XYZ_TO_SRGB[2][2],  // Column 2
+
+    // Define XYZ to sRGB (D65) matrix
+    // Column-major order for cgmath
+    #[rustfmt::skip]
+    const XYZ_TO_SRGB_MAT: Matrix3<f32> = Matrix3::new(
+         3.2406, -0.9689,  0.0557, // Column 0
+        -1.5372,  1.8758, -0.2040, // Column 1
+        -0.4986,  0.0415,  1.0570, // Column 2
     );
+
+    // Step 3: Multiply XYZ_TO_SRGB * Cam_to_XYZ
+    let unnormalized_matrix = XYZ_TO_SRGB_MAT * cam_to_xyz;
+
+    // Step 4 (The Fix): Normalize the rows
+    // We need to access rows. In cgmath Matrix3, columns are accessible.
+    // M = | c0.x c1.x c2.x |
+    //     | c0.y c1.y c2.y |
+    //     | c0.z c1.z c2.z |
     
-    // Multiply: cam_to_srgb = xyz_to_srgb × cam_to_xyz
-    let cam_to_srgb = xyz_to_srgb_matrix * cam_to_xyz;
-    
-    // Debug: print cam_to_srgb before conversion
-    println!("cam_to_srgb (col-major): [{:.4}, {:.4}, {:.4}]", cam_to_srgb[0][0], cam_to_srgb[0][1], cam_to_srgb[0][2]);
-    println!("                         [{:.4}, {:.4}, {:.4}]", cam_to_srgb[1][0], cam_to_srgb[1][1], cam_to_srgb[1][2]);
-    println!("                         [{:.4}, {:.4}, {:.4}]", cam_to_srgb[2][0], cam_to_srgb[2][1], cam_to_srgb[2][2]);
-    
-    // Convert back to flat row-major array for GPU
+    // Row 0: (c0.x, c1.x, c2.x)
+    let r0_sum = unnormalized_matrix.x.x + unnormalized_matrix.y.x + unnormalized_matrix.z.x;
+    // Row 1: (c0.y, c1.y, c2.y)
+    let r1_sum = unnormalized_matrix.x.y + unnormalized_matrix.y.y + unnormalized_matrix.z.y;
+    // Row 2: (c0.z, c1.z, c2.z)
+    let r2_sum = unnormalized_matrix.x.z + unnormalized_matrix.y.z + unnormalized_matrix.z.z;
+
+    // Avoid division by zero
+    let r0_scale = if r0_sum.abs() > 1e-6 { 1.0 / r0_sum } else { 1.0 };
+    let r1_scale = if r1_sum.abs() > 1e-6 { 1.0 / r1_sum } else { 1.0 };
+    let r2_scale = if r2_sum.abs() > 1e-6 { 1.0 / r2_sum } else { 1.0 };
+
+    // Construct the final normalized matrix
+    // We return a flat array [r0c0, r0c1, r0c2, r1c0...]
     let result = [
-        cam_to_srgb[0][0], cam_to_srgb[1][0], cam_to_srgb[2][0],  // Row 0
-        cam_to_srgb[0][1], cam_to_srgb[1][1], cam_to_srgb[2][1],  // Row 1
-        cam_to_srgb[0][2], cam_to_srgb[1][2], cam_to_srgb[2][2],  // Row 2
+        unnormalized_matrix.x.x * r0_scale, unnormalized_matrix.y.x * r0_scale, unnormalized_matrix.z.x * r0_scale,
+        unnormalized_matrix.x.y * r1_scale, unnormalized_matrix.y.y * r1_scale, unnormalized_matrix.z.y * r1_scale,
+        unnormalized_matrix.x.z * r2_scale, unnormalized_matrix.y.z * r2_scale, unnormalized_matrix.z.z * r2_scale,
     ];
+
+    crate::debug_log!(crate::debug::DEBUG_APP, "✅ Calculated Cam-to-sRGB matrix (normalized)");
     
-    println!("Output cam_to_srgb (raw): [{:.3}, {:.3}, {:.3}]", result[0], result[1], result[2]);
-    println!("                          [{:.3}, {:.3}, {:.3}]", result[3], result[4], result[5]);
-    println!("                          [{:.3}, {:.3}, {:.3}]", result[6], result[7], result[8]);
-    
-    // Scale the entire matrix to bring diagonal values to a reasonable range
-    // Typical color matrices have diagonal values around 1.0-1.5
-    // Calculate average of diagonal elements
-    let diag_avg = (result[0].abs() + result[4].abs() + result[8].abs()) / 3.0;
-    let scale_factor = if diag_avg > 2.0 {
-        1.5 / diag_avg  // Target average diagonal of ~1.5
-    } else {
-        1.0  // No scaling needed
-    };
-    
-    println!("🔧 Diagonal average: {:.3}, scale factor: {:.3}", diag_avg, scale_factor);
-    
-    let normalized_result = [
-        result[0] * scale_factor, result[1] * scale_factor, result[2] * scale_factor,
-        result[3] * scale_factor, result[4] * scale_factor, result[5] * scale_factor,
-        result[6] * scale_factor, result[7] * scale_factor, result[8] * scale_factor,
-    ];
-    
-    println!("Output cam_to_srgb (scaled): [{:.3}, {:.3}, {:.3}]", normalized_result[0], normalized_result[1], normalized_result[2]);
-    println!("                             [{:.3}, {:.3}, {:.3}]", normalized_result[3], normalized_result[4], normalized_result[5]);
-    println!("                             [{:.3}, {:.3}, {:.3}]", normalized_result[6], normalized_result[7], normalized_result[8]);
-    
-    // Check for unreasonable values (typical color matrices have values between -5 and 5)
-    let has_extreme_values = normalized_result.iter().any(|&x| x.abs() > 10.0 || !x.is_finite());
-    if has_extreme_values {
-        eprintln!("⚠️  WARNING: Color matrix has extreme values! Using identity instead.");
-        eprintln!("This might indicate incorrect camera metadata or matrix math error.");
-        return [
-            1.0, 0.0, 0.0,
-            0.0, 1.0, 0.0,
-            0.0, 0.0, 1.0,
-        ];
-    }
-    
-    normalized_result
-    */
+    result
 }
 
 /// Check if a color matrix is the identity matrix (no conversion)

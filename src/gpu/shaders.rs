@@ -87,7 +87,8 @@ struct EditParams {
     zoom: f32,                   // Zoom level (1.0 = 100%)
     pan_x: f32,                  // Pan offset X
     pan_y: f32,                  // Pan offset Y
-    padding6: f32,               // Padding for alignment
+    // Phase 34: CFA Pattern
+    cfa_pattern: u32,            // 0=RGGB, 1=GRBG, 2=GBRG, 3=BGGR
 }
 
 @group(0) @binding(0)
@@ -101,6 +102,8 @@ var<uniform> params: EditParams;
 
 // Simple nearest-neighbor debayering
 // Assumes RGGB Bayer pattern (most common)
+// Simple nearest-neighbor debayering with CFA pattern support
+// 0=RGGB, 1=GRBG, 2=GBRG, 3=BGGR
 fn debayer(coords: vec2<i32>, dimensions: vec2<u32>) -> vec3<f32> {
     // Load RAW pixel value (12-bit in u16, stored as u32)
     let raw_value = textureLoad(input_texture, coords, 0).r;
@@ -109,49 +112,110 @@ fn debayer(coords: vec2<i32>, dimensions: vec2<u32>) -> vec3<f32> {
     // 12-bit max = 4096
     let normalized = f32(raw_value) / 4096.0;
     
-    // Determine position in Bayer pattern
-    // Some cameras start at (1,1) instead of (0,0) - uncomment next 2 lines if colors are still wrong:
-    let x = coords.x;  // Try uncommenting this
-    let y = coords.y + 1;  // Try uncommenting this
+    // Determine position in Bayer pattern based on CFA type
+    // We shift the coordinates logically so that the pattern always looks like RGGB
+    // RGGB: (0,0) is R
+    // GRBG: (0,0) is G (Red row) -> Shift x+1 makes it R
+    // GBRG: (0,0) is G (Blue row) -> Shift y+1 makes it R
+    // BGGR: (0,0) is B -> Shift x+1, y+1 makes it R
+    
+    var x = coords.x;
+    var y = coords.y;
+    
+    // Apply logical shifts to align with RGGB pattern
+    if (params.cfa_pattern == 1u) { // GRBG
+        x = x + 1;
+    } else if (params.cfa_pattern == 2u) { // GBRG
+        y = y + 1;
+    } else if (params.cfa_pattern == 3u) { // BGGR
+        x = x + 1;
+        y = y + 1;
+    }
+    
     let is_even_row = (y % 2) == 0;
     let is_even_col = (x % 2) == 0;
     
     var rgb: vec3<f32>;
     
-    // GBRG pattern (Green-Blue-Red-Green):
-    // G B G B ...
-    // R G R G ...
-    // G B G B ...
-    // Alternative Nikon pattern (trying this one)
+    // Standard RGGB logic (applied to shifted coordinates)
+    // R G
+    // G B
     
     if is_even_row {
         if is_even_col {
-            // Green pixel (blue row) - sample blue right, red below
-            let g = normalized;
-            let b = get_neighbor(coords + vec2<i32>(1, 0), dimensions);  // Blue to the right
-            let r = get_neighbor(coords + vec2<i32>(0, 1), dimensions);  // Red below
+            // Red pixel
+            let r = normalized;
+            let g1 = get_neighbor(coords + vec2<i32>(1, 0), dimensions); // Green right
+            let g2 = get_neighbor(coords + vec2<i32>(0, 1), dimensions); // Green down
+            let g = (g1 + g2) * 0.5;
+            let b = get_neighbor(coords + vec2<i32>(1, 1), dimensions);  // Blue diagonal
             rgb = vec3<f32>(r, g, b);
         } else {
-            // Blue pixel - sample green from neighbors, red from diagonal
-            let b = normalized;
-            let g = get_neighbor(coords - vec2<i32>(1, 0), dimensions);  // Green to the left
-            let r = get_neighbor(coords + vec2<i32>(-1, 1), dimensions);  // Red diagonal
+            // Green pixel (Red row)
+            let g = normalized;
+            let r1 = get_neighbor(coords - vec2<i32>(1, 0), dimensions); // Red left
+            let r2 = get_neighbor(coords + vec2<i32>(1, 0), dimensions); // Red right
+            let r = (r1 + r2) * 0.5;
+            let b1 = get_neighbor(coords - vec2<i32>(0, 1), dimensions); // Blue up (oops, this is RGGB, so Blue is down)
+            let b2 = get_neighbor(coords + vec2<i32>(0, 1), dimensions); // Blue down
+            let b = (b2); // Simple neighbor for now
             rgb = vec3<f32>(r, g, b);
         }
     } else {
         if is_even_col {
-            // Red pixel - sample green from neighbors, blue from diagonal
-            let r = normalized;
-            let g = get_neighbor(coords + vec2<i32>(1, 0), dimensions); // Green to the right
-            let b = get_neighbor(coords + vec2<i32>(0, -1), dimensions);  // Blue above
+            // Green pixel (Blue row)
+            let g = normalized;
+            let b1 = get_neighbor(coords + vec2<i32>(1, 0), dimensions); // Blue right
+            let b = b1;
+            let r1 = get_neighbor(coords - vec2<i32>(0, 1), dimensions); // Red up
+            let r = r1;
             rgb = vec3<f32>(r, g, b);
         } else {
-            // Green pixel (red row) - sample red left, blue above
-            let g = normalized;
-            let r = get_neighbor(coords - vec2<i32>(1, 0), dimensions);  // Red to the left
-            let b = get_neighbor(coords + vec2<i32>(0, -1), dimensions);  // Blue above
+            // Blue pixel
+            let b = normalized;
+            let g1 = get_neighbor(coords - vec2<i32>(1, 0), dimensions); // Green left
+            let g2 = get_neighbor(coords - vec2<i32>(0, 1), dimensions); // Green up
+            let g = (g1 + g2) * 0.5;
+            let r = get_neighbor(coords - vec2<i32>(1, 1), dimensions);  // Red diagonal
             rgb = vec3<f32>(r, g, b);
         }
+    }
+    
+    // Re-implementing simple neighbor logic to be robust
+    // If we are at (x,y) in RGGB space:
+    // Even Row (0, 2, ...): Even Col (0, 2) = R, Odd Col (1, 3) = G
+    // Odd Row (1, 3, ...):  Even Col (0, 2) = G, Odd Col (1, 3) = B
+    
+    if (is_even_row && is_even_col) {
+        // Red Pixel
+        let r = normalized;
+        let g = (get_neighbor(coords + vec2<i32>(1, 0), dimensions) + 
+                 get_neighbor(coords + vec2<i32>(0, 1), dimensions)) * 0.5;
+        let b = get_neighbor(coords + vec2<i32>(1, 1), dimensions);
+        rgb = vec3<f32>(r, g, b);
+    } else if (is_even_row && !is_even_col) {
+        // Green Pixel (Red Row)
+        let g = normalized;
+        let r = (get_neighbor(coords - vec2<i32>(1, 0), dimensions) + 
+                 get_neighbor(coords + vec2<i32>(1, 0), dimensions)) * 0.5;
+        let b = (get_neighbor(coords - vec2<i32>(0, 1), dimensions) + // This might be wrong if top edge
+                 get_neighbor(coords + vec2<i32>(0, 1), dimensions)) * 0.5;
+        rgb = vec3<f32>(r, g, b);
+    } else if (!is_even_row && is_even_col) {
+        // Green Pixel (Blue Row)
+        let g = normalized;
+        let r = (get_neighbor(coords - vec2<i32>(0, 1), dimensions) + 
+                 get_neighbor(coords + vec2<i32>(0, 1), dimensions)) * 0.5;
+        let b = (get_neighbor(coords - vec2<i32>(1, 0), dimensions) + 
+                 get_neighbor(coords + vec2<i32>(1, 0), dimensions)) * 0.5;
+        rgb = vec3<f32>(r, g, b);
+    } else {
+        // Blue Pixel
+        let b = normalized;
+        let g = (get_neighbor(coords - vec2<i32>(1, 0), dimensions) + 
+                 get_neighbor(coords - vec2<i32>(0, 1), dimensions)) * 0.5;
+        let r = get_neighbor(coords - vec2<i32>(1, 1), dimensions);
+        rgb = vec3<f32>(r, g, b);
     }
     
     return rgb;

@@ -24,7 +24,7 @@ mod color;  // Phase 15: Color space conversion utilities
 use state::data::Image as ImageData;
 
 // Phase 15: Color space conversion
-use color::calculate_cam_to_srgb_matrix;
+
 
 /// Result of a folder import operation
 #[derive(Debug, Clone)]
@@ -973,7 +973,7 @@ impl RawEditor {
                         
                         // Phase 15: Calculate proper cam-to-sRGB color matrix
                         let xyz_to_cam = raw_data.color_matrix;
-                        let cam_to_srgb = calculate_cam_to_srgb_matrix(xyz_to_cam);
+                        let cam_to_srgb = color::calculate_cam_to_srgb(xyz_to_cam);
                         println!("🎨 CAM-to-sRGB Matrix: [{:.3}, {:.3}, {:.3}]", 
                             cam_to_srgb[0], cam_to_srgb[1], cam_to_srgb[2]);
                         println!("                      [{:.3}, {:.3}, {:.3}]", 
@@ -996,6 +996,7 @@ impl RawEditor {
                                     &params,
                                     wb,           // Phase 14: White balance from camera
                                     cam_to_srgb,  // Phase 15: Camera-to-sRGB color matrix
+                                    raw_data.cfa_pattern, // Phase 34: CFA Pattern
                                 ).await
                             },
                             |result| Message::GpuPipelineReady(result.map(Arc::new)),

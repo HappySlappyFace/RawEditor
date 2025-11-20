@@ -16,6 +16,8 @@ pub struct RawDataResult {
     pub wb_multipliers: [f32; 4],
     /// Color matrix (3x3) for camera RGB to sRGB conversion
     pub color_matrix: [f32; 9],
+    /// CFA Pattern (0=RGGB, 1=GRBG, 2=GBRG, 3=BGGR)
+    pub cfa_pattern: u32,
 }
 
 /// Load raw sensor data from a RAW file
@@ -142,12 +144,34 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
     println!("                     [{:.3}, {:.3}, {:.3}]", 
         xyz_to_cam_matrix[6], xyz_to_cam_matrix[7], xyz_to_cam_matrix[8]);
     
+    // Extract CFA pattern
+    // rawloader provides a string name like "RGGB", "GRBG", etc.
+    // We map this to an integer for the GPU shader:
+    // 0 = RGGB
+    // 1 = GRBG
+    // 2 = GBRG
+    // 3 = BGGR
+    let cfa_name = raw_image.cfa.name.to_uppercase();
+    let cfa_pattern = match cfa_name.as_str() {
+        "RGGB" => 0,
+        "GRBG" => 1,
+        "GBRG" => 2,
+        "BGGR" => 3,
+        _ => {
+            println!("⚠️  Unknown CFA pattern '{}', defaulting to RGGB (0)", cfa_name);
+            0
+        }
+    };
+    
+    println!("🎨 CFA Pattern: {} (Index: {})", cfa_name, cfa_pattern);
+    
     Ok(RawDataResult {
         data,
         width,
         height,
         wb_multipliers: wb_normalized,
         color_matrix: xyz_to_cam_matrix,  // Return xyz_to_cam, will convert in main.rs
+        cfa_pattern,
     })
 }
 

@@ -42,7 +42,8 @@ struct GpuEditParams {
     zoom: f32,                  // Zoom level (1.0 = 100%)
     pan_x: f32,                 // Pan offset X
     pan_y: f32,                 // Pan offset Y
-    _padding6: f32,             // Padding for alignment
+    // Phase 34: CFA Pattern
+    cfa_pattern: u32,           // 0=RGGB, 1=GRBG, 2=GBRG, 3=BGGR
 }
 
 impl From<&EditParams> for GpuEditParams {
@@ -72,7 +73,7 @@ impl From<&EditParams> for GpuEditParams {
             zoom: 1.0,
             pan_x: 0.0,
             pan_y: 0.0,
-            _padding6: 0.0,
+            cfa_pattern: 0,
         }
     }
 }
@@ -97,6 +98,7 @@ pub struct RenderPipeline {
     // Phase 14: Color science metadata
     wb_multipliers: [f32; 4],  // White balance from camera
     color_matrix: [f32; 9],    // Color correction matrix
+    cfa_pattern: u32,          // Phase 34: CFA Pattern
 }
 
 // Manual Debug implementation (wgpu types don't implement Debug)
@@ -119,6 +121,7 @@ impl RenderPipeline {
         params: &EditParams,
         wb_multipliers: [f32; 4],
         color_matrix: [f32; 9],
+        cfa_pattern: u32,
     ) -> Result<Self, String> {
         // Calculate preview dimensions for fast rendering
         // Phase 13: Render to smaller texture to eliminate 1-2s lag
@@ -228,6 +231,7 @@ impl RenderPipeline {
         gpu_params.color_matrix_0 = [color_matrix[0], color_matrix[1], color_matrix[2]];
         gpu_params.color_matrix_1 = [color_matrix[3], color_matrix[4], color_matrix[5]];
         gpu_params.color_matrix_2 = [color_matrix[6], color_matrix[7], color_matrix[8]];
+        gpu_params.cfa_pattern = cfa_pattern;
         
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Edit Params Uniform Buffer"),
@@ -359,6 +363,7 @@ impl RenderPipeline {
             histogram_height,  // Phase 22: Tiny render for histogram
             wb_multipliers,
             color_matrix,
+            cfa_pattern,
         })
     }
     
@@ -383,6 +388,7 @@ impl RenderPipeline {
         gpu_params.zoom = zoom;
         gpu_params.pan_x = pan_x;
         gpu_params.pan_y = pan_y;
+        gpu_params.cfa_pattern = self.cfa_pattern;
         
         crate::debug_log!(crate::debug::DEBUG_GPU, "🎨 GPU Uniforms Updated:");
         crate::debug_log!(crate::debug::DEBUG_GPU, "   Exposure: {:.2}, Contrast: {:.0}", gpu_params.exposure, gpu_params.contrast);
