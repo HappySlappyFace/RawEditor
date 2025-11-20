@@ -1669,19 +1669,25 @@ impl RawEditor {
         } else {
             // Unified container for Loading, Ready, and Failed states
             
-            // 1. The Image Widget (or spacer if None)
-            let image_widget = if let Some(handle) = image_handle {
-                Image::new(handle)
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .content_fit(iced::ContentFit::Contain)
+            // 1. The Image Widget - now using Canvas for previews (Phase 32)
+            let image_widget: Element<Message> = if let Some(handle) = image_handle {
+                // Phase 32: Use Canvas-based preview renderer instead of Image widget
+                // This ensures zoom/pan state transfers seamlessly to GPU RAW render
+                use iced::widget::canvas::Canvas;
+                use crate::ui::preview_renderer::PreviewRenderer;
+                
+                Canvas::new(PreviewRenderer {
+                    handle,
+                    zoom: self.zoom,
+                    offset: self.pan_offset,
+                })
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into()
             } else {
                 // Placeholder if no image yet (e.g. loading without preview)
-                Image::new(iced::widget::image::Handle::from_rgba(1, 1, vec![0, 0, 0, 255]))
-                     .width(Length::Fill)
-                     .height(Length::Fill)
-                     .content_fit(iced::ContentFit::Contain)
-                     .opacity(0.0) // Invisible
+                // Use a transparent canvas or empty space
+                iced::widget::Space::new(Length::Fill, Length::Fill).into()
             };
             
             // 2. Wrap in Mouse Area (ALWAYS present to capture events)
