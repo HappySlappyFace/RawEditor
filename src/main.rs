@@ -173,6 +173,8 @@ enum Message {
     TemperatureChanged(f32),
     /// User changed tint slider (Phase 18)
     TintChanged(f32),
+    /// User changed noise reduction slider (Phase 49)
+    NoiseReductionChanged(f32),
     /// User clicked Reset button to clear all edits
     ResetEdits,
     
@@ -719,6 +721,16 @@ impl RawEditor {
             }
             Message::TintChanged(value) => {
                 self.current_edit_params.tint = value;
+                self.save_current_edits();
+                // Phase 25: Update GPU uniforms and invalidate canvas cache
+                if let EditorStatus::Ready(pipeline) = &self.editor_status {
+                    pipeline.update_uniforms(&self.current_edit_params);
+                    self.canvas_cache.clear();
+                }
+                Task::none()
+            }
+            Message::NoiseReductionChanged(value) => {
+                self.current_edit_params.noise_reduction = value;
                 self.save_current_edits();
                 // Phase 25: Update GPU uniforms and invalidate canvas cache
                 if let EditorStatus::Ready(pipeline) = &self.editor_status {
@@ -1593,10 +1605,16 @@ impl RawEditor {
             .push(slider(-1.0..=1.0, self.current_edit_params.temperature, Message::TemperatureChanged)
                 .step(0.01))
             // Tint
-            .push(text(format!("Tint: {:.0}", self.current_edit_params.tint * 100.0)))
+            .push(text(format!("Tint: {:.0}", self.current_edit_params.tint * 100.0)).size(12))
             .push(slider(-1.0..=1.0, self.current_edit_params.tint, Message::TintChanged)
                 .step(0.01))
-            // Whites
+            
+            // Phase 49: Noise Reduction
+            .push(text(format!("Denoise: {:.2}", self.current_edit_params.noise_reduction)).size(12))
+            .push(slider(0.0..=1.0, self.current_edit_params.noise_reduction, Message::NoiseReductionChanged)
+                .step(0.01))
+            
+            // Phase 38: Sensor Correction (Manual Black Levels)
             .push(text(format!("Whites: {:.2}", self.current_edit_params.whites)))
             .push(slider(0.8..=1.2, self.current_edit_params.whites, Message::WhitesChanged)
                 .step(0.01))

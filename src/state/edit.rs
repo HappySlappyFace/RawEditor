@@ -85,6 +85,14 @@ pub struct EditParams {
     /// - Positive values = more green
     /// - 0.0 = as-shot
     pub tint: f32,
+    
+    // ========== Noise Reduction ==========
+    
+    /// Noise reduction strength (0.0 to 1.0)
+    /// - 0.0 = no noise reduction
+    /// - 1.0 = maximum noise reduction
+    /// - Phase 49: Chroma denoising to eliminate color speckles
+    pub noise_reduction: f32,
 }
 
 impl Default for EditParams {
@@ -105,6 +113,7 @@ impl Default for EditParams {
             saturation: 0.0,
             temperature: 0.0,  // Phase 18: Manual white balance (as-shot)
             tint: 0.0,         // Phase 18: Manual white balance (as-shot)
+            noise_reduction: 0.0,  // Phase 49: No noise reduction by default
         }
     }
 }

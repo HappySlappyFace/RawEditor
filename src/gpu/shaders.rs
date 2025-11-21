@@ -114,9 +114,16 @@ struct EditParams {
     black_phase_x: u32,          // Offset 192
     black_phase_y: u32,          // Offset 196
     
-    // Padding to reach 208 bytes
-    pad_phase_1: f32,            // 200
-    pad_phase_2: f32,            // 204
+    // Phase 49: Noise Reduction
+    noise_reduction: f32,        // Offset 200
+    
+    // Padding to reach 224 bytes
+    pad_phase_1: f32,            // 204
+    pad_phase_2: f32,            // 208
+    pad_phase_3: f32,            // 212
+    pad_phase_4: f32,            // 216
+    pad_phase_5: f32,            // 220
+    // Total: 224 bytes
 }
 
 @group(0) @binding(0)
@@ -369,6 +376,51 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     
     // 1. Debayer to get RAW RGB color (still in linear camera space)
     var color = debayer(pixel_coords, dimensions);
+    
+    // Phase 49: Chroma Noise Reduction (if enabled)
+    if (params.noise_reduction > 0.0) {
+        // RGB to YUV conversion (ITU-R BT.601)
+        // Y = luminance (detail), U and V = chrominance (color)
+        let y = 0.299 * color.r + 0.587 * color.g + 0.114 * color.b;
+        let u = (color.b - y) * 0.565;
+        let v = (color.r - y) * 0.713;
+        
+        // Sample 4 diagonal neighbors and convert to YUV
+        let tl = debayer(pixel_coords + vec2<i32>(-1, -1), dimensions);
+        let tr = debayer(pixel_coords + vec2<i32>(1, -1), dimensions);
+        let bl = debayer(pixel_coords + vec2<i32>(-1, 1), dimensions);
+        let br = debayer(pixel_coords + vec2<i32>(1, 1), dimensions);
+        
+        // Convert neighbors to YUV
+        let tl_y = 0.299 * tl.r + 0.587 * tl.g + 0.114 * tl.b;
+        let tl_u = (tl.b - tl_y) * 0.565;
+        let tl_v = (tl.r - tl_y) * 0.713;
+        
+        let tr_y = 0.299 * tr.r + 0.587 * tr.g + 0.114 * tr.b;
+        let tr_u = (tr.b - tr_y) * 0.565;
+        let tr_v = (tr.r - tr_y) * 0.713;
+        
+        let bl_y = 0.299 * bl.r + 0.587 * bl.g + 0.114 * bl.b;
+        let bl_u = (bl.b - bl_y) * 0.565;
+        let bl_v = (bl.r - bl_y) * 0.713;
+        
+        let br_y = 0.299 * br.r + 0.587 * br.g + 0.114 * br.b;
+        let br_u = (br.b - br_y) * 0.565;
+        let br_v = (br.r - br_y) * 0.713;
+        
+        // Average the UV channels of neighbors
+        let avg_u = (tl_u + tr_u + bl_u + br_u) * 0.25;
+        let avg_v = (tl_v + tr_v + bl_v + br_v) * 0.25;
+        
+        // Mix original UV with averaged UV based on strength
+        let denoised_u = mix(u, avg_u, params.noise_reduction);
+        let denoised_v = mix(v, avg_v, params.noise_reduction);
+        
+        // Convert YUV back to RGB (keep original Y for sharpness!)
+        color.r = y + 1.403 * denoised_v;
+        color.g = y - 0.344 * denoised_u - 0.714 * denoised_v;
+        color.b = y + 1.770 * denoised_u;
+    }
     
     // 2. Apply White Balance (normalize sensor response)
     color = color * params.wb_multipliers.rgb;
