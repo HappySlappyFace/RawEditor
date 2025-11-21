@@ -93,6 +93,12 @@ pub struct EditParams {
     /// - 1.0 = maximum noise reduction
     /// - Phase 49: Chroma denoising to eliminate color speckles
     pub noise_reduction: f32,
+    
+    /// Sharpening strength (0.0 to 1.0)
+    /// - 0.0 = no sharpening
+    /// - 1.0 = maximum sharpening
+    /// - Phase 50: Unsharp mask to enhance edge detail
+    pub sharpening: f32,
 }
 
 impl Default for EditParams {
@@ -114,6 +120,7 @@ impl Default for EditParams {
             temperature: 0.0,  // Phase 18: Manual white balance (as-shot)
             tint: 0.0,         // Phase 18: Manual white balance (as-shot)
             noise_reduction: 0.0,  // Phase 49: No noise reduction by default
+            sharpening: 0.0,       // Phase 50: No sharpening by default
         }
     }
 }

@@ -117,12 +117,14 @@ struct EditParams {
     // Phase 49: Noise Reduction
     noise_reduction: f32,        // Offset 200
     
+    // Phase 50: Sharpening
+    sharpening: f32,             // Offset 204
+    
     // Padding to reach 224 bytes
-    pad_phase_1: f32,            // 204
-    pad_phase_2: f32,            // 208
-    pad_phase_3: f32,            // 212
-    pad_phase_4: f32,            // 216
-    pad_phase_5: f32,            // 220
+    pad_phase_1: f32,            // 208
+    pad_phase_2: f32,            // 212
+    pad_phase_3: f32,            // 216
+    pad_phase_4: f32,            // 220
     // Total: 224 bytes
 }
 
@@ -420,6 +422,24 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         color.r = y + 1.403 * denoised_v;
         color.g = y - 0.344 * denoised_u - 0.714 * denoised_v;
         color.b = y + 1.770 * denoised_u;
+    }
+    
+    // Phase 50: Unsharp Mask Sharpening (if enabled)
+    if (params.sharpening > 0.0) {
+        // Sample 4 orthogonal neighbors for blur calculation
+        let up = debayer(pixel_coords + vec2<i32>(0, -1), dimensions);
+        let down = debayer(pixel_coords + vec2<i32>(0, 1), dimensions);
+        let left = debayer(pixel_coords + vec2<i32>(-1, 0), dimensions);
+        let right = debayer(pixel_coords + vec2<i32>(1, 0), dimensions);
+        
+        // Calculate blur (local average)
+        let blur = (up + down + left + right) * 0.25;
+        
+        // Extract high-frequency detail
+        let detail = color - blur;
+        
+        // Apply sharpening: add detail back based on strength
+        color = color + (detail * params.sharpening);
     }
     
     // 2. Apply White Balance (normalize sensor response)
