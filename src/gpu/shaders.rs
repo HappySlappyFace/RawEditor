@@ -128,111 +128,89 @@ var texture_sampler: sampler;  // Not used for integer textures, but kept for co
 @group(0) @binding(2)
 var<uniform> params: EditParams;
 
-// Simple nearest-neighbor debayering
-// Assumes RGGB Bayer pattern (most common)
 // Simple nearest-neighbor debayering with CFA pattern support
-// 0=RGGB, 1=GRBG, 2=GBRG, 3=BGGR
+// CFA patterns: 0=RGGB, 1=GRBG, 2=GBRG, 3=BGGR
 fn debayer(coords: vec2<i32>, dimensions: vec2<u32>) -> vec3<f32> {
     // Load RAW pixel value (12-bit in u16, stored as u32)
     let raw_value = textureLoad(input_texture, coords, 0).r;
     
-    // Phase 39: Black Level Phase Correction
-    // We revert to spatial indexing but add a user-controllable phase shift.
-    // This allows the user to align the black level grid to the pixel grid manually.
-    // (0,0) -> index 0 (TL)
-    // (1,0) -> index 1 (TR)
-    // (0,1) -> index 2 (BL)
-    // (1,1) -> index 3 (BR)
+    // CRITICAL: Black level must be indexed by CFA COLOR, not spatial position!
+    // black_levels array is [R, G1, G2, B] indexed by color channel
+    // We need to determine which color THIS pixel is, then use that index
     
-    let bl_index = ((u32(coords.y) + params.black_phase_y) & 1u) * 2u + ((u32(coords.x) + params.black_phase_x) & 1u);
+    let x = u32(coords.x);
+    let y = u32(coords.y);
+    let is_even_row = (y & 1u) == 0u;
+    let is_even_col = (x & 1u) == 0u;
     
-    // Apply manual offset to the base black level
-    // Note: black_offsets is vec4<f32>, so we can add directly
+    // Determine CFA color index for this pixel based on pattern
+    // black_levels[0] = R, black_levels[1] = G (red row), black_levels[2] = G (blue row), black_levels[3] = B
+    var bl_index: u32;
+    
+    if (params.cfa_pattern == 0u) { // RGGB
+        if (is_even_row && is_even_col) { bl_index = 0u; }       // R
+        else if (is_even_row && !is_even_col) { bl_index = 1u; } // G1 (red row)
+        else if (!is_even_row && is_even_col) { bl_index = 2u; } // G2 (blue row)  
+        else { bl_index = 3u; }                                   // B
+    } else if (params.cfa_pattern == 1u) { // GRBG
+        if (is_even_row && is_even_col) { bl_index = 1u; }       // G1
+        else if (is_even_row && !is_even_col) { bl_index = 0u; } // R
+        else if (!is_even_row && is_even_col) { bl_index = 3u; } // B
+        else { bl_index = 2u; }                                   // G2
+    } else if (params.cfa_pattern == 2u) { // GBRG
+        if (is_even_row && is_even_col) { bl_index = 1u; }       // G1
+        else if (is_even_row && !is_even_col) { bl_index = 3u; } // B
+        else if (!is_even_row && is_even_col) { bl_index = 0u; } // R
+        else { bl_index = 2u; }                                   // G2
+    } else { // BGGR (3)
+        if (is_even_row && is_even_col) { bl_index = 3u; }       // B
+        else if (is_even_row && !is_even_col) { bl_index = 1u; } // G1
+        else if (!is_even_row && is_even_col) { bl_index = 2u; } // G2
+        else { bl_index = 0u; }                                   // R
+    }
+    
+    // Apply black level correction BEFORE normalization
+    // This is the critical step: subtract black per-CFA-color, then clamp to 0
     let black = f32(params.black_levels[bl_index]) + params.black_offsets[bl_index];
     let white = f32(params.white_level);
+    let corrected = max(0.0, f32(raw_value) - black);
     
-    // Avoid division by zero
+    // Normalize to [0,1] range
     let range = max(1.0, white - black);
+    let normalized = corrected / range;
     
-    // (val - black) / (white - black)
-    let normalized = max(0.0, (f32(raw_value) - black) / range);
+    // Determine what color this pixel is for demosaicing
+    // (Reusing the CFA pattern logic from above)
+    var is_red = false;
+    var is_green = false;
+    var is_blue = false;
     
-    // Determine position in Bayer pattern based on CFA type
-    // We shift the coordinates logically so that the pattern always looks like RGGB
-    // RGGB: (0,0) is R
-    // GRBG: (0,0) is G (Red row) -> Shift x+1 makes it R
-    // GBRG: (0,0) is G (Blue row) -> Shift y+1 makes it R
-    // BGGR: (0,0) is B -> Shift x+1, y+1 makes it R
-    
-    var x = coords.x;
-    var y = coords.y;
-    
-    // Apply logical shifts to align with RGGB pattern
-    if (params.cfa_pattern == 1u) { // GRBG
-        x = x + 1;
+    if (params.cfa_pattern == 0u) { // RGGB
+        if (is_even_row && is_even_col) { is_red = true; }
+        else if (is_even_row && !is_even_col) { is_green = true; }
+        else if (!is_even_row && is_even_col) { is_green = true; }
+        else { is_blue = true; }
+    } else if (params.cfa_pattern == 1u) { // GRBG
+        if (is_even_row && is_even_col) { is_green = true; }
+        else if (is_even_row && !is_even_col) { is_red = true; }
+        else if (!is_even_row && is_even_col) { is_blue = true; }
+        else { is_green = true; }
     } else if (params.cfa_pattern == 2u) { // GBRG
-        y = y + 1;
-    } else if (params.cfa_pattern == 3u) { // BGGR
-        x = x + 1;
-        y = y + 1;
+        if (is_even_row && is_even_col) { is_green = true; }
+        else if (is_even_row && !is_even_col) { is_blue = true; }
+        else if (!is_even_row && is_even_col) { is_red = true; }
+        else { is_green = true; }
+    } else { // BGGR (3)
+        if (is_even_row && is_even_col) { is_blue = true; }
+        else if (is_even_row && !is_even_col) { is_green = true; }
+        else if (!is_even_row && is_even_col) { is_green = true; }
+        else { is_red = true; }
     }
     
-    let is_even_row = (y % 2) == 0;
-    let is_even_col = (x % 2) == 0;
-    
+    // Simple nearest-neighbor demosaicing
     var rgb: vec3<f32>;
     
-    // Standard RGGB logic (applied to shifted coordinates)
-    // R G
-    // G B
-    
-    if is_even_row {
-        if is_even_col {
-            // Red pixel
-            let r = normalized;
-            let g1 = get_neighbor(coords + vec2<i32>(1, 0), dimensions); // Green right
-            let g2 = get_neighbor(coords + vec2<i32>(0, 1), dimensions); // Green down
-            let g = (g1 + g2) * 0.5;
-            let b = get_neighbor(coords + vec2<i32>(1, 1), dimensions);  // Blue diagonal
-            rgb = vec3<f32>(r, g, b);
-        } else {
-            // Green pixel (Red row)
-            let g = normalized;
-            let r1 = get_neighbor(coords - vec2<i32>(1, 0), dimensions); // Red left
-            let r2 = get_neighbor(coords + vec2<i32>(1, 0), dimensions); // Red right
-            let r = (r1 + r2) * 0.5;
-            let b1 = get_neighbor(coords - vec2<i32>(0, 1), dimensions); // Blue up (oops, this is RGGB, so Blue is down)
-            let b2 = get_neighbor(coords + vec2<i32>(0, 1), dimensions); // Blue down
-            let b = (b2); // Simple neighbor for now
-            rgb = vec3<f32>(r, g, b);
-        }
-    } else {
-        if is_even_col {
-            // Green pixel (Blue row)
-            let g = normalized;
-            let b1 = get_neighbor(coords + vec2<i32>(1, 0), dimensions); // Blue right
-            let b = b1;
-            let r1 = get_neighbor(coords - vec2<i32>(0, 1), dimensions); // Red up
-            let r = r1;
-            rgb = vec3<f32>(r, g, b);
-        } else {
-            // Blue pixel
-            let b = normalized;
-            let g1 = get_neighbor(coords - vec2<i32>(1, 0), dimensions); // Green left
-            let g2 = get_neighbor(coords - vec2<i32>(0, 1), dimensions); // Green up
-            let g = (g1 + g2) * 0.5;
-            let r = get_neighbor(coords - vec2<i32>(1, 1), dimensions);  // Red diagonal
-            rgb = vec3<f32>(r, g, b);
-        }
-    }
-    
-    // Re-implementing simple neighbor logic to be robust
-    // If we are at (x,y) in RGGB space:
-    // Even Row (0, 2, ...): Even Col (0, 2) = R, Odd Col (1, 3) = G
-    // Odd Row (1, 3, ...):  Even Col (0, 2) = G, Odd Col (1, 3) = B
-    
-    if (is_even_row && is_even_col) {
-        // Red Pixel
+    if (is_red) {
         let r = normalized;
         let g = (get_neighbor(coords + vec2<i32>(1, 0), dimensions) + 
                  get_neighbor(coords + vec2<i32>(0, 1), dimensions)) * 0.5;
@@ -266,15 +244,56 @@ fn debayer(coords: vec2<i32>, dimensions: vec2<u32>) -> vec3<f32> {
     return rgb;
 }
 
-// Helper to safely load neighbor pixel
+// Helper to safely load neighbor pixel WITH CORRECT BLACK LEVEL CORRECTION
+// CRITICAL: This must match the processing in debayer() for the current pixel!
 fn get_neighbor(coords: vec2<i32>, dimensions: vec2<u32>) -> f32 {
     // Clamp to texture bounds
     let clamped = vec2<i32>(
         clamp(coords.x, 0, i32(dimensions.x) - 1),
         clamp(coords.y, 0, i32(dimensions.y) - 1)
     );
+    
     let raw_value = textureLoad(input_texture, clamped, 0).r;
-    return f32(raw_value) / 4096.0;
+    
+    // Apply same black level correction as debayer()
+    let x = u32(clamped.x);
+    let y = u32(clamped.y);
+    let is_even_row = (y & 1u) == 0u;
+    let is_even_col = (x & 1u) == 0u;
+    
+    // Determine CFA color index for this neighbor pixel
+    var bl_index: u32;
+    
+    if (params.cfa_pattern == 0u) { // RGGB
+        if (is_even_row && is_even_col) { bl_index = 0u; }
+        else if (is_even_row && !is_even_col) { bl_index = 1u; }
+        else if (!is_even_row && is_even_col) { bl_index = 2u; }
+        else { bl_index = 3u; }
+    } else if (params.cfa_pattern == 1u) { // GRBG
+        if (is_even_row && is_even_col) { bl_index = 1u; }
+        else if (is_even_row && !is_even_col) { bl_index = 0u; }
+        else if (!is_even_row && is_even_col) { bl_index = 3u; }
+        else { bl_index = 2u; }
+    } else if (params.cfa_pattern == 2u) { // GBRG
+        if (is_even_row && is_even_col) { bl_index = 1u; }
+        else if (is_even_row && !is_even_col) { bl_index = 3u; }
+        else if (!is_even_row && is_even_col) { bl_index = 0u; }
+        else { bl_index = 2u; }
+    } else { // BGGR (3)
+        if (is_even_row && is_even_col) { bl_index = 3u; }
+        else if (is_even_row && !is_even_col) { bl_index = 1u; }
+        else if (!is_even_row && is_even_col) { bl_index = 2u; }
+        else { bl_index = 0u; }
+    }
+    
+    // Apply black level correction and normalization (same as debayer())
+    let black = f32(params.black_levels[bl_index]) + params.black_offsets[bl_index];
+    let white = f32(params.white_level);
+    let corrected = max(0.0, f32(raw_value) - black);
+    let range = max(1.0, white - black);
+    let normalized = corrected / range;
+    
+    return normalized;
 }
 
 @fragment

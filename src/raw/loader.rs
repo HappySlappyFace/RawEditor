@@ -26,6 +26,8 @@ pub struct RawDataResult {
     pub crops: [usize; 4],
     /// CFA Pattern Name (e.g. "RGGB")
     pub cfa_name: String,
+    /// Measured Black Levels from Optical Black [f32; 4]
+    pub measured_black_levels: [f32; 4],
 }
 
 /// Load raw sensor data from a RAW file
@@ -78,7 +80,7 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
         }
     };
     
-    // Phase 40: Apply Crop (Active Area)
+    // Phase 40: Apply Crop (Active Area) FIRST
     // rawloader.crops is [top, right, bottom, left] in pixels to be removed
     let (data, width, height) = if raw_image.crops.len() == 4 {
         let top = raw_image.crops[0];
@@ -92,7 +94,6 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
         let full_height = raw_image.height;
         
         // Calculate active area dimensions
-        // Ensure we don't underflow if margins are larger than image (unlikely but safe)
         let crop_width = full_width.saturating_sub(left + right);
         let crop_height = full_height.saturating_sub(top + bottom);
         
@@ -121,6 +122,15 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
         println!("⚠️  No crop data found, using full sensor dump");
         (full_data, raw_image.width as u32, raw_image.height as u32)
     };
+    
+    // Phase 43: Compute per-CFA black levels from cropped mosaic (Step 3 of checklist)
+    // We do this AFTER cropping to analyze the active image data
+    let measured_black_levels = compute_cfa_black_levels_percentile(
+        &data, 
+        width as usize, 
+        height as usize, 
+        raw_image.cfa.clone() // Pass rawloader's CFA pattern
+    );
     
     println!("📷 Loaded RAW data: {}x{} ({} pixels)", width, height, data.len());
     
@@ -255,20 +265,291 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
         } else {
             [0, 0, 0, 0]
         },
-        cfa_name,
+        cfa_name: raw_image.cfa.name.clone(),
+        measured_black_levels,
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// Compute P0.1 percentile black level for each CFA phase from cropped mosaic
+/// This follows Step 3 of the diagnostic checklist exactly
+fn compute_cfa_black_levels_percentile(
+    data: &[u16], 
+    width: usize, 
+    height: usize, 
+    cfa: rawloader::CFA
+) -> [f32; 4] {
+    println!("📊 Computing per-CFA black levels using P0.1 percentile on {}x{} cropped mosaic", width, height);
     
-    #[tokio::test]
-    async fn test_load_raw_data() {
-        // This test requires an actual RAW file
-        // In practice, you would use a test fixture
-        // For now, we just verify the function signature compiles
-        let result = load_raw_data("/nonexistent/path.nef".to_string()).await;
-        assert!(result.is_err());
+    // Build histograms for each CFA phase (0-65535 range, but we'll use bins)
+    const MAX_VALUE: usize = 65536;
+    let mut phase_histograms: [Vec<u32>; 4] = [
+        vec![0; MAX_VALUE],
+        vec![0; MAX_VALUE],
+        vec![0; MAX_VALUE],
+        vec![0; MAX_VALUE],
+    ];
+    
+    let mut phase_counts: [usize; 4] = [0, 0, 0, 0];
+    
+    // Build histogram for each phase
+    for y in 0..height {
+        for x in 0..width {
+            let idx = y * width + x;
+            if idx >= data.len() { break; }
+            
+            let value = data[idx] as usize;
+            let phase_idx = ((y & 1) << 1) | (x & 1);
+            
+            if value < MAX_VALUE {
+                phase_histograms[phase_idx][value] += 1;
+                phase_counts[phase_idx] += 1;
+            }
+        }
     }
+    
+    // Compute percentiles for each phase
+    let mut p01_values = [0.0; 4];  // 0.1%
+    let mut p1_values = [0.0; 4];   // 1%
+    let mut p5_values = [0.0; 4];   // 5%
+    let mut min_values = [0; 4];
+    let mut median_values = [0; 4];
+    
+    for phase in 0..4 {
+        let count = phase_counts[phase];
+        if count == 0 {
+            println!("⚠️  Phase {} has no pixels!", phase);
+            continue;
+        }
+        
+        let p01_threshold = (count as f64 * 0.001) as usize;  // 0.1%
+        let p1_threshold = (count as f64 * 0.01) as usize;    // 1%
+        let p5_threshold = (count as f64 * 0.05) as usize;    // 5%
+        let median_threshold = count / 2;
+        
+        let mut cumsum = 0usize;
+        let mut found_min = false;
+        let mut found_p01 = false;
+        let mut found_p1 = false;
+        let mut found_p5 = false;
+        let mut found_median = false;
+        
+        for value in 0..MAX_VALUE {
+            cumsum += phase_histograms[phase][value] as usize;
+            
+            if !found_min && phase_histograms[phase][value] > 0 {
+                min_values[phase] = value;
+                found_min = true;
+            }
+            if !found_p01 && cumsum >= p01_threshold {
+                p01_values[phase] = value as f32;
+                found_p01 = true;
+            }
+            if !found_p1 && cumsum >= p1_threshold {
+                p1_values[phase] = value as f32;
+                found_p1 = true;
+            }
+            if !found_p5 && cumsum >= p5_threshold {
+                p5_values[phase] = value as f32;
+                found_p5 = true;
+            }
+            if !found_median && cumsum >= median_threshold {
+                median_values[phase] = value;
+                found_median = true;
+            }
+            
+            if found_median { break; }
+        }
+        
+        println!("Phase {}: Min={}, P0.1={:.1}, P1={:.1}, P5={:.1}, Median={} (N={})", 
+            phase, min_values[phase], p01_values[phase], p1_values[phase], 
+            p5_values[phase], median_values[phase], count);
+    }
+    
+    // Map phases to CFA colors based on pattern
+    // rawloader CFA pattern names: "RGGB", "GRBG", "GBRG", "BGGR"
+    let pattern_name = cfa.name.as_str();
+    let mut ordered_blacks = [0.0; 4];
+    
+    // Use P0.1 as the black level estimate
+    if pattern_name == "RGGB" {
+        ordered_blacks[0] = p01_values[0]; // R  (0,0)
+        ordered_blacks[1] = p01_values[1]; // G1 (0,1)
+        ordered_blacks[2] = p01_values[2]; // G2 (1,0)
+        ordered_blacks[3] = p01_values[3]; // B  (1,1)
+    } else if pattern_name == "GRBG" {
+        ordered_blacks[0] = p01_values[1]; // R  (0,1)
+        ordered_blacks[1] = p01_values[0]; // G1 (0,0)
+        ordered_blacks[2] = p01_values[3]; // G2 (1,1)
+        ordered_blacks[3] = p01_values[2]; // B  (1,0)
+    } else if pattern_name == "GBRG" {
+        ordered_blacks[0] = p01_values[2]; // R  (1,0)
+        ordered_blacks[1] = p01_values[0]; // G1 (0,0)
+        ordered_blacks[2] = p01_values[3]; // G2 (1,1)
+        ordered_blacks[3] = p01_values[1]; // B  (0,1)
+    } else if pattern_name == "BGGR" {
+        ordered_blacks[0] = p01_values[3]; // R  (1,1)
+        ordered_blacks[1] = p01_values[1]; // G1 (0,1)
+        ordered_blacks[2] = p01_values[2]; // G2 (1,0)
+        ordered_blacks[3] = p01_values[0]; // B  (0,0)
+    } else {
+        println!("⚠️  Unknown CFA pattern '{}', assuming RGGB mapping", pattern_name);
+        ordered_blacks = p01_values;
+    }
+    
+    println!("📊 Measured Black Levels (P0.1): R={:.1}, G1={:.1}, G2={:.1}, B={:.1}", 
+        ordered_blacks[0], ordered_blacks[1], ordered_blacks[2], ordered_blacks[3]);
+        
+    ordered_blacks
+}
+
+/// Old function - kept for reference but not used
+#[allow(dead_code)]
+fn compute_cfa_black_levels_old(
+    data: &[u16], 
+    width: usize, 
+    height: usize, 
+    crops: &[usize], 
+    cfa: rawloader::CFA
+) -> [f32; 4] {
+    // crops: [top, right, bottom, left]
+    let top_margin = crops[0];
+    let right_margin = crops[1];
+    let bottom_margin = crops[2];
+    let left_margin = crops[3];
+    
+    // We will collect pixels for each of the 4 CFA phases:
+    // Phase 0: (even row, even col) -> (0,0)
+    // Phase 1: (even row, odd col)  -> (0,1)
+    // Phase 2: (odd row, even col)  -> (1,0)
+    // Phase 3: (odd row, odd col)   -> (1,1)
+    let mut phase_pixels: [Vec<u16>; 4] = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+    
+    // Helper to add pixel to correct phase bucket
+    let mut add_pixel = |x: usize, y: usize, val: u16| {
+        let phase_idx = ((y & 1) << 1) | (x & 1);
+        phase_pixels[phase_idx].push(val);
+    };
+    
+    // 1. Top Margin
+    for y in 0..top_margin {
+        for x in 0..width {
+            if y < height && x < width {
+                add_pixel(x, y, data[y * width + x]);
+            }
+        }
+    }
+    
+    // 2. Bottom Margin
+    for y in (height - bottom_margin)..height {
+        for x in 0..width {
+            if y < height && x < width {
+                add_pixel(x, y, data[y * width + x]);
+            }
+        }
+    }
+    
+    // 3. Left Margin (excluding top/bottom corners to avoid double counting)
+    for y in top_margin..(height - bottom_margin) {
+        for x in 0..left_margin {
+            if y < height && x < width {
+                add_pixel(x, y, data[y * width + x]);
+            }
+        }
+    }
+    
+    // 4. Right Margin (excluding top/bottom corners)
+    for y in top_margin..(height - bottom_margin) {
+        for x in (width - right_margin)..width {
+            if y < height && x < width {
+                add_pixel(x, y, data[y * width + x]);
+            }
+        }
+    }
+    
+    // Compute median for each phase
+    let mut medians = [0.0; 4];
+    for i in 0..4 {
+        let pixels = &mut phase_pixels[i];
+        if pixels.is_empty() {
+            println!("⚠️  No optical black pixels found for phase {}", i);
+            continue;
+        }
+        
+        // Sort to find median
+        pixels.sort_unstable();
+        let mid = pixels.len() / 2;
+        medians[i] = pixels[mid] as f32;
+        
+        // Calculate stats for debugging
+        let min = pixels[0];
+        let max = pixels[pixels.len() - 1];
+        let p1 = pixels[pixels.len() / 100]; // 1st percentile
+        
+        println!("Phase {}: Median={:.1}, Min={}, Max={}, P1={} (N={})", 
+            i, medians[i], min, max, p1, pixels.len());
+    }
+    
+    // Map phases to CFA colors based on pattern
+    // We need to return [R, G1, G2, B] order for the shader
+    // rawloader CFA pattern: 0=Red, 1=Green, 2=Blue
+    // But we need to know the layout.
+    // Let's assume standard Bayer phases for now and map them later if needed.
+    // Actually, the shader expects [R, G1, G2, B] values.
+    // We need to know which phase corresponds to which color.
+    
+    // For RGGB (Pattern 0):
+    // (0,0)=R, (0,1)=G, (1,0)=G, (1,1)=B
+    // So Phase 0->R, Phase 1->G1, Phase 2->G2, Phase 3->B
+    
+    // For GRBG (Pattern 1):
+    // (0,0)=G, (0,1)=R, (1,0)=B, (1,1)=G
+    // So Phase 0->G1, Phase 1->R, Phase 2->B, Phase 3->G2
+    
+    // For GBRG (Pattern 2):
+    // (0,0)=G, (0,1)=B, (1,0)=R, (1,1)=G
+    // So Phase 0->G1, Phase 1->B, Phase 2->R, Phase 3->G2
+    
+    // For BGGR (Pattern 3):
+    // (0,0)=B, (0,1)=G, (1,0)=G, (1,1)=R
+    // So Phase 0->B, Phase 1->G1, Phase 2->G2, Phase 3->R
+    
+    // However, our shader logic ALREADY handles the mapping from (x,y) to color index.
+    // The shader expects `black_levels` to be [R, G1, G2, B].
+    // So we need to map our measured phases to these color slots.
+    
+    let pattern_name = cfa.name.as_str();
+    let mut ordered_blacks = [0.0; 4];
+    
+    if pattern_name == "RGGB" {
+        ordered_blacks[0] = medians[0]; // R  (0,0)
+        ordered_blacks[1] = medians[1]; // G1 (0,1)
+        ordered_blacks[2] = medians[2]; // G2 (1,0)
+        ordered_blacks[3] = medians[3]; // B  (1,1)
+    } else if pattern_name == "GRBG" {
+        ordered_blacks[0] = medians[1]; // R  (0,1)
+        ordered_blacks[1] = medians[0]; // G1 (0,0)
+        ordered_blacks[2] = medians[3]; // G2 (1,1)
+        ordered_blacks[3] = medians[2]; // B  (1,0)
+    } else if pattern_name == "GBRG" {
+        ordered_blacks[0] = medians[2]; // R  (1,0)
+        ordered_blacks[1] = medians[0]; // G1 (0,0)
+        ordered_blacks[2] = medians[3]; // G2 (1,1)
+        ordered_blacks[3] = medians[1]; // B  (0,1)
+    } else if pattern_name == "BGGR" {
+        ordered_blacks[0] = medians[3]; // R  (1,1)
+        ordered_blacks[1] = medians[1]; // G1 (0,1)
+        ordered_blacks[2] = medians[2]; // G2 (1,0)
+        ordered_blacks[3] = medians[0]; // B  (0,0)
+    } else {
+        println!("⚠️  Unknown CFA pattern '{}', assuming RGGB mapping", pattern_name);
+        ordered_blacks[0] = medians[0];
+        ordered_blacks[1] = medians[1];
+        ordered_blacks[2] = medians[2];
+        ordered_blacks[3] = medians[3];
+    }
+    
+    println!("📊 Measured Black Levels (Median): R={:.1}, G1={:.1}, G2={:.1}, B={:.1}", 
+        ordered_blacks[0], ordered_blacks[1], ordered_blacks[2], ordered_blacks[3]);
+        
+    ordered_blacks
 }

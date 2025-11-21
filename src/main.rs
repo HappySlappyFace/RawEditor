@@ -120,11 +120,6 @@ struct RawEditor {
     working_preview: Option<Handle>,
     /// Phase 41: Current image metadata for inspection
     current_metadata: Option<raw::loader::RawDataResult>,
-    
-    // WGPU Device and Queue for GPU processing
-    // Note: We'll need to get these from Iced's context, not create our own
-    device: Arc<iced_wgpu::wgpu::Device>,
-    queue: Arc<iced_wgpu::wgpu::Queue>,
 }
 
 /// Application messages (events)
@@ -263,11 +258,6 @@ impl RawEditor {
         // Initialize preview cache directory (fast)
         let preview_cache_dir = raw::preview::get_preview_cache_dir();
         
-        // TODO: Phase 41: WGPU device/queue initialization
-        // We need to get these from Iced's WGPU context instead of creating our own
-        // For now, using placeholder values - this will need proper Iced integration
-        // The app will panic when trying to use these, but that's okay for showing metadata
-        
         // Determine the database path (e.g., in the application's data directory)
         let db_path = state::library::Library::get_db_path();
 
@@ -294,11 +284,6 @@ impl RawEditor {
                 last_click_time: None,
                 viewport_size: (800.0, 600.0), // Default fallback
                 working_preview: None,
-                // TODO Phase 41: Placeholder device/queue - need proper Iced integration
-                // Using unsafe transmute to create dummy Arc values
-                // This will crash if actually used, but allows showing metadata
-                device: unsafe { std::mem::transmute(Arc::new(())) },
-                queue: unsafe { std::mem::transmute(Arc::new(())) },
             },
             // Phase 23: Trigger database loading in background
             Task::perform(
@@ -1030,28 +1015,48 @@ impl RawEditor {
                         let xyz_to_cam = raw_data.color_matrix;
                         let cam_to_srgb = color::calculate_cam_to_srgb(xyz_to_cam);
                         
-                        // Create GPU pipeline with the RAW data + color metadata
-                        let params = self.current_edit_params;
-                        let wb = raw_data.wb_multipliers;
-                        let image_id = self.selected_image_id.unwrap_or(0);
+                        // Phase 42: Use measured black levels if available and valid
+                    // If measurement failed (all 0), fall back to metadata
+                    let use_measured = raw_data.measured_black_levels.iter().any(|&x| x > 0.0);
+                    let black_levels_u32 = if use_measured {
+                        println!("Using MEASURED black levels for GPU: {:?}", raw_data.measured_black_levels);
+                        [
+                            raw_data.measured_black_levels[0] as u32,
+                            raw_data.measured_black_levels[1] as u32,
+                            raw_data.measured_black_levels[2] as u32,
+                            raw_data.measured_black_levels[3] as u32,
+                        ]
+                    } else {
+                        println!("Using METADATA black levels for GPU: {:?}", raw_data.black_levels);
+                        raw_data.black_levels
+                    };
+
+                    // Initialize GPU pipeline with loaded image data
+                    // We pass the UI edit params and the raw metadata separately
+                    
+                    // Update current edit params with measured black levels if we want to force them?
+                    // No, RenderPipeline::new takes black_levels as a separate argument.
+                    
+                    let image_id = self.selected_image_id.unwrap_or(0);
+                    let edit_params = self.current_edit_params.clone();
                         
-                        Task::perform(
-                            async move {
-                                gpu::RenderPipeline::new(
-                                    image_id,
-                                    raw_data.data,
-                                    raw_data.width,
-                                    raw_data.height,
-                                    &params,
-                                    wb,
-                                    cam_to_srgb,
-                                    raw_data.cfa_pattern,
-                                    raw_data.black_levels,
-                                    raw_data.white_level,
-                                ).await
-                            },
-                            |result| Message::GpuPipelineReady(result.map(Arc::new)),
-                        )
+                    Task::perform(
+                        async move {
+                            gpu::RenderPipeline::new(
+                                image_id,
+                                raw_data.data,
+                                raw_data.width,
+                                raw_data.height,
+                                &edit_params, // Pass the cloned params which is Send
+                                raw_data.wb_multipliers,
+                                cam_to_srgb,
+                                raw_data.cfa_pattern,
+                                black_levels_u32, // Use our MEASURED black levels here!
+                                raw_data.white_level,
+                            ).await
+                        },
+                        |result| Message::GpuPipelineReady(result.map(Arc::new)),
+                    )
                     }
                     Err(e) => {
                         let err_msg = format!("Failed to load RAW data: {}", e);
@@ -1628,12 +1633,17 @@ impl RawEditor {
                 column![
                     text(format!("Size: {}x{}", meta.width, meta.height)).size(12),
                     text(format!("CFA: {} ({})", meta.cfa_name, meta.cfa_pattern)).size(12),
-                    text(format!("Blacks: [{}, {}, {}, {}]", 
-                        meta.black_levels[0], meta.black_levels[1], meta.black_levels[2], meta.black_levels[3])).size(12),
+                    text(format!("Meta Blacks: {:?}", meta.black_levels)).size(12),
+                    text(format!("Meas Blacks: [{:.1}, {:.1}, {:.1}, {:.1}]", 
+                        meta.measured_black_levels[0], 
+                        meta.measured_black_levels[1], 
+                        meta.measured_black_levels[2], 
+                        meta.measured_black_levels[3]
+                    )).size(12),
                     text(format!("White: {}", meta.white_level)).size(12),
-                    text(format!("Crops: [T:{}, R:{}, B:{}, L:{}]", 
-                        meta.crops[0], meta.crops[1], meta.crops[2], meta.crops[3])).size(12),
-                ].spacing(2)
+                    text(format!("Crops: {:?}", meta.crops)).size(12),
+                ]
+                .spacing(2)
             } else {
                 column![text("No metadata loaded").size(12)]
             })
