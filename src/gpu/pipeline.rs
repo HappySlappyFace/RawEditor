@@ -80,11 +80,13 @@ struct GpuEditParams {
     // Phase 50: Sharpening
     sharpening: f32,            // Offset 204. Ends at 208.
     
+    // Phase 51: Sharpening Masking
+    sharpen_masking: f32,       // Offset 208. Ends at 212.
+    
     // Padding to reach 224 bytes (16-byte alignment for struct)
-    _pad_phase_1: f32,          // 208
-    _pad_phase_2: f32,          // 212
-    _pad_phase_3: f32,          // 216
-    _pad_phase_4: f32,          // 220
+    _pad_phase_1: f32,          // 212
+    _pad_phase_2: f32,          // 216
+    _pad_phase_3: f32,          // 220
     // Total: 224 bytes
 }
 
@@ -130,10 +132,10 @@ impl From<&EditParams> for GpuEditParams {
             black_phase_y: params.black_phase_y,
             noise_reduction: params.noise_reduction,
             sharpening: params.sharpening,
+            sharpen_masking: params.sharpen_masking,
             _pad_phase_1: 0.0,
             _pad_phase_2: 0.0,
             _pad_phase_3: 0.0,
-            _pad_phase_4: 0.0,
         }
     }
 }

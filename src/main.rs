@@ -177,6 +177,8 @@ enum Message {
     NoiseReductionChanged(f32),
     /// User changed sharpening slider (Phase 50)
     SharpeningChanged(f32),
+    /// User changed sharpen masking slider (Phase 51)
+    SharpenMaskingChanged(f32),
     /// User clicked Reset button to clear all edits
     ResetEdits,
     
@@ -743,6 +745,16 @@ impl RawEditor {
             }
             Message::SharpeningChanged(value) => {
                 self.current_edit_params.sharpening = value;
+                self.save_current_edits();
+                // Phase 25: Update GPU uniforms and invalidate canvas cache
+                if let EditorStatus::Ready(pipeline) = &self.editor_status {
+                    pipeline.update_uniforms(&self.current_edit_params);
+                    self.canvas_cache.clear();
+                }
+                Task::none()
+            }
+            Message::SharpenMaskingChanged(value) => {
+                self.current_edit_params.sharpen_masking = value;
                 self.save_current_edits();
                 // Phase 25: Update GPU uniforms and invalidate canvas cache
                 if let EditorStatus::Ready(pipeline) = &self.editor_status {
@@ -1628,6 +1640,9 @@ impl RawEditor {
                 .step(0.01))
             .push(text(format!("Sharpen: {:.2}", self.current_edit_params.sharpening)).size(12))
             .push(slider(0.0..=2.0, self.current_edit_params.sharpening, Message::SharpeningChanged)
+                .step(0.01))
+            .push(text(format!("Masking: {:.2}", self.current_edit_params.sharpen_masking)).size(12))
+            .push(slider(0.0..=1.0, self.current_edit_params.sharpen_masking, Message::SharpenMaskingChanged)
                 .step(0.01))
             
             // Tone Controls

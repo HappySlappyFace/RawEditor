@@ -120,11 +120,13 @@ struct EditParams {
     // Phase 50: Sharpening
     sharpening: f32,             // Offset 204
     
+    // Phase 51: Sharpening Masking
+    sharpen_masking: f32,        // Offset 208
+    
     // Padding to reach 224 bytes
-    pad_phase_1: f32,            // 208
-    pad_phase_2: f32,            // 212
-    pad_phase_3: f32,            // 216
-    pad_phase_4: f32,            // 220
+    pad_phase_1: f32,            // 212
+    pad_phase_2: f32,            // 216
+    pad_phase_3: f32,            // 220
     // Total: 224 bytes
 }
 
@@ -424,7 +426,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         color.b = y + 1.770 * denoised_u;
     }
     
-    // Phase 50: Unsharp Mask Sharpening (if enabled)
+    // Phase 50-51: Unsharp Mask Sharpening with Edge Masking
     if (params.sharpening > 0.0) {
         // Sample 4 orthogonal neighbors for blur calculation
         let up = debayer(pixel_coords + vec2<i32>(0, -1), dimensions);
@@ -438,8 +440,20 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         // Extract high-frequency detail
         let detail = color - blur;
         
-        // Apply sharpening: add detail back based on strength
-        color = color + (detail * params.sharpening);
+        // Phase 51: Edge-weighted masking to prevent noise amplification
+        // Calculate detail magnitude (edge strength)
+        let detail_luma = length(detail);
+        
+        // Apply smoothstep threshold:
+        // - If masking = 0.0, mask_val = 1.0 (sharpen everything)
+        // - If masking > 0.0, only areas with detail_luma > masking get sharpened
+        // - Soft transition over 0.05 range for smooth falloff
+        let mask_val = smoothstep(params.sharpen_masking, params.sharpen_masking + 0.05, detail_luma);
+        
+        // Apply sharpening weighted by mask
+        // Strong edges: mask_val ≈ 1.0 → full sharpening
+        // Smooth areas: mask_val ≈ 0.0 → no sharpening (noise protected!)
+        color = color + (detail * params.sharpening * mask_val);
     }
     
     // 2. Apply White Balance (normalize sensor response)
