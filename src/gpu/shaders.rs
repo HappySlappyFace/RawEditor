@@ -207,37 +207,88 @@ fn debayer(coords: vec2<i32>, dimensions: vec2<u32>) -> vec3<f32> {
         else { is_red = true; }
     }
     
-    // Simple nearest-neighbor demosaicing
+    // Phase 47: Bilinear Interpolation Demosaicing
+    // For each CFA color, properly interpolate missing channels using 4 neighbors
     var rgb: vec3<f32>;
     
     if (is_red) {
+        // Red pixel: R is native, interpolate G and B
         let r = normalized;
-        let g = (get_neighbor(coords + vec2<i32>(1, 0), dimensions) + 
-                 get_neighbor(coords + vec2<i32>(0, 1), dimensions)) * 0.5;
-        let b = get_neighbor(coords + vec2<i32>(1, 1), dimensions);
+        
+        // Green: Average of 4 orthogonal neighbors (↑↓←→)
+        let g = (
+            get_neighbor(coords + vec2<i32>(0, -1), dimensions) +  // up
+            get_neighbor(coords + vec2<i32>(0, 1), dimensions) +   // down
+            get_neighbor(coords + vec2<i32>(-1, 0), dimensions) +  // left
+            get_neighbor(coords + vec2<i32>(1, 0), dimensions)     // right
+        ) * 0.25;
+        
+        // Blue: Average of 4 diagonal neighbors (↖↗↙↘)
+        let b = (
+            get_neighbor(coords + vec2<i32>(-1, -1), dimensions) + // top-left
+            get_neighbor(coords + vec2<i32>(1, -1), dimensions) +  // top-right
+            get_neighbor(coords + vec2<i32>(-1, 1), dimensions) +  // bottom-left
+            get_neighbor(coords + vec2<i32>(1, 1), dimensions)     // bottom-right
+        ) * 0.25;
+        
         rgb = vec3<f32>(r, g, b);
+        
     } else if (is_even_row && !is_even_col) {
-        // Green Pixel (Red Row)
+        // Green Pixel (Red Row): G is native, R left/right, B top/bottom
         let g = normalized;
-        let r = (get_neighbor(coords - vec2<i32>(1, 0), dimensions) + 
-                 get_neighbor(coords + vec2<i32>(1, 0), dimensions)) * 0.5;
-        let b = (get_neighbor(coords - vec2<i32>(0, 1), dimensions) + // This might be wrong if top edge
-                 get_neighbor(coords + vec2<i32>(0, 1), dimensions)) * 0.5;
+        
+        // Red: Average of left and right neighbors
+        let r = (
+            get_neighbor(coords + vec2<i32>(-1, 0), dimensions) +  // left
+            get_neighbor(coords + vec2<i32>(1, 0), dimensions)     // right
+        ) * 0.5;
+        
+        // Blue: Average of top and bottom neighbors
+        let b = (
+            get_neighbor(coords + vec2<i32>(0, -1), dimensions) +  // top
+            get_neighbor(coords + vec2<i32>(0, 1), dimensions)     // bottom
+        ) * 0.5;
+        
         rgb = vec3<f32>(r, g, b);
+        
     } else if (!is_even_row && is_even_col) {
-        // Green Pixel (Blue Row)
+        // Green Pixel (Blue Row): G is native, B left/right, R top/bottom
         let g = normalized;
-        let r = (get_neighbor(coords - vec2<i32>(0, 1), dimensions) + 
-                 get_neighbor(coords + vec2<i32>(0, 1), dimensions)) * 0.5;
-        let b = (get_neighbor(coords - vec2<i32>(1, 0), dimensions) + 
-                 get_neighbor(coords + vec2<i32>(1, 0), dimensions)) * 0.5;
+        
+        // Red: Average of top and bottom neighbors
+        let r = (
+            get_neighbor(coords + vec2<i32>(0, -1), dimensions) +  // top
+            get_neighbor(coords + vec2<i32>(0, 1), dimensions)     // bottom
+        ) * 0.5;
+        
+        // Blue: Average of left and right neighbors
+        let b = (
+            get_neighbor(coords + vec2<i32>(-1, 0), dimensions) +  // left
+            get_neighbor(coords + vec2<i32>(1, 0), dimensions)     // right
+        ) * 0.5;
+        
         rgb = vec3<f32>(r, g, b);
+        
     } else {
-        // Blue Pixel
+        // Blue pixel: B is native, interpolate G and R
         let b = normalized;
-        let g = (get_neighbor(coords - vec2<i32>(1, 0), dimensions) + 
-                 get_neighbor(coords - vec2<i32>(0, 1), dimensions)) * 0.5;
-        let r = get_neighbor(coords - vec2<i32>(1, 1), dimensions);
+        
+        // Green: Average of 4 orthogonal neighbors (↑↓←→)
+        let g = (
+            get_neighbor(coords + vec2<i32>(0, -1), dimensions) +  // up
+            get_neighbor(coords + vec2<i32>(0, 1), dimensions) +   // down
+            get_neighbor(coords + vec2<i32>(-1, 0), dimensions) +  // left
+            get_neighbor(coords + vec2<i32>(1, 0), dimensions)     // right
+        ) * 0.25;
+        
+        // Red: Average of 4 diagonal neighbors (↖↗↙↘)
+        let r = (
+            get_neighbor(coords + vec2<i32>(-1, -1), dimensions) + // top-left
+            get_neighbor(coords + vec2<i32>(1, -1), dimensions) +  // top-right
+            get_neighbor(coords + vec2<i32>(-1, 1), dimensions) +  // bottom-left
+            get_neighbor(coords + vec2<i32>(1, 1), dimensions)     // bottom-right
+        ) * 0.25;
+        
         rgb = vec3<f32>(r, g, b);
     }
     
