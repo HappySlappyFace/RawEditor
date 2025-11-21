@@ -38,40 +38,23 @@ const XYZ_TO_SRGB: [[f32; 3]; 3] = [
 /// by inverting it and multiplying with the standard XYZ-to-sRGB matrix.
 /// It also performs row normalization to prevent color casts (pink tint).
 ///
-/// # Arguments
 /// * `raw_matrix` - The camera's XYZ to camera RGB matrix (from RAW metadata)
 ///
 /// # Returns
 /// * Camera-to-sRGB conversion matrix as a flat [f32; 9] array (row-major)
 pub fn calculate_cam_to_srgb(raw_matrix: [f32; 9]) -> [f32; 9] {
-    crate::debug_log!(crate::debug::DEBUG_APP, "🎨 Calculating Cam-to-sRGB matrix...");
+    crate::debug_log!(crate::debug::DEBUG_APP, "🎨 Phase 48: Calculating Cam-to-sRGB with Bradford Adaptation...");
 
-    // Step 1: Load raw_matrix into Matrix3 (XYZ_to_Cam)
-    // raw_matrix is usually row-major from the loader, but cgmath expects column-major arguments for new()
-    // However, if we treat the input array as row-major, we need to transpose it or load it carefully.
-    // Let's assume the input `raw_matrix` is row-major: [r0c0, r0c1, r0c2, r1c0, ...]
-    // Matrix3::new takes c0r0, c0r1, c0r2, c1r0...
-    
-    // Let's load it as is and see. Usually these 3x3 matrices are provided as flat lists.
-    // If raw_matrix is [a, b, c, d, e, f, g, h, i]
-    // We want a matrix:
-    // | a b c |
-    // | d e f |
-    // | g h i |
-    //
-    // Matrix3::new(c0r0, c0r1, c0r2, c1r0, c1r1, c1r2, c2r0, c2r1, c2r2)
-    // c0r0 = a, c0r1 = d, c0r2 = g
-    // c1r0 = b, c1r1 = e, c1r2 = h
-    // c2r0 = c, c2r1 = f, c2r2 = i
-    
+    // Step 1: Load xyz_to_cam matrix (Camera's XYZ -> Cam conversion in D50)
+    // Input is row-major [r0c0, r0c1, r0c2, r1c0, ...], cgmath needs column-major
     let xyz_to_cam = Matrix3::new(
         raw_matrix[0], raw_matrix[3], raw_matrix[6], // Column 0
         raw_matrix[1], raw_matrix[4], raw_matrix[7], // Column 1
         raw_matrix[2], raw_matrix[5], raw_matrix[8], // Column 2
     );
 
-    // Step 2: Invert it to get Cam_to_XYZ
-    let cam_to_xyz = match xyz_to_cam.invert() {
+    // Step 2: Invert to get Cam -> XYZ_D50
+    let cam_to_xyz_d50 = match xyz_to_cam.invert() {
         Some(m) => m,
         None => {
             crate::debug_log!(crate::debug::DEBUG_APP, "⚠️ Failed to invert XYZ-to-Cam matrix, using identity");
@@ -79,45 +62,65 @@ pub fn calculate_cam_to_srgb(raw_matrix: [f32; 9]) -> [f32; 9] {
         }
     };
 
-    // Define XYZ to sRGB (D65) matrix
-    // Column-major order for cgmath
+    // Step 3: Bradford Chromatic Adaptation (D50 -> D65)
+    // This is the KEY to preventing green/pink tints!
+    // Standard Bradford matrix from ICC profile specifications
     #[rustfmt::skip]
-    const XYZ_TO_SRGB_MAT: Matrix3<f32> = Matrix3::new(
-         3.2406, -0.9689,  0.0557, // Column 0
-        -1.5372,  1.8758, -0.2040, // Column 1
-        -0.4986,  0.0415,  1.0570, // Column 2
+    const BRADFORD_D50_TO_D65: Matrix3<f32> = Matrix3::new(
+         0.9555766, -0.0282895,  0.0122982, // Column 0
+        -0.0230393,  1.0099416, -0.0204830, // Column 1
+         0.0631636,  0.0210077,  1.3299098, // Column 2
     );
 
-    // Step 3: Multiply XYZ_TO_SRGB * Cam_to_XYZ
-    let unnormalized_matrix = XYZ_TO_SRGB_MAT * cam_to_xyz;
+    // Step 4: XYZ (D65) to sRGB matrix
+    // Standard sRGB transformation matrix
+    #[rustfmt::skip]
+    const XYZ_TO_SRGB: Matrix3<f32> = Matrix3::new(
+         3.2404542, -0.9692660,  0.0556434, // Column 0
+        -1.5371385,  1.8760108, -0.2040259, // Column 1
+        -0.4985314,  0.0415560,  1.0572252, // Column 2
+    );
 
-    // Step 4 (The Fix): Normalize the rows
-    // We need to access rows. In cgmath Matrix3, columns are accessible.
-    // M = | c0.x c1.x c2.x |
-    //     | c0.y c1.y c2.y |
-    //     | c0.z c1.z c2.z |
+    // Step 5: Chain transformations: Cam -> XYZ_D50 -> XYZ_D65 -> sRGB
+    let mut final_matrix = XYZ_TO_SRGB * BRADFORD_D50_TO_D65 * cam_to_xyz_d50;
+
+    // Step 6: CRITICAL - Normalize rows to prevent pink tint!
+    // Each row sum should equal 1.0 so that neutral (1,1,1) -> (1,1,1)
+    // This prevents highlights from clipping incorrectly
     
     // Row 0: (c0.x, c1.x, c2.x)
-    let r0_sum = unnormalized_matrix.x.x + unnormalized_matrix.y.x + unnormalized_matrix.z.x;
+    let r0_sum = final_matrix.x.x + final_matrix.y.x + final_matrix.z.x;
     // Row 1: (c0.y, c1.y, c2.y)
-    let r1_sum = unnormalized_matrix.x.y + unnormalized_matrix.y.y + unnormalized_matrix.z.y;
+    let r1_sum = final_matrix.x.y + final_matrix.y.y + final_matrix.z.y;
     // Row 2: (c0.z, c1.z, c2.z)
-    let r2_sum = unnormalized_matrix.x.z + unnormalized_matrix.y.z + unnormalized_matrix.z.z;
+    let r2_sum = final_matrix.x.z + final_matrix.y.z + final_matrix.z.z;
 
-    // Avoid division by zero
-    let r0_scale = if r0_sum.abs() > 1e-6 { 1.0 / r0_sum } else { 1.0 };
-    let r1_scale = if r1_sum.abs() > 1e-6 { 1.0 / r1_sum } else { 1.0 };
-    let r2_scale = if r2_sum.abs() > 1e-6 { 1.0 / r2_sum } else { 1.0 };
+    // Normalize each row (avoid division by zero)
+    if r0_sum.abs() > 1e-6 {
+        final_matrix.x.x /= r0_sum;
+        final_matrix.y.x /= r0_sum;
+        final_matrix.z.x /= r0_sum;
+    }
+    if r1_sum.abs() > 1e-6 {
+        final_matrix.x.y /= r1_sum;
+        final_matrix.y.y /= r1_sum;
+        final_matrix.z.y /= r1_sum;
+    }
+    if r2_sum.abs() > 1e-6 {
+        final_matrix.x.z /= r2_sum;
+        final_matrix.y.z /= r2_sum;
+        final_matrix.z.z /= r2_sum;
+    }
 
-    // Construct the final normalized matrix
-    // We return a flat array [r0c0, r0c1, r0c2, r1c0...]
+    // Convert back to flat row-major array [r0c0, r0c1, r0c2, r1c0...]
     let result = [
-        unnormalized_matrix.x.x * r0_scale, unnormalized_matrix.y.x * r0_scale, unnormalized_matrix.z.x * r0_scale,
-        unnormalized_matrix.x.y * r1_scale, unnormalized_matrix.y.y * r1_scale, unnormalized_matrix.z.y * r1_scale,
-        unnormalized_matrix.x.z * r2_scale, unnormalized_matrix.y.z * r2_scale, unnormalized_matrix.z.z * r2_scale,
+        final_matrix.x.x, final_matrix.y.x, final_matrix.z.x, // Row 0
+        final_matrix.x.y, final_matrix.y.y, final_matrix.z.y, // Row 1
+        final_matrix.x.z, final_matrix.y.z, final_matrix.z.z, // Row 2
     ];
 
-    crate::debug_log!(crate::debug::DEBUG_APP, "✅ Calculated Cam-to-sRGB matrix (normalized)");
+    crate::debug_log!(crate::debug::DEBUG_APP, "✅ Bradford-adapted Cam-to-sRGB matrix calculated");
+    crate::debug_log!(crate::debug::DEBUG_APP, "   Row sums: {:.4}, {:.4}, {:.4}", r0_sum, r1_sum, r2_sum);
     
     result
 }
@@ -153,7 +156,7 @@ mod tests {
             0.0, 0.0, 1.0,
         ];
         
-        let result = calculate_cam_to_srgb_matrix(xyz_to_cam);
+        let result = calculate_cam_to_srgb(xyz_to_cam);
         
         // Result should not be all zeros
         assert!(result.iter().any(|&x| x != 0.0));
