@@ -105,6 +105,14 @@ pub struct EditParams {
     /// - 1.0 = sharpen only strong edges (protect smooth areas)
     /// - Phase 51: Edge-weighted sharpening to prevent noise amplification
     pub sharpen_masking: f32,
+    
+    // ========== Geometry ==========
+    
+    /// Rotation angle in degrees (-45.0 to +45.0)
+    /// - Negative = counter-clockwise
+    /// - Positive = clockwise
+    /// - Phase 52: Straighten horizons
+    pub rotation: f32,
 }
 
 impl Default for EditParams {
@@ -128,6 +136,7 @@ impl Default for EditParams {
             noise_reduction: 0.0,  // Phase 49: No noise reduction by default
             sharpening: 0.0,       // Phase 50: No sharpening by default
             sharpen_masking: 0.0,  // Phase 51: No masking by default
+            rotation: 0.0,         // Phase 52: No rotation by default
         }
     }
 }

@@ -123,10 +123,12 @@ struct EditParams {
     // Phase 51: Sharpening Masking
     sharpen_masking: f32,        // Offset 208
     
+    // Phase 52: Rotation
+    rotation: f32,               // Offset 212
+    
     // Padding to reach 224 bytes
-    pad_phase_1: f32,            // 212
-    pad_phase_2: f32,            // 216
-    pad_phase_3: f32,            // 220
+    pad_phase_1: f32,            // 216
+    pad_phase_2: f32,            // 220
     // Total: 224 bytes
 }
 
@@ -367,13 +369,52 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         return vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
     
+    // Phase 52: Apply rotation to texture coordinates
+    var tex_coords = input.tex_coords;
+    
+    if (abs(params.rotation) > 0.01) {
+        // Get texture dimensions for aspect ratio
+        let dimensions = textureDimensions(input_texture);
+        let aspect = f32(dimensions.x) / f32(dimensions.y);
+        
+        // Convert degrees to radians
+        let angle_rad = params.rotation * 3.14159265359 / 180.0;
+        let cos_a = cos(angle_rad);
+        let sin_a = sin(angle_rad);
+        
+        // Translate to origin (center of rotation at 0.5, 0.5)
+        var centered = tex_coords - vec2<f32>(0.5, 0.5);
+        
+        // Scale to square space (compensate for aspect ratio)
+        centered.x *= aspect;
+        
+        // Apply 2D rotation matrix in square space
+        let rotated = vec2<f32>(
+            centered.x * cos_a - centered.y * sin_a,
+            centered.x * sin_a + centered.y * cos_a
+        );
+        
+        // Scale back from square space
+        var unscaled = rotated;
+        unscaled.x /= aspect;
+        
+        // Translate back
+        tex_coords = unscaled + vec2<f32>(0.5, 0.5);
+        
+        // Bounds check: if rotated coordinates are outside [0, 1], return black
+        if (tex_coords.x < 0.0 || tex_coords.x > 1.0 ||
+            tex_coords.y < 0.0 || tex_coords.y > 1.0) {
+            return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+        }
+    }
+    
     // Get texture dimensions
     let dimensions = textureDimensions(input_texture);
     
     // Convert normalized texture coordinates to pixel coordinates
     let pixel_coords = vec2<i32>(
-        i32(input.tex_coords.x * f32(dimensions.x)),
-        i32(input.tex_coords.y * f32(dimensions.y))
+        i32(tex_coords.x * f32(dimensions.x)),
+        i32(tex_coords.y * f32(dimensions.y))
     );
     
     // Phase 14: Color Science Pipeline (in correct order!)

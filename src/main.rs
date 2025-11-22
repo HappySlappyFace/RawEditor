@@ -179,6 +179,8 @@ enum Message {
     SharpeningChanged(f32),
     /// User changed sharpen masking slider (Phase 51)
     SharpenMaskingChanged(f32),
+    /// User changed rotation slider (Phase 52)
+    RotationChanged(f32),
     /// User clicked Reset button to clear all edits
     ResetEdits,
     
@@ -755,6 +757,16 @@ impl RawEditor {
             }
             Message::SharpenMaskingChanged(value) => {
                 self.current_edit_params.sharpen_masking = value;
+                self.save_current_edits();
+                // Phase 25: Update GPU uniforms and invalidate canvas cache
+                if let EditorStatus::Ready(pipeline) = &self.editor_status {
+                    pipeline.update_uniforms(&self.current_edit_params);
+                    self.canvas_cache.clear();
+                }
+                Task::none()
+            }
+            Message::RotationChanged(value) => {
+                self.current_edit_params.rotation = value;
                 self.save_current_edits();
                 // Phase 25: Update GPU uniforms and invalidate canvas cache
                 if let EditorStatus::Ready(pipeline) = &self.editor_status {
@@ -1644,6 +1656,12 @@ impl RawEditor {
             .push(text(format!("Masking: {:.2}", self.current_edit_params.sharpen_masking)).size(12))
             .push(slider(0.0..=1.0, self.current_edit_params.sharpen_masking, Message::SharpenMaskingChanged)
                 .step(0.01))
+            
+            // Phase 52: Geometry
+            .push(text("Geometry").size(14))
+            .push(text(format!("Rotate: {:.1}°", self.current_edit_params.rotation)).size(12))
+            .push(slider(-45.0..=45.0, self.current_edit_params.rotation, Message::RotationChanged)
+                .step(0.1))
             
             // Tone Controls
             .push(text(format!("Whites: {:.2}", self.current_edit_params.whites)))
