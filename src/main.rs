@@ -1,5 +1,5 @@
 use iced::{Background, Border, Color, Element, Task, Theme, Point};
-use iced::widget::{button, column, container, row, scrollable, text, Image, slider, canvas, checkbox};
+use iced::widget::{button, column, container, row, scrollable, text, Image, slider, canvas, checkbox, Container};
 use iced::{Alignment, Length};
 use iced::widget::image::Handle;
 use iced_aw::Wrap;
@@ -1939,14 +1939,25 @@ impl RawEditor {
         }
 
         // Otherwise, show Header + (Main | Sidebar)
-        column![
-            header,
+        let editor_content = column![ header,
             row![
                 main_content,
                 sidebar_container,
             ]
             .spacing(0)
             .height(Length::Fill),
+        ]
+        .width(Length::Fill)
+        .height(Length::Fill);
+        
+        // Phase 53: Add filmstrip timeline at bottom
+        let filmstrip = ui::filmstrip::view(&self.images, self.selected_image_id);
+        
+        column![
+            editor_content,
+            Container::new(filmstrip)
+                .width(Length::Fill)
+                .height(Length::Fixed(140.0))
         ]
         .width(Length::Fill)
         .height(Length::Fill)
