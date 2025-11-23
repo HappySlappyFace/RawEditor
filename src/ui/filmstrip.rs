@@ -22,48 +22,41 @@ pub fn view<'a>(images: &'a [Image], selected_id: Option<i64>) -> Element<'a, Me
         // Get thumbnail path (256px cache)
         let thumb_path = PathBuf::from(thumb_path_str);
         
-        // Create image widget
+        // Create image widget - larger to fill vertical space
         let img_widget = image(thumb_path)
-            .width(Length::Fixed(120.0))
-            .height(Length::Fixed(80.0));
+            .width(Length::Fixed(140.0))   // Wider
+            .height(Length::Fixed(105.0));  // Taller to fill filmstrip
         
-        // Wrap in container for border styling
+        // Wrap in container for selection styling
         let thumbnail_container = container(img_widget)
-            .padding(6)  // Padding so border is visible
-            .style(move |theme: &Theme| {
+            .padding(iced::Padding {
+                top: 4.0,      // Top padding
+                right: 16.0,    // Creates 4px gap between images (2+2)
+                bottom: 4.0,   // Bottom padding
+                left: 16.0,     // Creates 4px gap between images (2+2)
+            })
+            .style(move |_theme: &Theme| {
                 if is_selected {
-                    // Selected: thick bright border
+                    // Selected: light grey background only (no border)
                     container::Style {
-                        border: Border {
-                            color: Color::from_rgb(0.3, 0.6, 1.0), // Blue
-                            width: 6.0,
-                            radius: 4.0.into(),
-                        },
-                        background: Some(Background::Color(Color::from_rgb(0.15, 0.15, 0.2))),
+                        background: Some(Background::Color(Color::from_rgb(0.3, 0.3, 0.3))),
                         ..Default::default()
                     }
                 } else {
-                    // Unselected: subtle border
-                    container::Style {
-                        border: Border {
-                            color: Color::from_rgb(0.3, 0.3, 0.3),
-                            width: 1.0,
-                            radius: 4.0.into(),
-                        },
-                        // background: Some(Background::Color(Color::from_rgb(0.1, 0.1, 0.1))),
-                        ..Default::default()
-                    }
+                    // Unselected: no styling
+                    container::Style::default()
                 }
             });
         
         // Wrap in button for clicking
         let thumbnail_button = button(thumbnail_container)
+            .padding(0)  // Remove button's default padding
             .on_press(Message::ImageSelected(img.id))
-            .style(|theme: &Theme, status| {
+            .style(|_theme: &Theme, status| {
                 button::Style {
                     background: None,
                     border: Border::default(),
-                    ..button::primary(theme, status)
+                    ..button::primary(_theme, status)
                 }
             })
             .into(); // Convert to Element
@@ -71,15 +64,47 @@ pub fn view<'a>(images: &'a [Image], selected_id: Option<i64>) -> Element<'a, Me
         thumbnails.push(thumbnail_button);
     }
 
-    // Create row from thumbnails
-    let film_row = row(thumbnails).spacing(0).padding(5);
+    // Create row from thumbnails - minimal spacing
+    let film_row = row(thumbnails)
+        .spacing(0)
+        .padding(iced::Padding {
+            top: 2.0,
+            right: 0.0,
+            bottom: 10.0,  // Extra space for scrollbar
+            left: 0.0,
+        });
     // Make it scrollable horizontally
     let scrollable_film = scrollable(film_row)
         .direction(scrollable::Direction::Horizontal(
             scrollable::Scrollbar::new()
                 .width(8)
                 .scroller_width(8)
-        ));
+        ))
+        .style(|_theme: &Theme, _status| {
+            scrollable::Style {
+                container: container::Style {
+                    background: Some(Background::Color(Color::from_rgb(0.08, 0.08, 0.08))),
+                    ..Default::default()
+                },
+                vertical_rail: scrollable::Rail {
+                    background: None,
+                    border: Border::default(),
+                    scroller: scrollable::Scroller {
+                        color: Color::from_rgb(0.3, 0.3, 0.3),
+                        border: Border::default(),
+                    },
+                },
+                horizontal_rail: scrollable::Rail {
+                    background: Some(Background::Color(Color::from_rgb(0.1, 0.1, 0.1))), // Track color
+                    border: Border::default(),
+                    scroller: scrollable::Scroller {
+                        color: Color::from_rgb(0.4, 0.4, 0.4), // Draggable scroller color
+                        border: Border::default(),
+                    },
+                },
+                gap: None,
+            }
+        });
     
     // Dark background container (no padding to avoid wasted space)
     container(scrollable_film)
