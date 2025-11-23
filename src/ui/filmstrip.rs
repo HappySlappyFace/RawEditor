@@ -29,13 +29,14 @@ pub fn view<'a>(images: &'a [Image], selected_id: Option<i64>) -> Element<'a, Me
         
         // Wrap in container for border styling
         let thumbnail_container = container(img_widget)
+            .padding(6)  // Padding so border is visible
             .style(move |theme: &Theme| {
                 if is_selected {
                     // Selected: thick bright border
                     container::Style {
                         border: Border {
                             color: Color::from_rgb(0.3, 0.6, 1.0), // Blue
-                            width: 3.0,
+                            width: 6.0,
                             radius: 4.0.into(),
                         },
                         background: Some(Background::Color(Color::from_rgb(0.15, 0.15, 0.2))),
@@ -49,7 +50,7 @@ pub fn view<'a>(images: &'a [Image], selected_id: Option<i64>) -> Element<'a, Me
                             width: 1.0,
                             radius: 4.0.into(),
                         },
-                        background: Some(Background::Color(Color::from_rgb(0.1, 0.1, 0.1))),
+                        // background: Some(Background::Color(Color::from_rgb(0.1, 0.1, 0.1))),
                         ..Default::default()
                     }
                 }
@@ -71,7 +72,7 @@ pub fn view<'a>(images: &'a [Image], selected_id: Option<i64>) -> Element<'a, Me
     }
 
     // Create row from thumbnails
-    let film_row = row(thumbnails).spacing(10).padding(10);
+    let film_row = row(thumbnails).spacing(0).padding(5);
     // Make it scrollable horizontally
     let scrollable_film = scrollable(film_row)
         .direction(scrollable::Direction::Horizontal(
@@ -80,11 +81,12 @@ pub fn view<'a>(images: &'a [Image], selected_id: Option<i64>) -> Element<'a, Me
                 .scroller_width(8)
         ));
     
-    // Dark background container
+    // Dark background container (no padding to avoid wasted space)
     container(scrollable_film)
         .width(Length::Fill)
         .height(Length::Fill)
-        .style(|theme: &Theme| {
+        .padding(0)
+        .style(|_theme: &Theme| {
             container::Style {
                 background: Some(Background::Color(Color::from_rgb(0.08, 0.08, 0.08))),
                 ..Default::default()

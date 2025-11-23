@@ -1957,7 +1957,7 @@ impl RawEditor {
             editor_content,
             Container::new(filmstrip)
                 .width(Length::Fill)
-                .height(Length::Fixed(140.0))
+                .height(Length::Fixed(110.0))  // Reduced from 140px
         ]
         .width(Length::Fill)
         .height(Length::Fill)
