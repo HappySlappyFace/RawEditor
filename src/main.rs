@@ -120,6 +120,8 @@ struct RawEditor {
     working_preview: Option<Handle>,
     /// Phase 41: Current image metadata for inspection
     current_metadata: Option<raw::loader::RawDataResult>,
+    /// Phase 54: Edit settings clipboard for copy/paste
+    edit_clipboard: Option<state::edit::EditParams>,
 }
 
 /// Application messages (events)
@@ -183,6 +185,12 @@ enum Message {
     RotationChanged(f32),
     /// User clicked Reset button to clear all edits
     ResetEdits,
+    
+    // ========== Phase 54: Settings Clipboard ==========
+    /// Copy current edit settings to clipboard (Ctrl/Cmd+C)
+    CopySettings,
+    /// Paste edit settings from clipboard (Ctrl/Cmd+V)
+    PasteSettings,
     
     // ========== Phase 24: Workflow Messages ==========
     /// Toggle Before/After view (Spacebar)
@@ -292,10 +300,11 @@ impl RawEditor {
                 last_click_time: None,
                 viewport_size: (800.0, 600.0), // Default fallback
                 working_preview: None,
+                edit_clipboard: None,  // Phase 54: No clipboard initially
             },
             // Phase 23: Trigger database loading in background
             Task::perform(
-                state::library::load_database(db_path.display().to_string()), 
+                load_database_async(), 
                 Message::DatabaseLoaded
             )
         )
@@ -797,6 +806,44 @@ impl RawEditor {
                 Task::none()
             }
             
+            // ========== Phase 54: Settings Clipboard Handlers ==========
+            
+            Message::CopySettings => {
+                // Copy current edit parameters to clipboard
+                self.edit_clipboard = Some(self.current_edit_params);
+                self.status = "Settings copied!".to_string();
+                println!("📋 Copied edit settings to clipboard");
+                Task::none()
+            }
+            
+            Message::PasteSettings => {
+                // Paste edit parameters from clipboard
+                if let Some(clipboard_params) = self.edit_clipboard {
+                    // Overwrite current parameters
+                    self.current_edit_params = clipboard_params;
+                    
+                    // Save to database immediately
+                    if let Some(library) = &self.library {
+                        if let Some(image_id) = self.selected_image_id {
+                            let _ = library.save_edit_params(image_id, &self.current_edit_params);
+                            println!("💾 Pasted and saved settings for image {}", image_id);
+                        }
+                    }
+                    
+                    // Update GPU uniforms and refresh render
+                    if let EditorStatus::Ready(pipeline) = &self.editor_status {
+                        pipeline.update_uniforms(&self.current_edit_params);
+                        self.canvas_cache.clear();
+                        self.histogram_cache.clear();
+                    }
+                    
+                    self.status = "Settings pasted!".to_string();
+                } else {
+                    self.status = "No settings in clipboard".to_string();
+                }
+                Task::none()
+            }
+            
             // ========== Phase 24: Workflow Message Handlers ==========
             
             Message::ToggleBeforeAfter => {
@@ -1224,7 +1271,19 @@ impl RawEditor {
         use iced::keyboard::key::Named;
         
         iced::event::listen_with(|event, _status, _window| {
-            if let iced::Event::Keyboard(keyboard::Event::KeyPressed { key, .. }) = event {
+            if let iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) = event {
+                // Phase 54: Check for Ctrl/Cmd+C (Copy) and Ctrl/Cmd+V (Paste)
+                let ctrl_or_cmd = modifiers.command();
+                
+                if ctrl_or_cmd {
+                    match key.as_ref() {
+                        keyboard::Key::Character("c") | keyboard::Key::Character("C") => return Some(Message::CopySettings),
+                        keyboard::Key::Character("v") | keyboard::Key::Character("V") => return Some(Message::PasteSettings),
+                        _ => {}
+                    }
+                }
+                
+                // Other keyboard shortcuts (Phase 24)
                 match key.as_ref() {
                     keyboard::Key::Named(Named::Space) => Some(Message::ToggleBeforeAfter),
                     keyboard::Key::Character("r") | keyboard::Key::Character("R") => Some(Message::ResetEdits),
@@ -1612,6 +1671,16 @@ impl RawEditor {
             sidebar = sidebar.push(hist);
         }
         
+        // Phase 54: Copy/Paste Settings buttons
+        let copy_paste_row = row![
+            button("Copy").on_press(Message::CopySettings),
+            button(if self.edit_clipboard.is_some() { "Paste" } else { "Paste (Empty)" })
+                .on_press_maybe(self.edit_clipboard.map(|_| Message::PasteSettings))
+        ]
+        .spacing(10);
+        sidebar = sidebar.push(copy_paste_row);
+        
+
         let sidebar = sidebar
             // Exposure
             .push(text(format!("Exposure: {:.2}", self.current_edit_params.exposure)))
