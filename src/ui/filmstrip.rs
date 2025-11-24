@@ -1,12 +1,14 @@
 use iced::widget::{button, container, image, row, scrollable};
 use iced::{Background, Border, Color, Element, Length, Theme};
 use std::path::PathBuf;
+use std::collections::HashSet;  // Phase 55: Multi-selection
 
 use crate::state::data::Image;
 use crate::Message;
 
 /// Render the filmstrip timeline at the bottom of the Develop tab
-pub fn view<'a>(images: &'a [Image], selected_id: Option<i64>) -> Element<'a, Message> {
+/// Phase 55: Now accepts HashSet for multi-selection
+pub fn view<'a>(images: &'a [Image], selection: &HashSet<i64>) -> Element<'a, Message> {
     // Build row with thumbnails
     let mut thumbnails = Vec::new();
 
@@ -17,7 +19,8 @@ pub fn view<'a>(images: &'a [Image], selected_id: Option<i64>) -> Element<'a, Me
             None => continue, // Skip this image
         };
         
-        let is_selected = Some(img.id) == selected_id;
+        // Phase 55: Check if image is in selection set
+        let is_selected = selection.contains(&img.id);
         
         // Get thumbnail path (256px cache)
         let thumb_path = PathBuf::from(thumb_path_str);

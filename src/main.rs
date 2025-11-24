@@ -8,6 +8,7 @@ use rfd::FileDialog;
 use rusqlite::{Connection, ErrorCode};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::collections::HashSet;  // Phase 55: Multi-selection
 use walkdir::WalkDir;
 use chrono::Utc;
 // use crate::canvas;
@@ -122,6 +123,10 @@ struct RawEditor {
     current_metadata: Option<raw::loader::RawDataResult>,
     /// Phase 54: Edit settings clipboard for copy/paste
     edit_clipboard: Option<state::edit::EditParams>,
+    /// Phase 55: Multi-selection set (image IDs)
+    multi_selection: HashSet<i64>,
+    /// Phase 55: Track modifier keys for Ctrl/Cmd+Click
+    last_modifiers: iced::keyboard::Modifiers,
 }
 
 /// Application messages (events)
@@ -191,6 +196,10 @@ enum Message {
     CopySettings,
     /// Paste edit settings from clipboard (Ctrl/Cmd+V)
     PasteSettings,
+    
+    // ========== Phase 55: Multi-Selection ==========
+    /// Modifier keys changed (for Ctrl/Cmd+Click detection)
+    ModifiersChanged(iced::keyboard::Modifiers),
     
     // ========== Phase 24: Workflow Messages ==========
     /// Toggle Before/After view (Spacebar)
@@ -280,7 +289,6 @@ impl RawEditor {
         (
             RawEditor { 
                 library: None, // Phase 23: Database loads in background
-                current_metadata: None,
                 status: "Initializing...".to_string(),
                 images: Vec::new(), // Empty until database loads
                 selected_image_id: None,
@@ -298,9 +306,12 @@ impl RawEditor {
                 is_dragging: false,
                 last_cursor_position: None,
                 last_click_time: None,
-                viewport_size: (800.0, 600.0), // Default fallback
+                viewport_size: (800.0, 600.0),
                 working_preview: None,
-                edit_clipboard: None,  // Phase 54: No clipboard initially
+                current_metadata: None,
+                edit_clipboard: None,
+                multi_selection: HashSet::new(),
+                last_modifiers: iced::keyboard::Modifiers::default(),
             },
             // Phase 23: Trigger database loading in background
             Task::perform(
@@ -497,10 +508,25 @@ impl RawEditor {
                 Task::none()
             }
             Message::ImageSelected(image_id) => {
+                // Phase 55: Multi-selection logic
+                if self.last_modifiers.command() {
+                    // Ctrl/Cmd+Click: Toggle in multi-selection
+                    if !self.multi_selection.remove(&image_id) {
+                        // Wasn't in set, add it
+                        self.multi_selection.insert(image_id);
+                    }
+                    println!("🔘 Toggled image {} in selection (total: {})", image_id, self.multi_selection.len());
+                } else {
+                    // Normal click: Reset to single selection
+                    self.multi_selection.clear();
+                    self.multi_selection.insert(image_id);
+                    println!("✨ Selected image {} (single selection)", image_id);
+                }
+                
+                // Always update selected_image_id for "hot swap"
                 // Phase 20: INSTANT selection - just update state, don't load anything!
                 // Loading is deferred until user switches to Develop tab
                 self.selected_image_id = Some(image_id);
-                println!("✨ Selected image ID: {} (instant!)", image_id);
                 
                 // Phase 25: Clear canvas cache since we're switching to a different image
                 self.canvas_cache.clear();
@@ -817,30 +843,45 @@ impl RawEditor {
             }
             
             Message::PasteSettings => {
-                // Paste edit parameters from clipboard
+                // Phase 55: Paste edit parameters to ALL selected images
                 if let Some(clipboard_params) = self.edit_clipboard {
-                    // Overwrite current parameters
+                    // Overwrite current parameters (for the displayed image)
                     self.current_edit_params = clipboard_params;
                     
-                    // Save to database immediately
+                    // Save to ALL selected images (batch operation)
                     if let Some(library) = &self.library {
-                        if let Some(image_id) = self.selected_image_id {
-                            let _ = library.save_edit_params(image_id, &self.current_edit_params);
-                            println!("💾 Pasted and saved settings for image {}", image_id);
+                        let count = self.multi_selection.len();
+                        for &image_id in &self.multi_selection {
+                            let _ = library.save_edit_params(image_id, &clipboard_params);
                         }
+                        println!("💾 Pasted settings to {} image(s)", count);
                     }
                     
-                    // Update GPU uniforms and refresh render
+                    // Update GPU uniforms and refresh render (for currently displayed image)
                     if let EditorStatus::Ready(pipeline) = &self.editor_status {
                         pipeline.update_uniforms(&self.current_edit_params);
                         self.canvas_cache.clear();
                         self.histogram_cache.clear();
                     }
                     
-                    self.status = "Settings pasted!".to_string();
+                    let count = self.multi_selection.len();
+                    self.status = if count > 1 {
+                        format!("Settings pasted to {} images!", count)
+                    } else {
+                        "Settings pasted!".to_string()
+                    };
                 } else {
                     self.status = "No settings in clipboard".to_string();
                 }
+                Task::none()
+            }
+
+            
+            // ========== Phase 55: Multi-Selection Handlers ==========
+            
+            Message::ModifiersChanged(modifiers) => {
+                // Track modifier keys for Ctrl/Cmd+Click detection
+                self.last_modifiers = modifiers;
                 Task::none()
             }
             
@@ -1271,6 +1312,11 @@ impl RawEditor {
         use iced::keyboard::key::Named;
         
         iced::event::listen_with(|event, _status, _window| {
+            // Phase 55: Track modifier key changes for Ctrl/Cmd+Click
+            if let iced::Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) = event {
+                return Some(Message::ModifiersChanged(modifiers));
+            }
+            
             if let iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) = event {
                 // Phase 54: Check for Ctrl/Cmd+C (Copy) and Ctrl/Cmd+V (Paste)
                 let ctrl_or_cmd = modifiers.command();
@@ -1296,7 +1342,7 @@ impl RawEditor {
             }
         })
     }
-
+    
     /// Build the user interface
     fn view(&self) -> Element<Message> {
         // Phase 23: Show splash screen if database is still loading
@@ -2020,7 +2066,7 @@ impl RawEditor {
         .height(Length::Fill);
         
         // Phase 53: Add filmstrip timeline at bottom
-        let filmstrip = ui::filmstrip::view(&self.images, self.selected_image_id);
+        let filmstrip = ui::filmstrip::view(&self.images, &self.multi_selection);
         
         column![
             editor_content,
