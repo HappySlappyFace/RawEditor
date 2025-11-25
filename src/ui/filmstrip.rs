@@ -5,6 +5,7 @@ use std::collections::HashSet;  // Phase 55: Multi-selection
 
 use crate::state::data::Image;
 use crate::Message;
+use crate::ui::icons;  // Phase 58: Icon constants
 
 /// Render the filmstrip timeline at the bottom of the Develop tab
 /// Phase 55: Now accepts HashSet for multi-selection
@@ -32,8 +33,9 @@ pub fn view<'a>(images: &'a [Image], selection: &HashSet<i64>) -> Element<'a, Me
         
         // Phase 56: Overlay star rating on bottom-left corner
         let rating_overlay = if img.rating > 0 {
+            let stars_text = vec![icons::STAR; img.rating as usize].join(" ");
             container(
-                text("★".repeat(img.rating as usize))
+                text(stars_text)  // Space between stars
                     .size(14)
                     .color(Color::from_rgb(1.0, 0.8, 0.2))  // Gold
                     .font(crate::ICON_FONT)  // Phase 57: Use embedded font
