@@ -27,6 +27,10 @@ use state::data::Image as ImageData;
 // Phase 15: Color space conversion
 
 
+// Phase 57: Embedded font for icons and typography
+const ICON_FONT: iced::Font = iced::Font::with_name("JetBrainsMono Nerd Font");
+const ICON_FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/icons.ttf");
+
 /// Result of a folder import operation
 #[derive(Debug, Clone)]
 struct ImportResult {
@@ -2216,6 +2220,8 @@ fn main() -> iced::Result {
     )
     .theme(RawEditor::theme)
     .subscription(RawEditor::subscription) // Phase 24: Enable keyboard shortcuts
+    .font(ICON_FONT_BYTES)  // Phase 57: Load embedded font
+    .default_font(ICON_FONT)  // Phase 57: Set as default
     // Phase 23: Window settings - start with normal window (has title bar)
     // Note: iced::application() uses a single window throughout
     // To have a separate splash window, you'd need the multi-window API

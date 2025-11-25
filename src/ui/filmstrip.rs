@@ -36,6 +36,7 @@ pub fn view<'a>(images: &'a [Image], selection: &HashSet<i64>) -> Element<'a, Me
                 text("★".repeat(img.rating as usize))
                     .size(14)
                     .color(Color::from_rgb(1.0, 0.8, 0.2))  // Gold
+                    .font(crate::ICON_FONT)  // Phase 57: Use embedded font
             )
             .padding(iced::Padding {
                 top: 0.0,
