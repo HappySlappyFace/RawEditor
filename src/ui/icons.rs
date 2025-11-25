@@ -23,3 +23,15 @@ pub const ERROR: &str = "\u{f071}";
 
 /// Rocket icon
 pub const ROCKET: &str = "\u{f135}";
+
+/// Hourglass/loading icon
+pub const HOURGLASS: &str = "\u{f252}";
+
+/// Book/library icon
+pub const BOOK: &str = "\u{f02d}";
+
+/// Paintbrush/art icon (more common than palette)
+pub const PAINTBRUSH: &str = "\u{f1fc}";
+
+/// Times/close/X icon
+pub const TIMES: &str = "\u{f00d}";

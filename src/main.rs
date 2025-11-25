@@ -508,7 +508,7 @@ impl RawEditor {
                         );
                     } else {
                         // All done!
-                        self.status = format!("✅ All cache tiers generated! ({} images)", self.images.len());
+                        self.status = format!("{} All cache tiers generated! ({} images)", ui::icons::CHECK, self.images.len());
                         println!("🎉 Phase 28: All images cached with 3 tiers!");
                     }
                 }
@@ -1474,14 +1474,15 @@ impl RawEditor {
                         color: Some(Color::from_rgb(0.8, 0.8, 0.8)),
                     }),
                 Space::with_height(15.0),
-                text("⏳")
+                text(ui::icons::HOURGLASS)
                     .size(32)
+                    .font(ICON_FONT)
                     .center()
                     .style(|_theme| text::Style {
                         color: Some(Color::from_rgb(0.5, 0.7, 1.0)),
                     }),
                 Space::with_height(Length::Fill),
-                text("Version 0.1.5")
+                text("Version 0.3")
                     .size(11)
                     .center()
                     .style(|_theme| text::Style {
@@ -1514,8 +1515,10 @@ impl RawEditor {
     fn view_main(&self) -> Element<Message> {
         // Tab navigation bar
         let library_button = button(
-            text("📚 Library")
-                .size(16)
+            row![
+                text(ui::icons::BOOK).font(ICON_FONT).size(16),
+                text(" Library").size(16)
+            ]
         )
         .on_press(Message::TabChanged(AppTab::Library))
         .padding(12);
@@ -1527,8 +1530,10 @@ impl RawEditor {
         };
         
         let develop_button = button(
-            text("🎨 Develop")
-                .size(16)
+            row![
+                text(ui::icons::PAINTBRUSH).font(ICON_FONT).size(16),
+                text(" Develop").size(16)
+            ]
         )
         .on_press(Message::TabChanged(AppTab::Develop))
         .padding(12);
@@ -1575,7 +1580,7 @@ impl RawEditor {
         
         // Header for grid pane
         let grid_header = column![
-            text("RAW Editor v0.1.5 - Zoom and panning")
+            text("RAW Editor v0.3 - Culling features")
                 .size(24),
             button("Import Folder")
                 .on_press(Message::ImportFolder)
@@ -1601,7 +1606,7 @@ impl RawEditor {
                     // Show deleted file indicator with grey background
                     container(
                         column![
-                            text("❌").size(24),
+                            text(ui::icons::TIMES).size(24).font(ICON_FONT),
                             text(&img.filename).size(8),
                             text("(deleted)").size(7),
                         ]
@@ -1648,7 +1653,7 @@ impl RawEditor {
                 } else {
                     // Show placeholder for pending thumbnails with grey background
                     container(
-                        text("⏳").size(48)
+                        text(ui::icons::HOURGLASS).size(48).font(ICON_FONT)
                     )
                     .width(THUMB_SIZE)
                     .height(THUMB_SIZE)
@@ -1706,17 +1711,20 @@ impl RawEditor {
 
         // 2. Build the Header (always visible if image selected)
         let header = if let Some(img) = current_image {
-            let status_text = match &self.editor_status {
-                EditorStatus::Ready(_) => "🎨 GPU Rendering + Debayering",
-                EditorStatus::Loading(_) => "⌛ Loading RAW Data...",
-                EditorStatus::Failed(_, _) => "❌ Error Loading Image",
-                _ => "",
+            let (status_icon, status_text) = match &self.editor_status {
+                EditorStatus::Ready(_) => (ui::icons::PAINTBRUSH, "GPU Rendering + Debayering"),
+                EditorStatus::Loading(_) => (ui::icons::HOURGLASS, "Loading RAW Data..."),
+                EditorStatus::Failed(_, _) => (ui::icons::TIMES, "Error Loading Image"),
+                _ => ("", ""),
             };
 
             row![
                 text(&img.filename).size(18),
                 text(" • ").size(18),
-                text(status_text).size(18),
+                row![
+                    text(status_icon).font(ICON_FONT).size(18),
+                    text(format!(" {}", status_text)).size(18)
+                ],
             ]
             .spacing(5)
             .padding(10)
@@ -1910,12 +1918,20 @@ impl RawEditor {
                 // Create loading overlay
                 let overlay = container(
                     column![
-                        text("⌛ Loading RAW...").size(14)
-                            .style(|theme: &Theme| {
-                                text::Style {
-                                    color: Some(Color::WHITE),
-                                }
-                            }),
+                        row![
+                            text(ui::icons::HOURGLASS).font(ICON_FONT).size(14)
+                                .style(|theme: &Theme| {
+                                    text::Style {
+                                        color: Some(Color::WHITE),
+                                    }
+                                }),
+                            text(" Loading RAW...").size(14)
+                                .style(|theme: &Theme| {
+                                    text::Style {
+                                        color: Some(Color::WHITE),
+                                    }
+                                })
+                        ],
                     ]
                     .padding(8)
                 )
@@ -1968,7 +1984,10 @@ impl RawEditor {
                 // For failed state, we return None handle and an error overlay
                 let overlay = container(
                     column![
-                        text("❌ Preview Failed").size(24),
+                        row![
+                            text(ui::icons::TIMES).font(ICON_FONT).size(24),
+                            text(" Preview Failed").size(24)
+                        ],
                         text("").size(20),
                         text(error.clone())
                             .size(14)

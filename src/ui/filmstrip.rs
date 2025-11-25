@@ -35,10 +35,28 @@ pub fn view<'a>(images: &'a [Image], selection: &HashSet<i64>) -> Element<'a, Me
         let rating_overlay = if img.rating > 0 {
             let stars_text = vec![icons::STAR; img.rating as usize].join(" ");
             container(
-                text(stars_text)  // Space between stars
-                    .size(14)
-                    .color(Color::from_rgb(1.0, 0.8, 0.2))  // Gold
-                    .font(crate::ICON_FONT)  // Phase 57: Use embedded font
+                container(
+                    text(stars_text)  // Space between stars
+                        .size(14)
+                        .color(Color::from_rgb(1.0, 0.8, 0.2))  // Gold
+                        .font(crate::ICON_FONT)  // Phase 57: Use embedded font
+                )
+                .padding(iced::Padding {
+                    top: 2.0,
+                    right: 4.0,
+                    bottom: 2.0,
+                    left: 4.0,
+                })
+                .style(|_theme: &Theme| {
+                    container::Style {
+                        background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.6))),  // Dark semi-transparent
+                        border: Border {
+                            radius: 3.0.into(),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }
+                })
             )
             .padding(iced::Padding {
                 top: 0.0,
