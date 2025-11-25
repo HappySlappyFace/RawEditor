@@ -201,6 +201,10 @@ enum Message {
     /// Modifier keys changed (for Ctrl/Cmd+Click detection)
     ModifiersChanged(iced::keyboard::Modifiers),
     
+    // ========== Phase 56: Ratings & Culling ==========
+    /// Set star rating (0-5) for selected image(s)
+    SetRating(u8),
+    
     // ========== Phase 24: Workflow Messages ==========
     /// Toggle Before/After view (Spacebar)
     ToggleBeforeAfter,
@@ -885,6 +889,42 @@ impl RawEditor {
                 Task::none()
             }
             
+            // ========== Phase 56: Ratings & Culling Handlers ==========
+            
+            Message::SetRating(rating) => {
+                // Batch support: apply to all selected images
+                let target_ids: Vec<i64> = if !self.multi_selection.is_empty() {
+                    self.multi_selection.iter().copied().collect()
+                } else if let Some(id) = self.selected_image_id {
+                    vec![id]
+                } else {
+                    vec![]
+                };
+                
+                if let Some(library) = &self.library {
+                    for &id in &target_ids {
+                        // Update database
+                        let _ = library.set_image_rating(id, rating);
+                        // Update in-memory
+                        if let Some(img) = self.images.iter_mut().find(|i| i.id == id) {
+                            img.rating = rating;
+                        }
+                    }
+                }
+                
+                let count = target_ids.len();
+                let stars = "★".repeat(rating as usize);
+                self.status = if count > 0 {
+                    format!("Rated {} image(s): {}", count, if rating > 0 { &stars } else { "None" })
+                } else {
+                    "No image selected".to_string()
+                };
+                
+                println!("⭐ Set rating {} for {} image(s)", rating, count);
+                Task::none()
+            }
+            
+
             // ========== Phase 24: Workflow Message Handlers ==========
             
             Message::ToggleBeforeAfter => {
@@ -1335,6 +1375,13 @@ impl RawEditor {
                     keyboard::Key::Character("r") | keyboard::Key::Character("R") => Some(Message::ResetEdits),
                     keyboard::Key::Named(Named::ArrowRight) => Some(Message::SelectNextImage),
                     keyboard::Key::Named(Named::ArrowLeft) => Some(Message::SelectPreviousImage),
+                    // Phase 56: Ratings 0-5
+                    keyboard::Key::Character("0") => Some(Message::SetRating(0)),
+                    keyboard::Key::Character("1") => Some(Message::SetRating(1)),
+                    keyboard::Key::Character("2") => Some(Message::SetRating(2)),
+                    keyboard::Key::Character("3") => Some(Message::SetRating(3)),
+                    keyboard::Key::Character("4") => Some(Message::SetRating(4)),
+                    keyboard::Key::Character("5") => Some(Message::SetRating(5)),
                     _ => None,
                 }
             } else {
@@ -2072,7 +2119,7 @@ impl RawEditor {
             editor_content,
             Container::new(filmstrip)
                 .width(Length::Fill)
-                .height(Length::Fixed(110.0))  // Reduced from 140px
+                .height(Length::Fixed(145.0))  // Phase 56: Increased for star ratings
         ]
         .width(Length::Fill)
         .height(Length::Fill)

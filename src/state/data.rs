@@ -20,4 +20,6 @@ pub struct Image {
     pub cache_path_working: Option<String>,
     /// File status: 'exists' or 'deleted'
     pub file_status: String,
+    /// Phase 56: Star rating (0-5)
+    pub rating: u8,
 }

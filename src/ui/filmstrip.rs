@@ -1,4 +1,4 @@
-use iced::widget::{button, container, image, row, scrollable};
+use iced::widget::{button, container, image, row, scrollable, text, column};
 use iced::{Background, Border, Color, Element, Length, Theme};
 use std::path::PathBuf;
 use std::collections::HashSet;  // Phase 55: Multi-selection
@@ -27,11 +27,28 @@ pub fn view<'a>(images: &'a [Image], selection: &HashSet<i64>) -> Element<'a, Me
         
         // Create image widget - larger to fill vertical space
         let img_widget = image(thumb_path)
-            .width(Length::Fixed(140.0))   // Wider
-            .height(Length::Fixed(105.0));  // Taller to fill filmstrip
+            .width(Length::Fixed(140.0))
+            .height(Length::Fixed(105.0));
+        
+        // Phase 56: Add star rating display below image
+        let rating_row = if img.rating > 0 {
+            row![text("★".repeat(img.rating as usize))
+                .size(12)
+                .color(Color::from_rgb(1.0, 0.8, 0.2))]  // Gold color
+                .align_y(iced::Alignment::Center)
+                .height(Length::Fixed(14.0))
+        } else {
+            row![].height(Length::Fixed(14.0))  // Empty placeholder for alignment
+        };
+        
+        // Combine image and rating in column
+        let thumbnail_content = iced::widget::column![
+            img_widget,
+            rating_row
+        ];
         
         // Wrap in container for selection styling
-        let thumbnail_container = container(img_widget)
+        let thumbnail_container = container(thumbnail_content)
             .padding(iced::Padding {
                 top: 4.0,      // Top padding
                 right: 16.0,    // Creates 4px gap between images (2+2)

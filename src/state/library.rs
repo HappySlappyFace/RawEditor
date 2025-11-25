@@ -104,7 +104,14 @@ impl Library {
             "ALTER TABLE images ADD COLUMN cache_path_working TEXT",  // 1280px
             [],
         );
-
+        
+        // Phase 56: Ratings & Culling
+        // Add rating column for 0-5 star ratings
+        let _ = self.conn.execute(
+            "ALTER TABLE images ADD COLUMN rating INTEGER DEFAULT 0",
+            [],
+        );
+        
         // Add file_status column for tracking deleted files
         let _ = self.conn.execute(
             "ALTER TABLE images ADD COLUMN file_status TEXT DEFAULT 'exists'",
@@ -165,7 +172,7 @@ impl Library {
     /// Returns a vector of Image structs ordered by import date (newest first)
     pub fn get_all_images(&self) -> SqlResult<Vec<Image>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, filename, path, cache_path_thumb, cache_path_instant, cache_path_working, COALESCE(file_status, 'exists') 
+            "SELECT id, filename, path, cache_path_thumb, cache_path_instant, cache_path_working, COALESCE(file_status, 'exists'), COALESCE(rating, 0) 
              FROM images 
              ORDER BY imported_at DESC"
         )?;
@@ -179,6 +186,7 @@ impl Library {
                 cache_path_instant: row.get(4)?,
                 cache_path_working: row.get(5)?,
                 file_status: row.get(6)?,
+                rating: row.get(7)?,  // Phase 56
             })
         })?;
         
@@ -191,9 +199,9 @@ impl Library {
     }
 
     /// Get images that need thumbnail generation (cache_status = 'pending')
-    pub fn get_pending_thumbnails(&self, limit: usize) -> SqlResult<Vec<Image>> {
+    pub fn get_pending_images(&self, limit: usize) -> SqlResult<Vec<Image>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, filename, path, cache_path_thumb, cache_path_instant, cache_path_working, COALESCE(file_status, 'exists') 
+            "SELECT id, filename, path, cache_path_thumb, cache_path_instant, cache_path_working, COALESCE(file_status, 'exists'), COALESCE(rating, 0) 
              FROM images 
              WHERE cache_status = 'pending' 
              LIMIT ?1"
@@ -208,6 +216,7 @@ impl Library {
                 cache_path_instant: row.get(4)?,
                 cache_path_working: row.get(5)?,
                 file_status: row.get(6)?,
+                rating: row.get(7)?,  // Phase 56
             })
         })?;
 
@@ -367,6 +376,15 @@ impl Library {
         self.conn.execute(
             "DELETE FROM edits WHERE image_id = ?1",
             [image_id],
+        )?;
+        Ok(())
+    }
+    
+    /// Phase 56: Set star rating for an image (0-5)
+    pub fn set_image_rating(&self, image_id: i64, rating: u8) -> SqlResult<()> {
+        self.conn.execute(
+            "UPDATE images SET rating = ?1 WHERE id = ?2",
+            rusqlite::params![rating, image_id],
         )?;
         Ok(())
     }
