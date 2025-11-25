@@ -2119,7 +2119,7 @@ impl RawEditor {
             editor_content,
             Container::new(filmstrip)
                 .width(Length::Fill)
-                .height(Length::Fixed(145.0))  // Phase 56: Increased for star ratings
+                .height(Length::Fixed(115.0))  // Phase 56: Compact with overlaid stars
         ]
         .width(Length::Fill)
         .height(Length::Fill)

@@ -1,4 +1,4 @@
-use iced::widget::{button, container, image, row, scrollable, text, column};
+use iced::widget::{button, container, image, row, scrollable, text, stack};
 use iced::{Background, Border, Color, Element, Length, Theme};
 use std::path::PathBuf;
 use std::collections::HashSet;  // Phase 55: Multi-selection
@@ -25,26 +25,36 @@ pub fn view<'a>(images: &'a [Image], selection: &HashSet<i64>) -> Element<'a, Me
         // Get thumbnail path (256px cache)
         let thumb_path = PathBuf::from(thumb_path_str);
         
-        // Create image widget - larger to fill vertical space
+        // Create image widget
         let img_widget = image(thumb_path)
             .width(Length::Fixed(140.0))
             .height(Length::Fixed(105.0));
         
-        // Phase 56: Add star rating display below image
-        let rating_row = if img.rating > 0 {
-            row![text("★".repeat(img.rating as usize))
-                .size(12)
-                .color(Color::from_rgb(1.0, 0.8, 0.2))]  // Gold color
-                .align_y(iced::Alignment::Center)
-                .height(Length::Fixed(14.0))
+        // Phase 56: Overlay star rating on bottom-left corner
+        let rating_overlay = if img.rating > 0 {
+            container(
+                text("★".repeat(img.rating as usize))
+                    .size(14)
+                    .color(Color::from_rgb(1.0, 0.8, 0.2))  // Gold
+            )
+            .padding(iced::Padding {
+                top: 0.0,
+                right: 0.0,
+                bottom: 2.0,  // 2px from bottom
+                left: 2.0,    // 2px from left
+            })
+            .align_y(iced::alignment::Vertical::Bottom)
+            .align_x(iced::alignment::Horizontal::Left)
+            .width(Length::Fill)
+            .height(Length::Fill)
         } else {
-            row![].height(Length::Fixed(14.0))  // Empty placeholder for alignment
+            container(text("")).width(Length::Fill).height(Length::Fill)
         };
         
-        // Combine image and rating in column
-        let thumbnail_content = iced::widget::column![
+        // Stack image with rating overlay
+        let thumbnail_content = stack![
             img_widget,
-            rating_row
+            rating_overlay
         ];
         
         // Wrap in container for selection styling
