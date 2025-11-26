@@ -8,7 +8,7 @@ use rfd::FileDialog;
 use rusqlite::{Connection, ErrorCode};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::collections::HashSet;  // Phase 55: Multi-selection
+use std::collections::{HashMap, HashSet};  // Phase 55: Multi-selection
 use walkdir::WalkDir;
 use chrono::Utc;
 // use crate::canvas;
@@ -135,6 +135,8 @@ struct RawEditor {
     min_filter_rating: u8,
     /// Phase 60: Toggle for HUD overlay (ISO, Shutter, etc.)
     show_info_hud: bool,
+    /// Phase 65: Undo/Redo History Map<ImageID, (HistoryStack, CurrentIndex)>
+    history_map: HashMap<i64, (Vec<state::edit::EditParams>, usize)>,
 }
 
 /// Helper for creating a professional slider row
@@ -156,7 +158,8 @@ where
         slider(range, value, on_change)
             .step(step)
             .width(Length::Fill)
-            .style(crate::ui::styles::ProSlider::style),
+            .style(crate::ui::styles::ProSlider::style)
+            .on_release(Message::CommitEdit), // Phase 65: Commit edit on release
         text(format!("{:.2}", value))
             .width(Length::Fixed(40.0))
             .size(13)
@@ -229,8 +232,14 @@ enum Message {
     RotationChanged(f32),
     /// User clicked Reset button to clear all edits
     ResetEdits,
+    // Phase 63: Copy/Paste Edits
     CopyEdits,
     PasteEdits,
+    
+    // Phase 65: Undo/Redo
+    Undo,
+    Redo,
+    CommitEdit,
     
     // ========== Phase 54: Settings Clipboard ==========
     /// Copy current edit settings to clipboard (Ctrl/Cmd+C)
@@ -378,7 +387,7 @@ impl RawEditor {
                 last_modifiers: iced::keyboard::Modifiers::default(),
                 min_filter_rating: 0,  // Phase 59: Start with "show all"
                 show_info_hud: false,  // Phase 60: HUD hidden by default
-
+                history_map: HashMap::new(), // Phase 65: Undo/Redo History
             },
             // Phase 23: Trigger database loading in background
             Task::perform(
@@ -386,6 +395,23 @@ impl RawEditor {
                 Message::DatabaseLoaded
             )
         )
+    }
+
+    // Phase 65: Undo/Redo Helper
+    // Returns a mutable reference to the (Stack, Index) tuple for the current image.
+    // Initializes it if missing.
+    fn get_current_history(&mut self) -> Option<&mut (Vec<state::edit::EditParams>, usize)> {
+        if let Some(image_id) = self.selected_image_id {
+            // Ensure entry exists
+            self.history_map.entry(image_id).or_insert_with(|| {
+                // Initial state is the current params
+                (vec![self.current_edit_params.clone()], 0)
+            });
+            
+            self.history_map.get_mut(&image_id)
+        } else {
+            None
+        }
     }
 
     /// Handle application messages and update state
@@ -606,6 +632,11 @@ impl RawEditor {
                     if !self.current_edit_params.is_unedited() {
                         println!("📝 Loaded existing edits for image {}", image_id);
                     }
+                    
+                    // Phase 65: Initialize history for this image if needed
+                    self.history_map.entry(image_id).or_insert_with(|| {
+                        (vec![self.current_edit_params.clone()], 0)
+                    });
                 }
                 
                 // Phase 24: If already on Develop tab, reload RAW data for new image
@@ -877,6 +908,78 @@ impl RawEditor {
                 }
                 Task::none()
             }
+            // Phase 65: Undo/Redo
+            Message::CommitEdit => {
+                let params_to_push = self.current_edit_params.clone();
+                if let Some((stack, index)) = self.get_current_history() {
+                    // Truncate any redo history
+                    stack.truncate(*index + 1);
+                    
+                    // Push new state
+                    stack.push(params_to_push);
+                    *index += 1;
+                    
+                    println!("📝 Commit Edit: Stack size {}, Index {}", stack.len(), *index);
+                }
+                Task::none()
+            }
+            
+            Message::Undo => {
+                let new_params = if let Some((stack, index)) = self.get_current_history() {
+                    if *index > 0 {
+                        *index -= 1;
+                        println!("↩️ Undo: Index {}", *index);
+                        Some(stack[*index].clone())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                
+                if let Some(params) = new_params {
+                    self.current_edit_params = params;
+                    // Trigger update pipeline
+                    if let EditorStatus::Ready(pipeline) = &mut self.editor_status {
+                        pipeline.update_uniforms(&self.current_edit_params);
+                    }
+                    self.canvas_cache.clear();
+                    self.histogram_cache.clear();
+                    self.save_current_edits();
+                    Task::none()
+                } else {
+                    Task::none()
+                }
+            }
+            
+            Message::Redo => {
+                let new_params = if let Some((stack, index)) = self.get_current_history() {
+                    if *index < stack.len() - 1 {
+                        *index += 1;
+                        println!("↪️ Redo: Index {}", *index);
+                        Some(stack[*index].clone())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                
+                if let Some(params) = new_params {
+                    self.current_edit_params = params;
+                    // Trigger update pipeline
+                    if let EditorStatus::Ready(pipeline) = &mut self.editor_status {
+                        pipeline.update_uniforms(&self.current_edit_params);
+                    }
+                    self.canvas_cache.clear();
+                    self.histogram_cache.clear();
+                    self.save_current_edits();
+                    Task::none()
+                } else {
+                    Task::none()
+                }
+            }
+
             Message::CopyEdits => {
                 self.edit_clipboard = Some(self.current_edit_params.clone());
                 Task::none()
@@ -1472,6 +1575,14 @@ impl RawEditor {
                     match key.as_ref() {
                         keyboard::Key::Character("c") | keyboard::Key::Character("C") => return Some(Message::CopySettings),
                         keyboard::Key::Character("v") | keyboard::Key::Character("V") => return Some(Message::PasteSettings),
+                        // Phase 65: Undo/Redo Shortcuts
+                        keyboard::Key::Character("z") | keyboard::Key::Character("Z") => {
+                            if modifiers.shift() {
+                                return Some(Message::Redo);
+                            } else {
+                                return Some(Message::Undo);
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -2105,6 +2216,7 @@ impl RawEditor {
             sidebar = sidebar.push(hist);
         }
         
+        // Phase 54: Copy/Paste Shortcuts
         // Phase 54: Copy/Paste Settings buttons - Removed (Duplicate)
         
         let sidebar = sidebar
