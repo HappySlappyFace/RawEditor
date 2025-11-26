@@ -1,4 +1,5 @@
-use iced::{Background, Border, Color, Element, Task, Theme, Point};
+use iced::{Background, Border, Color, Element, Task, Theme, Point, Font};
+use iced::font::Weight;
 use iced::widget::{button, column, container, row, scrollable, text, Image, slider, canvas, checkbox, Container, stack};
 use iced::{Alignment, Length};
 use iced::widget::image::Handle;
@@ -230,6 +231,8 @@ enum Message {
     SharpenMaskingChanged(f32),
     /// User changed rotation slider (Phase 52)
     RotationChanged(f32),
+    /// User changed crop rectangle (Phase 66)
+    SetCrop([f32; 4]),
     /// User clicked Reset button to clear all edits
     ResetEdits,
     // Phase 63: Copy/Paste Edits
@@ -924,6 +927,23 @@ impl RawEditor {
                 }
                 Task::none()
             }
+            
+            // Phase 66: Crop Handler
+            Message::SetCrop(crop) => {
+                self.current_edit_params.crop = crop;
+                self.save_current_edits();
+                
+                if let EditorStatus::Ready(pipeline) = &self.editor_status {
+                    pipeline.update_uniforms(&self.current_edit_params);
+                    self.canvas_cache.clear();
+                    self.histogram_cache.clear(); // Crop changes histogram!
+                }
+                
+                // Commit to history
+                self.commit_current_state();
+                
+                Task::none()
+            }
             // Phase 65: Undo/Redo
             Message::CommitEdit => {
                 self.commit_current_state();
@@ -1565,6 +1585,26 @@ impl RawEditor {
                     println!("💾 Saved edits for image {}", image_id);
                 }
             }
+        }
+    }
+    
+    /// Phase 66: Helper to calculate a center crop for a target aspect ratio
+    /// Returns [x, y, w, h] in normalized coordinates (0.0 to 1.0)
+    fn calculate_center_crop(target_ratio: f32, image_w: u32, image_h: u32) -> [f32; 4] {
+        let image_ratio = image_w as f32 / image_h as f32;
+        
+        if image_ratio > target_ratio {
+            // Image is wider than target: Crop width (sides)
+            // h = 1.0, w = target / image
+            let w = target_ratio / image_ratio;
+            let x = (1.0 - w) / 2.0;
+            [x, 0.0, w, 1.0]
+        } else {
+            // Image is taller than target: Crop height (top/bottom)
+            // w = 1.0, h = image / target
+            let h = image_ratio / target_ratio;
+            let y = (1.0 - h) / 2.0;
+            [0.0, y, 1.0, h]
         }
     }
     
@@ -2288,6 +2328,47 @@ impl RawEditor {
                 ]
                 .spacing(10)
                 .width(Length::Fill)
+            )
+            
+            // Phase 66: Crop
+            .push(text("Crop").size(14).font(Font { weight: Weight::Bold, ..Default::default() }))
+            .push(
+                row![
+                    button(text("Reset").size(12))
+                        .style(ui::styles::NeutralButton::style)
+                        .on_press(Message::SetCrop([0.0, 0.0, 1.0, 1.0])),
+                    
+                    button(text("1:1").size(12))
+                        .style(ui::styles::NeutralButton::style)
+                        .on_press_maybe(
+                            if let EditorStatus::Ready(pipeline) = &self.editor_status {
+                                Some(Message::SetCrop(Self::calculate_center_crop(1.0, pipeline.width, pipeline.height)))
+                            } else {
+                                None
+                            }
+                        ),
+                        
+                    button(text("16:9").size(12))
+                        .style(ui::styles::NeutralButton::style)
+                        .on_press_maybe(
+                            if let EditorStatus::Ready(pipeline) = &self.editor_status {
+                                Some(Message::SetCrop(Self::calculate_center_crop(16.0/9.0, pipeline.width, pipeline.height)))
+                            } else {
+                                None
+                            }
+                        ),
+                        
+                    button(text("2:3").size(12))
+                        .style(ui::styles::NeutralButton::style)
+                        .on_press_maybe(
+                            if let EditorStatus::Ready(pipeline) = &self.editor_status {
+                                Some(Message::SetCrop(Self::calculate_center_crop(2.0/3.0, pipeline.width, pipeline.height)))
+                            } else {
+                                None
+                            }
+                        ),
+                ]
+                .spacing(5)
             );
             
         let mut sidebar = sidebar;
@@ -2406,7 +2487,33 @@ impl RawEditor {
                 };
                 
                 pipeline.update_uniforms_with_zoom(&params_to_render, self.zoom, self.pan_offset.x, self.pan_offset.y);
-                let rgba_bytes = pipeline.render_to_bytes();
+                
+                // Phase 66: Calculate dynamic preview size based on crop
+                // This ensures correct aspect ratio AND "digital zoom" (higher detail when cropped)
+                let crop = params_to_render.crop;
+                let crop_w = crop[2];
+                let crop_h = crop[3];
+                
+                // Calculate aspect ratio of the CROP
+                // AR = (OriginalW * CropW) / (OriginalH * CropH)
+                let original_aspect = pipeline.width as f32 / pipeline.height as f32;
+                let crop_aspect = original_aspect * (crop_w / crop_h);
+                
+                // Determine target dimensions (max 1280px on long edge)
+                const MAX_PREVIEW_SIZE: u32 = 1280;
+                let (target_w, target_h) = if crop_aspect > 1.0 {
+                    // Landscape
+                    let w = MAX_PREVIEW_SIZE;
+                    let h = (w as f32 / crop_aspect) as u32;
+                    (w, h)
+                } else {
+                    // Portrait
+                    let h = MAX_PREVIEW_SIZE;
+                    let w = (h as f32 * crop_aspect) as u32;
+                    (w, h)
+                };
+                
+                let rgba_bytes = pipeline.render_to_bytes(target_w, target_h);
                 
                 // Phase 22: Histogram
                 if self.histogram_enabled {
@@ -2417,8 +2524,8 @@ impl RawEditor {
                 }
                 
                 let handle = iced::widget::image::Handle::from_rgba(
-                    pipeline.preview_width,
-                    pipeline.preview_height,
+                    target_w,
+                    target_h,
                     rgba_bytes
                 );
                 

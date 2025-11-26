@@ -89,7 +89,10 @@ struct GpuEditParams {
     // Padding to reach 224 bytes (16-byte alignment for struct)
     _pad_phase_1: f32,          // 216
     _pad_phase_2: f32,          // 220
-    // Total: 224 bytes
+    
+    // Phase 66: Crop (vec4 alignment = 16 bytes)
+    crop: [f32; 4],             // Offset 224. Ends at 240.
+    // Total: 240 bytes
 }
 
 impl From<&EditParams> for GpuEditParams {
@@ -138,6 +141,7 @@ impl From<&EditParams> for GpuEditParams {
             rotation: params.rotation,
             _pad_phase_1: 0.0,
             _pad_phase_2: 0.0,
+            crop: params.crop,
         }
     }
 }
@@ -463,12 +467,15 @@ impl RenderPipeline {
         gpu_params.cfa_pattern = self.cfa_pattern;
         gpu_params.black_levels = self.black_levels;
         gpu_params.white_level = self.white_level;
+        // Phase 66: Set crop
+        gpu_params.crop = params.crop;
         
         crate::debug_log!(crate::debug::DEBUG_GPU, "🎨 GPU Uniforms Updated:");
         crate::debug_log!(crate::debug::DEBUG_GPU, "   Exposure: {:.2}, Contrast: {:.0}", gpu_params.exposure, gpu_params.contrast);
         crate::debug_log!(crate::debug::DEBUG_GPU, "   Highlights: {:.0}, Shadows: {:.0}", gpu_params.highlights, gpu_params.shadows);
         crate::debug_log!(crate::debug::DEBUG_GPU, "   Temp: {}, Tint: {}", gpu_params.temperature, gpu_params.tint);
         crate::debug_log!(crate::debug::DEBUG_GPU, "   Zoom: {:.1}%, Pan: ({:.3}, {:.3})", zoom * 100.0, pan_x, pan_y);
+        crate::debug_log!(crate::debug::DEBUG_GPU, "   Crop: {:?}", gpu_params.crop);
         
         self.queue.write_buffer(
             &self.uniform_buffer,
@@ -519,13 +526,14 @@ impl RenderPipeline {
     
     /// Phase 13: Render to preview resolution for fast updates
     /// Renders full RAW texture to smaller output (GPU downsamples automatically)
-    pub fn render_to_bytes(&self) -> Vec<u8> {
+    /// Phase 66: Added width/height args to support dynamic aspect ratios for cropping
+    pub fn render_to_bytes(&self, width: u32, height: u32) -> Vec<u8> {
         // Create PREVIEW-SIZED output texture (Phase 13 optimization!)
         let output_texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Output Texture (Preview)"),
             size: wgpu::Extent3d {
-                width: self.preview_width,   // Preview size, not full!
-                height: self.preview_height,  // Preview size, not full!
+                width,
+                height,
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -542,12 +550,12 @@ impl RenderPipeline {
         });
         
         // Render to PREVIEW texture (GPU rasterizer auto-downsamples from full res input)
-        self.render_to_target(&mut encoder, &output_view, (self.preview_width, self.preview_height));
+        self.render_to_target(&mut encoder, &output_view, (width, height));
         
         // Readback from PREVIEW buffer (much smaller!)
-        let bytes_per_row = self.preview_width * 4;
+        let bytes_per_row = width * 4;
         let padded_bytes_per_row = (bytes_per_row + 255) & !255;
-        let buffer_size = (padded_bytes_per_row * self.preview_height) as u64;
+        let buffer_size = (padded_bytes_per_row * height) as u64;
         
         let output_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Output Buffer"),
@@ -568,12 +576,12 @@ impl RenderPipeline {
                 layout: wgpu::ImageDataLayout {
                     offset: 0,
                     bytes_per_row: Some(padded_bytes_per_row),
-                    rows_per_image: Some(self.preview_height),  // Preview, not full!
+                    rows_per_image: Some(height),
                 },
             },
             wgpu::Extent3d {
-                width: self.preview_width,   // Preview, not full!
-                height: self.preview_height,  // Preview, not full!
+                width,
+                height,
                 depth_or_array_layers: 1,
             },
         );
@@ -589,10 +597,10 @@ impl RenderPipeline {
         rx.recv().unwrap().unwrap();
         
         let data = buffer_slice.get_mapped_range();
-        let mut output = Vec::with_capacity((self.preview_width * self.preview_height * 4) as usize);
-        for y in 0..self.preview_height {  // Preview, not full!
+        let mut output = Vec::with_capacity((width * height * 4) as usize);
+        for y in 0..height {
             let start = (y * padded_bytes_per_row) as usize;
-            let end = start + (self.preview_width * 4) as usize;  // Preview, not full!
+            let end = start + (width * 4) as usize;
             output.extend_from_slice(&data[start..end]);
         }
         

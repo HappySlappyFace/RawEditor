@@ -113,6 +113,13 @@ pub struct EditParams {
     /// - Positive = clockwise
     /// - Phase 52: Straighten horizons
     pub rotation: f32,
+    
+    // ========== Phase 66: Crop ==========
+    
+    /// Crop rectangle [x, y, width, height]
+    /// - Normalized coordinates (0.0 to 1.0)
+    /// - Defines the visible sub-rectangle of the image
+    pub crop: [f32; 4],
 }
 
 impl Default for EditParams {
@@ -137,6 +144,7 @@ impl Default for EditParams {
             sharpening: 0.0,       // Phase 50: No sharpening by default
             sharpen_masking: 0.0,  // Phase 51: No masking by default
             rotation: 0.0,         // Phase 52: No rotation by default
+            crop: [0.0, 0.0, 1.0, 1.0], // Phase 66: Full image by default
         }
     }
 }

@@ -54,6 +54,12 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     tex_x += 0.5;
     tex_y += 0.5;
     
+    // Phase 66: Apply Crop
+    // Map the viewport (0-1) to the sub-rectangle defined by crop params
+    // crop.xy = offset, crop.zw = size
+    tex_x = params.crop.x + (tex_x * params.crop.z);
+    tex_y = params.crop.y + (tex_y * params.crop.w);
+    
     output.tex_coords = vec2<f32>(tex_x, tex_y);
     
     return output;
@@ -129,7 +135,10 @@ struct EditParams {
     // Padding to reach 224 bytes
     pad_phase_1: f32,            // 216
     pad_phase_2: f32,            // 220
-    // Total: 224 bytes
+    
+    // Phase 66: Crop (vec4 alignment = 16 bytes)
+    crop: vec4<f32>,             // Offset 224. Ends at 240.
+    // Total: 240 bytes
 }
 
 @group(0) @binding(0)
