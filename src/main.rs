@@ -1,4 +1,4 @@
-use iced::{Background, Border, Color, Element, Task, Theme, Point, Font};
+use iced::{Background, Border, Color, Element, Task, Theme, Point, Font, Rectangle};
 use iced::font::Weight;
 use iced::widget::{button, column, container, row, scrollable, text, Image, slider, canvas, checkbox, Container, stack};
 use iced::{Alignment, Length};
@@ -24,6 +24,7 @@ mod color;  // Phase 15: Color space conversion utilities
 
 // Import shared data structures (alias to avoid conflict with iced's image widget)
 use state::data::Image as ImageData;
+use crate::ui::preview_renderer::CropHandle;
 
 // Phase 15: Color space conversion
 
@@ -149,16 +150,7 @@ struct RawEditor {
 enum DragMode {
     None,
     Pan,
-    CropHandle(CropHandle),
-}
-
-/// Phase 67: Crop handles
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum CropHandle {
-    TopLeft,
-    TopRight,
-    BottomLeft,
-    BottomRight,
+    CropHandle(crate::ui::preview_renderer::CropHandle),
 }
 
 /// Helper for creating a professional slider row
@@ -258,6 +250,7 @@ enum Message {
     ResetEdits,
     // Phase 67: Interactive Crop
     ToggleCropMode,
+    CropHandleGrabbed(crate::ui::preview_renderer::CropHandle, Rectangle),
     // Phase 63: Copy/Paste Edits
     CopyEdits,
     PasteEdits,
@@ -1050,6 +1043,22 @@ impl RawEditor {
                 self.canvas_cache.clear();
                 Task::none()
             }
+            
+            Message::CropHandleGrabbed(handle, bounds) => {
+                println!("✂️  Grabbed handle: {:?} (Bounds: {:?})", handle, bounds);
+                self.drag_mode = DragMode::CropHandle(handle);
+                self.is_dragging = true;
+                
+                // Store the bounds for accurate dragging
+                // We'll reuse viewport_size to store the image bounds width/height temporarily
+                // or just rely on the fact that we have the bounds now.
+                // Actually, we need to pass these bounds to the drag logic.
+                // Let's store them in viewport_size for now as a hack, or add a new field.
+                // Since we're in crop mode, viewport_size isn't being updated by mouse moves as aggressively.
+                self.viewport_size = (bounds.width, bounds.height);
+                
+                Task::none()
+            }
 
             // Phase 65: Undo/Redo
             Message::CommitEdit => {
@@ -1459,13 +1468,7 @@ impl RawEditor {
                 
                 // Phase 67: If cropping, handle interaction
                 if self.is_cropping {
-                    if let Some(last_pos) = self.last_cursor_position {
-                        if let Some(handle) = self.detect_crop_handle(last_pos) {
-                            println!("✂️  Dragging handle: {:?}", handle);
-                            self.drag_mode = DragMode::CropHandle(handle);
-                            self.is_dragging = true;
-                        }
-                    }
+                    // Handled by PreviewRenderer -> CropHandleGrabbed
                     return Task::none();
                 }
 
@@ -1515,28 +1518,101 @@ impl RawEditor {
                 // If dragging, calculate delta
                 if self.is_dragging {
                     if let Some(last_pos) = self.last_cursor_position {
-                                1.0 / pipeline.preview_width as f32,
-                                1.0 / pipeline.preview_height as f32,
-                            )
-                        } else {
-                            (0.001, 0.001)
-                        };
+                        let delta = current_position - last_pos;
                         
-                        let delta = cgmath::Vector2::new(
-                            delta_x * sensitivity_x,
-                            delta_y * sensitivity_y,
-                        );
-                        
-                        // Update cursor position AFTER calculating delta
-                        self.last_cursor_position = Some(current_position);
-                        
-                        // Send Pan message
-                        return self.update(Message::Pan(delta));
+                        match self.drag_mode {
+                            DragMode::Pan => {
+                                // Calculate delta in screen pixels
+                                let delta_x = delta.x;
+                                let delta_y = delta.y;
+                                
+                                // Phase 26: Pan sensitivity using image dimensions (not viewport)
+                                // Pan offset is in normalized image coordinates
+                                let (sensitivity_x, sensitivity_y) = if let EditorStatus::Ready(pipeline) = &self.editor_status {
+                                    (
+                                        1.0 / pipeline.preview_width as f32,
+                                        1.0 / pipeline.preview_height as f32,
+                                    )
+                                } else {
+                                    (0.001, 0.001)
+                                };
+                                
+                                let pan_delta = cgmath::Vector2::new(
+                                    delta_x * sensitivity_x,
+                                    delta_y * sensitivity_y,
+                                );
+                                
+                                // Update cursor position AFTER calculating delta
+                                self.last_cursor_position = Some(current_position);
+                                
+                                // Send Pan message
+                                return self.update(Message::Pan(pan_delta));
+                            }
+                            DragMode::CropHandle(handle) => {
+                                // Phase 67: Handle crop resizing
+                                // Use the bounds we stored when grabbing the handle
+                                let bounds_width = self.viewport_size.0;
+                                let bounds_height = self.viewport_size.1;
+                                
+                                // Convert delta to normalized coordinates
+                                let dx = delta.x / bounds_width;
+                                let dy = delta.y / bounds_height;
+                                
+                                let mut crop = self.current_edit_params.crop;
+                                // crop = [x, y, w, h]
+                                
+                                use crate::ui::preview_renderer::CropHandle;
+                                match handle {
+                                    CropHandle::TopLeft => {
+                                        crop[0] += dx;
+                                        crop[1] += dy;
+                                        crop[2] -= dx;
+                                        crop[3] -= dy;
+                                    }
+                                    CropHandle::TopRight => {
+                                        crop[1] += dy;
+                                        crop[2] += dx;
+                                        crop[3] -= dy;
+                                    }
+                                    CropHandle::BottomLeft => {
+                                        crop[0] += dx;
+                                        crop[2] -= dx;
+                                        crop[3] += dy;
+                                    }
+                                    CropHandle::BottomRight => {
+                                        crop[2] += dx;
+                                        crop[3] += dy;
+                                    }
+                                }
+                                
+                                // Constraints
+                                // Min size 1%
+                                if crop[2] < 0.01 { crop[2] = 0.01; }
+                                if crop[3] < 0.01 { crop[3] = 0.01; }
+                                
+                                // Clamp to 0-1 bounds
+                                crop[0] = crop[0].clamp(0.0, 1.0 - crop[2]);
+                                crop[1] = crop[1].clamp(0.0, 1.0 - crop[3]);
+                                crop[2] = crop[2].clamp(0.01, 1.0 - crop[0]);
+                                crop[3] = crop[3].clamp(0.01, 1.0 - crop[1]);
+                                
+                                // Update params directly
+                                self.current_edit_params.crop = crop;
+                                
+                                // Update cursor position
+                                self.last_cursor_position = Some(current_position);
+                                
+                                // Force redraw
+                                self.canvas_cache.clear();
+                            }
+                            DragMode::None => {}
+                        }
                     }
+                } else {
+                    // Store cursor position for zoom-to-cursor (if not dragging)
+                    self.last_cursor_position = Some(current_position);
                 }
                 
-                // Store cursor position for zoom-to-cursor (if not dragging)
-                self.last_cursor_position = Some(current_position);
                 Task::none()
             }
             
