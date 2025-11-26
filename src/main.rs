@@ -1928,29 +1928,6 @@ impl RawEditor {
         let current_image = self.selected_image_id
             .and_then(|id| self.images.iter().find(|i| i.id == id));
 
-        // 2. Build the Header (always visible if image selected)
-        let header = if let Some(img) = current_image {
-            let (status_icon, status_text) = match &self.editor_status {
-                EditorStatus::Ready(_) => (ui::icons::PAINTBRUSH, "GPU Rendering + Debayering"),
-                EditorStatus::Loading(_) => (ui::icons::HOURGLASS, "Loading RAW Data..."),
-                EditorStatus::Failed(_, _) => (ui::icons::TIMES, "Error Loading Image"),
-                _ => ("", ""),
-            };
-
-            row![
-                text(&img.filename).size(18),
-                text(" • ").size(18),
-                row![
-                    text(status_icon).font(ICON_FONT).size(18),
-                    text(format!(" {}", status_text)).size(18)
-                ],
-            ]
-            .spacing(5)
-            .padding(10)
-        } else {
-            row![text("No Image Selected").size(18)].padding(10)
-        };
-
         // 3. Build the Sidebar (always visible, disabled if not ready)
         // Phase 21: Histogram toggle
         let histogram_toggle = iced::widget::checkbox(
@@ -2377,7 +2354,8 @@ impl RawEditor {
         }
 
         // Otherwise, show Header + (Main | Sidebar)
-        let editor_content = column![ header,
+        // Otherwise, show Main | Sidebar
+        let editor_content = column![
             row![
                 main_content,
                 sidebar_container,
