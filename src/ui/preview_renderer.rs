@@ -93,12 +93,18 @@ impl Program<Message> for PreviewRenderer {
             height: zoomed_height,
         };
 
+        let mut image_frame = canvas::Frame::new(renderer, bounds.size());
+        
         // Draw the image
         let canvas_image = iced::widget::canvas::Image::new(self.handle.clone());
-        frame.draw_image(image_bounds, canvas_image);
+        image_frame.draw_image(image_bounds, canvas_image);
+        
+        let mut geometries = vec![image_frame.into_geometry()];
 
         // Phase 67: Draw Crop Overlay
         if self.is_cropping {
+            let mut overlay_frame = canvas::Frame::new(renderer, bounds.size());
+            
             // Calculate crop rect in screen coordinates
             // crop is [x, y, w, h] in normalized image coordinates
             
@@ -116,14 +122,14 @@ impl Program<Message> for PreviewRenderer {
                 .with_width(1.0);
                 
             // Vertical lines
-            frame.stroke(
+            overlay_frame.stroke(
                 &canvas::Path::line(
                     Point::new(crop_x + third_w, crop_y),
                     Point::new(crop_x + third_w, crop_y + crop_h)
                 ),
                 grid_stroke.clone(),
             );
-            frame.stroke(
+            overlay_frame.stroke(
                 &canvas::Path::line(
                     Point::new(crop_x + third_w * 2.0, crop_y),
                     Point::new(crop_x + third_w * 2.0, crop_y + crop_h)
@@ -132,14 +138,14 @@ impl Program<Message> for PreviewRenderer {
             );
             
             // Horizontal lines
-            frame.stroke(
+            overlay_frame.stroke(
                 &canvas::Path::line(
                     Point::new(crop_x, crop_y + third_h),
                     Point::new(crop_x + crop_w, crop_y + third_h)
                 ),
                 grid_stroke.clone(),
             );
-            frame.stroke(
+            overlay_frame.stroke(
                 &canvas::Path::line(
                     Point::new(crop_x, crop_y + third_h * 2.0),
                     Point::new(crop_x + crop_w, crop_y + third_h * 2.0)
@@ -154,7 +160,7 @@ impl Program<Message> for PreviewRenderer {
                 width: crop_w,
                 height: crop_h,
             };
-            frame.stroke(
+            overlay_frame.stroke(
                 &canvas::Path::rectangle(border_rect.position(), border_rect.size()),
                 canvas::Stroke::default().with_color(Color::WHITE).with_width(2.0),
             );
@@ -164,32 +170,34 @@ impl Program<Message> for PreviewRenderer {
             let handle_color = Color::WHITE;
             
             // Top-Left
-            frame.fill_rectangle(
+            overlay_frame.fill_rectangle(
                 Point::new(crop_x - handle_size/2.0, crop_y - handle_size/2.0),
                 Size::new(handle_size, handle_size),
                 handle_color,
             );
             // Top-Right
-            frame.fill_rectangle(
+            overlay_frame.fill_rectangle(
                 Point::new(crop_x + crop_w - handle_size/2.0, crop_y - handle_size/2.0),
                 Size::new(handle_size, handle_size),
                 handle_color,
             );
             // Bottom-Left
-            frame.fill_rectangle(
+            overlay_frame.fill_rectangle(
                 Point::new(crop_x - handle_size/2.0, crop_y + crop_h - handle_size/2.0),
                 Size::new(handle_size, handle_size),
                 handle_color,
             );
             // Bottom-Right
-            frame.fill_rectangle(
+            overlay_frame.fill_rectangle(
                 Point::new(crop_x + crop_w - handle_size/2.0, crop_y + crop_h - handle_size/2.0),
                 Size::new(handle_size, handle_size),
                 handle_color,
             );
+            
+            geometries.push(overlay_frame.into_geometry());
         }
 
-        vec![frame.into_geometry()]
+        geometries
     }
 
     fn update(

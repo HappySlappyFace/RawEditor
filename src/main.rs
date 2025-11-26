@@ -1561,40 +1561,61 @@ impl RawEditor {
                                 let mut crop = self.current_edit_params.crop;
                                 // crop = [x, y, w, h]
                                 
+                                // Current edges
+                                let mut left = crop[0];
+                                let mut top = crop[1];
+                                let mut right = crop[0] + crop[2];
+                                let mut bottom = crop[1] + crop[3];
+                                
                                 use crate::ui::preview_renderer::CropHandle;
                                 match handle {
                                     CropHandle::TopLeft => {
-                                        crop[0] += dx;
-                                        crop[1] += dy;
-                                        crop[2] -= dx;
-                                        crop[3] -= dy;
+                                        left += dx;
+                                        top += dy;
                                     }
                                     CropHandle::TopRight => {
-                                        crop[1] += dy;
-                                        crop[2] += dx;
-                                        crop[3] -= dy;
+                                        top += dy;
+                                        right += dx;
                                     }
                                     CropHandle::BottomLeft => {
-                                        crop[0] += dx;
-                                        crop[2] -= dx;
-                                        crop[3] += dy;
+                                        left += dx;
+                                        bottom += dy;
                                     }
                                     CropHandle::BottomRight => {
-                                        crop[2] += dx;
-                                        crop[3] += dy;
+                                        right += dx;
+                                        bottom += dy;
                                     }
                                 }
                                 
-                                // Constraints
-                                // Min size 1%
-                                if crop[2] < 0.01 { crop[2] = 0.01; }
-                                if crop[3] < 0.01 { crop[3] = 0.01; }
+                                // Constraints (Min size 1%)
+                                let min_size = 0.01;
                                 
-                                // Clamp to 0-1 bounds
-                                crop[0] = crop[0].clamp(0.0, 1.0 - crop[2]);
-                                crop[1] = crop[1].clamp(0.0, 1.0 - crop[3]);
-                                crop[2] = crop[2].clamp(0.01, 1.0 - crop[0]);
-                                crop[3] = crop[3].clamp(0.01, 1.0 - crop[1]);
+                                // Fix inversions (if left > right, swap or clamp)
+                                // Actually, we just clamp the moving edge against the fixed edge
+                                match handle {
+                                    CropHandle::TopLeft => {
+                                        left = left.min(right - min_size).max(0.0);
+                                        top = top.min(bottom - min_size).max(0.0);
+                                    }
+                                    CropHandle::TopRight => {
+                                        right = right.max(left + min_size).min(1.0);
+                                        top = top.min(bottom - min_size).max(0.0);
+                                    }
+                                    CropHandle::BottomLeft => {
+                                        left = left.min(right - min_size).max(0.0);
+                                        bottom = bottom.max(top + min_size).min(1.0);
+                                    }
+                                    CropHandle::BottomRight => {
+                                        right = right.max(left + min_size).min(1.0);
+                                        bottom = bottom.max(top + min_size).min(1.0);
+                                    }
+                                }
+                                
+                                // Reconstruct crop rect
+                                crop[0] = left;
+                                crop[1] = top;
+                                crop[2] = right - left;
+                                crop[3] = bottom - top;
                                 
                                 // Update params directly
                                 self.current_edit_params.crop = crop;
