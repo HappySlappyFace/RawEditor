@@ -1,5 +1,5 @@
 use iced::{Background, Border, Color, Element, Task, Theme, Point};
-use iced::widget::{button, column, container, row, scrollable, text, Image, slider, canvas, checkbox, Container};
+use iced::widget::{button, column, container, row, scrollable, text, Image, slider, canvas, checkbox, Container, stack};
 use iced::{Alignment, Length};
 use iced::widget::image::Handle;
 use iced_aw::Wrap;
@@ -133,6 +133,8 @@ struct RawEditor {
     last_modifiers: iced::keyboard::Modifiers,
     /// Phase 59: Minimum rating filter (0 = show all, 1-5 = show rating or higher)
     min_filter_rating: u8,
+    /// Phase 60: Toggle for HUD overlay (ISO, Shutter, etc.)
+    show_info_hud: bool,
 }
 
 /// Application messages (events)
@@ -214,6 +216,11 @@ enum Message {
     // ========== Phase 59: Rating Filter ==========
     /// Set minimum rating filter (0 = all, 1-5 = show rating or higher)
     SetMinRating(u8),
+
+    // ========== Phase 60: Modern Layout & HUD ==========
+    /// Toggle HUD overlay (ISO, Shutter, etc.)
+    ToggleInfoHud,
+
 
     
     // ========== Phase 24: Workflow Messages ==========
@@ -328,6 +335,8 @@ impl RawEditor {
                 multi_selection: HashSet::new(),
                 last_modifiers: iced::keyboard::Modifiers::default(),
                 min_filter_rating: 0,  // Phase 59: Start with "show all"
+                show_info_hud: false,  // Phase 60: HUD hidden by default
+
             },
             // Phase 23: Trigger database loading in background
             Task::perform(
@@ -905,6 +914,13 @@ impl RawEditor {
                 self.min_filter_rating = rating;
                 Task::none()
             }
+            
+            // Phase 60: Toggle HUD
+            Message::ToggleInfoHud => {
+                self.show_info_hud = !self.show_info_hud;
+                Task::none()
+            }
+
 
             
             // ========== Phase 56: Ratings & Culling Handlers ==========
@@ -1400,6 +1416,9 @@ impl RawEditor {
                     keyboard::Key::Character("3") => Some(Message::SetRating(3)),
                     keyboard::Key::Character("4") => Some(Message::SetRating(4)),
                     keyboard::Key::Character("5") => Some(Message::SetRating(5)),
+                    // Phase 60: HUD Toggle
+                    keyboard::Key::Character("i") | keyboard::Key::Character("I") => Some(Message::ToggleInfoHud),
+
                     _ => None,
                 }
             } else {
@@ -1528,42 +1547,65 @@ impl RawEditor {
     /// Phase 23: Main application UI (shown after database loads)
     fn view_main(&self) -> Element<Message> {
         // Tab navigation bar
-        let library_button = button(
+        // Phase 60: Modern Top Bar
+        let top_bar = container(
             row![
-                text(ui::icons::BOOK).font(ICON_FONT).size(16),
-                text(" Library").size(16)
+                // Library Tab
+                button(
+                    row![
+                        text(ui::icons::BOOK).font(ICON_FONT).size(14),
+                        text(" Library").size(14)
+                    ]
+                    .spacing(5)
+                )
+                .on_press(Message::TabChanged(AppTab::Library))
+                .padding(10)
+                .style(if self.current_tab == AppTab::Library {
+                    |_theme: &Theme, _status| button::Style {
+                        text_color: Color::WHITE,
+                        background: Some(Background::Color(Color::from_rgb(0.2, 0.2, 0.2))),
+                        ..button::Style::default()
+                    }
+                } else {
+                    |_theme: &Theme, _status| button::Style {
+                        text_color: Color::from_rgb(0.7, 0.7, 0.7),
+                        background: None,
+                        ..button::Style::default()
+                    }
+                }),
+                
+                // Develop Tab
+                button(
+                    row![
+                        text(ui::icons::PAINTBRUSH).font(ICON_FONT).size(14),
+                        text(" Develop").size(14)
+                    ]
+                    .spacing(5)
+                )
+                .on_press(Message::TabChanged(AppTab::Develop))
+                .padding(10)
+                .style(if self.current_tab == AppTab::Develop {
+                    |_theme: &Theme, _status| button::Style {
+                        text_color: Color::WHITE,
+                        background: Some(Background::Color(Color::from_rgb(0.2, 0.2, 0.2))),
+                        ..button::Style::default()
+                    }
+                } else {
+                    |_theme: &Theme, _status| button::Style {
+                        text_color: Color::from_rgb(0.7, 0.7, 0.7),
+                        background: None,
+                        ..button::Style::default()
+                    }
+                }),
             ]
+            .spacing(0)
         )
-        .on_press(Message::TabChanged(AppTab::Library))
-        .padding(12);
-        
-        let library_button = if self.current_tab == AppTab::Library {
-            library_button.style(button::primary)
-        } else {
-            library_button.style(button::secondary)
-        };
-        
-        let develop_button = button(
-            row![
-                text(ui::icons::PAINTBRUSH).font(ICON_FONT).size(16),
-                text(" Develop").size(16)
-            ]
-        )
-        .on_press(Message::TabChanged(AppTab::Develop))
-        .padding(12);
-        
-        let develop_button = if self.current_tab == AppTab::Develop {
-            develop_button.style(button::primary)
-        } else {
-            develop_button.style(button::secondary)
-        };
-        
-        let tab_bar = row![
-            library_button,
-            develop_button,
-        ]
-        .spacing(8)
-        .padding(10);
+        .width(Length::Fill)
+        .height(35.0)
+        .style(|_theme: &Theme| container::Style {
+            background: Some(Background::Color(Color::from_rgb(0.1, 0.1, 0.1))),
+            ..Default::default()
+        });
         
         // Render content based on current tab
         let content = match self.current_tab {
@@ -1573,7 +1615,7 @@ impl RawEditor {
         
         // Main layout: tab bar + content
         column![
-            tab_bar,
+            top_bar,
             content,
         ]
         .into()
@@ -1985,55 +2027,42 @@ impl RawEditor {
             
             // Tone Controls
             .push(text(format!("Whites: {:.2}", self.current_edit_params.whites)))
-            .push(slider(0.8..=1.2, self.current_edit_params.whites, Message::WhitesChanged)
-                .step(0.01))
+            .push(slider(0.8..=1.2, self.current_edit_params.whites, Message::WhitesChanged).step(0.01))
             // Blacks
             .push(text(format!("Blacks: {:.3}", self.current_edit_params.blacks)))
             .push(slider(0.0..=0.2, self.current_edit_params.blacks, Message::BlacksChanged)
                 .step(0.005))
-            .push(button("Reset All").on_press(Message::ResetEdits))
+            .push(button("Reset All").on_press(Message::ResetEdits));
             
-            // Phase 38: Sensor Correction (Manual Black Levels)
-            .push(text("Sensor Correction").size(14))
-            .push(checkbox("Shift Grid X", self.current_edit_params.black_phase_x != 0)
-                .on_toggle(|checked| Message::BlackPhaseChanged(false, if checked { 1 } else { 0 })))
-            .push(checkbox("Shift Grid Y", self.current_edit_params.black_phase_y != 0)
-                .on_toggle(|checked| Message::BlackPhaseChanged(true, if checked { 1 } else { 0 })))
+        let mut sidebar = sidebar;
+
+        // Phase 60: Hide sensor correction debug controls by default
+        if crate::debug::SHOW_SENSOR_CORRECTION {
+            sidebar = sidebar
+                .push(text("Sensor Correction").size(14))
+                .push(checkbox("Shift Grid X", self.current_edit_params.black_phase_x != 0)
+                    .on_toggle(|checked| Message::BlackPhaseChanged(false, if checked { 1 } else { 0 })))
+                .push(checkbox("Shift Grid Y", self.current_edit_params.black_phase_y != 0)
+                    .on_toggle(|checked| Message::BlackPhaseChanged(true, if checked { 1 } else { 0 })))
+                
+                .push(text(format!("Black TL (Red): {:.1}", self.current_edit_params.black_offsets[0])).size(12))
+                .push(slider(-50.0..=50.0, self.current_edit_params.black_offsets[0], |v| Message::BlackOffsetChanged(0, v)).step(0.1))
+                
+                .push(text(format!("Black TR (Green): {:.1}", self.current_edit_params.black_offsets[1])).size(12))
+                .push(slider(-50.0..=50.0, self.current_edit_params.black_offsets[1], |v| Message::BlackOffsetChanged(1, v)).step(0.1))
+                
+                .push(text(format!("Black BL (Green): {:.1}", self.current_edit_params.black_offsets[2])).size(12))
+                .push(slider(-50.0..=50.0, self.current_edit_params.black_offsets[2], |v| Message::BlackOffsetChanged(2, v)).step(0.1))
+                
+                .push(text(format!("Black BR (Blue): {:.1}", self.current_edit_params.black_offsets[3])).size(12))
+                .push(slider(-50.0..=50.0, self.current_edit_params.black_offsets[3], |v| Message::BlackOffsetChanged(3, v)).step(0.1));
+        }
             
-            .push(text(format!("Black TL (Red): {:.1}", self.current_edit_params.black_offsets[0])).size(12))
-            .push(slider(-50.0..=50.0, self.current_edit_params.black_offsets[0], |v| Message::BlackOffsetChanged(0, v)).step(0.1))
-            
-            .push(text(format!("Black TR (Green): {:.1}", self.current_edit_params.black_offsets[1])).size(12))
-            .push(slider(-50.0..=50.0, self.current_edit_params.black_offsets[1], |v| Message::BlackOffsetChanged(1, v)).step(0.1))
-            
-            .push(text(format!("Black BL (Green): {:.1}", self.current_edit_params.black_offsets[2])).size(12))
-            .push(slider(-50.0..=50.0, self.current_edit_params.black_offsets[2], |v| Message::BlackOffsetChanged(2, v)).step(0.1))
-            
-            .push(text(format!("Black BR (Blue): {:.1}", self.current_edit_params.black_offsets[3])).size(12))
-            .push(slider(-50.0..=50.0, self.current_edit_params.black_offsets[3], |v| Message::BlackOffsetChanged(3, v)).step(0.1))
-            
+        let sidebar = sidebar
             .push(button("Export").on_press(Message::ExportImage))
             
             // Phase 41: Metadata Info
-            .push(text("Image Info").size(14))
-            .push(if let Some(meta) = &self.current_metadata {
-                column![
-                    text(format!("Size: {}x{}", meta.width, meta.height)).size(12),
-                    text(format!("CFA: {} ({})", meta.cfa_name, meta.cfa_pattern)).size(12),
-                    text(format!("Meta Blacks: {:?}", meta.black_levels)).size(12),
-                    text(format!("Meas Blacks: [{:.1}, {:.1}, {:.1}, {:.1}]", 
-                        meta.measured_black_levels[0], 
-                        meta.measured_black_levels[1], 
-                        meta.measured_black_levels[2], 
-                        meta.measured_black_levels[3]
-                    )).size(12),
-                    text(format!("White: {}", meta.white_level)).size(12),
-                    text(format!("Crops: {:?}", meta.crops)).size(12),
-                ]
-                .spacing(2)
-            } else {
-                column![text("No metadata loaded").size(12)]
-            })
+            // Removed: Metadata info is now hidden by default.
         .spacing(10)
         .padding(15);
         
@@ -2218,11 +2247,88 @@ impl RawEditor {
                 iced::widget::Space::new(Length::Fill, Length::Fill).into()
             };
             
+            // Phase 60: Canvas Overlay (HUD)
+            let overlay = if self.show_info_hud {
+                container(
+                    column![
+                        // Camera Info
+                        text(format!("{} {}", 
+                            self.current_metadata.as_ref().map(|m| m.make.clone()).unwrap_or_default(),
+                            self.current_metadata.as_ref().map(|m| m.model.clone()).unwrap_or_default()
+                        )).size(12).style(|_theme| text::Style { color: Some(Color::WHITE) }),
+                        
+                        // Lens Info
+                        text(self.current_metadata.as_ref().map(|m| m.lens.clone()).unwrap_or_default())
+                            .size(12).style(|_theme| text::Style { color: Some(Color::WHITE) }),
+                            
+                        // Settings
+                        text(format!("ISO {}  {}s  f/{}", 
+                            self.current_metadata.as_ref().map(|m| m.iso.to_string()).unwrap_or("---".to_string()),
+                            self.current_metadata.as_ref().map(|m| m.shutter_speed.clone()).unwrap_or("---".to_string()),
+                            self.current_metadata.as_ref().map(|m| m.aperture.to_string()).unwrap_or("---".to_string())
+                        )).size(12).style(|_theme| text::Style { color: Some(Color::WHITE) }),
+                    ]
+                    .spacing(2)
+                )
+                .padding(10)
+                .style(|_theme| container::Style {
+                    background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.6))),
+                    border: iced::border::Border {
+                        radius: 5.0.into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })
+            } else {
+                container(column![]) // Empty container if hidden
+            };
+
+            // Filename Overlay (Bottom-Left)
+            let filename_overlay = container(
+                text(self.selected_image_id
+                    .and_then(|id| self.images.iter().find(|img| img.id == id))
+                    .map(|img| img.filename.clone())
+                    .unwrap_or_default())
+
+                    .size(12)
+                    .style(|_theme| text::Style { color: Some(Color::WHITE) })
+            )
+            .padding(5)
+            .style(|_theme| container::Style {
+                background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.4))),
+                border: iced::border::Border {
+                    radius: 3.0.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+
+            // Stack layers
+            let stacked_image = stack![
+                image_widget,
+                
+                // HUD (Top-Left)
+                container(overlay)
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .align_x(iced::alignment::Horizontal::Left)
+                    .align_y(iced::alignment::Vertical::Top)
+                    .padding(10),
+                    
+                // Filename (Bottom-Left)
+                container(filename_overlay)
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .align_x(iced::alignment::Horizontal::Left)
+                    .align_y(iced::alignment::Vertical::Bottom)
+                    .padding(10),
+            ];
+            
             // 2. Wrap in Mouse Area (ALWAYS present to capture events)
             use iced::widget::mouse_area;
             use iced::mouse::{self, ScrollDelta};
             
-            let interactive_image = mouse_area(image_widget)
+            let interactive_image = mouse_area(stacked_image)
                 .on_scroll(|delta| {
                     let zoom_delta = match delta {
                         ScrollDelta::Lines { y, .. } => y * 0.1,

@@ -1,5 +1,9 @@
 /// Centralized debug logging configuration
+// Phase 60: Debug flags
+pub const SHOW_SENSOR_CORRECTION: bool = false;
+
 /// 
+
 /// Toggle these flags to control which debug logs are printed.
 /// This helps avoid terminal overflow when debugging specific systems.
 

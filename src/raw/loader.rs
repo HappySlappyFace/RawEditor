@@ -28,6 +28,14 @@ pub struct RawDataResult {
     pub cfa_name: String,
     /// Measured Black Levels from Optical Black [f32; 4]
     pub measured_black_levels: [f32; 4],
+    
+    // Phase 60: Metadata
+    pub make: String,
+    pub model: String,
+    pub iso: String,
+    pub shutter_speed: String,
+    pub aperture: String,
+    pub lens: String,
 }
 
 /// Load raw sensor data from a RAW file
@@ -267,6 +275,15 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
         },
         cfa_name: raw_image.cfa.name.clone(),
         measured_black_levels,
+        
+        // Phase 60: Metadata extraction
+        make: raw_image.make.clone(),
+        model: raw_image.model.clone(),
+        // TODO: Extract these from rawloader if available, or use a separate EXIF parser
+        iso: "---".to_string(),
+        shutter_speed: "---".to_string(),
+        aperture: "---".to_string(),
+        lens: "---".to_string(),
     })
 }
 
