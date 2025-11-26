@@ -296,48 +296,94 @@ fn extract_metadata(path: &str) -> (String, String, String, String) {
     let mut aperture = "---".to_string();
     let mut lens = "---".to_string();
 
-    if let Ok(exif) = rexif::parse_file(path) {
-        for entry in exif.entries {
-            // Debug: Print all tags to find the lens info
-            // println!("EXIF: {:?} = {}", entry.tag, entry.value);
-            
-            match entry.tag {
-                rexif::ExifTag::ISOSpeedRatings => iso = entry.value.to_string(),
-                rexif::ExifTag::ExposureTime => {
-                    match entry.value {
-                        rexif::TagValue::URational(ref v) => {
-                            if let Some(r) = v.first() {
-                                if r.numerator > 0 {
-                                    if r.numerator >= r.denominator {
-                                        let val = r.numerator as f64 / r.denominator as f64;
-                                        shutter = format!("{:.1}", val).replace(".0s", "s");
-                                    } else {
-                                        let den = r.denominator as f64 / r.numerator as f64;
-                                        shutter = format!("1/{:.0}", den);
-                                    }
-                                }
-                            }
-                        }
-                        _ => shutter = entry.value.to_string(),
-                    }
-                },
-                rexif::ExifTag::FNumber => {
-                    match entry.value {
-                        rexif::TagValue::URational(ref v) => {
-                            if let Some(r) = v.first() {
-                                let val = r.numerator as f64 / r.denominator as f64;
-                                aperture = format!("{:.1}", val).replace(".0", "");
-                            }
-                        }
-                        _ => aperture = entry.value.to_string(),
-                    }
-                },
-                rexif::ExifTag::LensModel => lens = entry.value.to_string(),
-                _ => {}
+    // Try using the 'exif' crate first (better MakerNote support)
+    if let Ok(file) = std::fs::File::open(path) {
+        let mut bufreader = std::io::BufReader::new(&file);
+        let reader = exif::Reader::new();
+        
+        if let Ok(exif_data) = reader.read_from_container(&mut bufreader) {
+            // ISO
+            if let Some(field) = exif_data.get_field(exif::Tag::PhotographicSensitivity, exif::In::PRIMARY) {
+                iso = field.display_value().to_string();
             }
-
+            
+            // Shutter Speed
+            if let Some(field) = exif_data.get_field(exif::Tag::ExposureTime, exif::In::PRIMARY) {
+                let val = field.display_value().to_string();
+                // Remove " s" if present, but don't add "s" (HUD might add it, or we standardize)
+                // Actually, let's just keep the number/fraction.
+                shutter = val.replace(" s", "");
+            }
+            
+            // Aperture
+            if let Some(field) = exif_data.get_field(exif::Tag::FNumber, exif::In::PRIMARY) {
+                let val = field.display_value().to_string();
+                // Remove "f/" if present
+                aperture = val.replace("f/", "");
+            }
+            
+            // Lens Model
+            // Search in all IFDs (including MakerNote)
+            // for f in exif_data.fields() {
+            //     if f.tag == exif::Tag::LensModel || f.tag.to_string().contains("Lens") {
+            //          println!("Possible Lens Tag: {:?} = {}", f.tag, f.display_value());
+            //          if lens == "---" || lens.is_empty() {
+            //              lens = f.display_value().to_string();
+            //          }
+            //     }
+            // }
+            
+            // Clean up quotes if present
+            // lens = lens.trim_matches('"').to_string();
         }
     }
+    
+    // Fallback to rexif if 'exif' failed or returned empty values (legacy support)
+    if iso == "---" || shutter == "---" || aperture == "---" || lens == "---" {
+        if let Ok(exif) = rexif::parse_file(path) {
+            for entry in exif.entries {
+                match entry.tag {
+                    rexif::ExifTag::ISOSpeedRatings => if iso == "---" { iso = entry.value.to_string() },
+                    rexif::ExifTag::ExposureTime => {
+                        if shutter == "---" {
+                            match entry.value {
+                                rexif::TagValue::URational(ref v) => {
+                                    if let Some(r) = v.first() {
+                                        if r.numerator > 0 {
+                                            if r.numerator >= r.denominator {
+                                                let val = r.numerator as f64 / r.denominator as f64;
+                                                shutter = format!("{:.1}s", val);
+                                            } else {
+                                                let den = r.denominator as f64 / r.numerator as f64;
+                                                shutter = format!("1/{:.0}s", den);
+                                            }
+                                        }
+                                    }
+                                }
+                                _ => shutter = entry.value.to_string(),
+                            }
+                        }
+                    },
+                    rexif::ExifTag::FNumber => {
+                        if aperture == "---" {
+                            match entry.value {
+                                rexif::TagValue::URational(ref v) => {
+                                    if let Some(r) = v.first() {
+                                        let val = r.numerator as f64 / r.denominator as f64;
+                                        aperture = format!("{:.1}", val).replace(".0", "");
+                                    }
+                                }
+                                _ => aperture = entry.value.to_string(),
+                            }
+                        }
+                    },
+                    rexif::ExifTag::LensModel => if lens == "---" { lens = entry.value.to_string() },
+                    _ => {}
+                }
+            }
+        }
+    }
+
     (iso, shutter, aperture, lens)
 }
 

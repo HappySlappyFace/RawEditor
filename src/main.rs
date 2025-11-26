@@ -2405,7 +2405,7 @@ impl RawEditor {
                             .size(12).style(|_theme| text::Style { color: Some(Color::WHITE) }),
                             
                         // Settings
-                        text(format!("ISO {}  {}s  f/{}", 
+                        text(format!("ISO {}  {}  f/{}", 
                             self.current_metadata.as_ref().map(|m| m.iso.to_string()).unwrap_or("---".to_string()),
                             self.current_metadata.as_ref().map(|m| m.shutter_speed.clone()).unwrap_or("---".to_string()),
                             self.current_metadata.as_ref().map(|m| m.aperture.to_string()).unwrap_or("---".to_string())
