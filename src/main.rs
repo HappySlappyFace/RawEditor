@@ -1570,24 +1570,26 @@ impl RawEditor {
 
         // Assemble Title Bar
         container(
-            row![
-                menus,
-                // Draggable space
-                iced::widget::mouse_area(
-                    container(iced::widget::Space::with_width(Length::Fill))
-                ).on_press(Message::DragWindow),
+            stack![
+                // Layer 1: Menus (Left) and Controls (Right)
+                row![
+                    menus,
+                    // Draggable space
+                    iced::widget::mouse_area(
+                        container(iced::widget::Space::with_width(Length::Fill))
+                    ).on_press(Message::DragWindow),
+                    
+                    controls,
+                ]
+                .align_y(Alignment::Center)
+                .padding([0, 10]),
                 
-                navigation,
-                
-                // Draggable space
-                iced::widget::mouse_area(
-                    container(iced::widget::Space::with_width(Length::Fill))
-                ).on_press(Message::DragWindow),
-                
-                controls,
+                // Layer 2: Navigation (Centered)
+                container(navigation)
+                    .width(Length::Fill)
+                    .align_x(iced::alignment::Horizontal::Center)
+                    .align_y(iced::alignment::Vertical::Center),
             ]
-            .align_y(Alignment::Center)
-            .padding([0, 10])
         )
         .height(Length::Fixed(35.0))
         .style(|_theme| container::Style {
@@ -2560,9 +2562,9 @@ fn main() -> iced::Result {
     // Note: iced::application() uses a single window throughout
     // To have a separate splash window, you'd need the multi-window API
     .window(iced::window::Settings {
-        size: iced::Size::new(900.0, 400.0),  // Main app size
+        size: iced::Size::new(900.0, 600.0),  // Main app size
         min_size: Some(iced::Size::new(600.0, 400.0)),
-        decorations: true,  // Keep title bar for usability
+        decorations: false,  // Remove title bar
         ..Default::default()
     })
     .centered()
