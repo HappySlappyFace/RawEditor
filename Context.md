@@ -129,6 +129,13 @@
 ### Phase 63
 - Finalized the UI by styling all buttons with a Neutral Theme and condensing Copy/Paste into an icon strip.
 
+### Phase 65
+- Implemented a robust, per-image Undo/Redo system with `Ctrl+Z` (Undo) and `Ctrl+Shift+Z` (Redo).
+- Added `history_map` to `RawEditor` to maintain independent history stacks for each image.
+- Integrated history commits on slider release (`CommitEdit`) to prevent history flooding.
+- Fixed `PasteSettings` and `ResetEdits` to correctly commit to history, ensuring all actions are undoable.
+- Unified shortcut and button behavior for consistent user experience.
+
 ## Key Implementations & File Map
 - **State management:** `src/state/data.rs`, `src/state/library.rs` (schema, queries, cache path updates, edit persistence).
 - **UI & workflow:** `src/main.rs` (messages, update loop, subscriptions, import/cache tasks, view builders).
