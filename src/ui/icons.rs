@@ -24,6 +24,13 @@ pub const ERROR: &str = "\u{f071}";
 /// Rocket icon
 pub const ROCKET: &str = "\u{f135}";
 
+// Window Controls
+pub const MINIMIZE: &str = "\u{f2d1}";
+pub const MAXIMIZE: &str = "\u{f2d0}";
+pub const CLOSE: &str = "\u{f00d}";
+pub const CAMERA: &str = "\u{f030}";
+
+
 /// Hourglass/loading icon
 pub const HOURGLASS: &str = "\u{f252}";
 

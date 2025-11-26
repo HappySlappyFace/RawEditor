@@ -287,8 +287,13 @@ enum Message {
     // ========== Export Messages (Phase 19) ==========
     /// User clicked Export button
     ExportImage,
-    /// Background export completed
-    ExportComplete(Result<std::path::PathBuf, String>),
+    ExportComplete(Result<PathBuf, String>),
+    
+    // Window Controls
+    MinimizeWindow,
+    MaximizeWindow,
+    CloseWindow,
+    DragWindow,
     
     // ========== Histogram Messages (Phase 22) ==========
     /// User toggled histogram on/off
@@ -328,6 +333,10 @@ async fn load_database_async() -> Result<Vec<ImageData>, String> {
 }
 
 impl RawEditor {
+    fn title(&self) -> String {
+        String::from("RAW Editor")
+    }
+
     /// Phase 23: Create a new instance of the application (INSTANT!)
     /// The database now loads in the background to show splash screen immediately
     fn new() -> (Self, Task<Message>) {
@@ -1383,6 +1392,21 @@ impl RawEditor {
                 Task::none()
             }
             
+            // Window Controls
+            Message::MinimizeWindow => {
+                window::get_latest().and_then(|id| window::minimize(id, true))
+            }
+            Message::MaximizeWindow => {
+                window::get_latest().and_then(window::toggle_maximize)
+            }
+            Message::CloseWindow => {
+                window::get_latest().and_then(window::close)
+            }
+            Message::DragWindow => {
+                window::get_latest().and_then(window::drag)
+            }
+
+            
             Message::HistogramToggled(enabled) => {
                 self.histogram_enabled = enabled;
                 println!("📊 Histogram {}", if enabled { "enabled" } else { "disabled" });
@@ -1456,6 +1480,121 @@ impl RawEditor {
                 None
             }
         })
+    }
+    
+    /// Build the custom window title bar
+    fn view_title_bar(&self) -> Element<Message> {
+        // Left: Menus
+        let menus = row![
+            button(text("File").size(13)).style(button::text),
+            button(text("Edit").size(13)).style(button::text),
+            button(text("Window").size(13)).style(button::text),
+            button(text("Help").size(13)).style(button::text),
+        ]
+        .spacing(5)
+        .align_y(Alignment::Center);
+
+        // Center: Navigation (Library | Develop)
+        let navigation = container(
+            row![
+                button(
+                    row![
+                        text(ui::icons::FOLDER).font(ICON_FONT).size(14),
+                        text("Library").size(14)
+                    ]
+                    .spacing(5)
+                    .align_y(Alignment::Center)
+                )
+                .style(if self.current_tab == AppTab::Library { button::primary } else { button::text })
+                .on_press(Message::TabChanged(AppTab::Library)),
+                
+                button(
+                    row![
+                        text(ui::icons::PAINTBRUSH).font(ICON_FONT).size(14),
+                        text("Develop").size(14)
+                    ]
+                    .spacing(5)
+                    .align_y(Alignment::Center)
+                )
+                .style(if self.current_tab == AppTab::Develop { button::primary } else { button::text })
+                .on_press(Message::TabChanged(AppTab::Develop)),
+            ]
+            .spacing(10)
+        )
+        .width(Length::Fill)
+        .align_x(iced::alignment::Horizontal::Center);
+
+        // Right: Logo + Window Controls
+        let controls = row![
+            // Logo
+            text(ui::icons::CAMERA)
+                .font(ICON_FONT)
+                .size(16)
+                .style(|_theme| text::Style { color: Some(Color::from_rgb(0.4, 0.4, 0.4)) }),
+                
+            iced::widget::Space::with_width(Length::Fixed(15.0)),
+            
+            // Window Controls
+            button(text(ui::icons::MINIMIZE).font(ICON_FONT).size(14))
+                .on_press(Message::MinimizeWindow)
+                .style(button::text)
+                .width(Length::Fixed(30.0))
+                .height(Length::Fixed(30.0)),
+                
+            button(text(ui::icons::MAXIMIZE).font(ICON_FONT).size(14))
+                .on_press(Message::MaximizeWindow)
+                .style(button::text)
+                .width(Length::Fixed(30.0))
+                .height(Length::Fixed(30.0)),
+                
+            button(text(ui::icons::CLOSE).font(ICON_FONT).size(14))
+                .on_press(Message::CloseWindow)
+                .style(|_theme, status| {
+                    if status == button::Status::Hovered {
+                        button::Style {
+                            background: Some(Background::Color(Color::from_rgb(0.9, 0.2, 0.2))),
+                            text_color: Color::WHITE,
+                            ..button::Style::default()
+                        }
+                    } else {
+                        button::Style {
+                            text_color: Color::from_rgb(0.7, 0.7, 0.7),
+                            ..button::text(_theme, status)
+                        }
+                    }
+                })
+                .width(Length::Fixed(30.0))
+                .height(Length::Fixed(30.0)),
+        ]
+        .align_y(Alignment::Center);
+
+        // Assemble Title Bar
+        container(
+            row![
+                menus,
+                // Draggable space
+                iced::widget::mouse_area(
+                    container(iced::widget::Space::with_width(Length::Fill))
+                ).on_press(Message::DragWindow),
+                
+                navigation,
+                
+                // Draggable space
+                iced::widget::mouse_area(
+                    container(iced::widget::Space::with_width(Length::Fill))
+                ).on_press(Message::DragWindow),
+                
+                controls,
+            ]
+            .align_y(Alignment::Center)
+            .padding([0, 10])
+        )
+        .height(Length::Fixed(35.0))
+        .style(|_theme| container::Style {
+            background: Some(Background::Color(Color::from_rgb(0.05, 0.05, 0.05))),
+            ..Default::default()
+        })
+        .into()
     }
     
     /// Build the user interface
@@ -1577,80 +1716,21 @@ impl RawEditor {
     
     /// Phase 23: Main application UI (shown after database loads)
     fn view_main(&self) -> Element<Message> {
-        // Tab navigation bar
-        // Phase 60: Modern Top Bar
-        let top_bar = container(
-            row![
-                // Library Tab
-                button(
-                    row![
-                        text(ui::icons::BOOK).font(ICON_FONT).size(14),
-                        text(" Library").size(14)
-                    ]
-                    .spacing(5)
-                )
-                .on_press(Message::TabChanged(AppTab::Library))
-                .padding(10)
-                .style(if self.current_tab == AppTab::Library {
-                    |_theme: &Theme, _status| button::Style {
-                        text_color: Color::WHITE,
-                        background: Some(Background::Color(Color::from_rgb(0.2, 0.2, 0.2))),
-                        ..button::Style::default()
-                    }
-                } else {
-                    |_theme: &Theme, _status| button::Style {
-                        text_color: Color::from_rgb(0.7, 0.7, 0.7),
-                        background: None,
-                        ..button::Style::default()
-                    }
-                }),
-                
-                // Develop Tab
-                button(
-                    row![
-                        text(ui::icons::PAINTBRUSH).font(ICON_FONT).size(14),
-                        text(" Develop").size(14)
-                    ]
-                    .spacing(5)
-                )
-                .on_press(Message::TabChanged(AppTab::Develop))
-                .padding(10)
-                .style(if self.current_tab == AppTab::Develop {
-                    |_theme: &Theme, _status| button::Style {
-                        text_color: Color::WHITE,
-                        background: Some(Background::Color(Color::from_rgb(0.2, 0.2, 0.2))),
-                        ..button::Style::default()
-                    }
-                } else {
-                    |_theme: &Theme, _status| button::Style {
-                        text_color: Color::from_rgb(0.7, 0.7, 0.7),
-                        background: None,
-                        ..button::Style::default()
-                    }
-                }),
-            ]
-            .spacing(0)
-        )
-        .width(Length::Fill)
-        .height(35.0)
-        .style(|_theme: &Theme| container::Style {
-            background: Some(Background::Color(Color::from_rgb(0.1, 0.1, 0.1))),
-            ..Default::default()
-        });
-        
-        // Render content based on current tab
+        // Custom Window Title Bar (Phase 62)
+        let title_bar = self.view_title_bar();
+
         let content = match self.current_tab {
             AppTab::Library => self.view_library(),
             AppTab::Develop => self.view_develop(),
         };
         
-        // Main layout: tab bar + content
         column![
-            top_bar,
+            title_bar,
             content,
         ]
         .into()
     }
+
     
     /// Build the Library tab view (grid of thumbnails)
     fn view_library(&self) -> Element<Message> {
@@ -2468,12 +2548,12 @@ async fn export_image_async(
 /// or keep the app borderless throughout (like some Adobe products)
 fn main() -> iced::Result {
     iced::application(
-        "RAW Editor",
+        RawEditor::title,
         RawEditor::update,
         RawEditor::view,
     )
-    .theme(RawEditor::theme)
     .subscription(RawEditor::subscription) // Phase 24: Enable keyboard shortcuts
+    .theme(RawEditor::theme)
     .font(ICON_FONT_BYTES)  // Phase 57: Load embedded font
     .default_font(ICON_FONT)  // Phase 57: Set as default
     // Phase 23: Window settings - start with normal window (has title bar)
