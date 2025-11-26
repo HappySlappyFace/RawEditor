@@ -103,3 +103,83 @@ impl TabButton {
         }
     }
 }
+
+pub struct NeutralButton;
+
+impl NeutralButton {
+    pub fn style(_theme: &Theme, status: iced::widget::button::Status) -> iced::widget::button::Style {
+        match status {
+            iced::widget::button::Status::Active => iced::widget::button::Style {
+                background: Some(Background::Color(Color::from_rgb(0.15, 0.15, 0.15))),
+                text_color: Color::from_rgb(0.7, 0.7, 0.7),
+                border: Border {
+                    radius: 4.0.into(),
+                    width: 0.0,
+                    color: Color::TRANSPARENT,
+                },
+                ..Default::default()
+            },
+            iced::widget::button::Status::Hovered => iced::widget::button::Style {
+                background: Some(Background::Color(Color::from_rgb(0.25, 0.25, 0.25))),
+                text_color: Color::from_rgb(0.9, 0.9, 0.9),
+                border: Border {
+                    radius: 4.0.into(),
+                    width: 0.0,
+                    color: Color::TRANSPARENT,
+                },
+                ..Default::default()
+            },
+            iced::widget::button::Status::Pressed => iced::widget::button::Style {
+                background: Some(Background::Color(Color::from_rgb(0.1, 0.1, 0.1))),
+                text_color: Color::from_rgb(0.5, 0.5, 0.5),
+                border: Border {
+                    radius: 4.0.into(),
+                    width: 0.0,
+                    color: Color::TRANSPARENT,
+                },
+                ..Default::default()
+            },
+            _ => iced::widget::button::Style::default(),
+        }
+    }
+}
+
+pub struct AccentButton;
+
+impl AccentButton {
+    pub fn style(_theme: &Theme, status: iced::widget::button::Status) -> iced::widget::button::Style {
+        match status {
+            iced::widget::button::Status::Active => iced::widget::button::Style {
+                background: Some(Background::Color(Color::from_rgb(0.2, 0.2, 0.2))),
+                text_color: Color::from_rgb(0.9, 0.9, 0.9),
+                border: Border {
+                    radius: 4.0.into(),
+                    width: 1.0,
+                    color: Color::from_rgba(1.0, 1.0, 1.0, 0.5),
+                },
+                ..Default::default()
+            },
+            iced::widget::button::Status::Hovered => iced::widget::button::Style {
+                background: Some(Background::Color(Color::from_rgb(0.3, 0.3, 0.3))),
+                text_color: Color::WHITE,
+                border: Border {
+                    radius: 4.0.into(),
+                    width: 1.0,
+                    color: Color::WHITE,
+                },
+                ..Default::default()
+            },
+            iced::widget::button::Status::Pressed => iced::widget::button::Style {
+                background: Some(Background::Color(Color::from_rgb(0.15, 0.15, 0.15))),
+                text_color: Color::from_rgb(0.8, 0.8, 0.8),
+                border: Border {
+                    radius: 4.0.into(),
+                    width: 1.0,
+                    color: Color::from_rgba(1.0, 1.0, 1.0, 0.3),
+                },
+                ..Default::default()
+            },
+            _ => iced::widget::button::Style::default(),
+        }
+    }
+}

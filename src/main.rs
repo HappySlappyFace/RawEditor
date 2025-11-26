@@ -229,6 +229,8 @@ enum Message {
     RotationChanged(f32),
     /// User clicked Reset button to clear all edits
     ResetEdits,
+    CopyEdits,
+    PasteEdits,
     
     // ========== Phase 54: Settings Clipboard ==========
     /// Copy current edit settings to clipboard (Ctrl/Cmd+C)
@@ -872,6 +874,22 @@ impl RawEditor {
                 if let EditorStatus::Ready(pipeline) = &self.editor_status {
                     pipeline.update_uniforms(&self.current_edit_params);
                     self.canvas_cache.clear();
+                }
+                Task::none()
+            }
+            Message::CopyEdits => {
+                self.edit_clipboard = Some(self.current_edit_params.clone());
+                Task::none()
+            }
+            Message::PasteEdits => {
+                if let Some(clipboard) = &self.edit_clipboard {
+                    self.current_edit_params = clipboard.clone();
+                    self.save_current_edits(); // Save the pasted edits
+                    if let EditorStatus::Ready(pipeline) = &self.editor_status {
+                        pipeline.update_uniforms(&self.current_edit_params);
+                        self.canvas_cache.clear();
+                        self.histogram_cache.clear();
+                    }
                 }
                 Task::none()
             }
@@ -2125,7 +2143,34 @@ impl RawEditor {
             .push(slider_row("Rotate", self.current_edit_params.rotation, -45.0..=45.0, 0.1, Message::RotationChanged))
             
             // Action Buttons
-            .push(button("Reset All").on_press(Message::ResetEdits));
+            .push(
+                row![
+                    // Copy/Paste Icons
+                    button(text(ui::icons::COPY).font(ICON_FONT).size(16))
+                        .style(ui::styles::NeutralButton::style)
+                        .on_press(Message::CopyEdits)
+                        .padding(8),
+                    button(text(ui::icons::CLIPBOARD).font(ICON_FONT).size(16))
+                        .style(ui::styles::NeutralButton::style)
+                        .on_press(Message::PasteEdits)
+                        .padding(8),
+                        
+                    iced::widget::Space::with_width(Length::Fill),
+                    
+                    // Reset
+                    button(
+                        row![
+                            text(ui::icons::RESET).font(ICON_FONT).size(14),
+                            text("Reset").size(14)
+                        ].spacing(5)
+                    )
+                    .style(ui::styles::NeutralButton::style)
+                    .on_press(Message::ResetEdits)
+                    .padding([8, 12]),
+                ]
+                .spacing(10)
+                .width(Length::Fill)
+            );
             
         let mut sidebar = sidebar;
 
@@ -2152,7 +2197,20 @@ impl RawEditor {
         }
             
         let sidebar = sidebar
-            .push(button("Export").on_press(Message::ExportImage))
+            .push(
+                button(
+                    row![
+                        text(ui::icons::EXPORT).font(ICON_FONT).size(14),
+                        text("Export Image").size(14)
+                    ]
+                    .spacing(5)
+                    .align_y(Alignment::Center)
+                )
+                .style(ui::styles::AccentButton::style)
+                .on_press(Message::ExportImage)
+                .padding(12)
+                .width(Length::Fill)
+            )
             
             // Phase 41: Metadata Info
             // Removed: Metadata info is now hidden by default.
