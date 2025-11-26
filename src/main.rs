@@ -1486,68 +1486,101 @@ impl RawEditor {
     fn view_title_bar(&self) -> Element<Message> {
         // Left: Menus
         let menus = row![
-            button(text("File").size(13)).style(button::text),
-            button(text("Edit").size(13)).style(button::text),
-            button(text("Window").size(13)).style(button::text),
-            button(text("Help").size(13)).style(button::text),
+            button(container(text("File").size(13)).height(Length::Fill).align_x(iced::alignment::Horizontal::Center).align_y(iced::alignment::Vertical::Center))
+                .style(ui::styles::WindowControlButton::style)
+                .height(Length::Fill)
+                .padding([0, 10]),
+            button(container(text("Edit").size(13)).height(Length::Fill).align_x(iced::alignment::Horizontal::Center).align_y(iced::alignment::Vertical::Center))
+                .style(ui::styles::WindowControlButton::style)
+                .height(Length::Fill)
+                .padding([0, 10]),
+            button(container(text("Window").size(13)).height(Length::Fill).align_x(iced::alignment::Horizontal::Center).align_y(iced::alignment::Vertical::Center))
+                .style(ui::styles::WindowControlButton::style)
+                .height(Length::Fill)
+                .padding([0, 10]),
+            button(container(text("Help").size(13)).height(Length::Fill).align_x(iced::alignment::Horizontal::Center).align_y(iced::alignment::Vertical::Center))
+                .style(ui::styles::WindowControlButton::style)
+                .height(Length::Fill)
+                .padding([0, 10]),
         ]
-        .spacing(5)
+        .spacing(0)
         .align_y(Alignment::Center);
 
         // Center: Navigation (Library | Develop)
         let navigation = container(
             row![
                 button(
-                    row![
-                        text(ui::icons::FOLDER).font(ICON_FONT).size(14),
-                        text("Library").size(14)
-                    ]
-                    .spacing(5)
-                    .align_y(Alignment::Center)
+                    container(
+                        row![
+                            text(ui::icons::FOLDER).font(ICON_FONT).size(14),
+                            text("Library").size(14)
+                        ]
+                        .spacing(5)
+                        .align_y(Alignment::Center)
+                    )
+                    .height(Length::Fill)
+                    .align_x(iced::alignment::Horizontal::Center)
+                    .align_y(iced::alignment::Vertical::Center)
                 )
-                .style(if self.current_tab == AppTab::Library { button::primary } else { button::text })
+                .height(Length::Fill)
+                .padding([0, 15])
+                .style(|t, s| ui::styles::TabButton { is_active: self.current_tab == AppTab::Library }.style(t, s))
                 .on_press(Message::TabChanged(AppTab::Library)),
                 
                 button(
-                    row![
-                        text(ui::icons::PAINTBRUSH).font(ICON_FONT).size(14),
-                        text("Develop").size(14)
-                    ]
-                    .spacing(5)
-                    .align_y(Alignment::Center)
+                    container(
+                        row![
+                            text(ui::icons::PAINTBRUSH).font(ICON_FONT).size(14),
+                            text("Develop").size(14)
+                        ]
+                        .spacing(5)
+                        .align_y(Alignment::Center)
+                    )
+                    .height(Length::Fill)
+                    .align_x(iced::alignment::Horizontal::Center)
+                    .align_y(iced::alignment::Vertical::Center)
                 )
-                .style(if self.current_tab == AppTab::Develop { button::primary } else { button::text })
+                .height(Length::Fill)
+                .padding([0, 15])
+                .style(|t, s| ui::styles::TabButton { is_active: self.current_tab == AppTab::Develop }.style(t, s))
                 .on_press(Message::TabChanged(AppTab::Develop)),
             ]
-            .spacing(10)
+            .spacing(0)
+            .height(Length::Fill)
         )
         .width(Length::Fill)
-        .align_x(iced::alignment::Horizontal::Center);
+        .height(Length::Fill)
+        .align_x(iced::alignment::Horizontal::Center)
+        .align_y(iced::alignment::Vertical::Center);
 
         // Right: Logo + Window Controls
         let controls = row![
             // Logo
-            text(ui::icons::CAMERA)
-                .font(ICON_FONT)
-                .size(16)
-                .style(|_theme| text::Style { color: Some(Color::from_rgb(0.4, 0.4, 0.4)) }),
+            container(
+                text(ui::icons::CAMERA)
+                    .font(ICON_FONT)
+                    .size(16)
+                    .style(|_theme| text::Style { color: Some(Color::from_rgb(0.4, 0.4, 0.4)) })
+            )
+            .height(Length::Fill)
+            .align_y(iced::alignment::Vertical::Center),
                 
             iced::widget::Space::with_width(Length::Fixed(15.0)),
             
             // Window Controls
-            button(text(ui::icons::MINIMIZE).font(ICON_FONT).size(14))
+            button(container(text(ui::icons::MINIMIZE).font(ICON_FONT).size(14)).width(Length::Fill).height(Length::Fill).align_x(iced::alignment::Horizontal::Center).align_y(iced::alignment::Vertical::Center))
                 .on_press(Message::MinimizeWindow)
-                .style(button::text)
-                .width(Length::Fixed(30.0))
-                .height(Length::Fixed(30.0)),
+                .style(ui::styles::WindowControlButton::style)
+                .width(Length::Fixed(45.0))
+                .height(Length::Fill),
                 
-            button(text(ui::icons::MAXIMIZE).font(ICON_FONT).size(14))
+            button(container(text(ui::icons::MAXIMIZE).font(ICON_FONT).size(14)).width(Length::Fill).height(Length::Fill).align_x(iced::alignment::Horizontal::Center).align_y(iced::alignment::Vertical::Center))
                 .on_press(Message::MaximizeWindow)
-                .style(button::text)
-                .width(Length::Fixed(30.0))
-                .height(Length::Fixed(30.0)),
+                .style(ui::styles::WindowControlButton::style)
+                .width(Length::Fixed(45.0))
+                .height(Length::Fill),
                 
-            button(text(ui::icons::CLOSE).font(ICON_FONT).size(14))
+            button(container(text(ui::icons::CLOSE).font(ICON_FONT).size(14)).width(Length::Fill).height(Length::Fill).align_x(iced::alignment::Horizontal::Center).align_y(iced::alignment::Vertical::Center))
                 .on_press(Message::CloseWindow)
                 .style(|_theme, status| {
                     if status == button::Status::Hovered {
@@ -1563,9 +1596,11 @@ impl RawEditor {
                         }
                     }
                 })
-                .width(Length::Fixed(30.0))
-                .height(Length::Fixed(30.0)),
+                .width(Length::Fixed(45.0))
+                .height(Length::Fill),
         ]
+        .spacing(0)
+        .height(Length::Fill)
         .align_y(Alignment::Center);
 
         // Assemble Title Bar
@@ -1581,14 +1616,12 @@ impl RawEditor {
                     
                     controls,
                 ]
+                .height(Length::Fill)
                 .align_y(Alignment::Center)
-                .padding([0, 10]),
+                .padding(0),
                 
                 // Layer 2: Navigation (Centered)
-                container(navigation)
-                    .width(Length::Fill)
-                    .align_x(iced::alignment::Horizontal::Center)
-                    .align_y(iced::alignment::Vertical::Center),
+                navigation,
             ]
         )
         .height(Length::Fixed(35.0))

@@ -45,3 +45,61 @@ impl ProSlider {
         }
     }
 }
+
+pub struct WindowControlButton;
+
+impl WindowControlButton {
+    pub fn style(_theme: &Theme, status: iced::widget::button::Status) -> iced::widget::button::Style {
+        match status {
+            iced::widget::button::Status::Hovered => iced::widget::button::Style {
+                background: Some(Background::Color(Color::from_rgb(0.2, 0.2, 0.2))),
+                text_color: Color::WHITE,
+                ..Default::default()
+            },
+            iced::widget::button::Status::Pressed => iced::widget::button::Style {
+                background: Some(Background::Color(Color::from_rgb(0.3, 0.3, 0.3))),
+                text_color: Color::WHITE,
+                ..Default::default()
+            },
+            _ => iced::widget::button::Style {
+                background: None,
+                text_color: Color::from_rgb(0.7, 0.7, 0.7),
+                ..Default::default()
+            },
+        }
+    }
+}
+
+pub struct TabButton {
+    pub is_active: bool,
+}
+
+impl TabButton {
+    pub fn style(&self, _theme: &Theme, status: iced::widget::button::Status) -> iced::widget::button::Style {
+        if self.is_active {
+            iced::widget::button::Style {
+                background: Some(Background::Color(Color::from_rgb(0.2, 0.2, 0.2))), // Grey
+                text_color: Color::WHITE,
+                ..Default::default()
+            }
+        } else {
+            match status {
+                iced::widget::button::Status::Hovered => iced::widget::button::Style {
+                    background: Some(Background::Color(Color::from_rgb(0.2, 0.2, 0.2))),
+                    text_color: Color::WHITE,
+                    ..Default::default()
+                },
+                iced::widget::button::Status::Pressed => iced::widget::button::Style {
+                    background: Some(Background::Color(Color::from_rgb(0.3, 0.3, 0.3))),
+                    text_color: Color::WHITE,
+                    ..Default::default()
+                },
+                _ => iced::widget::button::Style {
+                    background: None,
+                    text_color: Color::from_rgb(0.7, 0.7, 0.7),
+                    ..Default::default()
+                },
+            }
+        }
+    }
+}
