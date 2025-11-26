@@ -414,6 +414,21 @@ impl RawEditor {
         }
     }
 
+    // Helper to push current state to history
+    fn commit_current_state(&mut self) {
+        let params_to_push = self.current_edit_params.clone();
+        if let Some((stack, index)) = self.get_current_history() {
+            // Truncate any redo history
+            stack.truncate(*index + 1);
+            
+            // Push new state
+            stack.push(params_to_push);
+            *index += 1;
+            
+            println!("📝 History Commit: Stack size {}, Index {}", stack.len(), *index);
+        }
+    }
+
     /// Handle application messages and update state
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
@@ -467,6 +482,7 @@ impl RawEditor {
                 }
                 Task::none()
             }
+            
             
             Message::ImportFolder => {
                 // Phase 23: Only allow imports if database is loaded
@@ -910,17 +926,7 @@ impl RawEditor {
             }
             // Phase 65: Undo/Redo
             Message::CommitEdit => {
-                let params_to_push = self.current_edit_params.clone();
-                if let Some((stack, index)) = self.get_current_history() {
-                    // Truncate any redo history
-                    stack.truncate(*index + 1);
-                    
-                    // Push new state
-                    stack.push(params_to_push);
-                    *index += 1;
-                    
-                    println!("📝 Commit Edit: Stack size {}, Index {}", stack.len(), *index);
-                }
+                self.commit_current_state();
                 Task::none()
             }
             
@@ -993,6 +999,8 @@ impl RawEditor {
                         self.canvas_cache.clear();
                         self.histogram_cache.clear();
                     }
+                    // Phase 65: Commit the pasted state to history
+                    self.commit_current_state();
                 }
                 Task::none()
             }
@@ -1014,6 +1022,9 @@ impl RawEditor {
                     self.canvas_cache.clear();
                     self.histogram_cache.clear(); // Phase 24: Clear histogram cache
                 }
+                
+                // Phase 65: Commit the reset state to history
+                self.commit_current_state();
                 
                 Task::none()
             }
@@ -1038,26 +1049,27 @@ impl RawEditor {
                     if let Some(library) = &self.library {
                         let count = self.multi_selection.len();
                         for &image_id in &self.multi_selection {
-                            let _ = library.save_edit_params(image_id, &clipboard_params);
+                            // Skip the current image in the loop, we'll save it explicitly below
+                            if Some(image_id) != self.selected_image_id {
+                                let _ = library.save_edit_params(image_id, &self.current_edit_params);
+                            }
                         }
-                        println!("💾 Pasted settings to {} image(s)", count);
+                        self.status = "Settings pasted to selection".to_string();
+                        println!("📋 Pasted settings to {} images", count);
                     }
                     
-                    // Update GPU uniforms and refresh render (for currently displayed image)
+                    // Explicitly save the current image (triggers log and ensures consistency)
+                    self.save_current_edits();
+                    
+                    // Phase 25: Update GPU uniforms if we pasted to the current image
                     if let EditorStatus::Ready(pipeline) = &self.editor_status {
                         pipeline.update_uniforms(&self.current_edit_params);
                         self.canvas_cache.clear();
                         self.histogram_cache.clear();
                     }
                     
-                    let count = self.multi_selection.len();
-                    self.status = if count > 1 {
-                        format!("Settings pasted to {} images!", count)
-                    } else {
-                        "Settings pasted!".to_string()
-                    };
-                } else {
-                    self.status = "No settings in clipboard".to_string();
+                    // Phase 65: Commit the pasted state to history (for the current image)
+                    self.commit_current_state();
                 }
                 Task::none()
             }
@@ -1583,6 +1595,8 @@ impl RawEditor {
                                 return Some(Message::Undo);
                             }
                         }
+                        // Phase 65: Ctrl+R for Reset (Alias)
+                        keyboard::Key::Character("r") | keyboard::Key::Character("R") => return Some(Message::ResetEdits),
                         _ => {}
                     }
                 }
