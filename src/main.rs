@@ -368,7 +368,7 @@ impl RawEditor {
                 is_dragging: false,
                 last_cursor_position: None,
                 last_click_time: None,
-                viewport_size: (800.0, 600.0),
+                viewport_size: (800.0, 400.0),
                 working_preview: None,
                 current_metadata: None,
                 edit_clipboard: None,
@@ -1720,7 +1720,7 @@ impl RawEditor {
                         color: Some(Color::from_rgb(0.5, 0.7, 1.0)),
                     }),
                 Space::with_height(Length::Fill),
-                text("Version 0.3")
+                text("Version 0.4")
                     .size(11)
                     .center()
                     .style(|_theme| text::Style {
@@ -2595,8 +2595,8 @@ fn main() -> iced::Result {
     // Note: iced::application() uses a single window throughout
     // To have a separate splash window, you'd need the multi-window API
     .window(iced::window::Settings {
-        size: iced::Size::new(900.0, 600.0),  // Main app size
-        min_size: Some(iced::Size::new(600.0, 400.0)),
+        size: iced::Size::new(900.0, 350.0),  // Main app size
+        min_size: Some(iced::Size::new(600.0, 350.0)),
         decorations: false,  // Remove title bar
         ..Default::default()
     })
