@@ -131,6 +131,8 @@ struct RawEditor {
     multi_selection: HashSet<i64>,
     /// Phase 55: Track modifier keys for Ctrl/Cmd+Click
     last_modifiers: iced::keyboard::Modifiers,
+    /// Phase 59: Minimum rating filter (0 = show all, 1-5 = show rating or higher)
+    min_filter_rating: u8,
 }
 
 /// Application messages (events)
@@ -206,8 +208,13 @@ enum Message {
     ModifiersChanged(iced::keyboard::Modifiers),
     
     // ========== Phase 56: Ratings & Culling ==========
-    /// Set star rating (0-5) for selected image(s)
+    /// Set rating for selected image(s) (0-5 stars)
     SetRating(u8),
+    
+    // ========== Phase 59: Rating Filter ==========
+    /// Set minimum rating filter (0 = all, 1-5 = show rating or higher)
+    SetMinRating(u8),
+
     
     // ========== Phase 24: Workflow Messages ==========
     /// Toggle Before/After view (Spacebar)
@@ -320,6 +327,7 @@ impl RawEditor {
                 edit_clipboard: None,
                 multi_selection: HashSet::new(),
                 last_modifiers: iced::keyboard::Modifiers::default(),
+                min_filter_rating: 0,  // Phase 59: Start with "show all"
             },
             // Phase 23: Trigger database loading in background
             Task::perform(
@@ -888,10 +896,16 @@ impl RawEditor {
             // ========== Phase 55: Multi-Selection Handlers ==========
             
             Message::ModifiersChanged(modifiers) => {
-                // Track modifier keys for Ctrl/Cmd+Click detection
                 self.last_modifiers = modifiers;
                 Task::none()
             }
+            
+            // Phase 59: Rating filter
+            Message::SetMinRating(rating) => {
+                self.min_filter_rating = rating;
+                Task::none()
+            }
+
             
             // ========== Phase 56: Ratings & Culling Handlers ==========
             
@@ -1567,16 +1581,146 @@ impl RawEditor {
     
     /// Build the Library tab view (grid of thumbnails)
     fn view_library(&self) -> Element<Message> {
+        // Phase 59: Filter images by rating
+        let filtered_images: Vec<&ImageData> = self.images.iter()
+            .filter(|img| self.min_filter_rating == 0 || img.rating >= self.min_filter_rating)
+            .collect();
+        
         // Count thumbnails and deleted files
-        let cached_count = self.images.iter()
+        let cached_count = filtered_images.iter()
             .filter(|img| img.cache_path_thumb.is_some())
             .count();
-        let deleted_count = self.images.iter()
+        let deleted_count = filtered_images.iter()
             .filter(|img| img.file_status == "deleted")
             .count();
-        let total_count = self.images.len();
+        let total_count = self.images.len();  // Total, not filtered
+        let filtered_count = filtered_images.len();
         
         // ========== LEFT PANE: Thumbnail Grid ==========
+        
+        // Phase 59: Filter bar
+        let filter_bar = row![
+            text("Filter: ").size(14),
+            button(text("All").size(12))
+                .on_press(Message::SetMinRating(0))
+                .padding(5)
+                .style(if self.min_filter_rating == 0 {
+                    |_theme: &Theme, _status| button::Style {
+                        background: Some(Background::Color(Color::from_rgb(0.3, 0.5, 0.7))),
+                        text_color: Color::WHITE,
+                        ..Default::default()
+                    }
+                } else {
+                    |_theme: &Theme, _status| button::Style {
+                        text_color: Color::WHITE,
+                        ..Default::default()
+                    }
+                }),
+            button(row![
+                text(ui::icons::STAR).font(ICON_FONT).size(12),
+                text(" 1+").size(12)
+            ])
+                .on_press(Message::SetMinRating(1))
+                .padding(5)
+                .style(if self.min_filter_rating == 1 {
+                   |_theme: &Theme, _status| button::Style {
+                        background: Some(Background::Color(Color::from_rgb(0.3, 0.5, 0.7))),
+                        text_color: Color::WHITE,
+                        ..Default::default()
+                    }
+                } else {
+                    |_theme: &Theme, _status| button::Style {
+                        text_color: Color::WHITE,
+                        ..Default::default()
+                    }
+                }),
+            button({
+                let stars = format!("{} {}", ui::icons::STAR, ui::icons::STAR);
+                row![
+                    text(stars).font(ICON_FONT).size(12),
+                    text(" 2+").size(12)
+                ]
+            })
+                .on_press(Message::SetMinRating(2))
+                .padding(5)
+                .style(if self.min_filter_rating == 2 {
+                    |_theme: &Theme, _status| button::Style {
+                        background: Some(Background::Color(Color::from_rgb(0.3, 0.5, 0.7))),
+                        text_color: Color::WHITE,
+                        ..Default::default()
+                    }
+                } else {
+                    |_theme: &Theme, _status| button::Style {
+                        text_color: Color::WHITE,
+                        ..Default::default()
+                    }
+                }),
+            button({
+                let stars = format!("{} {} {}", ui::icons::STAR, ui::icons::STAR, ui::icons::STAR);
+                row![
+                    text(stars).font(ICON_FONT).size(12),
+                    text(" 3+").size(12)
+                ]
+            })
+                .on_press(Message::SetMinRating(3))
+                .padding(5)
+                .style(if self.min_filter_rating == 3 {
+                    |_theme: &Theme, _status| button::Style {
+                        background: Some(Background::Color(Color::from_rgb(0.3, 0.5, 0.7))),
+                        text_color: Color::WHITE,
+                        ..Default::default()
+                    }
+                } else {
+                    |_theme: &Theme, _status| button::Style {
+                        text_color: Color::WHITE,
+                        ..Default::default()
+                    }
+                }),
+            button({
+                let stars = format!("{} {} {} {}", ui::icons::STAR, ui::icons::STAR, ui::icons::STAR, ui::icons::STAR);
+                row![
+                    text(stars).font(ICON_FONT).size(12),
+                    text(" 4+").size(12)
+                ]
+            })
+                .on_press(Message::SetMinRating(4))
+                .padding(5)
+                .style(if self.min_filter_rating == 4 {
+                    |_theme: &Theme, _status| button::Style {
+                        background: Some(Background::Color(Color::from_rgb(0.3, 0.5, 0.7))),
+                        text_color: Color::WHITE,
+                        ..Default::default()
+                    }
+                } else {
+                    |_theme: &Theme, _status| button::Style {
+                        text_color: Color::WHITE,
+                        ..Default::default()
+                    }
+                }),
+            button({
+                let stars = format!("{} {} {} {} {}", ui::icons::STAR, ui::icons::STAR, ui::icons::STAR, ui::icons::STAR, ui::icons::STAR);
+                row![
+                    text(stars).font(ICON_FONT).size(12),
+                    text(" 5").size(12)
+                ]
+            })
+                .on_press(Message::SetMinRating(5))
+                .padding(5)
+                .style(if self.min_filter_rating == 5 {
+                    |_theme: &Theme, _status| button::Style {
+                        background: Some(Background::Color(Color::from_rgb(0.3, 0.5, 0.7))),
+                        text_color: Color::WHITE,
+                        ..Default::default()
+                    }
+                } else {
+                    |_theme: &Theme, _status| button::Style {
+                        text_color: Color::WHITE,
+                        ..Default::default()
+                    }
+                }),
+        ]
+        .spacing(5)
+        .padding(5);
         
         // Header for grid pane
         let grid_header = column![
@@ -1586,8 +1730,10 @@ impl RawEditor {
                 .on_press(Message::ImportFolder)
                 .padding(8),
             text(&self.status).size(12),
-            text(format!("Thumbnails: {}/{}  |  Deleted: {}", cached_count, total_count, deleted_count))
+            text(format!("Showing: {}/{}  |  Thumbnails: {}/{}  |  Deleted: {}", 
+                filtered_count, total_count, cached_count, filtered_count, deleted_count))
                 .size(11),
+            filter_bar,  // Phase 59: Add filter bar
         ]
         .spacing(10)
         .padding(10);
@@ -1595,7 +1741,7 @@ impl RawEditor {
         // Create wrapping grid of clickable thumbnails
         const THUMB_SIZE: u16 = 1; // Equal size for all squares
         
-        let thumbnail_grid = self.images.iter().fold(
+        let thumbnail_grid = filtered_images.iter().fold(
             Wrap::new().spacing(8.0).line_spacing(8.0),
             |wrap, img| {
                 // Check if file is deleted
@@ -2130,13 +2276,17 @@ impl RawEditor {
                 sidebar_container,
             ]
             .spacing(0)
-            .height(Length::Fill),
+                .height(Length::Fill),
         ]
         .width(Length::Fill)
         .height(Length::Fill);
         
-        // Phase 53: Add filmstrip timeline at bottom
-        let filmstrip = ui::filmstrip::view(&self.images, &self.multi_selection);
+        // Phase 53: Filmstrip view
+        // Phase 59: Filter by rating
+        let filtered_images: Vec<&ImageData> = self.images.iter()
+            .filter(|img| self.min_filter_rating == 0 || img.rating >= self.min_filter_rating)
+            .collect();
+        let filmstrip = ui::filmstrip::view(&filtered_images, &self.multi_selection);
         
         column![
             editor_content,

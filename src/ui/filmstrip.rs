@@ -9,7 +9,11 @@ use crate::ui::icons;  // Phase 58: Icon constants
 
 /// Render the filmstrip timeline at the bottom of the Develop tab
 /// Phase 55: Now accepts HashSet for multi-selection
-pub fn view<'a>(images: &'a [Image], selection: &HashSet<i64>) -> Element<'a, Message> {
+/// Phase 59: Accepts &[&Image] for filtered view
+pub fn view<'a>(
+    images: &[&'a Image],
+    selection: &HashSet<i64>,
+) -> Element<'a, Message> {
     // Build row with thumbnails
     let mut thumbnails = Vec::new();
 
