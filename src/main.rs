@@ -138,6 +138,27 @@ struct RawEditor {
     show_info_hud: bool,
     /// Phase 65: Undo/Redo History Map<ImageID, (HistoryStack, CurrentIndex)>
     history_map: HashMap<i64, (Vec<state::edit::EditParams>, usize)>,
+    /// Phase 67: Interactive crop mode
+    is_cropping: bool,
+    /// Phase 67: Drag mode for interaction
+    drag_mode: DragMode,
+}
+
+/// Phase 67: Drag mode for mouse interaction
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum DragMode {
+    None,
+    Pan,
+    CropHandle(CropHandle),
+}
+
+/// Phase 67: Crop handles
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum CropHandle {
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
 }
 
 /// Helper for creating a professional slider row
@@ -235,6 +256,8 @@ enum Message {
     SetCrop([f32; 4]),
     /// User clicked Reset button to clear all edits
     ResetEdits,
+    // Phase 67: Interactive Crop
+    ToggleCropMode,
     // Phase 63: Copy/Paste Edits
     CopyEdits,
     PasteEdits,
@@ -391,6 +414,8 @@ impl RawEditor {
                 min_filter_rating: 0,  // Phase 59: Start with "show all"
                 show_info_hud: false,  // Phase 60: HUD hidden by default
                 history_map: HashMap::new(), // Phase 65: Undo/Redo History
+                is_cropping: false, // Phase 67: Interactive Crop
+                drag_mode: DragMode::None, // Phase 67: Interactive Crop
             },
             // Phase 23: Trigger database loading in background
             Task::perform(
@@ -430,6 +455,74 @@ impl RawEditor {
             
             println!("📝 History Commit: Stack size {}, Index {}", stack.len(), *index);
         }
+    }
+
+    // Phase 67: Calculate image screen bounds for interaction
+    fn get_image_screen_bounds(&self, pipeline: &gpu::RenderPipeline) -> Rectangle {
+        let viewport_width = self.viewport_size.0;
+        let viewport_height = self.viewport_size.1;
+        
+        // Use actual image aspect ratio
+        let image_aspect = pipeline.width as f32 / pipeline.height as f32;
+        let viewport_aspect = viewport_width / viewport_height;
+        
+        // Calculate fitted size (contain mode)
+        let (fitted_width, fitted_height) = if image_aspect > viewport_aspect {
+            let w = viewport_width;
+            let h = w / image_aspect;
+            (w, h)
+        } else {
+            let h = viewport_height;
+            let w = h * image_aspect;
+            (w, h)
+        };
+        
+        let center_x = viewport_width / 2.0;
+        let center_y = viewport_height / 2.0;
+        
+        let zoomed_width = fitted_width * self.zoom;
+        let zoomed_height = fitted_height * self.zoom;
+        
+        // Apply pan offset (scaled by zoom)
+        let pan_x = (self.pan_offset.x * fitted_width) / self.zoom;
+        let pan_y = (self.pan_offset.y * fitted_height) / self.zoom;
+        
+        let image_x = center_x - (zoomed_width / 2.0) + pan_x;
+        let image_y = center_y - (zoomed_height / 2.0) + pan_y;
+        
+        Rectangle {
+            x: image_x,
+            y: image_y,
+            width: zoomed_width,
+            height: zoomed_height,
+        }
+    }
+
+    // Phase 67: Detect if cursor is over a crop handle
+    fn detect_crop_handle(&self, cursor_pos: Point) -> Option<CropHandle> {
+        if let EditorStatus::Ready(pipeline) = &self.editor_status {
+            let bounds = self.get_image_screen_bounds(pipeline);
+            let crop = self.current_edit_params.crop;
+            
+            let crop_x = bounds.x + (crop[0] * bounds.width);
+            let crop_y = bounds.y + (crop[1] * bounds.height);
+            let crop_w = crop[2] * bounds.width;
+            let crop_h = crop[3] * bounds.height;
+            
+            let handle_radius = 15.0; // Hitbox radius (generous)
+            
+            let check_handle = |x, y| {
+                let dx = cursor_pos.x - x;
+                let dy = cursor_pos.y - y;
+                (dx*dx + dy*dy) < handle_radius * handle_radius
+            };
+            
+            if check_handle(crop_x, crop_y) { return Some(CropHandle::TopLeft); }
+            if check_handle(crop_x + crop_w, crop_y) { return Some(CropHandle::TopRight); }
+            if check_handle(crop_x, crop_y + crop_h) { return Some(CropHandle::BottomLeft); }
+            if check_handle(crop_x + crop_w, crop_y + crop_h) { return Some(CropHandle::BottomRight); }
+        }
+        None
     }
 
     /// Handle application messages and update state
@@ -944,6 +1037,20 @@ impl RawEditor {
                 
                 Task::none()
             }
+            
+            // Phase 67: Interactive Crop
+            Message::ToggleCropMode => {
+                self.is_cropping = !self.is_cropping;
+                println!("✂️ Crop Mode: {}", if self.is_cropping { "ON" } else { "OFF" });
+                
+                // Reset drag mode when toggling
+                self.drag_mode = DragMode::None;
+                
+                // Force redraw
+                self.canvas_cache.clear();
+                Task::none()
+            }
+
             // Phase 65: Undo/Redo
             Message::CommitEdit => {
                 self.commit_current_state();
@@ -1194,6 +1301,11 @@ impl RawEditor {
             // ========== Phase 25: Zoom & Pan Message Handlers ==========
 
             Message::Zoom(delta, mut cursor_pos) => {
+                // Phase 67: Disable zoom while cropping to avoid confusion
+                if self.is_cropping {
+                    return Task::none();
+                }
+
                 // Phase 26: Zoom to cursor position (not center)
                 
                 // Get cursor position (use last known if sentinel value)
@@ -1309,6 +1421,11 @@ impl RawEditor {
             }
             
             Message::Pan(delta) => {
+                // Phase 67: Disable pan while cropping
+                if self.is_cropping {
+                    return Task::none();
+                }
+
                 // Phase 25: Apply pan delta scaled by zoom (so panning speed feels consistent)
                 // Scale by 1/zoom so panning at high zoom feels same speed as low zoom
                 let scale = 1.0 / self.zoom;
@@ -1340,15 +1457,42 @@ impl RawEditor {
                     return self.update(Message::ResetView);
                 }
                 
+                // Phase 67: If cropping, handle interaction
+                if self.is_cropping {
+                    if let Some(last_pos) = self.last_cursor_position {
+                        if let Some(handle) = self.detect_crop_handle(last_pos) {
+                            println!("✂️  Dragging handle: {:?}", handle);
+                            self.drag_mode = DragMode::CropHandle(handle);
+                            self.is_dragging = true;
+                        }
+                    }
+                    return Task::none();
+                }
+
                 // Single click - start dragging for panning
                 self.is_dragging = true;
+                self.drag_mode = DragMode::Pan;
                 // Position will be updated by next MouseMoved event
                 Task::none()
             }
             
             Message::MouseReleased => {
                 // Stop dragging
+                if self.is_dragging {
+                    if let DragMode::CropHandle(_) = self.drag_mode {
+                        // Commit crop change to history
+                        self.save_current_edits();
+                        self.commit_current_state();
+                        
+                        // Update GPU uniforms (though we're in crop mode so it might be overridden)
+                        if let EditorStatus::Ready(pipeline) = &self.editor_status {
+                             pipeline.update_uniforms(&self.current_edit_params);
+                        }
+                    }
+                }
+                
                 self.is_dragging = false;
+                self.drag_mode = DragMode::None;
                 self.last_cursor_position = None;
                 Task::none()
             }
@@ -1368,17 +1512,9 @@ impl RawEditor {
                     self.viewport_size.1 = new_viewport_h;
                 }
                 
-                // If dragging, calculate pan delta and send Pan message
+                // If dragging, calculate delta
                 if self.is_dragging {
                     if let Some(last_pos) = self.last_cursor_position {
-                        // Calculate delta in screen pixels
-                        let delta_x = current_position.x - last_pos.x;
-                        let delta_y = current_position.y - last_pos.y;
-                        
-                        // Phase 26: Pan sensitivity using image dimensions (not viewport)
-                        // Pan offset is in normalized image coordinates
-                        let (sensitivity_x, sensitivity_y) = if let EditorStatus::Ready(pipeline) = &self.editor_status {
-                            (
                                 1.0 / pipeline.preview_width as f32,
                                 1.0 / pipeline.preview_height as f32,
                             )
@@ -1520,10 +1656,11 @@ impl RawEditor {
                     {
                         println!("📤 Exporting to: {:?}", path);
                         let pipeline_clone = Arc::clone(pipeline);
+                        let crop = self.current_edit_params.crop;
                         
                         // Run export in background to avoid freezing UI
                         return Task::perform(
-                            export_image_async(pipeline_clone, path),
+                            export_image_async(pipeline_clone, path, crop),
                             Message::ExportComplete
                         );
                     }
@@ -2332,6 +2469,20 @@ impl RawEditor {
             
             // Phase 66: Crop
             .push(text("Crop").size(14).font(Font { weight: Weight::Bold, ..Default::default() }))
+            // Phase 67: Crop Tool Toggle
+            .push(
+                button(
+                    row![
+                        text(if self.is_cropping { "Done" } else { "Crop Tool" }).size(14),
+                        text(ui::icons::CROP).font(ICON_FONT).size(14)
+                    ]
+                    .spacing(5)
+                    .align_y(Alignment::Center)
+                )
+                .style(if self.is_cropping { ui::styles::AccentButton::style } else { ui::styles::NeutralButton::style })
+                .on_press(Message::ToggleCropMode)
+                .width(Length::Fill)
+            )
             .push(
                 row![
                     button(text("Reset").size(12))
@@ -2480,13 +2631,19 @@ impl RawEditor {
                 // GPU pipeline ready - render frame
                 
                 // Phase 25: GPU-Accelerated Zoom & Pan
-                let params_to_render = if self.show_before {
+                let mut params_to_render = if self.show_before {
                     state::edit::EditParams::default()
                 } else {
                     self.current_edit_params.clone()
                 };
                 
-                pipeline.update_uniforms_with_zoom(&params_to_render, self.zoom, self.pan_offset.x, self.pan_offset.y);
+                // Phase 67: If cropping, render full image (no crop, no zoom)
+                if self.is_cropping {
+                    params_to_render.crop = [0.0, 0.0, 1.0, 1.0];
+                    pipeline.update_uniforms_with_zoom(&params_to_render, 1.0, 0.0, 0.0);
+                } else {
+                    pipeline.update_uniforms_with_zoom(&params_to_render, self.zoom, self.pan_offset.x, self.pan_offset.y);
+                }
                 
                 // Phase 66: Calculate dynamic preview size based on crop
                 // This ensures correct aspect ratio AND "digital zoom" (higher detail when cropped)
@@ -2595,19 +2752,42 @@ impl RawEditor {
                             handle,
                             zoom: self.zoom,
                             offset: self.pan_offset,
+                            is_cropping: false,
+                            crop: [0.0, 0.0, 1.0, 1.0],
+                            image_width: 3, // Dummy 3:2 aspect
+                            image_height: 2,
                         })
                         .width(Length::Fill)
                         .height(Length::Fill)
                         .into()
                     }
-                    EditorStatus::Ready(_) => {
-                        // RAW image: Pan/zoom already baked into pixels by GPU shader
-                        // Use plain Image widget WITHOUT any transformation
-                        Image::new(handle)
+                    EditorStatus::Ready(pipeline) => {
+                        if self.is_cropping {
+                            // Phase 67: Use PreviewRenderer for interactive cropping overlay
+                            use iced::widget::canvas::Canvas;
+                            use crate::ui::preview_renderer::PreviewRenderer;
+                            
+                            Canvas::new(PreviewRenderer {
+                                handle,
+                                zoom: self.zoom,
+                                offset: self.pan_offset,
+                                is_cropping: true,
+                                crop: self.current_edit_params.crop,
+                                image_width: pipeline.width,
+                                image_height: pipeline.height,
+                            })
                             .width(Length::Fill)
                             .height(Length::Fill)
-                            .content_fit(iced::ContentFit::Contain)
                             .into()
+                        } else {
+                            // RAW image: Pan/zoom already baked into pixels by GPU shader
+                            // Use plain Image widget WITHOUT any transformation
+                            Image::new(handle)
+                                .width(Length::Fill)
+                                .height(Length::Fill)
+                                .content_fit(iced::ContentFit::Contain)
+                                .into()
+                        }
                     }
                     _ => {
                         // Fallback for other states (shouldn't happen with current logic)
@@ -2789,19 +2969,15 @@ impl RawEditor {
     }
 }
 
-/// Phase 19: Async export function that renders full resolution and saves to disk
-/// This runs in a background thread to avoid freezing the UI
-async fn export_image_async(
-    pipeline: Arc<gpu::RenderPipeline>,
-    save_path: std::path::PathBuf,
-) -> Result<std::path::PathBuf, String> {
-    // Run the heavy rendering work in a blocking task
+/// Phase 19: Export helper (runs in background)
+async fn export_image_async(pipeline: Arc<gpu::RenderPipeline>, save_path: std::path::PathBuf, crop: [f32; 4]) -> Result<std::path::PathBuf, String> {
     tokio::task::spawn_blocking(move || {
         println!("🖼️  Starting full-resolution export...");
         
         // Render at FULL resolution (24MP for 6016x4016 image)
         // This will take 1-2 seconds - that's why we're async!
-        let rgba_bytes = pipeline.render_full_res_to_bytes();
+        // Phase 67: Pass crop to ensure correct output dimensions
+        let rgba_bytes = pipeline.render_full_res_to_bytes(crop);
         println!("✅ Rendered {} bytes at full resolution", rgba_bytes.len());
         
         // Determine format from file extension
@@ -2811,14 +2987,25 @@ async fn export_image_async(
             .unwrap_or("jpg")
             .to_lowercase();
         
+        let (width, height) = if crop[2] > 0.0 && crop[3] > 0.0 {
+            // Calculate dimensions from crop
+            let (full_w, full_h) = pipeline.dimensions();
+            (
+                (full_w as f32 * crop[2]) as u32,
+                (full_h as f32 * crop[3]) as u32
+            )
+        } else {
+            pipeline.dimensions()
+        };
+
         // Save using image crate
         let result = match extension.as_str() {
             "png" => {
                 image::save_buffer(
                     &save_path,
                     &rgba_bytes,
-                    pipeline.width,
-                    pipeline.height,
+                    width,
+                    height,
                     image::ColorType::Rgba8,
                 )
             }
@@ -2833,8 +3020,8 @@ async fn export_image_async(
                 image::save_buffer(
                     &save_path,
                     &rgb_bytes,
-                    pipeline.width,
-                    pipeline.height,
+                    width,
+                    height,
                     image::ColorType::Rgb8,
                 )
             }

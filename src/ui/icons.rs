@@ -47,3 +47,6 @@ pub const PAINTBRUSH: &str = "\u{f1fc}";
 
 /// Times/close/X icon
 pub const TIMES: &str = "\u{f00d}";
+
+/// Crop icon
+pub const CROP: &str = "\u{f125}";

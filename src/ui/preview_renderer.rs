@@ -1,6 +1,6 @@
 use iced::widget::canvas::{self, Program};
 use iced::mouse::Cursor;
-use iced::{Rectangle, Renderer, Theme};
+use iced::{Rectangle, Renderer, Theme, Point, Size, Color};
 
 use crate::Message;
 
@@ -16,6 +16,11 @@ pub struct PreviewRenderer {
     pub zoom: f32,
     /// Pan offset in normalized coordinates
     pub offset: cgmath::Vector2<f32>,
+    /// Phase 67: Interactive crop mode
+    pub is_cropping: bool,
+    pub crop: [f32; 4],
+    pub image_width: u32,
+    pub image_height: u32,
 }
 
 impl Program<Message> for PreviewRenderer {
@@ -35,11 +40,8 @@ impl Program<Message> for PreviewRenderer {
         let viewport_width = bounds.width;
         let viewport_height = bounds.height;
 
-        // For JPEG previews, we assume a standard aspect ratio
-        // Since we're loading from cache (1280px width typically), we'll assume 3:2 ratio
-        // This is a reasonable assumption for most RAW files
-        // TODO: If we need exact dimensions, we could store them when loading the handle
-        let image_aspect = 3.0 / 2.0; // Standard 3:2 camera aspect ratio
+        // Use actual image aspect ratio
+        let image_aspect = self.image_width as f32 / self.image_height as f32;
         let viewport_aspect = viewport_width / viewport_height;
 
         // Calculate fitted size (contain mode - image fits entirely within viewport)
@@ -71,14 +73,6 @@ impl Program<Message> for PreviewRenderer {
         let pan_x = (self.offset.x * fitted_width) / self.zoom;
         let pan_y = (self.offset.y * fitted_height) / self.zoom;
         
-        // Debug: Print coordinate calculations
-        crate::debug_log!(crate::debug::DEBUG_PREVIEW, "PreviewRenderer DEBUG:");
-        crate::debug_log!(crate::debug::DEBUG_PREVIEW, "  viewport: {}x{}", viewport_width, viewport_height);
-        crate::debug_log!(crate::debug::DEBUG_PREVIEW, "  fitted: {}x{}", fitted_width, fitted_height);
-        crate::debug_log!(crate::debug::DEBUG_PREVIEW, "  zoom: {}", self.zoom);
-        crate::debug_log!(crate::debug::DEBUG_PREVIEW, "  offset: ({}, {})", self.offset.x, self.offset.y);
-        crate::debug_log!(crate::debug::DEBUG_PREVIEW, "  pan: ({}, {}) [scaled by fitted/zoom]", pan_x, pan_y);
-
         // Calculate final image bounds
         let image_x = center_x - (zoomed_width / 2.0) + pan_x;
         let image_y = center_y - (zoomed_height / 2.0) + pan_y;
@@ -91,9 +85,100 @@ impl Program<Message> for PreviewRenderer {
         };
 
         // Draw the image
-        // Note: frame.draw_image signature is draw_image(bounds: Rectangle, image: impl Into<Image>)
         let canvas_image = iced::widget::canvas::Image::new(self.handle.clone());
         frame.draw_image(image_bounds, canvas_image);
+
+        // Phase 67: Draw Crop Overlay
+        if self.is_cropping {
+            // Calculate crop rect in screen coordinates
+            // crop is [x, y, w, h] in normalized image coordinates
+            
+            let crop_x = image_bounds.x + (self.crop[0] * image_bounds.width);
+            let crop_y = image_bounds.y + (self.crop[1] * image_bounds.height);
+            let crop_w = self.crop[2] * image_bounds.width;
+            let crop_h = self.crop[3] * image_bounds.height;
+            
+            // Draw Rule of Thirds grid
+            let third_w = crop_w / 3.0;
+            let third_h = crop_h / 3.0;
+            
+            let grid_stroke = canvas::Stroke::default()
+                .with_color(Color::from_rgba(1.0, 1.0, 1.0, 0.5))
+                .with_width(1.0);
+                
+            // Vertical lines
+            frame.stroke(
+                &canvas::Path::line(
+                    Point::new(crop_x + third_w, crop_y),
+                    Point::new(crop_x + third_w, crop_y + crop_h)
+                ),
+                grid_stroke.clone(),
+            );
+            frame.stroke(
+                &canvas::Path::line(
+                    Point::new(crop_x + third_w * 2.0, crop_y),
+                    Point::new(crop_x + third_w * 2.0, crop_y + crop_h)
+                ),
+                grid_stroke.clone(),
+            );
+            
+            // Horizontal lines
+            frame.stroke(
+                &canvas::Path::line(
+                    Point::new(crop_x, crop_y + third_h),
+                    Point::new(crop_x + crop_w, crop_y + third_h)
+                ),
+                grid_stroke.clone(),
+            );
+            frame.stroke(
+                &canvas::Path::line(
+                    Point::new(crop_x, crop_y + third_h * 2.0),
+                    Point::new(crop_x + crop_w, crop_y + third_h * 2.0)
+                ),
+                grid_stroke.clone(),
+            );
+            
+            // Draw white border
+            let border_rect = Rectangle {
+                x: crop_x,
+                y: crop_y,
+                width: crop_w,
+                height: crop_h,
+            };
+            frame.stroke(
+                &canvas::Path::rectangle(border_rect.position(), border_rect.size()),
+                canvas::Stroke::default().with_color(Color::WHITE).with_width(2.0),
+            );
+            
+            // Draw corner handles
+            let handle_size = 10.0;
+            let handle_color = Color::WHITE;
+            
+            // Top-Left
+            frame.fill_rectangle(
+                Point::new(crop_x - handle_size/2.0, crop_y - handle_size/2.0),
+                Size::new(handle_size, handle_size),
+                handle_color,
+            );
+            // Top-Right
+            frame.fill_rectangle(
+                Point::new(crop_x + crop_w - handle_size/2.0, crop_y - handle_size/2.0),
+                Size::new(handle_size, handle_size),
+                handle_color,
+            );
+            // Bottom-Left
+            frame.fill_rectangle(
+                Point::new(crop_x - handle_size/2.0, crop_y + crop_h - handle_size/2.0),
+                Size::new(handle_size, handle_size),
+                handle_color,
+            );
+            // Bottom-Right
+            frame.fill_rectangle(
+                Point::new(crop_x + crop_w - handle_size/2.0, crop_y + crop_h - handle_size/2.0),
+                Size::new(handle_size, handle_size),
+                handle_color,
+            );
+        }
 
         vec![frame.into_geometry()]
     }

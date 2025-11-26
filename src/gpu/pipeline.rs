@@ -611,13 +611,22 @@ impl RenderPipeline {
     
     /// Phase 19: Render to FULL resolution for export
     /// This is SLOW (1-2 seconds for 24MP) - only use for final export!
-    pub fn render_full_res_to_bytes(&self) -> Vec<u8> {
-        // Create FULL-SIZED output texture (all 24 megapixels!)
+    /// Phase 67: Added crop support to export at cropped resolution
+    pub fn render_full_res_to_bytes(&self, crop: [f32; 4]) -> Vec<u8> {
+        // Calculate target dimensions based on crop
+        let crop_w = crop[2];
+        let crop_h = crop[3];
+        let target_width = (self.width as f32 * crop_w) as u32;
+        let target_height = (self.height as f32 * crop_h) as u32;
+        
+        println!("📷 Exporting crop: {}x{} (Original: {}x{})", target_width, target_height, self.width, self.height);
+
+        // Create FULL-SIZED (or cropped) output texture
         let output_texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Output Texture (Full Resolution)"),
             size: wgpu::Extent3d {
-                width: self.width,   // FULL resolution!
-                height: self.height,  // FULL resolution!
+                width: target_width,
+                height: target_height,
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -633,13 +642,13 @@ impl RenderPipeline {
             label: Some("Render Encoder (Full Res)"),
         });
         
-        // Render to FULL resolution texture
-        self.render_to_target(&mut encoder, &output_view, (self.width, self.height));
+        // Render to texture
+        self.render_to_target(&mut encoder, &output_view, (target_width, target_height));
         
-        // Readback from FULL buffer (LARGE! ~96MB for 24MP)
-        let bytes_per_row = self.width * 4;
+        // Readback from buffer
+        let bytes_per_row = target_width * 4;
         let padded_bytes_per_row = (bytes_per_row + 255) & !255;
-        let buffer_size = (padded_bytes_per_row * self.height) as u64;
+        let buffer_size = (padded_bytes_per_row * target_height) as u64;
         
         let output_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Output Buffer (Full Res)"),
@@ -660,12 +669,12 @@ impl RenderPipeline {
                 layout: wgpu::ImageDataLayout {
                     offset: 0,
                     bytes_per_row: Some(padded_bytes_per_row),
-                    rows_per_image: Some(self.height),  // FULL resolution!
+                    rows_per_image: Some(target_height),
                 },
             },
             wgpu::Extent3d {
-                width: self.width,   // FULL resolution!
-                height: self.height,  // FULL resolution!
+                width: target_width,
+                height: target_height,
                 depth_or_array_layers: 1,
             },
         );
@@ -681,10 +690,10 @@ impl RenderPipeline {
         rx.recv().unwrap().unwrap();
         
         let data = buffer_slice.get_mapped_range();
-        let mut output = Vec::with_capacity((self.width * self.height * 4) as usize);
-        for y in 0..self.height {  // FULL resolution!
+        let mut output = Vec::with_capacity((target_width * target_height * 4) as usize);
+        for y in 0..target_height {
             let start = (y * padded_bytes_per_row) as usize;
-            let end = start + (self.width * 4) as usize;  // FULL resolution!
+            let end = start + (target_width * 4) as usize;
             output.extend_from_slice(&data[start..end]);
         }
         
