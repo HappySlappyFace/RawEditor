@@ -137,6 +137,36 @@ struct RawEditor {
     show_info_hud: bool,
 }
 
+/// Helper for creating a professional slider row
+fn slider_row<'a, F>(
+    label: &'a str, 
+    value: f32, 
+    range: std::ops::RangeInclusive<f32>, 
+    step: f32, 
+    on_change: F
+) -> Element<'a, Message>
+where
+    F: Fn(f32) -> Message + 'a,
+{
+    row![
+        text(label)
+            .width(Length::Fixed(90.0))
+            .size(13)
+            .style(|_theme| text::Style { color: Some(Color::from_rgb(0.7, 0.7, 0.7)) }),
+        slider(range, value, on_change)
+            .step(step)
+            .style(crate::ui::styles::ProSlider::style),
+        text(format!("{:.2}", value))
+            .width(Length::Fixed(40.0))
+            .size(13)
+            .align_x(iced::alignment::Horizontal::Right)
+            .style(|_theme| text::Style { color: Some(Color::from_rgb(0.7, 0.7, 0.7)) }),
+    ]
+    .spacing(10)
+    .align_y(iced::Alignment::Center)
+    .into()
+}
+
 /// Application messages (events)
 #[derive(Debug, Clone)]
 enum Message {
@@ -1975,63 +2005,33 @@ impl RawEditor {
         
 
         let sidebar = sidebar
-            // Exposure
-            .push(text(format!("Exposure: {:.2}", self.current_edit_params.exposure)))
-            .push(slider(-5.0..=5.0, self.current_edit_params.exposure, Message::ExposureChanged)
-                .step(0.1))
-            // Highlights
-            .push(text(format!("Highlights: {:.0}", self.current_edit_params.highlights * 100.0)))
-            .push(slider(-1.0..=1.0, self.current_edit_params.highlights, Message::HighlightsChanged)
-                .step(0.01))
-            // Shadows
-            .push(text(format!("Shadows: {:.0}", self.current_edit_params.shadows * 100.0)))
-            .push(slider(-1.0..=1.0, self.current_edit_params.shadows, Message::ShadowsChanged)
-                .step(0.01))
-            // Contrast
-            .push(text(format!("Contrast: {:.2}", self.current_edit_params.contrast)))
-            .push(slider(-10.0..=10.0, self.current_edit_params.contrast, Message::ContrastChanged)
-                .step(0.005))
-            // Vibrance (Phase 27: Smart saturation protecting skin tones)
-            .push(text(format!("Vibrance: {:.0}", self.current_edit_params.vibrance * 100.0)))
-            .push(slider(-1.0..=1.0, self.current_edit_params.vibrance, Message::VibranceChanged)
-                .step(0.01))
-            // Saturation
-            .push(text(format!("Saturation: {:.0}", self.current_edit_params.saturation)))
-            .push(slider(-100.0..=100.0, self.current_edit_params.saturation, Message::SaturationChanged))
-            // Temperature
-            .push(text(format!("Temperature: {:.0}", self.current_edit_params.temperature * 100.0)))
-            .push(slider(-1.0..=1.0, self.current_edit_params.temperature, Message::TemperatureChanged)
-                .step(0.01))
-            // Tint
-            .push(text(format!("Tint: {:.0}", self.current_edit_params.tint * 100.0)).size(12))
-            .push(slider(-1.0..=1.0, self.current_edit_params.tint, Message::TintChanged)
-                .step(0.01))
-            
-            // Phase 49-50: Detail Controls
-            .push(text("Detail").size(14))
-            .push(text(format!("Denoise: {:.2}", self.current_edit_params.noise_reduction)).size(12))
-            .push(slider(0.0..=2.0, self.current_edit_params.noise_reduction, Message::NoiseReductionChanged)
-                .step(0.01))
-            .push(text(format!("Sharpen: {:.2}", self.current_edit_params.sharpening)).size(12))
-            .push(slider(0.0..=2.0, self.current_edit_params.sharpening, Message::SharpeningChanged)
-                .step(0.01))
-            .push(text(format!("Masking: {:.2}", self.current_edit_params.sharpen_masking)).size(12))
-            .push(slider(0.0..=1.0, self.current_edit_params.sharpen_masking, Message::SharpenMaskingChanged)
-                .step(0.01))
-            
-            // Phase 52: Geometry
-            .push(text("Geometry").size(14))
-            .push(text(format!("Rotate: {:.1}°", self.current_edit_params.rotation)).size(12))
-            .push(slider(-45.0..=45.0, self.current_edit_params.rotation, Message::RotationChanged)
-                .step(0.1))
-            
             // Tone Controls
-            .push(text(format!("Whites: {:.2}", self.current_edit_params.whites)))
-            .push(slider(0.8..=1.2, self.current_edit_params.whites, Message::WhitesChanged).step(0.01))
-            // Blacks
-            .push(text(format!("Blacks: {:.3}", self.current_edit_params.blacks)))
-            .push(slider(0.0..=0.2, self.current_edit_params.blacks, Message::BlacksChanged)
-                .step(0.005))
+            .push(text("Tone").size(14))
+            .push(slider_row("Exposure", self.current_edit_params.exposure, -5.0..=5.0, 0.1, Message::ExposureChanged))
+            .push(slider_row("Contrast", self.current_edit_params.contrast, -10.0..=10.0, 0.005, Message::ContrastChanged))
+            .push(slider_row("Highlights", self.current_edit_params.highlights, -1.0..=1.0, 0.01, Message::HighlightsChanged))
+            .push(slider_row("Shadows", self.current_edit_params.shadows, -1.0..=1.0, 0.01, Message::ShadowsChanged))
+            .push(slider_row("Whites", self.current_edit_params.whites, 0.8..=1.2, 0.01, Message::WhitesChanged))
+            .push(slider_row("Blacks", self.current_edit_params.blacks, 0.0..=0.2, 0.005, Message::BlacksChanged))
+            
+            // Color Controls
+            .push(text("Color").size(14))
+            .push(slider_row("Temp", self.current_edit_params.temperature, -1.0..=1.0, 0.01, Message::TemperatureChanged))
+            .push(slider_row("Tint", self.current_edit_params.tint, -1.0..=1.0, 0.01, Message::TintChanged))
+            .push(slider_row("Vibrance", self.current_edit_params.vibrance, -1.0..=1.0, 0.01, Message::VibranceChanged))
+            .push(slider_row("Saturation", self.current_edit_params.saturation, -100.0..=100.0, 1.0, Message::SaturationChanged))
+            
+            // Detail Controls
+            .push(text("Detail").size(14))
+            .push(slider_row("Denoise", self.current_edit_params.noise_reduction, 0.0..=2.0, 0.01, Message::NoiseReductionChanged))
+            .push(slider_row("Sharpen", self.current_edit_params.sharpening, 0.0..=2.0, 0.01, Message::SharpeningChanged))
+            .push(slider_row("Masking", self.current_edit_params.sharpen_masking, 0.0..=1.0, 0.01, Message::SharpenMaskingChanged))
+            
+            // Geometry
+            .push(text("Geometry").size(14))
+            .push(slider_row("Rotate", self.current_edit_params.rotation, -45.0..=45.0, 0.1, Message::RotationChanged))
+            
+            // Action Buttons
             .push(button("Reset All").on_press(Message::ResetEdits));
             
         let mut sidebar = sidebar;
