@@ -298,6 +298,9 @@ fn extract_metadata(path: &str) -> (String, String, String, String) {
 
     if let Ok(exif) = rexif::parse_file(path) {
         for entry in exif.entries {
+            // Debug: Print all tags to find the lens info
+            // println!("EXIF: {:?} = {}", entry.tag, entry.value);
+            
             match entry.tag {
                 rexif::ExifTag::ISOSpeedRatings => iso = entry.value.to_string(),
                 rexif::ExifTag::ExposureTime => {

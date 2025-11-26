@@ -60,6 +60,75 @@
 - Old thumbnail system retired (deactivated `Message::ThumbnailGenerated` handling).
 - Library grid now counts cached images using `cache_path_thumb`.
 
+### Phase 29
+- Implemented the "Instant Preview" architecture, showing a 384px image immediately upon selection to eliminate UI freezing.
+
+### Phase 30
+- Built the Async Multi-Tier Loading pipeline (Instant → Working Preview → Full RAW) for seamless image transitions.
+
+### Phase 31
+- Unified the UI container hierarchy to ensure the layout stays stable during loading states.
+
+### Phase 32
+- Created a custom Canvas Preview Renderer to ensure pixel-perfect alignment (no jumping) when hot-swapping from JPEG to RAW.
+
+### Phase 33
+- Extracted EXIF metadata (ISO, Shutter, Lens) for the UI and fixed the canvas overdraw clipping bug.
+
+### Phase 34-36 (The Checkerboard War)
+- Debugged and fixed a critical shader normalization bug in `get_neighbor` that was causing CMY grid artifacts.
+
+### Phase 37
+- Upgraded the demosaicing algorithm from Nearest-Neighbor to Bilinear Interpolation, creating smooth, high-res details.
+
+### Phase 48
+- Implemented Bradford Chromatic Adaptation to correctly map camera colors to sRGB, fixing the "Green/Pink" tint issues.
+
+### Phase 49
+- Added real-time GPU Chroma Noise Reduction to eliminate color speckles.
+
+### Phase 50
+- Implemented Unsharp Mask Sharpening to restore crisp edge details.
+
+### Phase 51
+- Added Edge Masking to the sharpener, preventing noise amplification in smooth areas like skies.
+
+### Phase 52
+- Built the Rotation/Straighten tool using aspect-ratio-aware texture coordinate transformations.
+
+### Phase 53
+- Built the Filmstrip Timeline, allowing rapid image navigation at the bottom of the Develop tab.
+
+### Phase 54
+- Created the Settings Clipboard (Copy/Paste) to transfer edit parameters between images.
+
+### Phase 55
+- Enabled Multi-Selection (Ctrl+Click) and Batch Paste, allowing edits to be applied to groups of photos.
+
+### Phase 56
+- Implemented Star Ratings (0-5) with database persistence and gold star overlays on thumbnails.
+
+### Phase 57
+- Embedded Nerd Fonts directly into the binary to ensure consistent text rendering across platforms.
+
+### Phase 58
+- Replaced broken text emojis with a robust Icon System using vector glyphs.
+
+### Phase 59
+- Added the Filter Bar to instantly hide/show images based on their star rating.
+
+### Phase 60
+- Modernized the layout with a Floating HUD for metadata and a slim top navigation bar.
+
+### Phase 61
+- Refactored the sidebar sliders into a Compact "Pro" Style (Label Left, Slider Right) with neutral colors.
+
+### Phase 62
+- Built a Custom Window Chrome, removing the OS title bar for a fully immersive, borderless experience.
+
+### Phase 63
+- Finalized the UI by styling all buttons with a Neutral Theme and condensing Copy/Paste into an icon strip.
+
 ## Key Implementations & File Map
 - **State management:** `src/state/data.rs`, `src/state/library.rs` (schema, queries, cache path updates, edit persistence).
 - **UI & workflow:** `src/main.rs` (messages, update loop, subscriptions, import/cache tasks, view builders).
@@ -102,4 +171,4 @@
 - **GPU pipeline:** `RenderPipeline` handling exposure/tone/color adjustments via WGSL shaders.
 
 ---
-_Last updated: 2025-11-19_
+_Last updated: 2025-11-26_
