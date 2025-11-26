@@ -155,6 +155,7 @@ where
             .style(|_theme| text::Style { color: Some(Color::from_rgb(0.7, 0.7, 0.7)) }),
         slider(range, value, on_change)
             .step(step)
+            .width(Length::Fill)
             .style(crate::ui::styles::ProSlider::style),
         text(format!("{:.2}", value))
             .width(Length::Fixed(40.0))
@@ -2068,7 +2069,7 @@ impl RawEditor {
         
         // Wrap sidebar in scrollable to allow access to all controls
         let sidebar_scrollable = scrollable(sidebar)
-            .width(Length::Fixed(200.0))
+            .width(Length::Fixed(300.0))
             .height(Length::Fill);
         
         let sidebar_container = container(sidebar_scrollable)
