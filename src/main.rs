@@ -1531,7 +1531,7 @@ impl RawEditor {
                     container(
                         row![
                             text(ui::icons::FOLDER).font(ICON_FONT).size(14),
-                            text("Library").size(14)
+                            text(" Library").size(14)
                         ]
                         .spacing(5)
                         .align_y(Alignment::Center)
@@ -1549,7 +1549,7 @@ impl RawEditor {
                     container(
                         row![
                             text(ui::icons::PAINTBRUSH).font(ICON_FONT).size(14),
-                            text("Develop").size(14)
+                            text(" Develop").size(14)
                         ]
                         .spacing(5)
                         .align_y(Alignment::Center)
@@ -2105,16 +2105,8 @@ impl RawEditor {
             sidebar = sidebar.push(hist);
         }
         
-        // Phase 54: Copy/Paste Settings buttons
-        let copy_paste_row = row![
-            button("Copy").on_press(Message::CopySettings),
-            button(if self.edit_clipboard.is_some() { "Paste" } else { "Paste (Empty)" })
-                .on_press_maybe(self.edit_clipboard.map(|_| Message::PasteSettings))
-        ]
-        .spacing(10);
-        sidebar = sidebar.push(copy_paste_row);
+        // Phase 54: Copy/Paste Settings buttons - Removed (Duplicate)
         
-
         let sidebar = sidebar
             // Tone Controls
             .push(text("Tone").size(14))
@@ -2150,9 +2142,9 @@ impl RawEditor {
                         .style(ui::styles::NeutralButton::style)
                         .on_press(Message::CopyEdits)
                         .padding(8),
-                    button(text(ui::icons::CLIPBOARD).font(ICON_FONT).size(16))
+                    button(text(ui::icons::PASTE).font(ICON_FONT).size(16))
                         .style(ui::styles::NeutralButton::style)
-                        .on_press(Message::PasteEdits)
+                        .on_press_maybe(self.edit_clipboard.as_ref().map(|_| Message::PasteEdits))
                         .padding(8),
                         
                     iced::widget::Space::with_width(Length::Fill),
@@ -2200,8 +2192,8 @@ impl RawEditor {
             .push(
                 button(
                     row![
-                        text(ui::icons::EXPORT).font(ICON_FONT).size(14),
-                        text("Export Image").size(14)
+                        text(ui::icons::SAVE).font(ICON_FONT).size(14),
+                        text(" Export Image").size(14)
                     ]
                     .spacing(5)
                     .align_y(Alignment::Center)

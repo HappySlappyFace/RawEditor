@@ -37,6 +37,7 @@ pub const HOURGLASS: &str = "\u{f252}";
 /// Book/library icon
 pub const BOOK: &str = "\u{f02d}";
 pub const CLIPBOARD: &str = "\u{f328}";
+pub const PASTE: &str = "\u{f0ea}";
 pub const COPY: &str = "\u{f0c5}";
 pub const RESET: &str = "\u{f021}";
 pub const EXPORT: &str = "\u{f56e}";

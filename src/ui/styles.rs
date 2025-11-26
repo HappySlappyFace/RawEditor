@@ -139,6 +139,16 @@ impl NeutralButton {
                 },
                 ..Default::default()
             },
+            iced::widget::button::Status::Disabled => iced::widget::button::Style {
+                background: None,
+                text_color: Color::from_rgb(0.4, 0.4, 0.4),
+                border: Border {
+                    radius: 4.0.into(),
+                    width: 0.0,
+                    color: Color::TRANSPARENT,
+                },
+                ..Default::default()
+            },
             _ => iced::widget::button::Style::default(),
         }
     }
