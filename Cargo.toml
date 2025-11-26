@@ -54,6 +54,10 @@ image = "0.25"
 # System cache directory detection
 dirs-next = "2.0"
 
+# Phase 60: EXIF metadata parsing
+rexif = "0.7"
+
+
 [profile.release]
 # Maximum performance optimizations
 opt-level = 3

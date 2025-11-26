@@ -259,6 +259,9 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
         black_levels[0], black_levels[1], black_levels[2], black_levels[3]);
     println!("⚪ White Level: {}", white_level);
     
+    // Phase 60: Extract EXIF metadata
+    let metadata = extract_metadata(path.to_str().unwrap_or_default());
+    
     Ok(RawDataResult {
         data,
         width,
@@ -279,13 +282,62 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
         // Phase 60: Metadata extraction
         make: raw_image.make.clone(),
         model: raw_image.model.clone(),
-        // TODO: Extract these from rawloader if available, or use a separate EXIF parser
-        iso: "---".to_string(),
-        shutter_speed: "---".to_string(),
-        aperture: "---".to_string(),
-        lens: "---".to_string(),
+        iso: metadata.0,
+        shutter_speed: metadata.1,
+        aperture: metadata.2,
+        lens: metadata.3,
     })
 }
+
+/// Extract EXIF metadata (ISO, Shutter, Aperture, Lens)
+fn extract_metadata(path: &str) -> (String, String, String, String) {
+    let mut iso = "---".to_string();
+    let mut shutter = "---".to_string();
+    let mut aperture = "---".to_string();
+    let mut lens = "---".to_string();
+
+    if let Ok(exif) = rexif::parse_file(path) {
+        for entry in exif.entries {
+            match entry.tag {
+                rexif::ExifTag::ISOSpeedRatings => iso = entry.value.to_string(),
+                rexif::ExifTag::ExposureTime => {
+                    match entry.value {
+                        rexif::TagValue::URational(ref v) => {
+                            if let Some(r) = v.first() {
+                                if r.numerator > 0 {
+                                    if r.numerator >= r.denominator {
+                                        let val = r.numerator as f64 / r.denominator as f64;
+                                        shutter = format!("{:.1}", val).replace(".0s", "s");
+                                    } else {
+                                        let den = r.denominator as f64 / r.numerator as f64;
+                                        shutter = format!("1/{:.0}", den);
+                                    }
+                                }
+                            }
+                        }
+                        _ => shutter = entry.value.to_string(),
+                    }
+                },
+                rexif::ExifTag::FNumber => {
+                    match entry.value {
+                        rexif::TagValue::URational(ref v) => {
+                            if let Some(r) = v.first() {
+                                let val = r.numerator as f64 / r.denominator as f64;
+                                aperture = format!("{:.1}", val).replace(".0", "");
+                            }
+                        }
+                        _ => aperture = entry.value.to_string(),
+                    }
+                },
+                rexif::ExifTag::LensModel => lens = entry.value.to_string(),
+                _ => {}
+            }
+
+        }
+    }
+    (iso, shutter, aperture, lens)
+}
+
 
 /// Compute P0.1 percentile black level for each CFA phase from cropped mosaic
 /// This follows Step 3 of the diagnostic checklist exactly
