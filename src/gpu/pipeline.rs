@@ -169,6 +169,10 @@ pub struct RenderPipeline {
     cfa_pattern: u32,          // Phase 34: CFA Pattern
     black_levels: [u32; 4],    // Phase 36: Per-channel Black Levels
     white_level: u32,          // Phase 35: White Level
+    
+    // Phase 67: Store current params for temporary updates (e.g. export)
+    // Wrapped in Mutex for interior mutability since Pipeline is shared via Arc
+    current_params: std::sync::Mutex<GpuEditParams>,
 }
 
 // Manual Debug implementation (wgpu types don't implement Debug)
@@ -440,6 +444,9 @@ impl RenderPipeline {
             cfa_pattern,
             black_levels,
             white_level,
+            
+            // Phase 67: Initialize current params
+            current_params: std::sync::Mutex::new(GpuEditParams::from(&EditParams::default())),
         })
     }
     
@@ -611,11 +618,15 @@ impl RenderPipeline {
     
     /// Phase 19: Render to FULL resolution for export
     /// This is SLOW (1-2 seconds for 24MP) - only use for final export!
-    /// Phase 67: Added crop support to export at cropped resolution
-    pub fn render_full_res_to_bytes(&self, crop: [f32; 4]) -> Vec<u8> {
+    /// Phase 17: Render full resolution to bytes (for export)
+    /// Phase 67: Added crop parameter
+    /// Phase 17: Render full resolution to bytes (for export)
+    /// Phase 67: Added crop parameter
+    pub fn render_full_res_to_bytes(&self, output_format: wgpu::TextureFormat, crop: [f32; 4]) -> Result<Vec<u8>, String> {
         // Calculate target dimensions based on crop
         let crop_w = crop[2];
         let crop_h = crop[3];
+        
         let target_width = (self.width as f32 * crop_w) as u32;
         let target_height = (self.height as f32 * crop_h) as u32;
         
@@ -632,7 +643,7 @@ impl RenderPipeline {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
+            format: output_format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
@@ -641,6 +652,19 @@ impl RenderPipeline {
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Render Encoder (Full Res)"),
         });
+        
+        // Phase 67: Update uniforms with the crop parameters for this export
+        // We need to temporarily update the uniforms to reflect the crop
+        let mut export_params = if let Ok(current) = self.current_params.lock() {
+            *current
+        } else {
+            return Err("Failed to lock params".to_string());
+        };
+        
+        export_params.crop = crop; // Set the crop
+        
+        // Write to buffer
+        self.queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[export_params]));
         
         // Render to texture
         self.render_to_target(&mut encoder, &output_view, (target_width, target_height));
@@ -699,7 +723,7 @@ impl RenderPipeline {
         
         drop(data);
         output_buffer.unmap();
-        output
+        Ok(output)
     }
     
     /// Get the texture dimensions

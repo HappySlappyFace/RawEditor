@@ -25,6 +25,7 @@ mod color;  // Phase 15: Color space conversion utilities
 // Import shared data structures (alias to avoid conflict with iced's image widget)
 use state::data::Image as ImageData;
 use crate::ui::preview_renderer::CropHandle;
+use iced_wgpu::wgpu;
 
 // Phase 15: Color space conversion
 
@@ -1500,6 +1501,22 @@ impl RawEditor {
                 Task::none()
             }
             
+            Message::ToggleCropMode => {
+                // Phase 67: Toggle crop mode
+                // If we were dragging a crop handle, MouseReleased would have committed the changes.
+                // This message is for toggling the UI overlay.
+                self.is_cropping = !self.is_cropping;
+                self.drag_mode = DragMode::None;
+                
+                // Phase 67: Ensure uniforms are up to date when toggling
+                if let EditorStatus::Ready(pipeline) = &mut self.editor_status {
+                     pipeline.update_uniforms(&self.current_edit_params);
+                }
+                
+                self.canvas_cache.clear();
+                Task::none()
+            }
+            
             Message::MouseMoved(current_position) => {
                 // Phase 26: Update viewport size estimate
                 // Learn the viewport size by tracking the maximum mouse coordinates
@@ -1619,6 +1636,11 @@ impl RawEditor {
                                 
                                 // Update params directly
                                 self.current_edit_params.crop = crop;
+                                
+                                // Phase 67: Update GPU uniforms so the underlying image updates in real-time
+                                if let EditorStatus::Ready(pipeline) = &mut self.editor_status {
+                                     pipeline.update_uniforms(&self.current_edit_params);
+                                }
                                 
                                 // Update cursor position
                                 self.last_cursor_position = Some(current_position);
@@ -3099,8 +3121,13 @@ async fn export_image_async(pipeline: Arc<gpu::RenderPipeline>, save_path: std::
         // Render at FULL resolution (24MP for 6016x4016 image)
         // This will take 1-2 seconds - that's why we're async!
         // Phase 67: Pass crop to ensure correct output dimensions
-        let rgba_bytes = pipeline.render_full_res_to_bytes(crop);
-        println!("✅ Rendered {} bytes at full resolution", rgba_bytes.len());
+        // Phase 67: Pass TextureFormat and crop
+        let rgba_bytes = pipeline.render_full_res_to_bytes(wgpu::TextureFormat::Rgba8Unorm, crop);
+        
+        match &rgba_bytes {
+            Ok(bytes) => println!("✅ Rendered {} bytes at full resolution", bytes.len()),
+            Err(e) => println!("❌ Render failed: {}", e),
+        }
         
         // Determine format from file extension
         let extension = save_path
@@ -3108,45 +3135,53 @@ async fn export_image_async(pipeline: Arc<gpu::RenderPipeline>, save_path: std::
             .and_then(|e| e.to_str())
             .unwrap_or("jpg")
             .to_lowercase();
-        
+             // Calculate output dimensions
+        let (full_w, full_h) = pipeline.dimensions();
         let (width, height) = if crop[2] > 0.0 && crop[3] > 0.0 {
-            // Calculate dimensions from crop
-            let (full_w, full_h) = pipeline.dimensions();
             (
                 (full_w as f32 * crop[2]) as u32,
                 (full_h as f32 * crop[3]) as u32
             )
         } else {
-            pipeline.dimensions()
+            (full_w, full_h)
         };
 
         // Save using image crate
-        let result = match extension.as_str() {
-            "png" => {
-                image::save_buffer(
-                    &save_path,
-                    &rgba_bytes,
-                    width,
-                    height,
-                    image::ColorType::Rgba8,
-                )
-            }
-            _ => {
-                // Default to JPEG
-                // Convert RGBA to RGB (JPEG doesn't support alpha)
-                let rgb_bytes: Vec<u8> = rgba_bytes
-                    .chunks_exact(4)
-                    .flat_map(|rgba| [rgba[0], rgba[1], rgba[2]])
-                    .collect();
-                
-                image::save_buffer(
-                    &save_path,
-                    &rgb_bytes,
-                    width,
-                    height,
-                    image::ColorType::Rgb8,
-                )
-            }
+        let result = if save_path.extension().map_or(false, |ext| ext.eq_ignore_ascii_case("jpg") || ext.eq_ignore_ascii_case("jpeg")) {
+            // Save as JPEG
+            // Remove alpha channel
+            // Phase 67: Handle Result from render_full_res_to_bytes
+            let rgba_bytes = match rgba_bytes {
+                Ok(bytes) => bytes,
+                Err(e) => return Err(format!("Export failed: {}", e)),
+            };
+            
+            let rgb_bytes: Vec<u8> = rgba_bytes
+                .chunks_exact(4)
+                .flat_map(|rgba| [rgba[0], rgba[1], rgba[2]])
+                .collect();
+            
+            image::save_buffer(
+                &save_path,
+                &rgb_bytes,
+                width,
+                height,
+                image::ColorType::Rgb8,
+            )
+        } else {
+            // Save as PNG (or other) with Alpha
+            let rgba_bytes = match rgba_bytes {
+                Ok(bytes) => bytes,
+                Err(e) => return Err(format!("Export failed: {}", e)),
+            };
+            
+            image::save_buffer(
+                &save_path,
+                &rgba_bytes,
+                width,
+                height,
+                image::ColorType::Rgba8,
+            )
         };
         
         result
