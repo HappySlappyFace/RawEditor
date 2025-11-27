@@ -2005,7 +2005,7 @@ impl RawEditor {
             )
             .height(Length::Fill)
             .align_y(iced::alignment::Vertical::Center)
-            .padding(10),
+            .padding([8,15]),
                 
             iced::widget::Space::with_width(Length::Fixed(5.0)), // Reduced space since we added padding
             
