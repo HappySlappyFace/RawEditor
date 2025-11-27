@@ -21,6 +21,8 @@ pub struct PreviewRenderer {
     pub crop: [f32; 4],
     pub image_width: u32,
     pub image_height: u32,
+    /// Phase 67: Control rendering layers
+    pub draw_image: bool,
 }
 
 /// Phase 67: Crop handles
@@ -93,13 +95,17 @@ impl Program<Message> for PreviewRenderer {
             height: zoomed_height,
         };
 
-        let mut image_frame = canvas::Frame::new(renderer, bounds.size());
-        
-        // Draw the image
-        let canvas_image = iced::widget::canvas::Image::new(self.handle.clone());
-        image_frame.draw_image(image_bounds, canvas_image);
-        
-        let mut geometries = vec![image_frame.into_geometry()];
+        let mut geometries = Vec::new();
+
+        if self.draw_image {
+            let mut image_frame = canvas::Frame::new(renderer, bounds.size());
+            
+            // Draw the image
+            let canvas_image = iced::widget::canvas::Image::new(self.handle.clone());
+            image_frame.draw_image(image_bounds, canvas_image);
+            
+            geometries.push(image_frame.into_geometry());
+        }
 
         // Phase 67: Draw Crop Overlay
         if self.is_cropping {
@@ -112,13 +118,41 @@ impl Program<Message> for PreviewRenderer {
             let crop_y = image_bounds.y + (self.crop[1] * image_bounds.height);
             let crop_w = self.crop[2] * image_bounds.width;
             let crop_h = self.crop[3] * image_bounds.height;
+
+            // Draw Dimming Overlay (outside crop area)
+            let dim_color = Color::from_rgba(0.0, 0.0, 0.0, 0.7); // Dark overlay
             
+            // Top rect
+            overlay_frame.fill_rectangle(
+                Point::new(image_bounds.x, image_bounds.y),
+                Size::new(image_bounds.width, crop_y - image_bounds.y),
+                dim_color,
+            );
+            // Bottom rect
+            overlay_frame.fill_rectangle(
+                Point::new(image_bounds.x, crop_y + crop_h),
+                Size::new(image_bounds.width, (image_bounds.y + image_bounds.height) - (crop_y + crop_h)),
+                dim_color,
+            );
+            // Left rect
+            overlay_frame.fill_rectangle(
+                Point::new(image_bounds.x, crop_y),
+                Size::new(crop_x - image_bounds.x, crop_h),
+                dim_color,
+            );
+            // Right rect
+            overlay_frame.fill_rectangle(
+                Point::new(crop_x + crop_w, crop_y),
+                Size::new((image_bounds.x + image_bounds.width) - (crop_x + crop_w), crop_h),
+                dim_color,
+            );
+
             // Draw Rule of Thirds grid
             let third_w = crop_w / 3.0;
             let third_h = crop_h / 3.0;
             
             let grid_stroke = canvas::Stroke::default()
-                .with_color(Color::from_rgba(1.0, 1.0, 1.0, 0.5))
+                .with_color(Color::from_rgba(1.0, 1.0, 1.0, 0.8)) // Increased opacity
                 .with_width(1.0);
                 
             // Vertical lines
@@ -166,33 +200,30 @@ impl Program<Message> for PreviewRenderer {
             );
             
             // Draw corner handles
-            let handle_size = 10.0;
+            let handle_size = 12.0; // Slightly larger
             let handle_color = Color::WHITE;
+            let handle_stroke = canvas::Stroke::default().with_color(Color::BLACK).with_width(1.0);
+            
+            let draw_handle = |frame: &mut canvas::Frame, x: f32, y: f32| {
+                let pos = Point::new(x - handle_size/2.0, y - handle_size/2.0);
+                let size = Size::new(handle_size, handle_size);
+                // Fill
+                frame.fill_rectangle(pos, size, handle_color);
+                // Stroke (outline for visibility)
+                frame.stroke(
+                    &canvas::Path::rectangle(pos, size),
+                    handle_stroke.clone(),
+                );
+            };
             
             // Top-Left
-            overlay_frame.fill_rectangle(
-                Point::new(crop_x - handle_size/2.0, crop_y - handle_size/2.0),
-                Size::new(handle_size, handle_size),
-                handle_color,
-            );
+            draw_handle(&mut overlay_frame, crop_x, crop_y);
             // Top-Right
-            overlay_frame.fill_rectangle(
-                Point::new(crop_x + crop_w - handle_size/2.0, crop_y - handle_size/2.0),
-                Size::new(handle_size, handle_size),
-                handle_color,
-            );
+            draw_handle(&mut overlay_frame, crop_x + crop_w, crop_y);
             // Bottom-Left
-            overlay_frame.fill_rectangle(
-                Point::new(crop_x - handle_size/2.0, crop_y + crop_h - handle_size/2.0),
-                Size::new(handle_size, handle_size),
-                handle_color,
-            );
+            draw_handle(&mut overlay_frame, crop_x, crop_y + crop_h);
             // Bottom-Right
-            overlay_frame.fill_rectangle(
-                Point::new(crop_x + crop_w - handle_size/2.0, crop_y + crop_h - handle_size/2.0),
-                Size::new(handle_size, handle_size),
-                handle_color,
-            );
+            draw_handle(&mut overlay_frame, crop_x + crop_w, crop_y + crop_h);
             
             geometries.push(overlay_frame.into_geometry());
         }

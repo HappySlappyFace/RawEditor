@@ -2853,6 +2853,7 @@ impl RawEditor {
                             crop: [0.0, 0.0, 1.0, 1.0],
                             image_width: 3, // Dummy 3:2 aspect
                             image_height: 2,
+                            draw_image: true,
                         })
                         .width(Length::Fill)
                         .height(Length::Fill)
@@ -2860,19 +2861,43 @@ impl RawEditor {
                     }
                     EditorStatus::Ready(pipeline) => {
                         if self.is_cropping {
-                            // Phase 67: Use PreviewRenderer for interactive cropping overlay
+                            // Phase 67: Use Stack to ensure Overlay is ON TOP of Image
+                            // Iced Canvas sometimes layers images weirdly, so we force it with a Stack
                             use iced::widget::canvas::Canvas;
                             use crate::ui::preview_renderer::PreviewRenderer;
                             
-                            Canvas::new(PreviewRenderer {
-                                handle,
+                            // Layer 1: Image Only
+                            let image_layer = Canvas::new(PreviewRenderer {
+                                handle: handle.clone(),
                                 zoom: self.zoom,
                                 offset: self.pan_offset,
-                                is_cropping: true,
+                                is_cropping: false, // Don't draw overlay
                                 crop: self.current_edit_params.crop,
                                 image_width: pipeline.width,
                                 image_height: pipeline.height,
+                                draw_image: true,
                             })
+                            .width(Length::Fill)
+                            .height(Length::Fill);
+                            
+                            // Layer 2: Overlay Only
+                            let overlay_layer = Canvas::new(PreviewRenderer {
+                                handle: handle.clone(),
+                                zoom: self.zoom,
+                                offset: self.pan_offset,
+                                is_cropping: true, // Draw overlay
+                                crop: self.current_edit_params.crop,
+                                image_width: pipeline.width,
+                                image_height: pipeline.height,
+                                draw_image: false, // Don't draw image
+                            })
+                            .width(Length::Fill)
+                            .height(Length::Fill);
+                            
+                            stack![
+                                image_layer,
+                                overlay_layer
+                            ]
                             .width(Length::Fill)
                             .height(Length::Fill)
                             .into()
