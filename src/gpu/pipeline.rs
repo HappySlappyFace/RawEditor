@@ -445,8 +445,8 @@ impl RenderPipeline {
             black_levels,
             white_level,
             
-            // Phase 67: Initialize current params
-            current_params: std::sync::Mutex::new(GpuEditParams::from(&EditParams::default())),
+            // Phase 67: Initialize current params with the fully populated gpu_params (including metadata!)
+            current_params: std::sync::Mutex::new(gpu_params),
         })
     }
     
@@ -482,7 +482,13 @@ impl RenderPipeline {
         crate::debug_log!(crate::debug::DEBUG_GPU, "   Highlights: {:.0}, Shadows: {:.0}", gpu_params.highlights, gpu_params.shadows);
         crate::debug_log!(crate::debug::DEBUG_GPU, "   Temp: {}, Tint: {}", gpu_params.temperature, gpu_params.tint);
         crate::debug_log!(crate::debug::DEBUG_GPU, "   Zoom: {:.1}%, Pan: ({:.3}, {:.3})", zoom * 100.0, pan_x, pan_y);
+        crate::debug_log!(crate::debug::DEBUG_GPU, "   Zoom: {:.1}%, Pan: ({:.3}, {:.3})", zoom * 100.0, pan_x, pan_y);
         crate::debug_log!(crate::debug::DEBUG_GPU, "   Crop: {:?}", gpu_params.crop);
+        
+        // Phase 67: Store current params (with metadata!)
+        if let Ok(mut current) = self.current_params.lock() {
+            *current = gpu_params;
+        }
         
         self.queue.write_buffer(
             &self.uniform_buffer,
