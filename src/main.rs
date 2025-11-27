@@ -27,6 +27,9 @@ use state::data::Image as ImageData;
 use crate::ui::preview_renderer::CropHandle;
 use iced_wgpu::wgpu;
 
+// Phase 69: Brand Identity
+const LOGO_BYTES: &[u8] = include_bytes!("../assets/logo.png");
+
 // Phase 15: Color space conversion
 
 
@@ -1996,15 +1999,15 @@ impl RawEditor {
         let controls = row![
             // Logo
             container(
-                text(ui::icons::CAMERA)
-                    .font(ICON_FONT)
-                    .size(16)
-                    .style(|_theme| text::Style { color: Some(Color::from_rgb(0.4, 0.4, 0.4)) })
+                Image::new(Handle::from_bytes(LOGO_BYTES.to_vec()))
+                    .height(Length::Fixed(24.0))
+                    .content_fit(iced::ContentFit::Contain)
             )
             .height(Length::Fill)
-            .align_y(iced::alignment::Vertical::Center),
+            .align_y(iced::alignment::Vertical::Center)
+            .padding(10),
                 
-            iced::widget::Space::with_width(Length::Fixed(15.0)),
+            iced::widget::Space::with_width(Length::Fixed(5.0)), // Reduced space since we added padding
             
             // Window Controls
             button(container(text(ui::icons::MINIMIZE).font(ICON_FONT).size(14)).width(Length::Fill).height(Length::Fill).align_x(iced::alignment::Horizontal::Center).align_y(iced::alignment::Vertical::Center))
