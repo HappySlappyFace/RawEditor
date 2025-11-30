@@ -132,7 +132,7 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
     };
     
     // Phase 43: Compute per-CFA black levels from cropped mosaic (Step 3 of checklist)
-    // We do this AFTER cropping to analyze the active image data
+    // We do this AFTER cropping to analyze the actual active image data
     let measured_black_levels = compute_cfa_black_levels_percentile(
         &data, 
         width as usize, 
@@ -142,6 +142,15 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
     
     println!("📷 Loaded RAW data: {}x{} ({} pixels)", width, height, data.len());
     
+    // Use the measured black levels for the pipeline (converted to u32)
+    // This ensures they are in the correct [R, G1, G2, B] order and match the actual data
+    let black_levels = [
+        measured_black_levels[0] as u32,
+        measured_black_levels[1] as u32,
+        measured_black_levels[2] as u32,
+        measured_black_levels[3] as u32,
+    ];
+
     // Extract white balance coefficients (as-shot from camera)
     let wb_multipliers: [f32; 4] = if raw_image.wb_coeffs.len() >= 4 {
         [
@@ -233,21 +242,9 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
     
     // Extract Black and White Levels
     // Extract Black and White Levels
-    // rawloader provides these as u16 arrays (per channel)
-    let black_levels: [u32; 4] = if raw_image.blacklevels.len() >= 4 {
-        [
-            raw_image.blacklevels[0] as u32,
-            raw_image.blacklevels[1] as u32,
-            raw_image.blacklevels[2] as u32,
-            raw_image.blacklevels[3] as u32,
-        ]
-    } else if !raw_image.blacklevels.is_empty() {
-        // If fewer than 4, repeat the first one
-        let val = raw_image.blacklevels[0] as u32;
-        [val, val, val, val]
-    } else {
-        [0, 0, 0, 0]
-    };
+    // Old black level extraction logic removed in favor of measured black levels
+    // which are guaranteed to be in correct [R, G1, G2, B] order.
+
     
     let white_level = if !raw_image.whitelevels.is_empty() {
         raw_image.whitelevels[0] as u32
