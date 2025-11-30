@@ -23,9 +23,9 @@ impl Program<Message> for GpuRenderer {
     fn draw(
         &self,
         _state: &Self::State,
-        renderer: &Renderer,
+        _renderer: &Renderer,
         _theme: &Theme,
-        bounds: Rectangle,
+        _bounds: Rectangle,
         _cursor: Cursor,
     ) -> Vec<canvas::Geometry> {
         // Phase 25: CRITICAL - Direct GPU rendering to screen!

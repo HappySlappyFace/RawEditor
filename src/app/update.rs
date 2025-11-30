@@ -354,7 +354,7 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
                             let (bw, bh) = editor.viewport_size;
                             let dx = delta.x / bw;
                             let dy = delta.y / bh;
-                            let mut c = editor.current_edit_params.crop;
+                            let c = editor.current_edit_params.crop;
                             let (mut l, mut t, mut r, mut b) = (c[0], c[1], c[0]+c[2], c[1]+c[3]);
                             
                             match h {

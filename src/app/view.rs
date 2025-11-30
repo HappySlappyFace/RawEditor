@@ -17,7 +17,7 @@ pub const ICON_FONT: Font = Font::with_name("JetBrainsMono Nerd Font");
 const ICON_FONT_BYTES: &[u8] = include_bytes!("../../assets/fonts/icons.ttf");
 
 /// Build the user interface
-pub fn view(editor: &RawEditor) -> Element<Message> {
+pub fn view(editor: &RawEditor) -> Element<'_, Message> {
     // Phase 23: Show splash screen if database is still loading
     match &editor.library {
         None => view_splash(editor),
@@ -26,7 +26,7 @@ pub fn view(editor: &RawEditor) -> Element<Message> {
 }
 
 /// Phase 23: Splash screen shown during database loading
-fn view_splash(editor: &RawEditor) -> Element<Message> {
+fn view_splash(editor: &RawEditor) -> Element<'_, Message> {
     use iced::widget::Space;
     
     let left_content = column![
@@ -77,7 +77,7 @@ fn view_splash(editor: &RawEditor) -> Element<Message> {
 }
 
 /// Phase 23: Main application UI (shown after database loads)
-fn view_main(editor: &RawEditor) -> Element<Message> {
+fn view_main(editor: &RawEditor) -> Element<'_, Message> {
     let title_bar = view_title_bar(editor);
 
     let content = match editor.current_tab {
@@ -89,7 +89,7 @@ fn view_main(editor: &RawEditor) -> Element<Message> {
 }
 
 /// Build the custom window title bar
-fn view_title_bar(editor: &RawEditor) -> Element<Message> {
+fn view_title_bar(editor: &RawEditor) -> Element<'_, Message> {
     let menus = row![
         button(container(text("File").size(13)).height(Length::Fill).align_x(iced::alignment::Horizontal::Center).align_y(iced::alignment::Vertical::Center)).style(ui::styles::WindowControlButton::style).height(Length::Fill).padding([0, 10]),
         button(container(text("Edit").size(13)).height(Length::Fill).align_x(iced::alignment::Horizontal::Center).align_y(iced::alignment::Vertical::Center)).style(ui::styles::WindowControlButton::style).height(Length::Fill).padding([0, 10]),
@@ -130,7 +130,7 @@ fn view_title_bar(editor: &RawEditor) -> Element<Message> {
 }
 
 /// Build the Library tab view (grid of thumbnails)
-fn view_library(editor: &RawEditor) -> Element<Message> {
+fn view_library(editor: &RawEditor) -> Element<'_, Message> {
     let filtered_images: Vec<&ImageData> = editor.images.iter()
         .filter(|img| editor.min_filter_rating == 0 || img.rating >= editor.min_filter_rating)
         .collect();
@@ -187,7 +187,7 @@ fn view_library(editor: &RawEditor) -> Element<Message> {
 }
 
 /// Build the Develop tab view (full-screen editor with preview)
-fn view_develop(editor: &RawEditor) -> Element<Message> {
+fn view_develop(editor: &RawEditor) -> Element<'_, Message> {
     let histogram_toggle = checkbox("Show Histogram", editor.histogram_enabled).on_toggle(Message::HistogramToggled);
     
     let histogram_section = if editor.histogram_enabled {

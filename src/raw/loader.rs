@@ -67,7 +67,7 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
         return Err(format!("File not found: {}", path.display()));
     }
     
-    let mut decoder = rawloader::RawLoader::new();
+    let decoder = rawloader::RawLoader::new();
     
     // Decode the RAW file (rawloader expects &Path)
     let raw_image = decoder.decode_file(path)

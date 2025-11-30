@@ -47,7 +47,7 @@ impl Program<Message> for PreviewRenderer {
         bounds: Rectangle,
         _cursor: Cursor,
     ) -> Vec<canvas::Geometry> {
-        let mut frame = canvas::Frame::new(renderer, bounds.size());
+        let _frame = canvas::Frame::new(renderer, bounds.size());
 
         // The bounds give us the viewport size (canvas container size)
         let viewport_width = bounds.width;

@@ -145,7 +145,7 @@ impl RawEditor {
         let preview_cache_dir = raw::preview::get_preview_cache_dir();
         
         // Determine the database path (e.g., in the application's data directory)
-        let db_path = state::library::Library::get_db_path();
+        let _db_path = state::library::Library::get_db_path();
 
         (
             RawEditor { 

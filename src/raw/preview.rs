@@ -77,7 +77,7 @@ fn extract_largest_jpeg(raw_path: &Path) -> Result<Option<Vec<u8>>, String> {
 }
 
 /// Use rawloader to extract the embedded JPEG
-fn extract_with_rawloader(raw_path: &Path) -> Result<Option<Vec<u8>>, String> {
+fn extract_with_rawloader(_raw_path: &Path) -> Result<Option<Vec<u8>>, String> {
     // rawloader's API doesn't expose thumbnails directly in 0.37
     // We'll rely on the marker scan method instead
     Ok(None)
