@@ -518,6 +518,12 @@ impl RawEditor {
             if check_handle(crop_x + crop_w, crop_y) { return Some(CropHandle::TopRight); }
             if check_handle(crop_x, crop_y + crop_h) { return Some(CropHandle::BottomLeft); }
             if check_handle(crop_x + crop_w, crop_y + crop_h) { return Some(CropHandle::BottomRight); }
+            
+            // Phase 70: Check if inside body
+            if cursor_pos.x >= crop_x && cursor_pos.x <= crop_x + crop_w &&
+               cursor_pos.y >= crop_y && cursor_pos.y <= crop_y + crop_h {
+                return Some(CropHandle::Body);
+            }
         }
         None
     }
@@ -1605,6 +1611,13 @@ impl RawEditor {
                                         right += dx;
                                         bottom += dy;
                                     }
+                                    CropHandle::Body => {
+                                        // Handled in the second match block, but we need to cover it here
+                                        // to satisfy the compiler.
+                                        // Since we modify left/top/right/bottom in the second block based on the *original* values,
+                                        // we can just skip this pre-calculation step for Body or do nothing.
+                                        // Actually, the second block does the logic.
+                                    }
                                 }
                                 
                                 // Constraints (Min size 1%)
@@ -1628,6 +1641,35 @@ impl RawEditor {
                                     CropHandle::BottomRight => {
                                         right = right.max(left + min_size).min(1.0);
                                         bottom = bottom.max(top + min_size).min(1.0);
+                                    }
+                                    // Phase 70: Pan the crop box
+                                    CropHandle::Body => {
+                                        // Apply delta to both left/top (move the whole box)
+                                        left += dx;
+                                        top += dy;
+                                        right += dx;
+                                        bottom += dy;
+                                        
+                                        // Clamp to image bounds [0.0, 1.0]
+                                        // Check horizontal bounds
+                                        if left < 0.0 {
+                                            right -= left; // Shift right back by the amount we went over
+                                            left = 0.0;
+                                        }
+                                        if right > 1.0 {
+                                            left -= (right - 1.0); // Shift left back
+                                            right = 1.0;
+                                        }
+                                        
+                                        // Check vertical bounds
+                                        if top < 0.0 {
+                                            bottom -= top;
+                                            top = 0.0;
+                                        }
+                                        if bottom > 1.0 {
+                                            top -= (bottom - 1.0);
+                                            bottom = 1.0;
+                                        }
                                     }
                                 }
                                 

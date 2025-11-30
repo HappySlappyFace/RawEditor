@@ -32,6 +32,8 @@ pub enum CropHandle {
     TopRight,
     BottomLeft,
     BottomRight,
+    /// Phase 70: Dragging the crop area itself
+    Body,
 }
 
 impl Program<Message> for PreviewRenderer {
@@ -308,10 +310,103 @@ impl Program<Message> for PreviewRenderer {
                 if check_handle(crop_x + crop_w, crop_y + crop_h) {
                     return (canvas::event::Status::Captured, Some(Message::CropHandleGrabbed(CropHandle::BottomRight, image_bounds)));
                 }
+                
+                // Phase 70: Check if inside body
+                if cursor_position.x >= crop_x && cursor_position.x <= crop_x + crop_w &&
+                   cursor_position.y >= crop_y && cursor_position.y <= crop_y + crop_h {
+                    return (canvas::event::Status::Captured, Some(Message::CropHandleGrabbed(CropHandle::Body, image_bounds)));
+                }
             }
             _ => {}
         }
 
         (canvas::event::Status::Ignored, None)
+    }
+
+    fn mouse_interaction(
+        &self,
+        _state: &Self::State,
+        bounds: Rectangle,
+        cursor: Cursor,
+    ) -> iced::mouse::Interaction {
+        if !self.is_cropping {
+            return iced::mouse::Interaction::default();
+        }
+
+        let cursor_position = match cursor.position_in(bounds) {
+            Some(p) => p,
+            None => return iced::mouse::Interaction::default(),
+        };
+
+        // Re-calculate bounds (duplicate logic, but necessary for stateless Program)
+        // In a real app, we might cache this layout, but for now it's cheap enough
+        let viewport_width = bounds.width;
+        let viewport_height = bounds.height;
+        let image_aspect = self.image_width as f32 / self.image_height as f32;
+        let viewport_aspect = viewport_width / viewport_height;
+
+        let (fitted_width, fitted_height) = if image_aspect > viewport_aspect {
+            let w = viewport_width;
+            let h = w / image_aspect;
+            (w, h)
+        } else {
+            let h = viewport_height;
+            let w = h * image_aspect;
+            (w, h)
+        };
+
+        let center_x = viewport_width / 2.0;
+        let center_y = viewport_height / 2.0;
+        let zoomed_width = fitted_width * self.zoom;
+        let zoomed_height = fitted_height * self.zoom;
+        let pan_x = (self.offset.x * fitted_width) / self.zoom;
+        let pan_y = (self.offset.y * fitted_height) / self.zoom;
+        
+        let image_x = center_x - (zoomed_width / 2.0) + pan_x;
+        let image_y = center_y - (zoomed_height / 2.0) + pan_y;
+        
+        let image_bounds = Rectangle {
+            x: image_x,
+            y: image_y,
+            width: zoomed_width,
+            height: zoomed_height,
+        };
+
+        let crop_x = image_bounds.x + (self.crop[0] * image_bounds.width);
+        let crop_y = image_bounds.y + (self.crop[1] * image_bounds.height);
+        let crop_w = self.crop[2] * image_bounds.width;
+        let crop_h = self.crop[3] * image_bounds.height;
+        
+        let handle_radius = 15.0;
+        let check_handle = |x, y| {
+            let dx = cursor_position.x - x;
+            let dy = cursor_position.y - y;
+            (dx*dx + dy*dy) < handle_radius * handle_radius
+        };
+        
+        if check_handle(crop_x, crop_y) { return iced::mouse::Interaction::ResizingDiagonallyUp; } // TopLeft (NW)
+        if check_handle(crop_x + crop_w, crop_y) { return iced::mouse::Interaction::ResizingDiagonallyDown; } // TopRight (NE) - Wait, NE is Up?
+        // Let's check standard cursors.
+        // NWSE = ResizingDiagonallyUp (/) or Down (\)?
+        // Usually:
+        // NW-SE (\) = ResizingDiagonallyDown (if defined as top-left to bottom-right)
+        // NE-SW (/) = ResizingDiagonallyUp
+        
+        // Iced 0.13:
+        // ResizingDiagonallyUp = / (NE-SW)
+        // ResizingDiagonallyDown = \ (NW-SE)
+        
+        if check_handle(crop_x, crop_y) { return iced::mouse::Interaction::ResizingDiagonallyDown; } // TopLeft (NW) -> SE
+        if check_handle(crop_x + crop_w, crop_y) { return iced::mouse::Interaction::ResizingDiagonallyUp; } // TopRight (NE) -> SW
+        if check_handle(crop_x, crop_y + crop_h) { return iced::mouse::Interaction::ResizingDiagonallyUp; } // BottomLeft (SW) -> NE
+        if check_handle(crop_x + crop_w, crop_y + crop_h) { return iced::mouse::Interaction::ResizingDiagonallyDown; } // BottomRight (SE) -> NW
+        
+        // Check body
+        if cursor_position.x >= crop_x && cursor_position.x <= crop_x + crop_w &&
+           cursor_position.y >= crop_y && cursor_position.y <= crop_y + crop_h {
+            return iced::mouse::Interaction::Grab;
+        }
+
+        iced::mouse::Interaction::default()
     }
 }
