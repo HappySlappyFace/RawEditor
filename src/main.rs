@@ -1,3 +1,6 @@
+// The line below is to remove all the warnings for unused methods, fields, etc. To optimize token use
+#![allow(dead_code)]
+
 mod app;
 pub mod color;
 mod debug;
