@@ -1,7 +1,7 @@
 /// Phase 21: Real-Time Histogram
 /// Displays RGB histogram for visual exposure feedback
-use iced::widget::canvas::{self, Path, Stroke};
-use iced::{Color, Point, Rectangle, Size};
+use iced::widget::canvas::{self, Stroke};
+use iced::{Color, Point, Rectangle};
 
 use crate::app::message::Message;
 

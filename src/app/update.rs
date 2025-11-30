@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::collections::HashSet;
 use iced::{Task, Point};
 use iced::widget::image::Handle;
 use rusqlite::{Connection, OptionalExtension};
@@ -362,7 +361,7 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
                                 CropHandle::TopRight => { t += dy; r += dx; }
                                 CropHandle::BottomLeft => { l += dx; b += dy; }
                                 CropHandle::BottomRight => { r += dx; b += dy; }
-                                CropHandle::Body => { l += dx; t += dy; r += dx; b += dy; if l < 0.0 { r -= l; l = 0.0; } if r > 1.0 { l -= (r - 1.0); r = 1.0; } if t < 0.0 { b -= t; t = 0.0; } if b > 1.0 { t -= (b - 1.0); b = 1.0; } }
+                                CropHandle::Body => { l += dx; t += dy; r += dx; b += dy; if l < 0.0 { r -= l; l = 0.0; } if r > 1.0 { l -= r - 1.0; r = 1.0; } if t < 0.0 { b -= t; t = 0.0; } if b > 1.0 { t -= b - 1.0; b = 1.0; } }
                             }
                             
                             if h != CropHandle::Body {

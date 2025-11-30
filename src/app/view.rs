@@ -6,7 +6,7 @@ use iced_aw::Wrap;
 
 use crate::ui;
 use crate::app::message::{Message, AppTab};
-use crate::app::state::{RawEditor, EditorStatus, DragMode};
+use crate::app::state::{RawEditor, EditorStatus};
 use crate::state::data::Image as ImageData;
 
 // Phase 69: Brand Identity
@@ -320,7 +320,7 @@ fn view_develop(editor: &RawEditor) -> Element<'_, Message> {
         ];
 
         use iced::widget::mouse_area;
-        use iced::mouse::{self, ScrollDelta};
+        use iced::mouse::ScrollDelta;
         let interactive_image = mouse_area(stacked_image)
             .on_scroll(|delta| { let zoom_delta = match delta { ScrollDelta::Lines { y, .. } => y * 0.1, ScrollDelta::Pixels { y, .. } => y * 0.01 }; Message::Zoom(zoom_delta, Point::new(-1.0, -1.0)) })
             .on_press(Message::MousePressed).on_release(Message::MouseReleased).on_move(|position| Message::MouseMoved(position));
