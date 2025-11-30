@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::collections::HashSet;  // Phase 55: Multi-selection
 
 use crate::state::data::Image;
-use crate::Message;
+use crate::app::message::Message;
 use crate::ui::icons;  // Phase 58: Icon constants
 
 /// Render the filmstrip timeline at the bottom of the Develop tab
@@ -43,7 +43,7 @@ pub fn view<'a>(
                     text(stars_text)  // Space between stars
                         .size(14)
                         .color(Color::from_rgb(1.0, 0.8, 0.2))  // Gold
-                        .font(crate::ICON_FONT)  // Phase 57: Use embedded font
+                        .font(crate::app::view::ICON_FONT)  // Phase 57: Use embedded font
                 )
                 .padding(iced::Padding {
                     top: 2.0,

@@ -1,3 +1,4 @@
+use crate::app::message::Message;
 use iced::widget::slider;
 use iced::{Background, Border, Color, Theme};
 

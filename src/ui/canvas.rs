@@ -4,7 +4,7 @@ use iced::{Rectangle, Renderer, Theme, Point};
 use std::sync::Arc;
 
 use crate::gpu;
-use crate::Message;
+use crate::app::message::Message;
 
 /// GPU-accelerated canvas renderer for RAW images
 /// Phase 25: Direct wgpu rendering with zoom/pan support

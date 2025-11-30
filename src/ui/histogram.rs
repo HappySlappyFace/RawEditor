@@ -3,7 +3,7 @@
 use iced::widget::canvas::{self, Path, Stroke};
 use iced::{Color, Point, Rectangle, Size};
 
-use crate::Message;
+use crate::app::message::Message;
 
 /// Histogram data structure
 #[derive(Debug, Clone)]

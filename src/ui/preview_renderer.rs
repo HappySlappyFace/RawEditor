@@ -2,7 +2,7 @@ use iced::widget::canvas::{self, Program};
 use iced::mouse::Cursor;
 use iced::{Rectangle, Renderer, Theme, Point, Size, Color};
 
-use crate::Message;
+use crate::app::message::Message;
 
 /// Canvas-based JPEG preview renderer (Phase 32)
 /// 
