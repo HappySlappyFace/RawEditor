@@ -396,6 +396,10 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
                     let image_id = editor.selected_image_id.unwrap_or(0);
                     let params = editor.current_edit_params.clone();
                     
+                    // Phase 15: Calculate proper cam-to-sRGB color matrix
+                    let xyz_to_cam = raw.color_matrix;
+                    let cam_to_srgb = crate::color::calculate_cam_to_srgb(xyz_to_cam);
+
                     return Task::perform(
                         async move {
                             gpu::RenderPipeline::new(
@@ -405,7 +409,7 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
                                 raw.height,
                                 &params,
                                 raw.wb_multipliers,
-                                raw.color_matrix,
+                                cam_to_srgb,
                                 raw.cfa_pattern,
                                 raw.black_levels,
                                 raw.white_level

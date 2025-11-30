@@ -1,4 +1,5 @@
 mod app;
+pub mod color;
 mod debug;
 mod gpu;
 mod raw;
