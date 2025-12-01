@@ -42,7 +42,11 @@ pub enum DragMode {
     CropHandle(CropHandle),
 }
 
+use lru::LruCache;
+use std::num::NonZeroUsize;
+
 /// Main application state
+#[derive(Debug)]
 pub struct RawEditor {
     /// The catalog database (Phase 23: Optional during startup)
     pub library: Option<state::library::Library>,
@@ -54,6 +58,8 @@ pub struct RawEditor {
     pub selected_image_id: Option<i64>,
     /// Cache directory for full-size previews
     pub preview_cache_dir: PathBuf,
+    /// Phase 73: RAM cache for 1280px previews (Look-Ahead)
+    pub preview_cache: LruCache<i64, Handle>,
     /// Currently active tab
     pub current_tab: AppTab,
     /// Current edit parameters for the selected image
@@ -154,6 +160,7 @@ impl RawEditor {
                 images: Vec::new(), // Empty until database loads
                 selected_image_id: None,
                 preview_cache_dir,
+                preview_cache: LruCache::new(NonZeroUsize::new(20).unwrap()),
                 current_tab: AppTab::Library, // Start in Library view
                 current_edit_params: state::edit::EditParams::default(),
                 editor_status: EditorStatus::NoSelection,

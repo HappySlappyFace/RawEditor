@@ -96,6 +96,10 @@ pub enum Message {
     SetCrop([f32; 4]),
     /// User clicked Reset button to clear all edits
     ResetEdits,
+    // Phase 73: The Look-Ahead Cache
+    PreloadPreview(i64),
+    PreviewCached(i64, Result<iced::widget::image::Handle, String>),
+    
     // Phase 67: Interactive Crop
     ToggleCropMode,
     CropHandleGrabbed(CropHandle, Rectangle),

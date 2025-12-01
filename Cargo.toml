@@ -1,6 +1,6 @@
 [package]
 name = "raw-editor"
-version = "0.0.6"
+version = "0.6.0"
 edition = "2021"
 authors = ["Ayman REBAI <ayman.rebai@gmail.com>"]
 description = "A blazing-fast, native RAW photo editor"
@@ -58,6 +58,7 @@ dirs-next = "2.0"
 rexif = "0.7"
 # Phase 64: Better EXIF parsing (supports MakerNotes for Lens info)
 kamadak-exif = "0.5"
+lru = "0.12"
 
 
 [profile.release]
