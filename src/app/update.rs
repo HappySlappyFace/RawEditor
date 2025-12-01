@@ -109,7 +109,7 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
                 editor.history_map.entry(image_id).or_insert_with(|| (vec![editor.current_edit_params.clone()], 0));
             }
             
-            if editor.current_tab == AppTab::Develop {
+            if editor.current_tab == AppTab::Develop || editor.current_tab == AppTab::Cull {
                 let needs_load = match &editor.editor_status {
                     EditorStatus::Ready(p) => p.image_id != image_id,
                     EditorStatus::Loading(id) => *id != image_id,
@@ -133,7 +133,11 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
                         if let Some(path) = &img.cache_path_working {
                             tasks.push(Task::perform(load_image_handle(path.clone()), Message::WorkingPreviewReady));
                         }
-                        tasks.push(Task::perform(raw::loader::load_raw_data(img.path.clone()), Message::RawDataLoaded));
+                        
+                        // Only load full RAW data if we are in Develop mode
+                        if editor.current_tab == AppTab::Develop {
+                            tasks.push(Task::perform(raw::loader::load_raw_data(img.path.clone()), Message::RawDataLoaded));
+                        }
                         
                         // Schedule preloads for adjacent images
                         tasks.push(schedule_preloads(editor));
