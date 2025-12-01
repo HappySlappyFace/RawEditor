@@ -10,6 +10,7 @@ use crate::ui::preview_renderer::CropHandle;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppTab {
     Library,  // Browse, import, organize images
+    Cull,
     Develop,  // Edit selected image with full preview
 }
 
