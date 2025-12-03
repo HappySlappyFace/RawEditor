@@ -107,6 +107,8 @@ pub struct RawEditor {
     pub is_cropping: bool,
     /// Phase 67: Drag mode for interaction
     pub drag_mode: DragMode,
+    /// Phase 78: Async Task Deduplication (track pending background loads)
+    pub pending_loads: HashSet<i64>,
 }
 
 /// Phase 23: Async database loading
@@ -185,6 +187,7 @@ impl RawEditor {
                 history_map: HashMap::new(), // Phase 65: Undo/Redo History
                 is_cropping: false, // Phase 67: Interactive Crop
                 drag_mode: DragMode::None, // Phase 67: Interactive Crop
+                pending_loads: HashSet::new(),
             },
             // Phase 23: Trigger database loading in background
             Task::perform(

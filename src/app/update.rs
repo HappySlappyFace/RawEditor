@@ -476,6 +476,9 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
         }
         Message::PreloadPreview(_) => Task::none(), // Handled by schedule_preloads batching
         Message::PreviewCached(id, res) => {
+            // Phase 78: Cleanup pending load
+            editor.pending_loads.remove(&id);
+            
             if let Ok((width, height, pixels)) = res {
                 let handle = iced::widget::image::Handle::from_rgba(width, height, pixels);
                 editor.preview_cache.put(id, handle);
@@ -565,7 +568,7 @@ async fn export_image_async(pipeline: Arc<gpu::RenderPipeline>, save_path: std::
 
 // Phase 73: The Look-Ahead Cache
 // Identify adjacent images (current - 2 to current + 10) and preload their working previews
-fn schedule_preloads(editor: &RawEditor) -> Task<Message> {
+fn schedule_preloads(editor: &mut RawEditor) -> Task<Message> {
     if let Some(current_id) = editor.selected_image_id {
         if let Some(current_idx) = editor.images.iter().position(|i| i.id == current_id) {
             let total = editor.images.len() as isize;
@@ -585,19 +588,25 @@ fn schedule_preloads(editor: &RawEditor) -> Task<Message> {
                 if target_idx < editor.images.len() {
                     let img = &editor.images[target_idx];
                     
-                    // Check if already cached
-                    if !editor.preview_cache.contains(&img.id) {
-                        // Not in RAM cache, check if we have a working preview on disk
-                        if let Some(path) = &img.cache_path_working {
-                            let path_clone = path.clone();
-                            let id = img.id;
-                            
-                            // Spawn load task
-                            tasks.push(Task::perform(
-                                load_preview_pixels(path_clone),
-                                move |res| Message::PreviewCached(id, res)
-                            ));
-                        }
+                    // Phase 78: Async Task Deduplication
+                    // Check if already cached OR already loading
+                    if editor.preview_cache.contains(&img.id) || editor.pending_loads.contains(&img.id) {
+                        continue;
+                    }
+
+                    // Not in RAM cache and not loading, check if we have a working preview on disk
+                    if let Some(path) = &img.cache_path_working {
+                        let path_clone = path.clone();
+                        let id = img.id;
+                        
+                        // Mark as loading
+                        editor.pending_loads.insert(id);
+                        
+                        // Spawn load task
+                        tasks.push(Task::perform(
+                            load_preview_pixels(path_clone),
+                            move |res| Message::PreviewCached(id, res)
+                        ));
                     }
                 }
             }
