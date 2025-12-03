@@ -304,13 +304,13 @@ fn view_develop(editor: &RawEditor) -> Element<'_, Message> {
         .push(text("Geometry").size(14))
         .push(slider_row("Rotate", editor.current_edit_params.rotation, -45.0..=45.0, 0.1, Message::RotationChanged))
         .push(row![
-            button(text(ui::icons::COPY).font(ICON_FONT).size(16)).style(ui::styles::NeutralButton::style).on_press(Message::CopyEdits).padding(8),
-            button(text(ui::icons::PASTE).font(ICON_FONT).size(16)).style(ui::styles::NeutralButton::style).on_press_maybe(editor.edit_clipboard.as_ref().map(|_| Message::PasteEdits)).padding(8),
+            button(text(ui::icons::COPY).font(ICON_FONT).size(16)).style(ui::styles::NeutralButton::style).on_press(Message::CopySettings).padding(8),
+            button(text(ui::icons::PASTE).font(ICON_FONT).size(16)).style(ui::styles::NeutralButton::style).on_press_maybe(editor.edit_clipboard.as_ref().map(|_| Message::PasteSettings)).padding(8),
             iced::widget::Space::with_width(Length::Fill),
             button(row![text(ui::icons::RESET).font(ICON_FONT).size(14), text("Reset").size(14)].spacing(5)).style(ui::styles::NeutralButton::style).on_press(Message::ResetEdits).padding([8, 12]),
         ].spacing(10).width(Length::Fill))
         .push(text("Crop").size(14).font(Font { weight: Weight::Bold, ..Default::default() }))
-        .push(button(row![text(if editor.is_cropping { "Done" } else { "Crop Tool" }).size(14), text(ui::icons::CROP).font(ICON_FONT).size(14)].spacing(5).align_y(Alignment::Center)).style(if editor.is_cropping { ui::styles::AccentButton::style } else { ui::styles::NeutralButton::style }).on_press(Message::ToggleCropMode).width(Length::Fill))
+        .push(button(row![text(if editor.is_cropping { "Done" } else { "Crop Tool" }).size(14), text(ui::icons::CROP).font(ICON_FONT).size(14)].spacing(5).align_y(Alignment::Center)).style(if editor.is_cropping { ui::styles::AccentButton::style } else { ui::styles::NeutralButton::style }).on_press(Message::ToggleCrop).width(Length::Fill))
         .push(row![
             button(text("Reset").size(12)).style(ui::styles::NeutralButton::style).on_press(Message::SetCrop([0.0, 0.0, 1.0, 1.0])),
             button(text("1:1").size(12)).style(ui::styles::NeutralButton::style).on_press_maybe(if let EditorStatus::Ready(pipeline) = &editor.editor_status { Some(Message::SetCrop(RawEditor::calculate_center_crop(1.0, pipeline.width, pipeline.height))) } else { None }),

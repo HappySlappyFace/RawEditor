@@ -40,6 +40,7 @@ pub enum DragMode {
     None,
     Pan,
     CropHandle(CropHandle),
+    Crop,
 }
 
 use lru::LruCache;
@@ -109,6 +110,8 @@ pub struct RawEditor {
     pub drag_mode: DragMode,
     /// Phase 78: Async Task Deduplication (track pending background loads)
     pub pending_loads: HashSet<i64>,
+    /// Phase 81: Throttled Image Loader queue
+    pub queued_loads: Vec<(i64, String)>,
 }
 
 /// Phase 79: Modular Info Overlay States
@@ -161,8 +164,8 @@ async fn load_database_async() -> Result<Vec<ImageData>, String> {
 /// Phase 80: Configurable Cache Size
 pub const PRELOAD_BEHIND: usize = 10;
 pub const PRELOAD_AHEAD: usize = 50;
-// Capacity should be enough for behind + ahead + current + some buffer
-pub const CACHE_CAPACITY: usize = PRELOAD_BEHIND + PRELOAD_AHEAD + 5;
+// Phase 81: Increased cache capacity
+pub const CACHE_CAPACITY: usize = 200;
 
 impl RawEditor {
     pub fn title(&self) -> String {
@@ -213,6 +216,7 @@ impl RawEditor {
                 is_cropping: false, // Phase 67: Interactive Crop
                 drag_mode: DragMode::None, // Phase 67: Interactive Crop
                 pending_loads: HashSet::new(),
+                queued_loads: Vec::new(),
             },
             // Phase 23: Trigger database loading in background
             Task::perform(
@@ -363,11 +367,12 @@ impl RawEditor {
     }
 
     /// Phase 24: Keyboard shortcuts subscription
+    /// Phase 81: Throttled Image Loader subscription
     pub fn subscription(&self) -> iced::Subscription<Message> {
         use iced::keyboard;
         use iced::keyboard::key::Named;
         
-        iced::event::listen_with(|event, _status, _window| {
+        let keyboard_subscription = iced::event::listen_with(|event, _status, _window| {
             // Phase 55: Track modifier key changes for Ctrl/Cmd+Click
             if let iced::Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) = event {
                 return Some(Message::ModifiersChanged(modifiers));
@@ -383,17 +388,6 @@ impl RawEditor {
                         keyboard::Key::Character(c) if c == "v" || c == "V" => {
                             return Some(Message::PasteSettings);
                         }
-                        // Phase 65: Undo/Redo (Ctrl+Z / Ctrl+Y or Ctrl+Shift+Z)
-                        keyboard::Key::Character(c) if c == "z" || c == "Z" => {
-                            if modifiers.shift() {
-                                return Some(Message::Redo);
-                            } else {
-                                return Some(Message::Undo);
-                            }
-                        }
-                        keyboard::Key::Character(c) if c == "y" || c == "Y" => {
-                            return Some(Message::Redo);
-                        }
                         _ => {}
                     }
                 }
@@ -402,6 +396,7 @@ impl RawEditor {
                     keyboard::Key::Named(Named::Space) => Some(Message::ToggleBeforeAfter),
                     keyboard::Key::Named(Named::ArrowRight) => Some(Message::SelectNextImage),
                     keyboard::Key::Named(Named::ArrowLeft) => Some(Message::SelectPreviousImage),
+                    keyboard::Key::Named(Named::Delete) | keyboard::Key::Named(Named::Backspace) => Some(Message::DeleteImage),
                     // Phase 56: Rating Shortcuts (1-5)
                     keyboard::Key::Character(c) if c == "0" => Some(Message::SetRating(0)),
                     keyboard::Key::Character(c) if c == "1" => Some(Message::SetRating(1)),
@@ -411,12 +406,22 @@ impl RawEditor {
                     keyboard::Key::Character(c) if c == "5" => Some(Message::SetRating(5)),
                     // Phase 60: HUD Toggle
                     keyboard::Key::Character(c) if c == "i" || c == "I" => Some(Message::ToggleInfoHud),
-
+                    // Phase 65: Undo/Redo shortcuts
+                    keyboard::Key::Character(c) if c == "z" && (modifiers.command() || modifiers.control()) => {
+                        if modifiers.shift() { Some(Message::Redo) } else { Some(Message::Undo) }
+                    }
+                    keyboard::Key::Character(c) if c == "y" && (modifiers.command() || modifiers.control()) => Some(Message::Redo),
+                    // Phase 67: Crop shortcut
+                    keyboard::Key::Character(c) if c == "c" => Some(Message::ToggleCrop),
                     _ => None,
                 }
             } else {
                 None
             }
-        })
+        });
+
+        let loader_subscription = crate::app::loader::subscription(self.queued_loads.clone());
+
+        iced::Subscription::batch(vec![keyboard_subscription, loader_subscription])
     }
 }

@@ -188,10 +188,13 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
             editor.commit_current_state();
             Task::none()
         }
-        Message::ToggleCropMode => {
+        Message::ToggleCrop => {
             editor.is_cropping = !editor.is_cropping;
-            editor.drag_mode = DragMode::None;
-            editor.canvas_cache.clear();
+            if editor.is_cropping {
+                editor.drag_mode = DragMode::Crop;
+            } else {
+                editor.drag_mode = DragMode::None;
+            }
             Task::none()
         }
         Message::CropHandleGrabbed(handle, bounds) => {
@@ -218,15 +221,6 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
                     editor.current_edit_params = stack[*index].clone();
                     update_pipeline(editor);
                 }
-            }
-            Task::none()
-        }
-        Message::CopyEdits => { editor.edit_clipboard = Some(editor.current_edit_params.clone()); Task::none() }
-        Message::PasteEdits => {
-            if let Some(cb) = &editor.edit_clipboard {
-                editor.current_edit_params = cb.clone();
-                update_pipeline(editor);
-                editor.commit_current_state();
             }
             Task::none()
         }
@@ -283,6 +277,12 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
                     return update(editor, Message::ImageSelected(prev));
                 }
             }
+            Task::none()
+        }
+        Message::DeleteImage => {
+            // Phase 81: Placeholder for delete functionality
+            // In a real implementation, this would remove the image from the database and disk.
+            println!("Delete image requested (not implemented yet)");
             Task::none()
         }
         Message::Zoom(d, mut p) => {
@@ -478,6 +478,8 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::PreviewCached(id, res) => {
             // Phase 78: Cleanup pending load
             editor.pending_loads.remove(&id);
+            // Phase 81: Cleanup queued load
+            editor.queued_loads.retain(|(i, _)| *i != id);
             
             if let Ok((width, height, pixels)) = res {
                 let handle = iced::widget::image::Handle::from_rgba(width, height, pixels);
@@ -572,8 +574,6 @@ fn schedule_preloads(editor: &mut RawEditor) -> Task<Message> {
     if let Some(current_id) = editor.selected_image_id {
         if let Some(current_idx) = editor.images.iter().position(|i| i.id == current_id) {
             let total = editor.images.len() as isize;
-            let mut tasks = Vec::new();
-            
             // Phase 80: Configurable Cache Size
             let behind = crate::app::state::PRELOAD_BEHIND as isize;
             let ahead = crate::app::state::PRELOAD_AHEAD as isize;
@@ -606,18 +606,16 @@ fn schedule_preloads(editor: &mut RawEditor) -> Task<Message> {
                         // Mark as loading
                         editor.pending_loads.insert(id);
                         
-                        // Spawn load task
-                        tasks.push(Task::perform(
-                            load_preview_pixels(path_clone),
-                            move |res| Message::PreviewCached(id, res)
-                        ));
+                        // Phase 81: Throttled Image Loader
+                        // Instead of spawning a task immediately, we push to the queue.
+                        // The subscription will pick this up.
+                        editor.queued_loads.push((id, path_clone));
                     }
                 }
             }
             
-            if !tasks.is_empty() {
-                return Task::batch(tasks);
-            }
+            // Phase 81: We no longer return a batch of tasks here.
+            // The subscription handles the loading.
         }
     }
     Task::none()

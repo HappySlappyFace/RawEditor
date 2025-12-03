@@ -97,21 +97,17 @@ pub enum Message {
     SetCrop([f32; 4]),
     /// User clicked Reset button to clear all edits
     ResetEdits,
-    // Phase 73: The Look-Ahead Cache
-    PreloadPreview(i64),
-    // Phase 76: Eager Background Decoding (width, height, pixels)
-    PreviewCached(i64, Result<(u32, u32, Vec<u8>), String>),
-    
-    // Phase 67: Interactive Crop
-    ToggleCropMode,
+    /// Phase 60: Toggle for HUD overlay (ISO, Shutter, etc.)
+    ToggleInfoHud,
+    /// Phase 67: Interactive Crop
+    ToggleCrop,
     CropHandleGrabbed(CropHandle, Rectangle),
-    // Phase 63: Copy/Paste Edits
-    CopyEdits,
-    PasteEdits,
-    
-    // Phase 65: Undo/Redo
+    /// Phase 67: Delete Image
+    DeleteImage,
+    /// Phase 65: Undo/Redo History
     Undo,
     Redo,
+    /// Phase 65: Commit current edit state to history
     CommitEdit,
     
     // ========== Phase 54: Settings Clipboard ==========
@@ -132,10 +128,6 @@ pub enum Message {
     /// Set minimum rating filter (0 = all, 1-5 = show rating or higher)
     SetMinRating(u8),
 
-    // ========== Phase 60: Modern Layout & HUD ==========
-    /// Toggle HUD overlay (ISO, Shutter, etc.)
-    ToggleInfoHud,
-
     // ========== Phase 24: Workflow Messages ==========
     /// Toggle Before/After view (Spacebar)
     ToggleBeforeAfter,
@@ -144,6 +136,14 @@ pub enum Message {
     /// Select previous image (Left arrow)
     SelectPreviousImage,
     
+    /// Phase 73: Preload preview for adjacent image
+    PreloadPreview(i64),
+    /// Phase 73: Preview loaded from cache/disk
+    /// Phase 76: Eager Background Decoding (width, height, pixels)
+    PreviewCached(i64, Result<(u32, u32, Vec<u8>), String>),
+    /// Phase 77: Working Preview Ready (id, handle)
+    WorkingPreviewReady(i64, iced::widget::image::Handle),
+
     // ========== Phase 25: Zoom & Pan Messages ==========
     /// User zoomed with mouse wheel (delta, cursor position)
     Zoom(f32, Point),
@@ -180,8 +180,4 @@ pub enum Message {
     // ========== Histogram Messages (Phase 22) ==========
     /// User toggled histogram on/off
     HistogramToggled(bool),
-    
-    // ========== Phase 30: Multi-Tier Preview Loading ==========
-    /// Background loading of    /// Working preview loaded (handle)
-    WorkingPreviewReady(i64, iced::widget::image::Handle),
 }
