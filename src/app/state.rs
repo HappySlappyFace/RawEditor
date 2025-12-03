@@ -158,6 +158,12 @@ async fn load_database_async() -> Result<Vec<ImageData>, String> {
     .map_err(|e| format!("Database task failed: {:?}", e))?
 }
 
+/// Phase 80: Configurable Cache Size
+pub const PRELOAD_BEHIND: usize = 10;
+pub const PRELOAD_AHEAD: usize = 50;
+// Capacity should be enough for behind + ahead + current + some buffer
+pub const CACHE_CAPACITY: usize = PRELOAD_BEHIND + PRELOAD_AHEAD + 5;
+
 impl RawEditor {
     pub fn title(&self) -> String {
         String::from("RAW Editor")
@@ -181,7 +187,7 @@ impl RawEditor {
                 images: Vec::new(), // Empty until database loads
                 selected_image_id: None,
                 preview_cache_dir,
-                preview_cache: LruCache::new(NonZeroUsize::new(20).unwrap()),
+                preview_cache: LruCache::new(NonZeroUsize::new(CACHE_CAPACITY).unwrap()),
                 current_tab: AppTab::Library, // Start in Library view
                 current_edit_params: state::edit::EditParams::default(),
                 editor_status: EditorStatus::NoSelection,

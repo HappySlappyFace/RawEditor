@@ -116,17 +116,22 @@ fn view_cull(editor: &RawEditor) -> Element<'_, Message> {
                     let mut after = 0;
                     if let Some(current_idx) = editor.images.iter().position(|i| i.id == id) {
                         let total = editor.images.len() as isize;
-                        // Check -10 to -1
-                        for i in 1..=10 {
-                            let mut idx = current_idx as isize - i;
+                        
+                        // Phase 80: Configurable Cache Size
+                        let behind_limit = crate::app::state::PRELOAD_BEHIND;
+                        let ahead_limit = crate::app::state::PRELOAD_AHEAD;
+
+                        // Check -BEHIND to -1
+                        for i in 1..=behind_limit {
+                            let mut idx = current_idx as isize - i as isize;
                             if idx < 0 { idx += total; }
                             if let Some(img) = editor.images.get(idx as usize) {
                                 if editor.preview_cache.contains(&img.id) { before += 1; }
                             }
                         }
-                        // Check +1 to +10
-                        for i in 1..=10 {
-                            let mut idx = current_idx as isize + i;
+                        // Check +1 to +AHEAD
+                        for i in 1..=ahead_limit {
+                            let mut idx = current_idx as isize + i as isize;
                             if idx >= total { idx -= total; }
                             if let Some(img) = editor.images.get(idx as usize) {
                                 if editor.preview_cache.contains(&img.id) { after += 1; }

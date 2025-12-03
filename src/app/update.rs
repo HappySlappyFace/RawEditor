@@ -574,8 +574,12 @@ fn schedule_preloads(editor: &mut RawEditor) -> Task<Message> {
             let total = editor.images.len() as isize;
             let mut tasks = Vec::new();
             
-            // Range: -2 to +10 (Look-behind 2, Look-ahead 10)
-            for offset in -2..=10 {
+            // Phase 80: Configurable Cache Size
+            let behind = crate::app::state::PRELOAD_BEHIND as isize;
+            let ahead = crate::app::state::PRELOAD_AHEAD as isize;
+
+            // Range: -BEHIND to +AHEAD
+            for offset in -behind..=ahead {
                 if offset == 0 { continue; } // Skip current image (already handled)
                 
                 let mut target_idx = current_idx as isize + offset;
