@@ -101,13 +101,46 @@ fn view_cull(editor: &RawEditor) -> Element<'_, Message> {
             let image_widget = Image::new(handle).width(Length::Fill).height(Length::Fill).content_fit(iced::ContentFit::Contain);
             
             // HUD Overlay (ISO, Shutter, etc.)
-            let overlay = if editor.show_info_hud {
-                container(column![
-                    text(format!("{} {}", editor.current_metadata.as_ref().map(|m| m.make.clone()).unwrap_or_default(), editor.current_metadata.as_ref().map(|m| m.model.clone()).unwrap_or_default())).size(12).style(|_| text::Style { color: Some(Color::WHITE) }),
-                    text(editor.current_metadata.as_ref().map(|m| m.lens.clone()).unwrap_or_default()).size(12).style(|_| text::Style { color: Some(Color::WHITE) }),
-                    text(format!("ISO {}  {}  f/{}", editor.current_metadata.as_ref().map(|m| m.iso.to_string()).unwrap_or("---".to_string()), editor.current_metadata.as_ref().map(|m| m.shutter_speed.clone()).unwrap_or("---".to_string()), editor.current_metadata.as_ref().map(|m| m.aperture.to_string()).unwrap_or("---".to_string()))).size(12).style(|_| text::Style { color: Some(Color::WHITE) }),
-                ].spacing(2)).padding(10).style(|_| container::Style { background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.6))), border: iced::border::Border { radius: 5.0.into(), ..Default::default() }, ..Default::default() })
-            } else { container(column![]) };
+            let overlay = match editor.info_overlay {
+                crate::app::state::InfoOverlayState::Hidden => container(column![]),
+                crate::app::state::InfoOverlayState::Metadata => {
+                    container(column![
+                        text(format!("{} {}", editor.current_metadata.as_ref().map(|m| m.make.clone()).unwrap_or_default(), editor.current_metadata.as_ref().map(|m| m.model.clone()).unwrap_or_default())).size(12).style(|_| text::Style { color: Some(Color::WHITE) }),
+                        text(editor.current_metadata.as_ref().map(|m| m.lens.clone()).unwrap_or_default()).size(12).style(|_| text::Style { color: Some(Color::WHITE) }),
+                        text(format!("ISO {}  {}  f/{}", editor.current_metadata.as_ref().map(|m| m.iso.to_string()).unwrap_or("---".to_string()), editor.current_metadata.as_ref().map(|m| m.shutter_speed.clone()).unwrap_or("---".to_string()), editor.current_metadata.as_ref().map(|m| m.aperture.to_string()).unwrap_or("---".to_string()))).size(12).style(|_| text::Style { color: Some(Color::WHITE) }),
+                    ].spacing(2)).padding(10).style(|_| container::Style { background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.6))), border: iced::border::Border { radius: 5.0.into(), ..Default::default() }, ..Default::default() })
+                }
+                crate::app::state::InfoOverlayState::CacheDebug => {
+                    // Count cached images before and after current
+                    let mut before = 0;
+                    let mut after = 0;
+                    if let Some(current_idx) = editor.images.iter().position(|i| i.id == id) {
+                        let total = editor.images.len() as isize;
+                        // Check -10 to -1
+                        for i in 1..=10 {
+                            let mut idx = current_idx as isize - i;
+                            if idx < 0 { idx += total; }
+                            if let Some(img) = editor.images.get(idx as usize) {
+                                if editor.preview_cache.contains(&img.id) { before += 1; }
+                            }
+                        }
+                        // Check +1 to +10
+                        for i in 1..=10 {
+                            let mut idx = current_idx as isize + i;
+                            if idx >= total { idx -= total; }
+                            if let Some(img) = editor.images.get(idx as usize) {
+                                if editor.preview_cache.contains(&img.id) { after += 1; }
+                            }
+                        }
+                    }
+                    
+                    container(
+                        text(format!("-{} | +{}", before, after))
+                            .size(16)
+                            .style(|_| text::Style { color: Some(Color::WHITE) })
+                    ).padding(10).style(|_| container::Style { background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.6))), border: iced::border::Border { radius: 5.0.into(), ..Default::default() }, ..Default::default() })
+                }
+            };
 
             let filename_overlay = container(text(editor.images.iter().find(|img| img.id == id).map(|img| img.filename.clone()).unwrap_or_default()).size(12).style(|_| text::Style { color: Some(Color::WHITE) })).padding(5).style(|_| container::Style { background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.4))), border: iced::border::Border { radius: 3.0.into(), ..Default::default() }, ..Default::default() });
 
@@ -351,13 +384,16 @@ fn view_develop(editor: &RawEditor) -> Element<'_, Message> {
             }
         } else { iced::widget::Space::new(Length::Fill, Length::Fill).into() };
 
-        let overlay = if editor.show_info_hud {
-            container(column![
-                text(format!("{} {}", editor.current_metadata.as_ref().map(|m| m.make.clone()).unwrap_or_default(), editor.current_metadata.as_ref().map(|m| m.model.clone()).unwrap_or_default())).size(12).style(|_| text::Style { color: Some(Color::WHITE) }),
-                text(editor.current_metadata.as_ref().map(|m| m.lens.clone()).unwrap_or_default()).size(12).style(|_| text::Style { color: Some(Color::WHITE) }),
-                text(format!("ISO {}  {}  f/{}", editor.current_metadata.as_ref().map(|m| m.iso.to_string()).unwrap_or("---".to_string()), editor.current_metadata.as_ref().map(|m| m.shutter_speed.clone()).unwrap_or("---".to_string()), editor.current_metadata.as_ref().map(|m| m.aperture.to_string()).unwrap_or("---".to_string()))).size(12).style(|_| text::Style { color: Some(Color::WHITE) }),
-            ].spacing(2)).padding(10).style(|_| container::Style { background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.6))), border: iced::border::Border { radius: 5.0.into(), ..Default::default() }, ..Default::default() })
-        } else { container(column![]) };
+        let overlay = match editor.info_overlay {
+            crate::app::state::InfoOverlayState::Hidden => container(column![]),
+            crate::app::state::InfoOverlayState::Metadata | crate::app::state::InfoOverlayState::CacheDebug => {
+                container(column![
+                    text(format!("{} {}", editor.current_metadata.as_ref().map(|m| m.make.clone()).unwrap_or_default(), editor.current_metadata.as_ref().map(|m| m.model.clone()).unwrap_or_default())).size(12).style(|_| text::Style { color: Some(Color::WHITE) }),
+                    text(editor.current_metadata.as_ref().map(|m| m.lens.clone()).unwrap_or_default()).size(12).style(|_| text::Style { color: Some(Color::WHITE) }),
+                    text(format!("ISO {}  {}  f/{}", editor.current_metadata.as_ref().map(|m| m.iso.to_string()).unwrap_or("---".to_string()), editor.current_metadata.as_ref().map(|m| m.shutter_speed.clone()).unwrap_or("---".to_string()), editor.current_metadata.as_ref().map(|m| m.aperture.to_string()).unwrap_or("---".to_string()))).size(12).style(|_| text::Style { color: Some(Color::WHITE) }),
+                ].spacing(2)).padding(10).style(|_| container::Style { background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.6))), border: iced::border::Border { radius: 5.0.into(), ..Default::default() }, ..Default::default() })
+            }
+        };
 
         let filename_overlay = container(text(editor.selected_image_id.and_then(|id| editor.images.iter().find(|img| img.id == id)).map(|img| img.filename.clone()).unwrap_or_default()).size(12).style(|_| text::Style { color: Some(Color::WHITE) })).padding(5).style(|_| container::Style { background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.4))), border: iced::border::Border { radius: 3.0.into(), ..Default::default() }, ..Default::default() });
 

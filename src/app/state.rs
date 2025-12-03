@@ -99,8 +99,8 @@ pub struct RawEditor {
     pub last_modifiers: iced::keyboard::Modifiers,
     /// Phase 59: Minimum rating filter (0 = show all, 1-5 = show rating or higher)
     pub min_filter_rating: u8,
-    /// Phase 60: Toggle for HUD overlay (ISO, Shutter, etc.)
-    pub show_info_hud: bool,
+    /// Phase 79: Modular Info Overlay state
+    pub info_overlay: InfoOverlayState,
     /// Phase 65: Undo/Redo History Map<ImageID, (HistoryStack, CurrentIndex)>
     pub history_map: HashMap<i64, (Vec<state::edit::EditParams>, usize)>,
     /// Phase 67: Interactive crop mode
@@ -109,6 +109,25 @@ pub struct RawEditor {
     pub drag_mode: DragMode,
     /// Phase 78: Async Task Deduplication (track pending background loads)
     pub pending_loads: HashSet<i64>,
+}
+
+/// Phase 79: Modular Info Overlay States
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InfoOverlayState {
+    #[default]
+    Hidden,
+    Metadata,
+    CacheDebug,
+}
+
+impl InfoOverlayState {
+    pub fn next(&self) -> Self {
+        match self {
+            Self::Hidden => Self::Metadata,
+            Self::Metadata => Self::CacheDebug,
+            Self::CacheDebug => Self::Hidden,
+        }
+    }
 }
 
 /// Phase 23: Async database loading
@@ -183,7 +202,7 @@ impl RawEditor {
                 multi_selection: HashSet::new(),
                 last_modifiers: iced::keyboard::Modifiers::default(),
                 min_filter_rating: 0,  // Phase 59: Start with "show all"
-                show_info_hud: false,  // Phase 60: HUD hidden by default
+                info_overlay: Default::default(),
                 history_map: HashMap::new(), // Phase 65: Undo/Redo History
                 is_cropping: false, // Phase 67: Interactive Crop
                 drag_mode: DragMode::None, // Phase 67: Interactive Crop

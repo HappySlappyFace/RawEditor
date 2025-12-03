@@ -254,7 +254,7 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
         }
         Message::ModifiersChanged(m) => { editor.last_modifiers = m; Task::none() }
         Message::SetMinRating(r) => { editor.min_filter_rating = r; Task::none() }
-        Message::ToggleInfoHud => { editor.show_info_hud = !editor.show_info_hud; Task::none() }
+        Message::ToggleInfoHud => { editor.info_overlay = editor.info_overlay.next(); Task::none() }
         Message::SetRating(r) => {
             let ids: Vec<i64> = if !editor.multi_selection.is_empty() { editor.multi_selection.iter().copied().collect() } else if let Some(id) = editor.selected_image_id { vec![id] } else { vec![] };
             if let Some(lib) = &editor.library {
