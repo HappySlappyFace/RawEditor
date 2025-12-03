@@ -122,8 +122,6 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
                         // Phase 73: Check RAM cache first
                         if let Some(handle) = editor.preview_cache.get(&image_id) {
                             editor.working_preview = Some(handle.clone());
-                        } else if let Some(path) = &img.cache_path_instant {
-                            editor.working_preview = Some(Handle::from_path(path.clone()));
                         } else if let Some(path) = &img.cache_path_working {
                             editor.working_preview = Some(Handle::from_path(path.clone()));
                         }
@@ -131,7 +129,7 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
                         editor.editor_status = EditorStatus::Loading(image_id);
                         let mut tasks = Vec::new();
                         if let Some(path) = &img.cache_path_working {
-                            tasks.push(Task::perform(load_image_handle(path.clone()), Message::WorkingPreviewReady));
+                            tasks.push(Task::perform(load_image_handle(image_id, path.clone()), |(id, h)| Message::WorkingPreviewReady(id, h)));
                         }
                         
                         // Only load full RAW data if we are in Develop mode
@@ -470,10 +468,16 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::CloseWindow => { use iced::window; window::get_latest().and_then(window::close) }
         Message::DragWindow => { use iced::window; window::get_latest().and_then(window::drag) }
         Message::HistogramToggled(e) => { editor.histogram_enabled = e; Task::none() }
-        Message::WorkingPreviewReady(h) => { if let EditorStatus::Loading(_) = editor.editor_status { editor.working_preview = Some(h); } Task::none() }
+        Message::WorkingPreviewReady(id, h) => {
+            if Some(id) == editor.selected_image_id {
+                editor.working_preview = Some(h);
+            }
+            Task::none()
+        }
         Message::PreloadPreview(_) => Task::none(), // Handled by schedule_preloads batching
         Message::PreviewCached(id, res) => {
-            if let Ok(handle) = res {
+            if let Ok((width, height, pixels)) = res {
+                let handle = iced::widget::image::Handle::from_rgba(width, height, pixels);
                 editor.preview_cache.put(id, handle);
             }
             Task::none()
@@ -531,7 +535,20 @@ async fn process_cache_async(db_path: PathBuf) -> Result<(i64, String, String, S
     } else { Err((0, "No pending images".to_string())) }
 }
 
-async fn load_image_handle(path: String) -> iced::widget::image::Handle { iced::widget::image::Handle::from_path(path) }
+async fn load_preview_pixels(path: String) -> Result<(u32, u32, Vec<u8>), String> {
+    tokio::task::spawn_blocking(move || {
+        let img = image::open(&path).map_err(|e| e.to_string())?;
+        let rgba = img.to_rgba8();
+        Ok((rgba.width(), rgba.height(), rgba.into_raw()))
+    }).await.map_err(|e| e.to_string())?
+}
+
+async fn load_image_handle(id: i64, path: String) -> (i64, iced::widget::image::Handle) {
+    match load_preview_pixels(path.clone()).await {
+        Ok((w, h, pixels)) => (id, iced::widget::image::Handle::from_rgba(w, h, pixels)),
+        Err(_) => (id, iced::widget::image::Handle::from_path(path)),
+    }
+}
 
 async fn export_image_async(pipeline: Arc<gpu::RenderPipeline>, save_path: std::path::PathBuf, crop: [f32; 4]) -> Result<std::path::PathBuf, String> {
     tokio::task::spawn_blocking(move || {
@@ -547,15 +564,15 @@ async fn export_image_async(pipeline: Arc<gpu::RenderPipeline>, save_path: std::
 }
 
 // Phase 73: The Look-Ahead Cache
-// Identify adjacent images (current - 2 to current + 5) and preload their working previews
+// Identify adjacent images (current - 2 to current + 10) and preload their working previews
 fn schedule_preloads(editor: &RawEditor) -> Task<Message> {
     if let Some(current_id) = editor.selected_image_id {
         if let Some(current_idx) = editor.images.iter().position(|i| i.id == current_id) {
             let total = editor.images.len() as isize;
             let mut tasks = Vec::new();
             
-            // Range: -2 to +5 (Look-behind 2, Look-ahead 5)
-            for offset in -2..=5 {
+            // Range: -2 to +10 (Look-behind 2, Look-ahead 10)
+            for offset in -2..=10 {
                 if offset == 0 { continue; } // Skip current image (already handled)
                 
                 let mut target_idx = current_idx as isize + offset;
@@ -577,16 +594,7 @@ fn schedule_preloads(editor: &RawEditor) -> Task<Message> {
                             
                             // Spawn load task
                             tasks.push(Task::perform(
-                                async move {
-                                    let handle = iced::widget::image::Handle::from_path(path_clone);
-                                    // We can't easily verify if decoding succeeded without loading bytes, 
-                                    // but Handle::from_path is lazy. 
-                                    // To ensure it's in RAM, we might need to force load, but for now let's trust Iced.
-                                    // Actually, for instant rendering, we want it decoded.
-                                    // Let's use a helper that forces decode if possible, or just rely on OS cache.
-                                    // For now, Handle::from_path is standard.
-                                    Ok(handle)
-                                },
+                                load_preview_pixels(path_clone),
                                 move |res| Message::PreviewCached(id, res)
                             ));
                         }

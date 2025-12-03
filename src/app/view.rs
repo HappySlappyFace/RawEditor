@@ -92,10 +92,10 @@ fn view_main(editor: &RawEditor) -> Element<'_, Message> {
 // Phase 74: The Cull Interface (Fast review mode)
 fn view_cull(editor: &RawEditor) -> Element<'_, Message> {
     let main_content: Element<Message> = if let Some(id) = editor.selected_image_id {
-        // Use working preview (1280px) if available (from cache or disk), otherwise instant (384px)
+        // Use working preview (1280px) if available (from cache or disk)
         // We prioritize speed over quality here.
         let image_handle = editor.working_preview.clone()
-            .or_else(|| editor.images.iter().find(|i| i.id == id).and_then(|i| i.cache_path_instant.as_ref()).map(|p| Handle::from_path(p.clone())));
+            .or_else(|| editor.images.iter().find(|i| i.id == id).and_then(|i| i.cache_path_working.as_ref()).map(|p| Handle::from_path(p.clone())));
             
         if let Some(handle) = image_handle {
             let image_widget = Image::new(handle).width(Length::Fill).height(Length::Fill).content_fit(iced::ContentFit::Contain);

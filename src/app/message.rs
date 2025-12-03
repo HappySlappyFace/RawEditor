@@ -99,7 +99,8 @@ pub enum Message {
     ResetEdits,
     // Phase 73: The Look-Ahead Cache
     PreloadPreview(i64),
-    PreviewCached(i64, Result<iced::widget::image::Handle, String>),
+    // Phase 76: Eager Background Decoding (width, height, pixels)
+    PreviewCached(i64, Result<(u32, u32, Vec<u8>), String>),
     
     // Phase 67: Interactive Crop
     ToggleCropMode,
@@ -181,6 +182,6 @@ pub enum Message {
     HistogramToggled(bool),
     
     // ========== Phase 30: Multi-Tier Preview Loading ==========
-    /// Background loading of 1280px working preview completed
-    WorkingPreviewReady(iced::widget::image::Handle),
+    /// Background loading of    /// Working preview loaded (handle)
+    WorkingPreviewReady(i64, iced::widget::image::Handle),
 }
