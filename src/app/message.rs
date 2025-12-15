@@ -115,7 +115,7 @@ pub enum Message {
     CopySettings,
     /// Paste edit settings from clipboard (Ctrl/Cmd+V)
     PasteSettings,
-    
+
     // ========== Phase 55: Multi-Selection ==========
     /// Modifier keys changed (for Ctrl/Cmd+Click detection)
     ModifiersChanged(iced::keyboard::Modifiers),
@@ -123,14 +123,19 @@ pub enum Message {
     // ========== Phase 56: Ratings & Culling ==========
     /// Set rating for selected image(s) (0-5 stars)
     SetRating(u8),
+    /// Phase 83: Set Pick/Reject flag (-1, 0, 1)
+    SetFlag(i8),
+    /// Phase 83: Toggle auto-advance feature
+    ToggleAutoAdvance,
     
-    // ========== Phase 59: Rating Filter ==========
+    // ========== Phase 59: Filtering ==========
     /// Set minimum rating filter (0 = all, 1-5 = show rating or higher)
     SetMinRating(u8),
 
     // ========== Phase 24: Workflow Messages ==========
     /// Toggle Before/After view (Spacebar)
     ToggleBeforeAfter,
+
     /// Select next image (Right arrow)
     SelectNextImage,
     /// Select previous image (Left arrow)

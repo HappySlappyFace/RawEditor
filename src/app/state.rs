@@ -43,6 +43,14 @@ pub enum DragMode {
     Crop,
 }
 
+/// Phase 83: Pick/Reject flags
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Flag {
+    Unflagged = 0,
+    Pick = 1,
+    Reject = -1,
+}
+
 use lru::LruCache;
 use std::num::NonZeroUsize;
 
@@ -98,6 +106,8 @@ pub struct RawEditor {
     pub multi_selection: HashSet<i64>,
     /// Phase 55: Track modifier keys for Ctrl/Cmd+Click
     pub last_modifiers: iced::keyboard::Modifiers,
+    /// Phase 83: Auto-advance to next image after rating/flagging
+    pub auto_advance: bool,
     /// Phase 59: Minimum rating filter (0 = show all, 1-5 = show rating or higher)
     pub min_filter_rating: u8,
     /// Phase 79: Modular Info Overlay state
@@ -210,17 +220,17 @@ impl RawEditor {
                 edit_clipboard: None,
                 multi_selection: HashSet::new(),
                 last_modifiers: iced::keyboard::Modifiers::default(),
-                min_filter_rating: 0,  // Phase 59: Start with "show all"
-                info_overlay: Default::default(),
-                history_map: HashMap::new(), // Phase 65: Undo/Redo History
-                is_cropping: false, // Phase 67: Interactive Crop
-                drag_mode: DragMode::None, // Phase 67: Interactive Crop
+                auto_advance: false,
+                min_filter_rating: 0,
+                info_overlay: crate::app::state::InfoOverlayState::Metadata,
+                history_map: HashMap::new(),
+                is_cropping: false,
+                drag_mode: DragMode::None,
                 pending_loads: HashSet::new(),
                 queued_loads: Vec::new(),
             },
-            // Phase 23: Trigger database loading in background
             Task::perform(
-                load_database_async(), 
+                state::library::load_database("".to_string()),
                 Message::DatabaseLoaded
             )
         )
@@ -403,6 +413,11 @@ impl RawEditor {
                     keyboard::Key::Character(c) if c == "2" => Some(Message::SetRating(2)),
                     keyboard::Key::Character(c) if c == "3" => Some(Message::SetRating(3)),
                     keyboard::Key::Character(c) if c == "4" => Some(Message::SetRating(4)),
+                    keyboard::Key::Character(c) if c == "5" => Some(Message::SetRating(5)),
+                    // Phase 83: Flag Shortcuts
+                    keyboard::Key::Character(c) if c == "p" || c == "P" => Some(Message::SetFlag(1)),
+                    keyboard::Key::Character(c) if c == "x" || c == "X" => Some(Message::SetFlag(-1)),
+                    keyboard::Key::Character(c) if c == "u" || c == "U" => Some(Message::SetFlag(0)),
                     keyboard::Key::Character(c) if c == "5" => Some(Message::SetRating(5)),
                     // Phase 60: HUD Toggle
                     keyboard::Key::Character(c) if c == "i" || c == "I" => Some(Message::ToggleInfoHud),

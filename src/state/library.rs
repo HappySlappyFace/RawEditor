@@ -118,6 +118,13 @@ impl Library {
             [],
         );
 
+        // Phase 83: Culling Flags
+        // Add flag column: 0=Unflagged, 1=Pick, -1=Reject
+        let _ = self.conn.execute(
+            "ALTER TABLE images ADD COLUMN flag INTEGER DEFAULT 0",
+            [],
+        );
+
         // Create index for cache_status to quickly find pending thumbnails
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_images_cache_status 
@@ -172,7 +179,7 @@ impl Library {
     /// Returns a vector of Image structs ordered by import date (newest first)
     pub fn get_all_images(&self) -> SqlResult<Vec<Image>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, filename, path, cache_path_thumb, cache_path_instant, cache_path_working, COALESCE(file_status, 'exists'), COALESCE(rating, 0) 
+            "SELECT id, filename, path, cache_path_thumb, cache_path_instant, cache_path_working, COALESCE(file_status, 'exists'), COALESCE(rating, 0), COALESCE(flag, 0) 
              FROM images 
              ORDER BY imported_at DESC"
         )?;
@@ -187,6 +194,7 @@ impl Library {
                 cache_path_working: row.get(5)?,
                 file_status: row.get(6)?,
                 rating: row.get(7)?,  // Phase 56
+                flag: row.get(8).unwrap_or(0), // Phase 83
             })
         })?;
         
@@ -201,7 +209,7 @@ impl Library {
     /// Get images that need thumbnail generation (cache_status = 'pending')
     pub fn get_pending_images(&self, limit: usize) -> SqlResult<Vec<Image>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, filename, path, cache_path_thumb, cache_path_instant, cache_path_working, COALESCE(file_status, 'exists'), COALESCE(rating, 0) 
+            "SELECT id, filename, path, cache_path_thumb, cache_path_instant, cache_path_working, COALESCE(file_status, 'exists'), COALESCE(rating, 0), COALESCE(flag, 0) 
              FROM images 
              WHERE cache_status = 'pending' 
              LIMIT ?1"
@@ -217,6 +225,7 @@ impl Library {
                 cache_path_working: row.get(5)?,
                 file_status: row.get(6)?,
                 rating: row.get(7)?,  // Phase 56
+                flag: row.get(8).unwrap_or(0), // Phase 83
             })
         })?;
 
@@ -385,6 +394,15 @@ impl Library {
         self.conn.execute(
             "UPDATE images SET rating = ?1 WHERE id = ?2",
             rusqlite::params![rating, image_id],
+        )?;
+        Ok(())
+    }
+
+    /// Phase 83: Set Pick/Reject flag (-1, 0, 1)
+    pub fn set_image_flag(&self, image_id: i64, flag: i8) -> SqlResult<()> {
+        self.conn.execute(
+            "UPDATE images SET flag = ?1 WHERE id = ?2",
+            rusqlite::params![flag, image_id],
         )?;
         Ok(())
     }

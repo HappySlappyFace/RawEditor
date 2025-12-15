@@ -1,5 +1,3 @@
-use iced::futures::sink::SinkExt;
-
 use crate::app::message::Message;
 
 pub fn subscription(queued_loads: Vec<(i64, String)>) -> iced::Subscription<Message> {

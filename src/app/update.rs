@@ -249,6 +249,21 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::ModifiersChanged(m) => { editor.last_modifiers = m; Task::none() }
         Message::SetMinRating(r) => { editor.min_filter_rating = r; Task::none() }
         Message::ToggleInfoHud => { editor.info_overlay = editor.info_overlay.next(); Task::none() }
+        Message::ToggleAutoAdvance => { editor.auto_advance = !editor.auto_advance; Task::none() }
+        Message::SetFlag(f) => {
+            let ids: Vec<i64> = if !editor.multi_selection.is_empty() { editor.multi_selection.iter().copied().collect() } else if let Some(id) = editor.selected_image_id { vec![id] } else { vec![] };
+            if let Some(lib) = &editor.library {
+                for &id in &ids {
+                    let _ = lib.set_image_flag(id, f);
+                    if let Some(img) = editor.images.iter_mut().find(|i| i.id == id) { img.flag = f; }
+                }
+            }
+            editor.status = format!("Flagged {} image(s)", ids.len());
+            if editor.auto_advance {
+                return update(editor, Message::SelectNextImage);
+            }
+            Task::none()
+        }
         Message::SetRating(r) => {
             let ids: Vec<i64> = if !editor.multi_selection.is_empty() { editor.multi_selection.iter().copied().collect() } else if let Some(id) = editor.selected_image_id { vec![id] } else { vec![] };
             if let Some(lib) = &editor.library {
@@ -258,6 +273,9 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
                 }
             }
             editor.status = format!("Rated {} image(s)", ids.len());
+            if editor.auto_advance {
+                return update(editor, Message::SelectNextImage);
+            }
             Task::none()
         }
         Message::ToggleBeforeAfter => { editor.show_before = !editor.show_before; editor.histogram_cache.clear(); Task::none() }

@@ -22,4 +22,6 @@ pub struct Image {
     pub file_status: String,
     /// Phase 56: Star rating (0-5)
     pub rating: u8,
+    /// Phase 83: Pick/Reject flag (0=None, 1=Pick, -1=Reject)
+    pub flag: i8,
 }
