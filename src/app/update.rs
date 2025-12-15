@@ -278,6 +278,17 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
             Task::none()
         }
         
+        // Phase 85: Preferences
+        Message::SetCacheCapacity(val) => {
+            let new_capacity = val as usize;
+            editor.cache_capacity = new_capacity;
+            // Resize the LRU cache
+            if let Some(non_zero_cap) = std::num::NonZeroUsize::new(new_capacity) {
+                editor.preview_cache.resize(non_zero_cap);
+            }
+            Task::none()
+        }
+        
         Message::SetRating(r) => {
             let ids: Vec<i64> = if !editor.multi_selection.is_empty() { editor.multi_selection.iter().copied().collect() } else if let Some(id) = editor.selected_image_id { vec![id] } else { vec![] };
             if let Some(lib) = &editor.library {

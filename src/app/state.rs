@@ -67,6 +67,10 @@ pub enum Modal {
 pub struct RawEditor {
     // Phase 84: Active modal overlay
     pub active_modal: Modal,
+    
+    // Phase 85: User-configurable cache capacity
+    pub cache_capacity: usize,
+
     /// The catalog database (Phase 23: Optional during startup)
     pub library: Option<state::library::Library>,
     /// Status message to display to the user
@@ -235,6 +239,8 @@ impl RawEditor {
                 info_overlay: crate::app::state::InfoOverlayState::Metadata,
                 // Phase 84
                 active_modal: Modal::None,
+                // Phase 85
+                cache_capacity: 200,
                 
                 // Background task
                 // background_task: None, // This field is not defined in the struct

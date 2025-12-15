@@ -133,6 +133,9 @@ pub enum Message {
     ModalNoOp, // Swallows clicks
     Escape,    // Global Escape key
     
+    // Phase 85: Preferences
+    SetCacheCapacity(f32),
+    
     /// User selected an image from the grid
     ImageSelected(i64),
     // ========== Phase 59: Filtering ==========

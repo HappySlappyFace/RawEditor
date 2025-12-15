@@ -28,7 +28,7 @@ pub fn view(editor: &RawEditor) -> Element<'_, Message> {
     let modal = match editor.active_modal {
         crate::app::state::Modal::None => text("").height(0).width(0).into(),
         crate::app::state::Modal::Help => modal_overlay(view_help_modal()),
-        crate::app::state::Modal::Preferences => text("Preferences").into(), // Placeholder
+        crate::app::state::Modal::Preferences => modal_overlay(view_preferences_modal(editor)),
     };
     
     stack![
@@ -185,7 +185,7 @@ fn view_cull(editor: &RawEditor) -> Element<'_, Message> {
 fn view_title_bar(editor: &RawEditor) -> Element<'_, Message> {
     let menus = row![
         button(container(text("File").size(13)).height(Length::Fill).align_x(iced::alignment::Horizontal::Center).align_y(iced::alignment::Vertical::Center)).style(ui::styles::WindowControlButton::style).height(Length::Fill).padding([0, 10]),
-        button(container(text("Edit").size(13)).height(Length::Fill).align_x(iced::alignment::Horizontal::Center).align_y(iced::alignment::Vertical::Center)).style(ui::styles::WindowControlButton::style).height(Length::Fill).padding([0, 10]),
+        button(container(text("Edit").size(13)).height(Length::Fill).align_x(iced::alignment::Horizontal::Center).align_y(iced::alignment::Vertical::Center)).style(ui::styles::WindowControlButton::style).height(Length::Fill).padding([0, 10]).on_press(Message::OpenModal(crate::app::state::Modal::Preferences)),
         button(container(text("Window").size(13)).height(Length::Fill).align_x(iced::alignment::Horizontal::Center).align_y(iced::alignment::Vertical::Center)).style(ui::styles::WindowControlButton::style).height(Length::Fill).padding([0, 10]),
         button(container(text("Help").size(13)).height(Length::Fill).align_x(iced::alignment::Horizontal::Center).align_y(iced::alignment::Vertical::Center)).style(ui::styles::WindowControlButton::style).height(Length::Fill).padding([0, 10]).on_press(Message::OpenModal(crate::app::state::Modal::Help)),
     ].spacing(0).align_y(Alignment::Center);
@@ -521,6 +521,53 @@ fn view_help_modal<'a>() -> Element<'a, Message> {
             shortcut("Ctrl + C / V", "Copy / Paste Settings"),
             shortcut("Double Click", "Reset Zoom"),
         ].spacing(6),
+        
+        button("Close").on_press(Message::CloseModal).padding(8).width(Length::Fill).style(ui::styles::NeutralButton::style)
+    ]
+    .spacing(12)
+    .width(420)
+    .into()
+}
+
+fn view_preferences_modal<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
+    column![
+        text("Preferences").size(18).font(Font { weight: Weight::Bold, ..Default::default() }).style(|_| text::Style { color: Some(Color::from_rgb(0.85, 0.85, 0.85)) }),
+        iced::widget::horizontal_rule(1.0).style(|_| iced::widget::rule::Style { color: Color::from_rgb(0.3, 0.3, 0.3), width: 1, radius: 0.0.into(), fill_mode: iced::widget::rule::FillMode::Full }),
+        
+        column![
+            text("Workflow").size(12).font(Font { weight: Weight::Bold, ..Default::default() }).style(|_| text::Style{color: Some(Color::from_rgb(0.5, 0.5, 0.5))}),
+            checkbox("Auto-Advance on Rate/Flag", editor.auto_advance)
+                .on_toggle(|_| Message::ToggleAutoAdvance)
+                .size(16)
+                .spacing(8)
+                .text_size(13)
+                .style(|_theme, _status| checkbox::Style {
+                    background: Background::Color(Color::from_rgb(0.2, 0.2, 0.2)),
+                    icon_color: Color::from_rgb(0.85, 0.85, 0.85),
+                    border: Border {
+                        color: Color::from_rgb(0.4, 0.4, 0.4),
+                        width: 1.0,
+                        radius: 3.0.into(),
+                    },
+                    text_color: Some(Color::from_rgb(0.7, 0.7, 0.7)),
+                }),
+        ].spacing(8),
+        
+        column![
+            text("Performance").size(12).font(Font { weight: Weight::Bold, ..Default::default() }).style(|_| text::Style{color: Some(Color::from_rgb(0.5, 0.5, 0.5))}),
+            
+            row![
+                text("Memory Cache Size:").size(13).style(|_| text::Style { color: Some(Color::from_rgb(0.7, 0.7, 0.7)) }),
+                text(format!("{} Images", editor.cache_capacity)).size(13).font(Font { weight: Weight::Bold, ..Default::default() }).style(|_| text::Style { color: Some(Color::from_rgb(0.85, 0.85, 0.85)) }),
+            ].spacing(8).align_y(Alignment::Center),
+            
+            slider(20.0..=500.0, editor.cache_capacity as f32, Message::SetCacheCapacity)
+                .step(10.0),
+            
+            text("Controls how many high-res previews are kept in RAM.")
+                .size(11)
+                .style(|_| text::Style { color: Some(Color::from_rgb(0.45, 0.45, 0.45)) }),
+        ].spacing(8),
         
         button("Close").on_press(Message::CloseModal).padding(8).width(Length::Fill).style(ui::styles::NeutralButton::style)
     ]
