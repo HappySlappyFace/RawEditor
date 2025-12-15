@@ -474,11 +474,11 @@ fn modal_overlay<'a>(content: Element<'a, Message>) -> Element<'a, Message> {
     let card = container(content)
         .padding(20)
         .style(|_| container::Style {
-            background: Some(Background::Color(Color::from_rgb(0.15, 0.15, 0.17))),
+            background: Some(Background::Color(Color::from_rgb(0.10, 0.10, 0.10))),
             border: Border {
-                radius: 10.0.into(),
+                radius: 8.0.into(),
                 width: 1.0,
-                color: Color::from_rgb(0.3, 0.3, 0.3),
+                color: Color::from_rgb(0.25, 0.25, 0.25),
             },
             ..Default::default()
         });
@@ -495,34 +495,36 @@ fn modal_overlay<'a>(content: Element<'a, Message>) -> Element<'a, Message> {
 fn view_help_modal<'a>() -> Element<'a, Message> {
     let shortcut = |key: &str, desc: &str| {
         row![
-            text(key.to_string()).font(Font { weight: Weight::Bold, ..Default::default() }).width(Length::Fixed(120.0)).style(|_| text::Style { color: Some(Color::from_rgb(0.8, 0.8, 1.0)) }),
-            text(desc.to_string()).size(14)
-        ].spacing(10)
+            text(key.to_string()).font(Font { weight: Weight::Bold, ..Default::default() }).width(Length::Fixed(140.0)).size(13).style(|_| text::Style { color: Some(Color::from_rgb(0.7, 0.7, 0.7)) }),
+            text(desc.to_string()).size(13).style(|_| text::Style { color: Some(Color::from_rgb(0.5, 0.5, 0.5)) })
+        ].spacing(8)
     };
     
     column![
-        text("Keyboard Shortcuts").size(24).font(Font { weight: Weight::Bold, ..Default::default() }),
-        iced::widget::horizontal_rule(1.0),
+        text("Keyboard Shortcuts").size(18).font(Font { weight: Weight::Bold, ..Default::default() }).style(|_| text::Style { color: Some(Color::from_rgb(0.85, 0.85, 0.85)) }),
+        iced::widget::horizontal_rule(1.0).style(|_| iced::widget::rule::Style { color: Color::from_rgb(0.3, 0.3, 0.3), width: 1, radius: 0.0.into(), fill_mode: iced::widget::rule::FillMode::Full }),
         column![
-            text("Navigation").size(16).style(|_| text::Style{color: Some(Color::from_rgb(0.6, 0.6, 0.6))}),
+            text("Navigation").size(12).font(Font { weight: Weight::Bold, ..Default::default() }).style(|_| text::Style{color: Some(Color::from_rgb(0.5, 0.5, 0.5))}),
             shortcut("Arrow Keys", "Previous / Next Image"),
-            shortcut("Space", "Toggle Before/After View"),
+            shortcut("Space", "Toggle Before/After"),
             
-            text("Rating & Culling").size(16).style(|_| text::Style{color: Some(Color::from_rgb(0.6, 0.6, 0.6))}),
-            shortcut("0 - 5", "Set Star Rating"),
-            shortcut("P", "Pick (Flag)"),
-            shortcut("X", "Reject (X)"),
+            text("Rating & Culling").size(12).font(Font { weight: Weight::Bold, ..Default::default() }).style(|_| text::Style{color: Some(Color::from_rgb(0.5, 0.5, 0.5))}),
+            shortcut("0 - 5", "Star Rating"),
+            shortcut("P", "Pick"),
+            shortcut("X", "Reject"),
             shortcut("U", "Unflag"),
             
-            text("Editing").size(16).style(|_| text::Style{color: Some(Color::from_rgb(0.6, 0.6, 0.6))}),
+            text("Editing").size(12).font(Font { weight: Weight::Bold, ..Default::default() }).style(|_| text::Style{color: Some(Color::from_rgb(0.5, 0.5, 0.5))}),
+            shortcut("R", "Reset Edits"),
             shortcut("Ctrl + Z", "Undo"),
             shortcut("Ctrl + Shift + Z", "Redo"),
             shortcut("Ctrl + C / V", "Copy / Paste Settings"),
-        ].spacing(10),
+            shortcut("Double Click", "Reset Zoom"),
+        ].spacing(6),
         
-        button("Close").on_press(Message::CloseModal).padding(10).width(Length::Fill).style(ui::styles::NeutralButton::style)
+        button("Close").on_press(Message::CloseModal).padding(8).width(Length::Fill).style(ui::styles::NeutralButton::style)
     ]
-    .spacing(20)
-    .width(400)
+    .spacing(12)
+    .width(420)
     .into()
 }
