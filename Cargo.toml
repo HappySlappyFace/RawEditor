@@ -60,6 +60,9 @@ rexif = "0.7"
 kamadak-exif = "0.5"
 lru = "0.12"
 
+# Fast JPEG decoding
+zune-jpeg = "0.4"
+zune-core = "0.4"
 
 [profile.release]
 # Maximum performance optimizations
@@ -67,3 +70,6 @@ opt-level = 3
 lto = true
 codegen-units = 1
 strip = true
+
+# Fast JPEG decoding
+
