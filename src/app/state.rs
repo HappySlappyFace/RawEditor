@@ -54,9 +54,19 @@ pub enum Flag {
 use lru::LruCache;
 use std::num::NonZeroUsize;
 
+/// Phase 84: Modal system
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Modal {
+    None,
+    Help,
+    Preferences,
+}
+
 /// Main application state
 #[derive(Debug)]
 pub struct RawEditor {
+    // Phase 84: Active modal overlay
+    pub active_modal: Modal,
     /// The catalog database (Phase 23: Optional during startup)
     pub library: Option<state::library::Library>,
     /// Status message to display to the user
@@ -223,6 +233,11 @@ impl RawEditor {
                 auto_advance: false,
                 min_filter_rating: 0,
                 info_overlay: crate::app::state::InfoOverlayState::Metadata,
+                // Phase 84
+                active_modal: Modal::None,
+                
+                // Background task
+                // background_task: None, // This field is not defined in the struct
                 history_map: HashMap::new(),
                 is_cropping: false,
                 drag_mode: DragMode::None,
@@ -403,6 +418,7 @@ impl RawEditor {
                 }
 
                 match key {
+                    keyboard::Key::Named(Named::Escape) => Some(Message::Escape),
                     keyboard::Key::Named(Named::Space) => Some(Message::ToggleBeforeAfter),
                     keyboard::Key::Named(Named::ArrowRight) => Some(Message::SelectNextImage),
                     keyboard::Key::Named(Named::ArrowLeft) => Some(Message::SelectPreviousImage),

@@ -51,8 +51,7 @@ pub enum Message {
     /// Phase 28: Multi-tier cache processing completed
     /// Result is (image_id, thumb_path, instant_path, working_path) or (image_id, error)
     CacheProcessed(Result<(i64, String, String, String), (i64, String)>),
-    /// User selected an image from the grid
-    ImageSelected(i64),
+    
     /// Background preview generation completed
     PreviewGenerated(PreviewResult),
     /// User switched to a different tab
@@ -128,6 +127,14 @@ pub enum Message {
     /// Phase 83: Toggle auto-advance feature
     ToggleAutoAdvance,
     
+    // Phase 84: Generic Modal System
+    OpenModal(crate::app::state::Modal),
+    CloseModal,
+    ModalNoOp, // Swallows clicks
+    Escape,    // Global Escape key
+    
+    /// User selected an image from the grid
+    ImageSelected(i64),
     // ========== Phase 59: Filtering ==========
     /// Set minimum rating filter (0 = all, 1-5 = show rating or higher)
     SetMinRating(u8),

@@ -19,10 +19,22 @@ const ICON_FONT_BYTES: &[u8] = include_bytes!("../../assets/fonts/icons.ttf");
 /// Build the user interface
 pub fn view(editor: &RawEditor) -> Element<'_, Message> {
     // Phase 23: Show splash screen if database is still loading
-    match &editor.library {
+    let content = match &editor.library {
         None => view_splash(editor),
         Some(_) => view_main(editor),
-    }
+    };
+    
+    // Phase 84: Generic Modal System
+    let modal = match editor.active_modal {
+        crate::app::state::Modal::None => text("").height(0).width(0).into(),
+        crate::app::state::Modal::Help => modal_overlay(view_help_modal()),
+        crate::app::state::Modal::Preferences => text("Preferences").into(), // Placeholder
+    };
+    
+    stack![
+        content,
+        modal
+    ].into()
 }
 
 /// Phase 23: Splash screen shown during database loading
@@ -175,7 +187,7 @@ fn view_title_bar(editor: &RawEditor) -> Element<'_, Message> {
         button(container(text("File").size(13)).height(Length::Fill).align_x(iced::alignment::Horizontal::Center).align_y(iced::alignment::Vertical::Center)).style(ui::styles::WindowControlButton::style).height(Length::Fill).padding([0, 10]),
         button(container(text("Edit").size(13)).height(Length::Fill).align_x(iced::alignment::Horizontal::Center).align_y(iced::alignment::Vertical::Center)).style(ui::styles::WindowControlButton::style).height(Length::Fill).padding([0, 10]),
         button(container(text("Window").size(13)).height(Length::Fill).align_x(iced::alignment::Horizontal::Center).align_y(iced::alignment::Vertical::Center)).style(ui::styles::WindowControlButton::style).height(Length::Fill).padding([0, 10]),
-        button(container(text("Help").size(13)).height(Length::Fill).align_x(iced::alignment::Horizontal::Center).align_y(iced::alignment::Vertical::Center)).style(ui::styles::WindowControlButton::style).height(Length::Fill).padding([0, 10]),
+        button(container(text("Help").size(13)).height(Length::Fill).align_x(iced::alignment::Horizontal::Center).align_y(iced::alignment::Vertical::Center)).style(ui::styles::WindowControlButton::style).height(Length::Fill).padding([0, 10]).on_press(Message::OpenModal(crate::app::state::Modal::Help)),
     ].spacing(0).align_y(Alignment::Center);
 
     let navigation = container(
@@ -443,3 +455,74 @@ pub fn theme(_: &RawEditor) -> Theme {
     Theme::Dark
 }
 
+fn modal_overlay<'a>(content: Element<'a, Message>) -> Element<'a, Message> {
+    use iced::widget::{container, mouse_area};
+    
+    // The backdrop: semi-transparent black, fills screen, closes on click
+    let backdrop = mouse_area(
+        container(text(" "))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(|_| container::Style {
+                background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.5))),
+                ..Default::default()
+            })
+    )
+    .on_press(Message::CloseModal);
+
+    // The card: centered content
+    let card = container(content)
+        .padding(20)
+        .style(|_| container::Style {
+            background: Some(Background::Color(Color::from_rgb(0.15, 0.15, 0.17))),
+            border: Border {
+                radius: 10.0.into(),
+                width: 1.0,
+                color: Color::from_rgb(0.3, 0.3, 0.3),
+            },
+            ..Default::default()
+        });
+    
+    stack![
+        backdrop,
+        container(
+            // Swallow clicks on the card so they don't reach the backdrop
+            mouse_area(card).on_press(Message::ModalNoOp)
+        ).width(Length::Fill).height(Length::Fill).center_x(Length::Fill).center_y(Length::Fill)
+    ].into()
+}
+
+fn view_help_modal<'a>() -> Element<'a, Message> {
+    let shortcut = |key: &str, desc: &str| {
+        row![
+            text(key.to_string()).font(Font { weight: Weight::Bold, ..Default::default() }).width(Length::Fixed(120.0)).style(|_| text::Style { color: Some(Color::from_rgb(0.8, 0.8, 1.0)) }),
+            text(desc.to_string()).size(14)
+        ].spacing(10)
+    };
+    
+    column![
+        text("Keyboard Shortcuts").size(24).font(Font { weight: Weight::Bold, ..Default::default() }),
+        iced::widget::horizontal_rule(1.0),
+        column![
+            text("Navigation").size(16).style(|_| text::Style{color: Some(Color::from_rgb(0.6, 0.6, 0.6))}),
+            shortcut("Arrow Keys", "Previous / Next Image"),
+            shortcut("Space", "Toggle Before/After View"),
+            
+            text("Rating & Culling").size(16).style(|_| text::Style{color: Some(Color::from_rgb(0.6, 0.6, 0.6))}),
+            shortcut("0 - 5", "Set Star Rating"),
+            shortcut("P", "Pick (Flag)"),
+            shortcut("X", "Reject (X)"),
+            shortcut("U", "Unflag"),
+            
+            text("Editing").size(16).style(|_| text::Style{color: Some(Color::from_rgb(0.6, 0.6, 0.6))}),
+            shortcut("Ctrl + Z", "Undo"),
+            shortcut("Ctrl + Shift + Z", "Redo"),
+            shortcut("Ctrl + C / V", "Copy / Paste Settings"),
+        ].spacing(10),
+        
+        button("Close").on_press(Message::CloseModal).padding(10).width(Length::Fill).style(ui::styles::NeutralButton::style)
+    ]
+    .spacing(20)
+    .width(400)
+    .into()
+}

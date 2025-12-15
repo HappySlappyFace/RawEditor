@@ -264,6 +264,20 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
             }
             Task::none()
         }
+        
+        Message::OpenModal(modal) => { editor.active_modal = modal; Task::none() }
+        Message::CloseModal => { editor.active_modal = crate::app::state::Modal::None; Task::none() }
+        Message::ModalNoOp => Task::none(),
+        Message::Escape => {
+            if editor.active_modal != crate::app::state::Modal::None {
+                editor.active_modal = crate::app::state::Modal::None;
+            } else {
+                // Potential feature: clear selection or navigate back?
+                // For now, just close modal if open.
+            }
+            Task::none()
+        }
+        
         Message::SetRating(r) => {
             let ids: Vec<i64> = if !editor.multi_selection.is_empty() { editor.multi_selection.iter().copied().collect() } else if let Some(id) = editor.selected_image_id { vec![id] } else { vec![] };
             if let Some(lib) = &editor.library {
