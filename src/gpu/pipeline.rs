@@ -717,19 +717,34 @@ impl RenderPipeline {
             tx.send(result).unwrap();
         });
         self.device.poll(wgpu::Maintain::Wait);
-        rx.recv().unwrap().unwrap();
         
-        let data = buffer_slice.get_mapped_range();
-        let mut output = Vec::with_capacity((target_width * target_height * 4) as usize);
-        for y in 0..target_height {
-            let start = (y * padded_bytes_per_row) as usize;
-            let end = start + (target_width * 4) as usize;
-            output.extend_from_slice(&data[start..end]);
+        match rx.recv() {
+            Ok(Ok(())) => {
+                let data = buffer_slice.get_mapped_range();
+                println!("✅ GPU Readback success! Data size: {} bytes", data.len());
+                let mut output = Vec::with_capacity((target_width * target_height * 4) as usize);
+                for y in 0..target_height {
+                    let start = (y * padded_bytes_per_row) as usize;
+                    let end = start + (target_width * 4) as usize;
+                    if end <= data.len() {
+                        output.extend_from_slice(&data[start..end]);
+                    } else {
+                        println!("⚠️  Buffer underrun at row {}", y);
+                    }
+                }
+                drop(data);
+                output_buffer.unmap();
+                Ok(output)
+            }
+            Ok(Err(e)) => {
+                println!("❌ GPU Readback failed: {:?}", e);
+                Err(format!("GPU Readback failed: {:?}", e))
+            }
+            Err(e) => {
+                println!("❌ GPU Readback channel error: {:?}", e);
+                Err(format!("GPU Readback channel error: {:?}", e))
+            }
         }
-        
-        drop(data);
-        output_buffer.unmap();
-        Ok(output)
     }
     
     /// Get the texture dimensions

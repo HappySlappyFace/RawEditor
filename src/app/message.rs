@@ -106,6 +106,8 @@ pub enum Message {
     ToggleExportResize(bool),
     SetExportWidth(u32),
     SetExportSubfolder(String),
+    SetExportBasePath(PathBuf),
+    PickExportBasePath,
     OpenExportModal,
     ExportConfirmed,
     ProcessNextExport,

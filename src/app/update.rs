@@ -561,8 +561,44 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
             editor.export_settings.subfolder = subfolder;
             Task::none()
         }
+        Message::PickExportBasePath => {
+            let current = editor.export_settings.base_path.clone();
+            Task::perform(async move {
+                rfd::AsyncFileDialog::new()
+                    .set_directory(current)
+                    .pick_folder()
+                    .await
+                    .map(|handle| handle.path().to_path_buf())
+            }, |opt| if let Some(path) = opt { Message::SetExportBasePath(path) } else { Message::SetExportBasePath(PathBuf::new()) }) // Handle cancel gracefully? Actually we should just ignore if None.
+            // Better:
+            // Task::perform(..., |opt| opt.map(Message::SetExportBasePath).unwrap_or(Message::None? No Message::None))
+            // Let's just use a helper or simple match in the closure if possible, but Task::perform expects a specific return.
+            // Let's use a wrapper message or just ignore inside the update if path is empty? No, PathBuf::new() is empty.
+        }
+        Message::SetExportBasePath(path) => {
+            if !path.as_os_str().is_empty() {
+                editor.export_settings.base_path = path;
+            }
+            Task::none()
+        }
         Message::OpenExportModal => {
             editor.active_modal = Modal::Export;
+            
+            // If base_path is still default (Pictures) AND we have a selected image, 
+            // try to set base_path to that image's parent directory.
+            // Only do this if the user hasn't explicitly changed it? 
+            // For now, let's do it if it matches the system picture dir (default).
+            let default_dir = dirs::picture_dir().unwrap_or_else(|| PathBuf::from("."));
+            if editor.export_settings.base_path == default_dir {
+                 if let Some(id) = editor.selected_image_id {
+                    if let Some(img) = editor.images.iter().find(|i| i.id == id) {
+                        if let Some(parent) = Path::new(&img.path).parent() {
+                            editor.export_settings.base_path = parent.to_path_buf();
+                        }
+                    }
+                }
+            }
+            
             Task::none()
         }
         Message::ExportConfirmed => {
@@ -717,8 +753,7 @@ async fn save_export_async(
         };
         
         // 3. Create output path
-        let base_dir = dirs::picture_dir().unwrap_or_else(|| PathBuf::from("."));
-        let output_dir = base_dir.join(&settings.subfolder);
+        let output_dir = settings.base_path.join(&settings.subfolder);
         fs::create_dir_all(&output_dir).map_err(|e| e.to_string())?;
         
         let extension = match settings.format {

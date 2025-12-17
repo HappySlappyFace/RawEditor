@@ -258,3 +258,15 @@ pub fn modal_container_style(_theme: &Theme) -> container::Style {
         ..Default::default()
     }
 }
+
+pub fn button_style(theme: &Theme, status: iced::widget::button::Status) -> iced::widget::button::Style {
+    NeutralButton::style(theme, status)
+}
+
+pub fn button_confirm() -> impl Fn(&Theme, iced::widget::button::Status) -> iced::widget::button::Style {
+    AccentButton::style
+}
+
+pub fn button_cancel() -> impl Fn(&Theme, iced::widget::button::Status) -> iced::widget::button::Style {
+    NeutralButton::style
+}

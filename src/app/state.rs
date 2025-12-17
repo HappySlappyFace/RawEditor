@@ -87,6 +87,7 @@ pub struct ExportSettings {
     pub resize: bool,
     pub max_width: u32,
     pub subfolder: String,
+    pub base_path: std::path::PathBuf,
 }
 
 impl Default for ExportSettings {
@@ -97,6 +98,7 @@ impl Default for ExportSettings {
             resize: false,
             max_width: 2048,
             subfolder: "Export".to_string(),
+            base_path: dirs::picture_dir().unwrap_or_else(|| std::path::PathBuf::from(".")),
         }
     }
 }

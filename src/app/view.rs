@@ -683,10 +683,28 @@ fn view_export_modal<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
 
     let destination_section = column![
         text("Destination").size(12).font(Font { weight: Weight::Bold, ..Default::default() }).style(|_theme: &Theme| text::Style{color: Some(Color::from_rgb(0.5, 0.5, 0.5))}),
+        
+        row![
+            text("Base Folder:").size(13).style(|_theme: &Theme| text::Style { color: Some(Color::from_rgb(0.7, 0.7, 0.7)) }),
+            button(
+                row![
+                    text(settings.base_path.file_name().unwrap_or_default().to_string_lossy()).size(13),
+                    text("...").size(13)
+                ].spacing(5).align_y(Alignment::Center)
+            )
+            .on_press(Message::PickExportBasePath)
+            .padding(5)
+            .style(ui::styles::button_style),
+        ].spacing(10).align_y(Alignment::Center),
+
         row![
             text("Subfolder:").size(13).style(|_theme: &Theme| text::Style { color: Some(Color::from_rgb(0.7, 0.7, 0.7)) }),
             text_input("Export", &settings.subfolder).on_input(Message::SetExportSubfolder).padding(5).style(ui::styles::text_input_style)
-        ].spacing(10).align_y(Alignment::Center)
+        ].spacing(10).align_y(Alignment::Center),
+        
+        text(format!("Full Path: {}/{}", settings.base_path.display(), settings.subfolder))
+            .size(11)
+            .style(|_theme: &Theme| text::Style { color: Some(Color::from_rgb(0.5, 0.5, 0.5)) })
     ].spacing(10);
 
     let count = if editor.multi_selection.is_empty() { 1 } else { editor.multi_selection.len() };
