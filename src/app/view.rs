@@ -1,8 +1,8 @@
 use iced::{Alignment, Background, Border, Color, Element, Font, Length, Point, Theme};
-use iced::widget::{button, checkbox, column, container, row, scrollable, slider, stack, text, Image};
+use iced::widget::{button, checkbox, column, container, row, scrollable, slider, stack, text, Image, Space};
 use iced::widget::image::Handle;
 use iced::font::Weight;
-use iced_aw::Wrap;
+use std::path::PathBuf;
 
 use crate::ui;
 use crate::app::message::{Message, AppTab};
@@ -228,6 +228,101 @@ fn view_title_bar(editor: &RawEditor) -> Element<'_, Message> {
 }
 
 /// Build the Library tab view (grid of thumbnails)
+fn view_image_card<'a>(img: &'a ImageData, is_selected: bool) -> Element<'a, Message> {
+    const THUMB_WIDTH: u16 = 220;
+    const THUMB_HEIGHT: u16 = 165; // 4:3 aspect ratio
+    
+    let is_deleted = img.file_status == "deleted";
+    
+    // 1. The Image Content
+    let image_widget = if let Some(ref thumb_path) = img.cache_path_thumb {
+        let handle = Handle::from_path(PathBuf::from(thumb_path));
+        Image::new(handle).content_fit(iced::ContentFit::Contain)
+            .width(Length::Fixed(THUMB_WIDTH as f32))
+            .height(Length::Fixed(THUMB_HEIGHT as f32))
+    } else {
+        Image::new(Handle::from_path(PathBuf::new())) // Placeholder or empty
+            .width(Length::Fixed(THUMB_WIDTH as f32))
+            .height(Length::Fixed(THUMB_HEIGHT as f32))
+    };
+    
+    // 2. Rating Overlay (Bottom-Left)
+    let rating_overlay = if img.rating > 0 {
+        let stars_text = vec![ui::icons::STAR; img.rating as usize].join(" ");
+        container(
+            text(stars_text).size(12).font(ICON_FONT).style(|_| text::Style { color: Some(Color::from_rgb(1.0, 0.8, 0.2)) })
+        )
+        .padding([2, 4])
+        .style(|_| container::Style {
+            background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.6))),
+            border: Border { radius: 3.0.into(), ..Default::default() },
+            ..Default::default()
+        })
+    } else {
+        container(text(""))
+    };
+    
+    // 3. Flag Overlay (Full or Corner)
+    let flag_overlay = if img.flag == -1 {
+        // Reject: Full red X overlay
+        container(
+            text(ui::icons::TIMES).font(ICON_FONT).size(64).style(|_| text::Style { color: Some(Color::from_rgba(1.0, 0.2, 0.2, 0.4)) })
+        )
+        .width(Length::Fill).height(Length::Fill)
+        .center_x(Length::Fill).center_y(Length::Fill)
+        .style(|_| container::Style { background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.6))), ..Default::default() })
+    } else if img.flag == 1 {
+        // Pick: Green check in top-right
+        container(
+            text(ui::icons::CHECK).font(ICON_FONT).size(16).style(|_| text::Style { color: Some(Color::from_rgba(0.2, 1.0, 0.2, 0.9)) })
+        )
+        .padding(4)
+        .width(Length::Fill).height(Length::Fill)
+        .align_x(iced::alignment::Horizontal::Right)
+        .align_y(iced::alignment::Vertical::Top)
+        .style(|_| container::Style::default())
+    } else {
+        container(text(""))
+    };
+
+    // 4. Deleted Overlay
+    let deleted_overlay = if is_deleted {
+            container(column![text(ui::icons::TIMES).size(24).font(ICON_FONT), text("Deleted").size(10)].align_x(Alignment::Center).spacing(2))
+            .width(Length::Fill).height(Length::Fill)
+            .center_x(Length::Fill).center_y(Length::Fill)
+            .style(|_| container::Style { background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.8))), ..Default::default() })
+    } else {
+        container(text(""))
+    };
+
+    // Stack 'em up
+    let content = stack![
+        container(image_widget).style(|_| container::Style { background: Some(Background::Color(Color::from_rgb(0.15, 0.15, 0.15))), ..Default::default() }), // Placeholder background
+        container(rating_overlay).width(Length::Fill).height(Length::Fill).align_x(iced::alignment::Horizontal::Left).align_y(iced::alignment::Vertical::Bottom).padding(4),
+        flag_overlay,
+        deleted_overlay
+    ];
+
+    // Wrapper for Selection Styling
+    let wrapper = container(content)
+        .width(Length::Fixed(THUMB_WIDTH as f32 + 8.0)) // +8 for padding
+        .height(Length::Fixed(THUMB_HEIGHT as f32 + 8.0))
+        .padding(4) // Selection border thickness
+        .style(move |_| {
+            if is_selected {
+                container::Style {
+                    background: Some(Background::Color(Color::from_rgb(0.3, 0.5, 0.7))), // Selection Highlight Color
+                    border: Border { radius: 4.0.into(), ..Default::default() },
+                    ..Default::default()
+                }
+            } else {
+                container::Style::default()
+            }
+        });
+
+    button(wrapper).on_press(Message::ImageSelected(img.id)).padding(0).style(|theme, status| button::Style { background: None, border: Border::default(), ..button::primary(theme, status) }).into()
+}
+
 fn view_library(editor: &RawEditor) -> Element<'_, Message> {
     let filtered_images: Vec<&ImageData> = editor.images.iter()
         .filter(|img| editor.min_filter_rating == 0 || img.rating >= editor.min_filter_rating)
@@ -238,66 +333,26 @@ fn view_library(editor: &RawEditor) -> Element<'_, Message> {
     let total_count = editor.images.len();
     let filtered_count = filtered_images.len();
     
-    const THUMB_SIZE: u16 = 200;
+    // Fallback to fixed columns since Responsive is not available
+    const COLUMNS: usize = 6;
+    const SPACING: f32 = 10.0;
     
-    let thumbnail_grid = filtered_images.iter().fold(
-        Wrap::new().spacing(8.0).line_spacing(8.0),
-        |wrap, img| {
-            let is_deleted = img.file_status == "deleted";
-            let thumbnail_content = if is_deleted {
-                container(column![text(ui::icons::TIMES).size(24).font(ICON_FONT), text(&img.filename).size(8), text("(deleted)").size(7)].align_x(Alignment::Center).spacing(4))
-                    .width(THUMB_SIZE).height(THUMB_SIZE).center_x(iced::Length::Fixed(200.0)).center_y(iced::Length::Fixed(150.0))
-                    .style(|_theme| container::Style { background: Some(Background::Color(Color::from_rgb(0.3, 0.3, 0.3))), border: Border { color: Color::from_rgb(0.5, 0.2, 0.2), width: 2.0, radius: 4.0.into() }, ..Default::default() })
-            } else if let Some(ref thumb_path) = img.cache_path_thumb {
-                let handle = Handle::from_path(thumb_path.clone());
-                container(Image::new(handle).content_fit(iced::ContentFit::Contain))
-                    .width(THUMB_SIZE).height(THUMB_SIZE).center_x(iced::Length::Fixed(200.0)).center_y(iced::Length::Fixed(150.0))
-                    .style(|_theme| container::Style { background: Some(Background::Color(Color::from_rgb(0.25, 0.25, 0.25))), border: Border { color: Color::from_rgb(0.4, 0.4, 0.4), width: 1.0, radius: 4.0.into() }, ..Default::default() })
-            } else {
-                container(text(ui::icons::HOURGLASS).size(48).font(ICON_FONT))
-                    .width(THUMB_SIZE).height(THUMB_SIZE).center_x(iced::Length::Fixed(200.0)).center_y(iced::Length::Fixed(150.0))
-                    .style(|_theme| container::Style { background: Some(Background::Color(Color::from_rgb(0.2, 0.2, 0.2))), border: Border { color: Color::from_rgb(0.3, 0.3, 0.3), width: 1.0, radius: 4.0.into() }, ..Default::default() })
-            };
-            
-            // Phase 83: Visual feedback for flags
-            let mut final_content = Element::from(thumbnail_content);
-            if img.flag == -1 {
-                 let reject_overlay = container(
-                    text(ui::icons::TIMES).font(ICON_FONT).size(64).style(|_| text::Style { color: Some(Color::from_rgba(1.0, 0.2, 0.2, 0.4)) })
-                )
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .center_x(Length::Fill)
-                .center_y(Length::Fill)
-                .style(|_| container::Style { background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.6))), ..Default::default() });
-                
-                final_content = Element::from(stack![
-                    final_content,
-                    reject_overlay
-                ]);
-            } else if img.flag == 1 {
-                let pick_overlay = container(
-                    text(ui::icons::CHECK).font(ICON_FONT).size(16).style(|_| text::Style { color: Some(Color::from_rgba(0.2, 1.0, 0.2, 0.9)) })
-                )
-                .padding(4)
-                .align_x(iced::alignment::Horizontal::Right)
-                .align_y(iced::alignment::Vertical::Top)
-                .width(Length::Fill)
-                .height(Length::Fill);
-                
-                final_content = Element::from(stack![
-                    final_content,
-                    pick_overlay
-                ]);
-            }
+    let rows: Vec<Element<_>> = filtered_images.chunks(COLUMNS).map(|chunk| {
+        let row_children: Vec<Element<_>> = chunk.iter().map(|img| {
+            let is_selected = editor.selected_image_id == Some(img.id) || editor.multi_selection.contains(&img.id);
+            view_image_card(img, is_selected)
+        }).collect();
+        
+        row(row_children).spacing(SPACING).into()
+    }).collect();
+    
+    let grid_content = scrollable(column(rows).spacing(SPACING))
+        .height(Length::Fill)
+        .width(Length::Fill);
 
-            wrap.push(button(final_content).on_press(Message::ImageSelected(img.id)).padding(0).style(|theme, status| button::Style { background: None, border: Border::default(), ..button::primary(theme, status) }))
-        },
-    );
-    
     column![
         view_library_toolbar(editor),
-        container(scrollable(thumbnail_grid).height(Length::Fill).width(Length::Fill)).padding(10).height(Length::Fill),
+        container(grid_content).padding(10).height(Length::Fill).width(Length::Fill),
         view_status_bar(editor, filtered_count, total_count, cached_count, deleted_count)
     ].into()
 }
