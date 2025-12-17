@@ -99,6 +99,20 @@ pub enum Message {
     SetCrop([f32; 4]),
     /// User clicked Reset button to clear all edits
     ResetEdits,
+    
+    // ========== Export Messages (Phase 89) ==========
+    SetExportFormat(crate::app::state::ExportFormat),
+    SetExportQuality(u8),
+    ToggleExportResize(bool),
+    SetExportWidth(u32),
+    SetExportSubfolder(String),
+    OpenExportModal,
+    ExportConfirmed,
+    ProcessNextExport,
+    ExportRawLoaded(i64, Result<raw::loader::RawDataResult, String>),
+    ExportPipelineReady(i64, Result<std::sync::Arc<crate::gpu::pipeline::RenderPipeline>, String>),
+    ExportSaveComplete(i64, Result<PathBuf, String>),
+    
     /// Phase 60: Toggle for HUD overlay (ISO, Shutter, etc.)
     ToggleInfoHud,
     /// Phase 67: Interactive Crop

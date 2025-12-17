@@ -1,4 +1,4 @@
-use iced::widget::slider;
+use iced::widget::{slider, container};
 use iced::{Background, Border, Color, Theme};
 
 pub struct ProSlider;
@@ -200,5 +200,61 @@ impl AccentButton {
                 ..Default::default()
             },
         }
+    }
+}
+
+pub fn radio_style(_theme: &Theme, _status: iced::widget::radio::Status) -> iced::widget::radio::Style {
+    iced::widget::radio::Style {
+        background: Background::Color(Color::from_rgb(0.2, 0.2, 0.2)),
+        dot_color: Color::WHITE,
+        border_width: 1.0,
+        border_color: Color::from_rgb(0.5, 0.5, 0.5),
+        text_color: Some(Color::WHITE),
+    }
+}
+
+// ...
+
+// ...
+
+pub fn checkbox_style(_theme: &Theme, _status: iced::widget::checkbox::Status) -> iced::widget::checkbox::Style {
+    iced::widget::checkbox::Style {
+        background: Background::Color(Color::from_rgb(0.2, 0.2, 0.2)),
+        // checkmark_color removed
+        border: Border {
+            radius: 3.0.into(),
+            width: 1.0,
+            color: Color::from_rgb(0.5, 0.5, 0.5),
+        },
+        text_color: Some(Color::WHITE),
+        icon_color: Color::WHITE,
+    }
+}
+
+pub fn text_input_style(_theme: &Theme, _status: iced::widget::text_input::Status) -> iced::widget::text_input::Style {
+    iced::widget::text_input::Style {
+        background: Background::Color(Color::from_rgb(0.15, 0.15, 0.15)),
+        border: Border {
+            radius: 4.0.into(),
+            width: 1.0,
+            color: Color::from_rgb(0.3, 0.3, 0.3),
+        },
+        icon: Color::from_rgb(0.5, 0.5, 0.5),
+        placeholder: Color::from_rgb(0.4, 0.4, 0.4),
+        value: Color::WHITE,
+        selection: Color::from_rgb(0.3, 0.5, 0.7),
+    }
+}
+
+pub fn modal_container_style(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(Color::from_rgb(0.1, 0.1, 0.1))),
+        border: Border {
+            radius: 10.0.into(),
+            width: 1.0,
+            color: Color::from_rgb(0.3, 0.3, 0.3),
+        },
+        text_color: Some(Color::WHITE),
+        ..Default::default()
     }
 }

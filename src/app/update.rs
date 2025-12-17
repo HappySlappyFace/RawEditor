@@ -1,20 +1,26 @@
 use std::path::PathBuf;
 use std::sync::Arc;
-use iced::{Task, Point};
+use iced::Task;
 use iced::widget::image::Handle;
 use rusqlite::{Connection, OptionalExtension};
 use walkdir::WalkDir;
-use chrono::Utc;
 use rfd::FileDialog;
 use iced_wgpu::wgpu;
+use chrono::Utc;
+use iced::Point;
 
 use crate::state;
 use crate::gpu;
-use crate::raw;
 use crate::ui;
 use crate::app::message::{Message, AppTab, ImportResult};
-use crate::app::state::{RawEditor, EditorStatus, DragMode};
+use crate::app::state::{self as app_state, EditorStatus, RawEditor, ExportSettings, ExportFormat, Modal, DragMode};
+use crate::state::data::Image as ImageData;
+use crate::app::view;
+use crate::gpu::pipeline::RenderPipeline;
+use crate::raw;
 use crate::ui::preview_renderer::CropHandle;
+use std::path::Path;
+use std::collections::HashSet;
 
 pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
     match message {
@@ -534,7 +540,208 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
             editor.thumbnail_size = size;
             Task::none()
         }
+        // ========== Export Handlers (Phase 89) ==========
+        Message::SetExportFormat(format) => {
+            editor.export_settings.format = format;
+            Task::none()
+        }
+        Message::SetExportQuality(quality) => {
+            editor.export_settings.quality = quality;
+            Task::none()
+        }
+        Message::ToggleExportResize(resize) => {
+            editor.export_settings.resize = resize;
+            Task::none()
+        }
+        Message::SetExportWidth(width) => {
+            editor.export_settings.max_width = width;
+            Task::none()
+        }
+        Message::SetExportSubfolder(subfolder) => {
+            editor.export_settings.subfolder = subfolder;
+            Task::none()
+        }
+        Message::OpenExportModal => {
+            editor.active_modal = Modal::Export;
+            Task::none()
+        }
+        Message::ExportConfirmed => {
+            editor.active_modal = Modal::None;
+            
+            // Collect IDs
+            if editor.multi_selection.is_empty() {
+                if let Some(id) = editor.selected_image_id {
+                    editor.export_queue = vec![id];
+                }
+            } else {
+                editor.export_queue = editor.multi_selection.iter().cloned().collect();
+            }
+            
+            if editor.export_queue.is_empty() {
+                editor.status = "Nothing to export.".to_string();
+                return Task::none();
+            }
+            
+            editor.is_exporting = true;
+            editor.status = format!("Starting export of {} images...", editor.export_queue.len());
+            Task::perform(async {}, |_| Message::ProcessNextExport)
+        }
+        Message::ProcessNextExport => {
+            if let Some(image_id) = editor.export_queue.pop() {
+                editor.status = format!("Exporting image {}...", image_id);
+                // Find path
+                if let Some(img) = editor.images.iter().find(|i| i.id == image_id) {
+                    let path = img.path.clone();
+                    return Task::perform(raw::loader::load_raw_data(path), move |res| Message::ExportRawLoaded(image_id, res));
+                }
+                // If not found, skip
+                return Task::perform(async {}, |_| Message::ProcessNextExport);
+            } else {
+                editor.is_exporting = false;
+                editor.status = "Export Complete!".to_string();
+                Task::none()
+            }
+        }
+        Message::ExportRawLoaded(image_id, result) => {
+             match result {
+                Ok(raw_data) => {
+                    // Load params for this image
+                    let params = if let Some(library) = &editor.library {
+                        library.load_edit_params(image_id).unwrap_or_default()
+                    } else {
+                        state::edit::EditParams::default()
+                    };
+                    
+                    // Spawn pipeline creation
+                    let width = raw_data.width;
+                    let height = raw_data.height;
+                    let data = raw_data.data;
+                    let wb = raw_data.wb_multipliers;
+                    let cm = raw_data.color_matrix;
+                    let cfa = raw_data.cfa_pattern;
+                    let bl = raw_data.black_levels;
+                    let wl = raw_data.white_level;
+                    
+                    Task::perform(async move {
+                        RenderPipeline::new(image_id, data, width, height, &params, wb, cm, cfa, bl, wl).await
+                            .map(Arc::new)
+                    }, move |res| Message::ExportPipelineReady(image_id, res))
+                }
+                Err(e) => {
+                    editor.status = format!("Failed to load RAW: {}", e);
+                    Task::perform(async {}, |_| Message::ProcessNextExport)
+                }
+             }
+        }
+        Message::ExportPipelineReady(image_id, result) => {
+            match result {
+                Ok(pipeline) => {
+                    // Load params again (or pass them? Pipeline has them now)
+                    // Pipeline::new initialized params.
+                    
+                    // Render
+                    // We need to access params from pipeline or library.
+                    // Pipeline has current_params.
+                    // But we need crop.
+                    // Let's reload params from library to be safe, or assume pipeline has them.
+                    // Pipeline::new took params, so it has them.
+                    // But we can't easily access them from Arc<RenderPipeline> unless we expose them.
+                    // We can just reload them.
+                     let params = if let Some(library) = &editor.library {
+                        library.load_edit_params(image_id).unwrap_or_default()
+                    } else {
+                        state::edit::EditParams::default()
+                    };
+                    
+                    let crop = params.crop;
+                    let format = iced_wgpu::wgpu::TextureFormat::Rgba8Unorm;
+                    
+                    match pipeline.render_full_res_to_bytes(format, crop) {
+                        Ok(bytes) => {
+                            let settings = editor.export_settings.clone();
+                            let crop_w = crop[2];
+                            let crop_h = crop[3];
+                            let target_width = (pipeline.width as f32 * crop_w) as u32;
+                            let target_height = (pipeline.height as f32 * crop_h) as u32;
+                            
+                            let filename = if let Some(img) = editor.images.iter().find(|i| i.id == image_id) {
+                                 Path::new(&img.path).file_stem().unwrap_or_default().to_string_lossy().to_string()
+                            } else {
+                                format!("image_{}", image_id)
+                            };
+                            
+                            Task::perform(save_export_async(filename, bytes, target_width, target_height, settings), move |res| Message::ExportSaveComplete(image_id, res))
+                        }
+                        Err(e) => {
+                            editor.status = format!("Render failed: {}", e);
+                            Task::perform(async {}, |_| Message::ProcessNextExport)
+                        }
+                    }
+                }
+                Err(e) => {
+                    editor.status = format!("Pipeline failed: {}", e);
+                    Task::perform(async {}, |_| Message::ProcessNextExport)
+                }
+            }
+        }
+        Message::ExportSaveComplete(_id, res) => {
+            match res {
+                Ok(path) => editor.status = format!("Saved: {}", path.display()),
+                Err(e) => editor.status = format!("Save failed: {}", e),
+            }
+            Task::perform(async {}, |_| Message::ProcessNextExport)
+        }
     }
+}
+
+async fn save_export_async(
+    filename: String,
+    bytes: Vec<u8>,
+    width: u32,
+    height: u32,
+    settings: ExportSettings,
+) -> Result<PathBuf, String> {
+    tokio::task::spawn_blocking(move || {
+        use image::{ImageBuffer, Rgba};
+        use std::fs;
+        
+        // 1. Create ImageBuffer
+        let img: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::from_raw(width, height, bytes)
+            .ok_or("Failed to create image buffer")?;
+        
+        // 2. Resize if needed
+        let final_img = if settings.resize && (width > settings.max_width || height > settings.max_width) {
+            image::imageops::resize(&img, settings.max_width, settings.max_width, image::imageops::FilterType::Lanczos3)
+        } else {
+            image::DynamicImage::ImageRgba8(img).to_rgba8()
+        };
+        
+        // 3. Create output path
+        let base_dir = dirs::picture_dir().unwrap_or_else(|| PathBuf::from("."));
+        let output_dir = base_dir.join(&settings.subfolder);
+        fs::create_dir_all(&output_dir).map_err(|e| e.to_string())?;
+        
+        let extension = match settings.format {
+            ExportFormat::Jpeg => "jpg",
+            ExportFormat::Png => "png",
+        };
+        
+        let output_path = output_dir.join(format!("{}.{}", filename, extension));
+        
+        // 4. Save
+        match settings.format {
+            ExportFormat::Jpeg => {
+                let file = fs::File::create(&output_path).map_err(|e| e.to_string())?;
+                let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(file, settings.quality);
+                encoder.encode(&final_img, final_img.width(), final_img.height(), image::ColorType::Rgba8.into()).map_err(|e| e.to_string())?;
+            }
+            ExportFormat::Png => {
+                final_img.save_with_format(&output_path, image::ImageFormat::Png).map_err(|e| e.to_string())?;
+            }
+        }
+        
+        Ok(output_path)
+    }).await.map_err(|e| e.to_string())?
 }
 
 fn update_pipeline(editor: &mut RawEditor) {

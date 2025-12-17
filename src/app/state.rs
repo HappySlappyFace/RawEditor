@@ -60,6 +60,45 @@ pub enum Modal {
     None,
     Help,
     Preferences,
+    Export,
+}
+
+/// Phase 89: Export Format
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportFormat {
+    Jpeg,
+    Png,
+}
+
+impl std::fmt::Display for ExportFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ExportFormat::Jpeg => write!(f, "JPEG"),
+            ExportFormat::Png => write!(f, "PNG"),
+        }
+    }
+}
+
+/// Phase 89: Export Settings
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExportSettings {
+    pub format: ExportFormat,
+    pub quality: u8,
+    pub resize: bool,
+    pub max_width: u32,
+    pub subfolder: String,
+}
+
+impl Default for ExportSettings {
+    fn default() -> Self {
+        Self {
+            format: ExportFormat::Jpeg,
+            quality: 80,
+            resize: false,
+            max_width: 2048,
+            subfolder: "Export".to_string(),
+        }
+    }
 }
 
 /// Main application state
@@ -73,6 +112,11 @@ pub struct RawEditor {
     
     // Phase 88: Responsive Grid
     pub thumbnail_size: f32,
+    
+    // Phase 89: Export Studio
+    pub export_settings: ExportSettings,
+    pub export_queue: Vec<i64>,
+    pub is_exporting: bool,
 
     /// The catalog database (Phase 23: Optional during startup)
     pub library: Option<state::library::Library>,
@@ -245,7 +289,11 @@ impl RawEditor {
                 // Phase 85
                 cache_capacity: 200,
                 // Phase 88
-                thumbnail_size: 171.0,
+                thumbnail_size: 220.0,
+                // Phase 89
+                export_settings: ExportSettings::default(),
+                export_queue: Vec::new(),
+                is_exporting: false,
                 
                 // Background task
                 // background_task: None, // This field is not defined in the struct

@@ -1,7 +1,7 @@
-use iced::{Alignment, Background, Border, Color, Element, Font, Length, Point, Theme};
-use iced::widget::{button, checkbox, column, container, row, scrollable, slider, stack, text, Image, Space};
+use iced::{Alignment, Background, Border, Color, Element, Length, Theme, Point};
+use iced::widget::{button, checkbox, column, container, row, scrollable, slider, stack, text, Image, radio, text_input};
 use iced::widget::image::Handle;
-use iced::font::Weight;
+use iced::font::{Font, Weight};
 use std::path::PathBuf;
 use iced_aw::Wrap;
 
@@ -27,9 +27,10 @@ pub fn view(editor: &RawEditor) -> Element<'_, Message> {
     
     // Phase 84: Generic Modal System
     let modal = match editor.active_modal {
-        crate::app::state::Modal::None => text("").height(0).width(0).into(),
-        crate::app::state::Modal::Help => modal_overlay(view_help_modal()),
-        crate::app::state::Modal::Preferences => modal_overlay(view_preferences_modal(editor)),
+        crate::app::state::Modal::None => container(text("")).height(0).width(0).into(),
+        crate::app::state::Modal::Help => container(view_help_modal()).style(ui::styles::modal_container_style).padding(20),
+        crate::app::state::Modal::Preferences => container(view_preferences_modal(editor)).style(ui::styles::modal_container_style).padding(20),
+        crate::app::state::Modal::Export => container(view_export_modal(editor)).style(ui::styles::modal_container_style).padding(20),
     };
     
     stack![
@@ -639,6 +640,87 @@ fn view_preferences_modal<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
     .into()
 }
 
+fn view_export_modal<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
+    let settings = &editor.export_settings;
+    
+    let format_section = column![
+        text("File Format").size(12).font(Font { weight: Weight::Bold, ..Default::default() }).style(|_theme: &Theme| text::Style{color: Some(Color::from_rgb(0.5, 0.5, 0.5))}),
+        row![
+            radio("JPEG", crate::app::state::ExportFormat::Jpeg, Some(settings.format), Message::SetExportFormat).size(14).spacing(5).text_size(13).style(ui::styles::radio_style),
+            radio("PNG", crate::app::state::ExportFormat::Png, Some(settings.format), Message::SetExportFormat).size(14).spacing(5).text_size(13).style(ui::styles::radio_style),
+        ].spacing(20),
+        
+        if settings.format == crate::app::state::ExportFormat::Jpeg {
+            Element::from(column![
+                row![
+                    text("Quality:").size(13).style(|_theme: &Theme| text::Style { color: Some(Color::from_rgb(0.7, 0.7, 0.7)) }),
+                    text(format!("{}", settings.quality)).size(13).font(Font { weight: Weight::Bold, ..Default::default() }).style(|_theme: &Theme| text::Style { color: Some(Color::from_rgb(0.85, 0.85, 0.85)) }),
+                ].spacing(8).align_y(Alignment::Center),
+                slider(10..=100, settings.quality, Message::SetExportQuality).step(1),
+            ].spacing(5))
+        } else {
+            column![].into()
+        }
+    ].spacing(10);
+
+    let dimensions_section = column![
+        text("Dimensions").size(12).font(Font { weight: Weight::Bold, ..Default::default() }).style(|_theme: &Theme| text::Style{color: Some(Color::from_rgb(0.5, 0.5, 0.5))}),
+        checkbox("Resize Long Edge", settings.resize).on_toggle(Message::ToggleExportResize).size(16).text_size(13).style(ui::styles::checkbox_style),
+        
+        if settings.resize {
+            Element::from(row![
+                text("Max Width (px):").size(13).style(|_theme: &Theme| text::Style { color: Some(Color::from_rgb(0.7, 0.7, 0.7)) }),
+                text_input("2048", &settings.max_width.to_string())
+                    .on_input(|s| s.parse().ok().map(Message::SetExportWidth).unwrap_or(Message::SetExportWidth(settings.max_width)))
+                    .width(Length::Fixed(80.0))
+                    .padding(5)
+                    .style(ui::styles::text_input_style)
+            ].spacing(10).align_y(Alignment::Center))
+        } else {
+            row![].into()
+        }
+    ].spacing(10);
+
+    let destination_section = column![
+        text("Destination").size(12).font(Font { weight: Weight::Bold, ..Default::default() }).style(|_theme: &Theme| text::Style{color: Some(Color::from_rgb(0.5, 0.5, 0.5))}),
+        row![
+            text("Subfolder:").size(13).style(|_theme: &Theme| text::Style { color: Some(Color::from_rgb(0.7, 0.7, 0.7)) }),
+            text_input("Export", &settings.subfolder).on_input(Message::SetExportSubfolder).padding(5).style(ui::styles::text_input_style)
+        ].spacing(10).align_y(Alignment::Center)
+    ].spacing(10);
+
+    let count = if editor.multi_selection.is_empty() { 1 } else { editor.multi_selection.len() };
+    let export_btn = button(text(format!("Export {} Images", count)).align_x(iced::alignment::Horizontal::Center))
+        .on_press(Message::ExportConfirmed)
+        .width(Length::Fill)
+        .padding(10)
+        .style(|theme, status| button::Style {
+            background: Some(Background::Color(Color::from_rgb(0.2, 0.6, 0.3))),
+            text_color: Color::WHITE,
+            border: Border { radius: 4.0.into(), ..Default::default() },
+            ..button::primary(theme, status)
+        });
+
+    column![
+        text("Export Studio").size(18).font(Font { weight: Weight::Bold, ..Default::default() }).style(|_| text::Style { color: Some(Color::from_rgb(0.85, 0.85, 0.85)) }),
+        iced::widget::horizontal_rule(1.0).style(|_| iced::widget::rule::Style { color: Color::from_rgb(0.3, 0.3, 0.3), width: 1, radius: 0.0.into(), fill_mode: iced::widget::rule::FillMode::Full }),
+        
+        format_section,
+        dimensions_section,
+        destination_section,
+        
+        iced::widget::vertical_space().height(10),
+        
+        row![
+            button("Cancel").on_press(Message::CloseModal).padding(10).width(Length::Fill).style(ui::styles::NeutralButton::style),
+            export_btn
+        ].spacing(10)
+    ]
+    .spacing(15)
+    .width(400)
+    .into()
+}
+
 fn view_filter_bar<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
     row![
         text("Filter: ").size(14).style(|_| text::Style { color: Some(Color::from_rgb(0.7, 0.7, 0.7)) }),
@@ -680,6 +762,21 @@ fn view_library_toolbar<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
         ..button::primary(theme, status)
     });
 
+    let export_btn = button(
+        row![
+            text(ui::icons::SAVE).font(ICON_FONT),
+            text("Export")
+        ].spacing(8)
+    )
+    .on_press(Message::OpenExportModal)
+    .padding(10)
+    .style(|theme, status| button::Style {
+        background: Some(Background::Color(Color::from_rgb(0.2, 0.2, 0.2))),
+        text_color: Color::WHITE,
+        border: Border { radius: 4.0.into(), ..Default::default() },
+        ..button::primary(theme, status)
+    });
+
     let size_slider = row![
         text(ui::icons::TH_LARGE).font(ICON_FONT).size(16),
         slider(100.0..=400.0, editor.thumbnail_size, Message::SetThumbnailSize).width(Length::Fixed(150.0)),
@@ -689,11 +786,13 @@ fn view_library_toolbar<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
     container(
         row![
             import_btn,
+            export_btn,
             Space::with_width(Length::Fill),
             size_slider,
             Space::with_width(20.0),
             view_filter_bar(editor)
         ]
+        .spacing(10)
         .align_y(Alignment::Center)
         .width(Length::Fill)
     )
