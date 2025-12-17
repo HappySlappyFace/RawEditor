@@ -57,6 +57,9 @@ pub enum Message {
     /// User switched to a different tab
     TabChanged(AppTab),
     
+    /// Phase 88: Resize thumbnails
+    SetThumbnailSize(f32),
+    
     // ========== Edit Parameter Changes ==========
     /// User changed exposure slider
     ExposureChanged(f32),

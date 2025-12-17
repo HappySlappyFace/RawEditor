@@ -70,6 +70,9 @@ pub struct RawEditor {
     
     // Phase 85: User-configurable cache capacity
     pub cache_capacity: usize,
+    
+    // Phase 88: Responsive Grid
+    pub thumbnail_size: f32,
 
     /// The catalog database (Phase 23: Optional during startup)
     pub library: Option<state::library::Library>,
@@ -241,6 +244,8 @@ impl RawEditor {
                 active_modal: Modal::None,
                 // Phase 85
                 cache_capacity: 200,
+                // Phase 88
+                thumbnail_size: 171.0,
                 
                 // Background task
                 // background_task: None, // This field is not defined in the struct

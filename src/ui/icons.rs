@@ -17,6 +17,10 @@ pub const FOLDER_OPEN: &str = "\u{f07c}";
 /// Checkmark icon
 pub const CHECK: &str = "\u{f00c}";
 
+/// Grid icons
+pub const TH: &str = "\u{f00a}";
+pub const TH_LARGE: &str = "\u{f009}";
+
 
 // Window Controls
 pub const MINIMIZE: &str = "\u{f2d1}";

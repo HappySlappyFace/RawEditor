@@ -530,6 +530,10 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
             }
             Task::none()
         }
+        Message::SetThumbnailSize(size) => {
+            editor.thumbnail_size = size;
+            Task::none()
+        }
     }
 }
 
