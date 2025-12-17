@@ -238,26 +238,6 @@ fn view_library(editor: &RawEditor) -> Element<'_, Message> {
     let total_count = editor.images.len();
     let filtered_count = filtered_images.len();
     
-    let filter_bar = row![
-        text("Filter: ").size(14),
-        button(text("All").size(12)).on_press(Message::SetMinRating(0)).padding(5).style(if editor.min_filter_rating == 0 { |_theme: &Theme, _status| button::Style { background: Some(Background::Color(Color::from_rgb(0.3, 0.5, 0.7))), text_color: Color::WHITE, ..Default::default() } } else { |_theme: &Theme, _status| button::Style { text_color: Color::WHITE, ..Default::default() } }),
-        button(row![text(ui::icons::STAR).font(ICON_FONT).size(12), text(" 1+").size(12)]).on_press(Message::SetMinRating(1)).padding(5).style(if editor.min_filter_rating == 1 { |_theme: &Theme, _status| button::Style { background: Some(Background::Color(Color::from_rgb(0.3, 0.5, 0.7))), text_color: Color::WHITE, ..Default::default() } } else { |_theme: &Theme, _status| button::Style { text_color: Color::WHITE, ..Default::default() } }),
-        button(row![text(format!("{} {}", ui::icons::STAR, ui::icons::STAR)).font(ICON_FONT).size(12), text(" 2+").size(12)]).on_press(Message::SetMinRating(2)).padding(5).style(if editor.min_filter_rating == 2 { |_theme: &Theme, _status| button::Style { background: Some(Background::Color(Color::from_rgb(0.3, 0.5, 0.7))), text_color: Color::WHITE, ..Default::default() } } else { |_theme: &Theme, _status| button::Style { text_color: Color::WHITE, ..Default::default() } }),
-        button(row![text(format!("{} {} {}", ui::icons::STAR, ui::icons::STAR, ui::icons::STAR)).font(ICON_FONT).size(12), text(" 3+").size(12)]).on_press(Message::SetMinRating(3)).padding(5).style(if editor.min_filter_rating == 3 { |_theme: &Theme, _status| button::Style { background: Some(Background::Color(Color::from_rgb(0.3, 0.5, 0.7))), text_color: Color::WHITE, ..Default::default() } } else { |_theme: &Theme, _status| button::Style { text_color: Color::WHITE, ..Default::default() } }),
-        button(row![text(format!("{} {} {} {}", ui::icons::STAR, ui::icons::STAR, ui::icons::STAR, ui::icons::STAR)).font(ICON_FONT).size(12), text(" 4+").size(12)]).on_press(Message::SetMinRating(4)).padding(5).style(if editor.min_filter_rating == 4 { |_theme: &Theme, _status| button::Style { background: Some(Background::Color(Color::from_rgb(0.3, 0.5, 0.7))), text_color: Color::WHITE, ..Default::default() } } else { |_theme: &Theme, _status| button::Style { text_color: Color::WHITE, ..Default::default() } }),
-        button(row![text(format!("{} {} {} {} {}", ui::icons::STAR, ui::icons::STAR, ui::icons::STAR, ui::icons::STAR, ui::icons::STAR)).font(ICON_FONT).size(12), text(" 5").size(12)]).on_press(Message::SetMinRating(5)).padding(5).style(if editor.min_filter_rating == 5 { |_theme: &Theme, _status| button::Style { background: Some(Background::Color(Color::from_rgb(0.3, 0.5, 0.7))), text_color: Color::WHITE, ..Default::default() } } else { |_theme: &Theme, _status| button::Style { text_color: Color::WHITE, ..Default::default() } }),
-        // Phase 83: Auto-Advance Toggle
-        iced::widget::checkbox("Auto-Advance", editor.auto_advance).on_toggle(|_| Message::ToggleAutoAdvance).size(16).spacing(5),
-    ].spacing(5).padding(5);
-    
-    let grid_header = column![
-        text("RAW Editor v0.3 - Culling features").size(24),
-        button("Import Folder").on_press(Message::ImportFolder).padding(8),
-        text(&editor.status).size(12),
-        text(format!("Showing: {}/{}  |  Thumbnails: {}/{}  |  Deleted: {}", filtered_count, total_count, cached_count, filtered_count, deleted_count)).size(11),
-        filter_bar,
-    ].spacing(10).padding(10);
-    
     const THUMB_SIZE: u16 = 200;
     
     let thumbnail_grid = filtered_images.iter().fold(
@@ -279,11 +259,47 @@ fn view_library(editor: &RawEditor) -> Element<'_, Message> {
                     .style(|_theme| container::Style { background: Some(Background::Color(Color::from_rgb(0.2, 0.2, 0.2))), border: Border { color: Color::from_rgb(0.3, 0.3, 0.3), width: 1.0, radius: 4.0.into() }, ..Default::default() })
             };
             
-            wrap.push(button(thumbnail_content).on_press(Message::ImageSelected(img.id)).padding(0).style(|theme, status| button::Style { background: None, border: Border::default(), ..button::primary(theme, status) }))
+            // Phase 83: Visual feedback for flags
+            let mut final_content = Element::from(thumbnail_content);
+            if img.flag == -1 {
+                 let reject_overlay = container(
+                    text(ui::icons::TIMES).font(ICON_FONT).size(64).style(|_| text::Style { color: Some(Color::from_rgba(1.0, 0.2, 0.2, 0.4)) })
+                )
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .center_x(Length::Fill)
+                .center_y(Length::Fill)
+                .style(|_| container::Style { background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.6))), ..Default::default() });
+                
+                final_content = Element::from(stack![
+                    final_content,
+                    reject_overlay
+                ]);
+            } else if img.flag == 1 {
+                let pick_overlay = container(
+                    text(ui::icons::CHECK).font(ICON_FONT).size(16).style(|_| text::Style { color: Some(Color::from_rgba(0.2, 1.0, 0.2, 0.9)) })
+                )
+                .padding(4)
+                .align_x(iced::alignment::Horizontal::Right)
+                .align_y(iced::alignment::Vertical::Top)
+                .width(Length::Fill)
+                .height(Length::Fill);
+                
+                final_content = Element::from(stack![
+                    final_content,
+                    pick_overlay
+                ]);
+            }
+
+            wrap.push(button(final_content).on_press(Message::ImageSelected(img.id)).padding(0).style(|theme, status| button::Style { background: None, border: Border::default(), ..button::primary(theme, status) }))
         },
     );
     
-    container(column![grid_header, scrollable(thumbnail_grid).height(Length::Fill).width(Length::Fill)]).width(Length::Fill).height(Length::Fill).into()
+    column![
+        view_library_toolbar(editor),
+        container(scrollable(thumbnail_grid).height(Length::Fill).width(Length::Fill)).padding(10).height(Length::Fill),
+        view_status_bar(editor, filtered_count, total_count, cached_count, deleted_count)
+    ].into()
 }
 
 /// Build the Develop tab view (full-screen editor with preview)
@@ -573,5 +589,82 @@ fn view_preferences_modal<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
     ]
     .spacing(12)
     .width(420)
+    .into()
+}
+
+fn view_library_toolbar<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
+    let filter_bar = row![
+        text("Filter: ").size(14).style(|_| text::Style { color: Some(Color::from_rgb(0.7, 0.7, 0.7)) }),
+        button(text("All").size(12)).on_press(Message::SetMinRating(0)).padding(5).style(if editor.min_filter_rating == 0 { |_theme: &Theme, _status| button::Style { background: Some(Background::Color(Color::from_rgb(0.3, 0.5, 0.7))), text_color: Color::WHITE, ..Default::default() } } else { ui::styles::NeutralButton::style }),
+        button(row![text(ui::icons::STAR).font(ICON_FONT).size(12), text(" 1+").size(12)]).on_press(Message::SetMinRating(1)).padding(5).style(if editor.min_filter_rating == 1 { |_theme: &Theme, _status| button::Style { background: Some(Background::Color(Color::from_rgb(0.3, 0.5, 0.7))), text_color: Color::WHITE, ..Default::default() } } else { ui::styles::NeutralButton::style }),
+        button(row![text(format!("{} {}", ui::icons::STAR, ui::icons::STAR)).font(ICON_FONT).size(12), text(" 2+").size(12)]).on_press(Message::SetMinRating(2)).padding(5).style(if editor.min_filter_rating == 2 { |_theme: &Theme, _status| button::Style { background: Some(Background::Color(Color::from_rgb(0.3, 0.5, 0.7))), text_color: Color::WHITE, ..Default::default() } } else { ui::styles::NeutralButton::style }),
+        button(row![text(format!("{} {} {}", ui::icons::STAR, ui::icons::STAR, ui::icons::STAR)).font(ICON_FONT).size(12), text(" 3+").size(12)]).on_press(Message::SetMinRating(3)).padding(5).style(if editor.min_filter_rating == 3 { |_theme: &Theme, _status| button::Style { background: Some(Background::Color(Color::from_rgb(0.3, 0.5, 0.7))), text_color: Color::WHITE, ..Default::default() } } else { ui::styles::NeutralButton::style }),
+        button(row![text(format!("{} {} {} {}", ui::icons::STAR, ui::icons::STAR, ui::icons::STAR, ui::icons::STAR)).font(ICON_FONT).size(12), text(" 4+").size(12)]).on_press(Message::SetMinRating(4)).padding(5).style(if editor.min_filter_rating == 4 { |_theme: &Theme, _status| button::Style { background: Some(Background::Color(Color::from_rgb(0.3, 0.5, 0.7))), text_color: Color::WHITE, ..Default::default() } } else { ui::styles::NeutralButton::style }),
+        button(row![text(format!("{} {} {} {} {}", ui::icons::STAR, ui::icons::STAR, ui::icons::STAR, ui::icons::STAR, ui::icons::STAR)).font(ICON_FONT).size(12), text(" 5").size(12)]).on_press(Message::SetMinRating(5)).padding(5).style(if editor.min_filter_rating == 5 { |_theme: &Theme, _status| button::Style { background: Some(Background::Color(Color::from_rgb(0.3, 0.5, 0.7))), text_color: Color::WHITE, ..Default::default() } } else { ui::styles::NeutralButton::style }),
+        // Phase 83: Auto-Advance Toggle
+        iced::widget::checkbox("Auto-Advance", editor.auto_advance)
+            .on_toggle(|_| Message::ToggleAutoAdvance)
+            .size(16)
+            .spacing(5)
+            .text_size(12)
+            .style(|_theme, _status| checkbox::Style {
+                text_color: Some(Color::from_rgb(0.7, 0.7, 0.7)),
+                background: Background::Color(Color::from_rgb(0.2, 0.2, 0.2)),
+                icon_color: Color::from_rgb(0.85, 0.85, 0.85),
+                border: Border { color: Color::from_rgb(0.4, 0.4, 0.4), width: 1.0, radius: 3.0.into() },
+            }),
+    ].spacing(5).align_y(Alignment::Center);
+
+    container(
+        row![
+            button(row![text(ui::icons::FOLDER_OPEN).font(ICON_FONT).size(14), text(" Import Folder").size(14)].align_y(Alignment::Center))
+                .on_press(Message::ImportFolder)
+                .padding(8)
+                .style(ui::styles::NeutralButton::style),
+            iced::widget::horizontal_space(),
+            filter_bar,
+        ]
+        .align_y(Alignment::Center)
+        .width(Length::Fill)
+    )
+    .padding(10)
+    .style(|_| container::Style {
+        background: Some(Background::Color(Color::from_rgb(0.12, 0.12, 0.12))),
+        border: Border {
+            width: 1.0,
+            color: Color::from_rgb(0.2, 0.2, 0.2),
+            radius: 0.0.into(), // Flat toolbar
+        },
+        ..Default::default()
+    })
+    .into()
+}
+
+fn view_status_bar<'a>(editor: &'a RawEditor, filtered_count: usize, total_count: usize, cached_count: usize, deleted_count: usize) -> Element<'a, Message> {
+    container(
+        row![
+            text(format!("Showing: {}/{}", filtered_count, total_count)).size(12).style(|_| text::Style { color: Some(Color::from_rgb(0.5, 0.5, 0.5)) }),
+            text(" | ").size(12).style(|_| text::Style { color: Some(Color::from_rgb(0.3, 0.3, 0.3)) }),
+            text(format!("Thumbnails: {}/{}", cached_count, filtered_count)).size(12).style(|_| text::Style { color: Some(Color::from_rgb(0.5, 0.5, 0.5)) }),
+            text(" | ").size(12).style(|_| text::Style { color: Some(Color::from_rgb(0.3, 0.3, 0.3)) }),
+            text(format!("Deleted: {}", deleted_count)).size(12).style(|_| text::Style { color: Some(Color::from_rgb(0.5, 0.5, 0.5)) }),
+            iced::widget::horizontal_space(),
+            text(&editor.status).size(12).style(|_| text::Style { color: Some(Color::from_rgb(0.6, 0.6, 0.6)) }),
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center)
+    )
+    .height(Length::Fixed(30.0))
+    .padding([0, 10])
+    .align_y(iced::alignment::Vertical::Center)
+    .style(|_| container::Style {
+        background: Some(Background::Color(Color::from_rgb(0.08, 0.08, 0.08))),
+        border: Border {
+            width: 1.0,
+            color: Color::from_rgb(0.15, 0.15, 0.15),
+            radius: 0.0.into(),
+        },
+        ..Default::default()
+    })
     .into()
 }

@@ -12,6 +12,7 @@ pub const SAVE: &str = "\u{f0c7}";
 
 /// Folder icon
 pub const FOLDER: &str = "\u{f07b}";
+pub const FOLDER_OPEN: &str = "\u{f07c}";
 
 /// Checkmark icon
 pub const CHECK: &str = "\u{f00c}";
