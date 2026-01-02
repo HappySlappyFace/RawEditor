@@ -660,38 +660,71 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::ExportRawLoaded(image_id, result) => {
             match result {
                 Ok(raw_data) => {
-                    // CRITICAL FIX: Try to reuse the existing Develop pipeline if it's for the same image
-                    // This avoids creating a new pipeline which might have initialization issues
-                    if let (EditorReadiness::Ready(id), Some(resources)) = (&editor.editor_readiness, &editor.image_resources) {
-                       if Some(image_id) == editor.selected_image_id {
-                            // Same image! Reuse the existing resources (can't clone, so skip export for now)
-                            println!("✅ Same image already loaded in Develop - skipping batch export for this one");
-                            editor.status = format!("Skipping image {} (already in Develop)", image_id);
-                            return Task::perform(async {}, |_| Message::ProcessNextExport);
+                    // Phase 95: Check if this is the currently loaded image - if so, render directly!
+                    if let (EditorReadiness::Ready(ready_id), Some(ctx), Some(resources)) = 
+                        (&editor.editor_readiness, &editor.gpu_context, &editor.image_resources) 
+                    {
+                        if *ready_id == image_id {
+                            // Same image! Render directly using existing resources
+                            println!("✅ Exporting currently loaded image directly");
+                            
+                            let crop = editor.current_edit_params.crop;
+                            let crop_w = crop[2];
+                            let crop_h = crop[3];
+                            let target_width = (resources.width as f32 * crop_w) as u32;
+                            let target_height = (resources.height as f32 * crop_h) as u32;
+                            
+                            // Render at full resolution with current params
+                            let bytes = crate::gpu::render_functions::render_to_bytes(ctx, resources, target_width, target_height);
+                            
+                            let settings = editor.export_settings.clone();
+                            let filename = if let Some(img) = editor.images.iter().find(|i| i.id == image_id) {
+                                Path::new(&img.path).file_stem().unwrap_or_default().to_string_lossy().to_string()
+                            } else {
+                                format!("image_{}", image_id)
+                            };
+                            
+                            return Task::perform(
+                                save_export_async(filename, bytes, target_width, target_height, settings),
+                                move |res| Message::ExportSaveComplete(image_id, res)
+                            );
                         }
                     }
                     
-                    // Different image or no pipeline - create new one
-                    println!("🔨 Creating new pipeline for export (image {})", image_id);
+                    // Different image - need to create temporary ImageResources for export
+                    println!("🔨 Creating ImageResources for export (image {})", image_id);
                     
-                    // Use current editor params for ALL exports (batch export uses same adjustments)
                     let params = editor.current_edit_params.clone();
+                    let ctx = editor.gpu_context.clone();
                     
-                    println!("   Using current editor params: exposure={}, whites={}", params.exposure, params.whites);
-                    
-                    // Spawn pipeline creation
-                    let width = raw_data.width;
-                    let height = raw_data.height;
-                    let data = raw_data.data;
-                    let wb = raw_data.wb_multipliers;
-                    let cm = raw_data.color_matrix;
-                    let cfa = raw_data.cfa_pattern;
-                    let bl = raw_data.black_levels;
-                    let wl = raw_data.white_level;
+                    let xyz_to_cam = raw_data.color_matrix;
+                    let cam_to_srgb = crate::color::calculate_cam_to_srgb(xyz_to_cam);
                     
                     Task::perform(async move {
-                        RenderPipeline::new(image_id, data, width, height, &params, wb, cm, cfa, bl, wl).await
-                            .map(Arc::new)
+                        // Ensure we have SharedContext
+                        let context = if let Some(c) = ctx {
+                            c
+                        } else {
+                            match gpu::shared::SharedContext::new().await {
+                                Ok(c) => Arc::new(c),
+                                Err(e) => return Err(e),
+                            }
+                        };
+                        
+                        // Create ImageResources for this export
+                        gpu::shared::ImageResources::new(
+                            &context,
+                            image_id,
+                            raw_data.data,
+                            raw_data.width,
+                            raw_data.height,
+                            &params,
+                            raw_data.wb_multipliers,
+                            cam_to_srgb,
+                            raw_data.cfa_pattern,
+                            raw_data.black_levels,
+                            raw_data.white_level
+                        ).map(|res| (context, Arc::new(res)))
                     }, move |res| Message::ExportPipelineReady(image_id, res))
                 }
                 Err(e) => {
@@ -702,43 +735,31 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
         }
         Message::ExportPipelineReady(image_id, result) => {
             match result {
-                Ok(pipeline) => {
-                    // Get filename first
+                Ok((context, resources)) => {
+                    // Phase 95: Export using ImageResources
+                    let crop = editor.current_edit_params.crop;
+                    let crop_w = crop[2];
+                    let crop_h = crop[3];
+                    let target_width = (resources.width as f32 * crop_w) as u32;
+                    let target_height = (resources.height as f32 * crop_h) as u32;
+                    
+                    // Render at target resolution
+                    let bytes = crate::gpu::render_functions::render_to_bytes(&context, &resources, target_width, target_height);
+                    
+                    let settings = editor.export_settings.clone();
                     let filename = if let Some(img) = editor.images.iter().find(|i| i.id == image_id) {
                         Path::new(&img.path).file_stem().unwrap_or_default().to_string_lossy().to_string()
                     } else {
                         format!("image_{}", image_id)
                     };
                     
-                    // Export full resolution
-                    // Use current editor params (already loaded above for pipeline creation)
-                    let crop = editor.current_edit_params.crop;
-                    let format = iced_wgpu::wgpu::TextureFormat::Rgba8Unorm;
-                    
-                    match pipeline.render_full_res_to_bytes(format, crop) {
-                        Ok(bytes) => {
-                            let settings = editor.export_settings.clone();
-                            let crop_w = crop[2];
-                            let crop_h = crop[3];
-                            let target_width = (pipeline.width as f32 * crop_w) as u32;
-                            let target_height = (pipeline.height as f32 * crop_h) as u32;
-                            
-                            let filename = if let Some(img) = editor.images.iter().find(|i| i.id == image_id) {
-                                 Path::new(&img.path).file_stem().unwrap_or_default().to_string_lossy().to_string()
-                            } else {
-                                format!("image_{}", image_id)
-                            };
-                            
-                            Task::perform(save_export_async(filename, bytes, target_width, target_height, settings), move |res| Message::ExportSaveComplete(image_id, res))
-                        }
-                        Err(e) => {
-                            editor.status = format!("Render failed: {}", e);
-                            Task::perform(async {}, |_| Message::ProcessNextExport)
-                        }
-                    }
+                    Task::perform(
+                        save_export_async(filename, bytes, target_width, target_height, settings),
+                        move |res| Message::ExportSaveComplete(image_id, res)
+                    )
                 }
                 Err(e) => {
-                    editor.status = format!("Pipeline failed: {}", e);
+                    editor.status = format!("Export failed: {}", e);
                     Task::perform(async {}, |_| Message::ProcessNextExport)
                 }
             }

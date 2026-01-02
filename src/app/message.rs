@@ -112,7 +112,7 @@ pub enum Message {
     ExportConfirmed,
     ProcessNextExport,
     ExportRawLoaded(i64, Result<raw::loader::RawDataResult, String>),
-    ExportPipelineReady(i64, Result<std::sync::Arc<crate::gpu::pipeline::RenderPipeline>, String>),
+    ExportPipelineReady(i64, Result<(std::sync::Arc<crate::gpu::shared::SharedContext>, std::sync::Arc<crate::gpu::shared::ImageResources>), String>),
     ExportSaveComplete(i64, Result<PathBuf, String>),
     
     /// Phase 60: Toggle for HUD overlay (ISO, Shutter, etc.)
