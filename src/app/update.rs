@@ -493,25 +493,7 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
             }
             Task::none()
         }
-        Message::ExportImage => {
-            if let EditorStatus::Ready(p) = &editor.editor_status {
-                if let Some(id) = editor.selected_image_id {
-                    let fname = editor.images.iter().find(|i| i.id == id).map(|i| i.filename.clone()).unwrap_or("export.jpg".to_string());
-                    if let Some(path) = FileDialog::new().set_file_name(&format!("edited_{}", fname)).save_file() {
-                        editor.status = "Exporting...".to_string();
-                        return Task::perform(export_image_async(p.clone(), path, editor.current_edit_params.crop), Message::ExportComplete);
-                    }
-                }
-            }
-            Task::none()
-        }
-        Message::ExportComplete(res) => {
-            match res {
-                Ok(p) => editor.status = format!("Export saved to {}", p.display()),
-                Err(e) => editor.status = format!("Export failed: {}", e),
-            }
-            Task::none()
-        }
+        // Legacy export messages removed
         Message::MinimizeWindow => { use iced::window; window::get_latest().and_then(|id| window::minimize(id, true)) }
         Message::MaximizeWindow => { use iced::window; window::get_latest().and_then(|id| window::maximize(id, true)) }
         Message::CloseWindow => { use iced::window; window::get_latest().and_then(window::close) }
@@ -722,8 +704,14 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
         }
         Message::ExportSaveComplete(_id, res) => {
             match res {
-                Ok(path) => editor.status = format!("Saved: {}", path.display()),
-                Err(e) => editor.status = format!("Save failed: {}", e),
+                Ok(path) => {
+                    println!("✅ Export saved successfully: {}", path.display());
+                    editor.status = format!("Saved: {}", path.display());
+                }
+                Err(e) => {
+                    println!("❌ Export save failed: {}", e);
+                    editor.status = format!("Save failed: {}", e);
+                }
             }
             Task::perform(async {}, |_| Message::ProcessNextExport)
         }
@@ -738,21 +726,10 @@ async fn save_export_async(
     settings: ExportSettings,
 ) -> Result<PathBuf, String> {
     tokio::task::spawn_blocking(move || {
-        use image::{ImageBuffer, Rgba};
         use std::fs;
+        use std::io::BufWriter;
         
-        // 1. Create ImageBuffer
-        let img: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::from_raw(width, height, bytes)
-            .ok_or("Failed to create image buffer")?;
-        
-        // 2. Resize if needed
-        let final_img = if settings.resize && (width > settings.max_width || height > settings.max_width) {
-            image::imageops::resize(&img, settings.max_width, settings.max_width, image::imageops::FilterType::Lanczos3)
-        } else {
-            image::DynamicImage::ImageRgba8(img).to_rgba8()
-        };
-        
-        // 3. Create output path
+        // 1. Create output path
         let output_dir = settings.base_path.join(&settings.subfolder);
         fs::create_dir_all(&output_dir).map_err(|e| e.to_string())?;
         
@@ -763,18 +740,37 @@ async fn save_export_async(
         
         let output_path = output_dir.join(format!("{}.{}", filename, extension));
         
-        // 4. Save
+        // 2. Save directly using image::save_buffer (no intermediate transformations)
+        // This avoids any potential issues with ImageBuffer/DynamicImage conversions
         match settings.format {
-            ExportFormat::Jpeg => {
-                let file = fs::File::create(&output_path).map_err(|e| e.to_string())?;
-                let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(file, settings.quality);
-                encoder.encode(&final_img, final_img.width(), final_img.height(), image::ColorType::Rgba8.into()).map_err(|e| e.to_string())?;
-            }
             ExportFormat::Png => {
-                final_img.save_with_format(&output_path, image::ImageFormat::Png).map_err(|e| e.to_string())?;
+                // PNG supports RGBA8 directly
+                image::save_buffer(
+                    &output_path,
+                    &bytes,
+                    width,
+                    height,
+                    image::ColorType::Rgba8,
+                ).map_err(|e| e.to_string())?;
+            }
+            ExportFormat::Jpeg => {
+                // JPEG requires RGB8, so convert RGBA to RGB by dropping alpha
+                let rgb_bytes: Vec<u8> = bytes
+                    .chunks_exact(4)
+                    .flat_map(|rgba| [rgba[0], rgba[1], rgba[2]])
+                    .collect();
+                
+                image::save_buffer(
+                    &output_path,
+                    &rgb_bytes,
+                    width,
+                    height,
+                    image::ColorType::Rgb8,
+                ).map_err(|e| e.to_string())?;
             }
         }
         
+        println!("✅ Export saved successfully: {}", output_path.display());
         Ok(output_path)
     }).await.map_err(|e| e.to_string())?
 }
@@ -842,19 +838,6 @@ async fn load_image_handle(id: i64, path: String) -> (i64, iced::widget::image::
         Ok((w, h, pixels)) => (id, iced::widget::image::Handle::from_rgba(w, h, pixels)),
         Err(_) => (id, iced::widget::image::Handle::from_path(path)),
     }
-}
-
-async fn export_image_async(pipeline: Arc<gpu::RenderPipeline>, save_path: std::path::PathBuf, crop: [f32; 4]) -> Result<std::path::PathBuf, String> {
-    tokio::task::spawn_blocking(move || {
-        let rgba_bytes = pipeline.render_full_res_to_bytes(wgpu::TextureFormat::Rgba8Unorm, crop);
-        let result = {
-            let width = (pipeline.width as f32 * crop[2]) as u32;
-            let height = (pipeline.height as f32 * crop[3]) as u32;
-            let bytes = rgba_bytes.map_err(|e| format!("Export failed: {}", e))?;
-            image::save_buffer(&save_path, &bytes, width, height, image::ColorType::Rgba8)
-        };
-        result.map(|_| save_path.clone()).map_err(|e| format!("Save failed: {}", e))
-    }).await.map_err(|e| format!("Task failed: {}", e))?
 }
 
 // Phase 73: The Look-Ahead Cache

@@ -407,7 +407,7 @@ fn view_develop(editor: &RawEditor) -> Element<'_, Message> {
             .push(text(format!("Black BR (Blue): {:.1}", editor.current_edit_params.black_offsets[3])).size(12)).push(slider(-50.0..=50.0, editor.current_edit_params.black_offsets[3], |v| Message::BlackOffsetChanged(3, v)).step(0.1));
     }
 
-    let sidebar = sidebar.push(button(row![text(ui::icons::SAVE).font(ICON_FONT).size(14), text(" Export Image").size(14)].spacing(5).align_y(Alignment::Center)).style(ui::styles::AccentButton::style).on_press(Message::ExportImage).padding(12).width(Length::Fill)).spacing(10).padding(15);
+    let sidebar = sidebar.push(button(row![text(ui::icons::SAVE).font(ICON_FONT).size(14), text(" Export Image").size(14)].spacing(5).align_y(Alignment::Center)).style(ui::styles::AccentButton::style).on_press(Message::OpenExportModal).padding(12).width(Length::Fill)).spacing(10).padding(15);
     let sidebar_container = container(scrollable(sidebar).width(Length::Fixed(300.0)).height(Length::Fill)).style(|_theme| container::Style { background: Some(Background::Color(Color::from_rgb(0.15, 0.15, 0.15))), ..Default::default() });
 
     let (image_handle, overlay_content) = match &editor.editor_status {

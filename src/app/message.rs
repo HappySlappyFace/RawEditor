@@ -201,9 +201,7 @@ pub enum Message {
     GpuPipelineReady(Result<Arc<gpu::RenderPipeline>, String>),
     
     // ========== Export Messages (Phase 19) ==========
-    /// User clicked Export button
-    ExportImage,
-    ExportComplete(Result<PathBuf, String>),
+    // Legacy export messages removed
     
     // Window Controls
     MinimizeWindow,

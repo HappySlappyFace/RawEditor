@@ -265,24 +265,60 @@ impl RenderPipeline {
             view_formats: &[],
         });
         
-        // Upload RAW u16 data directly (no conversion!)
+        // Upload RAW u16 data
+        // CRITICAL: wgpu requires bytes_per_row to be a multiple of 256
+        let bytes_per_pixel = 2;
+        let unpadded_bytes_per_row = width * bytes_per_pixel;
+        let padded_bytes_per_row = (unpadded_bytes_per_row + 255) & !255;
+        
         let raw_bytes = bytemuck::cast_slice(&raw_data);
-        println!("💾 Uploading {} bytes of RAW u16 data to GPU", raw_bytes.len());
-        queue.write_texture(
-            wgpu::ImageCopyTexture {
-                texture: &texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            raw_bytes,
-            wgpu::ImageDataLayout {
-                offset: 0,
-                bytes_per_row: Some(2 * width),  // 2 bytes per pixel (u16)
-                rows_per_image: Some(height),
-            },
-            texture_size,
-        );
+        
+        if unpadded_bytes_per_row == padded_bytes_per_row {
+            // Already aligned, upload directly
+            println!("💾 Uploading {} bytes of RAW u16 data to GPU (Aligned)", raw_bytes.len());
+            queue.write_texture(
+                wgpu::ImageCopyTexture {
+                    texture: &texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                raw_bytes,
+                wgpu::ImageDataLayout {
+                    offset: 0,
+                    bytes_per_row: Some(unpadded_bytes_per_row),
+                    rows_per_image: Some(height),
+                },
+                texture_size,
+            );
+        } else {
+            // Need to pad rows
+            println!("💾 Uploading RAW u16 data with padding (Row: {} -> {})", unpadded_bytes_per_row, padded_bytes_per_row);
+            let mut padded_data = Vec::with_capacity((padded_bytes_per_row * height) as usize);
+            for y in 0..height {
+                let start = (y * unpadded_bytes_per_row) as usize;
+                let end = start + unpadded_bytes_per_row as usize;
+                padded_data.extend_from_slice(&raw_bytes[start..end]);
+                // Add padding
+                padded_data.extend(std::iter::repeat(0).take((padded_bytes_per_row - unpadded_bytes_per_row) as usize));
+            }
+            
+            queue.write_texture(
+                wgpu::ImageCopyTexture {
+                    texture: &texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &padded_data,
+                wgpu::ImageDataLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_bytes_per_row),
+                    rows_per_image: Some(height),
+                },
+                texture_size,
+            );
+        }
         println!("✅ RAW texture uploaded to GPU!");
         
         let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
