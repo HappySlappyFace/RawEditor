@@ -12,5 +12,6 @@
 
 pub mod shaders;
 pub mod pipeline;
+pub mod shared;  // Phase 95: Unified pipeline architecture
 
 pub use pipeline::RenderPipeline;

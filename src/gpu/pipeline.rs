@@ -16,7 +16,7 @@ use crate::state::edit::EditParams;
 /// Must match the WGSL struct layout with proper alignment
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-struct GpuEditParams {
+pub struct GpuEditParams {
     exposure: f32,
     contrast: f32,
     highlights: f32,
@@ -30,20 +30,20 @@ struct GpuEditParams {
     padding1: f32,  // For 16-byte alignment
     padding2: f32,
     // Phase 14: Color science (must match WGSL layout!)
-    wb_multipliers: [f32; 4],   // White balance [R, G, B, G2] - vec4 in WGSL
+    pub wb_multipliers: [f32; 4],   // White balance [R, G, B, G2] - vec4 in WGSL
     // Color matrix split into 3 rows with padding (WGSL vec3 = 12 bytes + 4 padding)
-    color_matrix_0: [f32; 3],   // Row 0
+    pub color_matrix_0: [f32; 3],   // Row 0
     _padding3: f32,
-    color_matrix_1: [f32; 3],   // Row 1
+    pub color_matrix_1: [f32; 3],   // Row 1
     _padding4: f32,
-    color_matrix_2: [f32; 3],   // Row 2
+    pub color_matrix_2: [f32; 3],   // Row 2
     _padding5: f32,
     // Phase 25: Zoom & Pan
-    zoom: f32,                  // Zoom level (1.0 = 100%)
-    pan_x: f32,                 // Pan offset X
-    pan_y: f32,                 // Pan offset Y
+    pub zoom: f32,                  // Zoom level (1.0 = 100%)
+    pub pan_x: f32,                 // Pan offset X
+    pub pan_y: f32,                 // Pan offset Y
     // Phase 34: CFA Pattern
-    cfa_pattern: u32,           // Offset 128. Ends at 132.
+    pub cfa_pattern: u32,           // Offset 128. Ends at 132.
     
     // Padding to align black_levels to 16 bytes (Offset 144)
     _pad_cfa_1: f32,            // 136 (Wait, 124+4=128. So this is 128)
@@ -58,9 +58,9 @@ struct GpuEditParams {
     _pad_cfa_4: f32,            // 144
     
     // Phase 36: Per-channel Black Levels (vec4 alignment = 16 bytes)
-    black_levels: [u32; 4],     // Offset 144. Ends at 160.
+    pub black_levels: [u32; 4],     // Offset 144. Ends at 160.
     
-    white_level: u32,           // Offset 160. Ends at 164.
+    pub white_level: u32,           // Offset 160. Ends at 164.
     
     // Padding to reach 176 bytes (16-byte alignment for struct)
     _pad_end_1: f32,            // 168
