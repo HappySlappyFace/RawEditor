@@ -198,7 +198,8 @@ pub enum Message {
     /// Background RAW data loading completed
     RawDataLoaded(Result<raw::loader::RawDataResult, String>),
     /// GPU pipeline initialization completed
-    GpuPipelineReady(Result<Arc<gpu::RenderPipeline>, String>),
+    // Phase 95: GPU ImageResources loaded (wrapped in Arc for Clone)
+    ImageResourcesReady(i64, Result<(std::sync::Arc<crate::gpu::shared::SharedContext>, std::sync::Arc<crate::gpu::shared::ImageResources>), String>),
     
     // ========== Export Messages (Phase 19) ==========
     // Legacy export messages removed

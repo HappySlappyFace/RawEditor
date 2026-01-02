@@ -7,7 +7,7 @@ use iced_aw::Wrap;
 
 use crate::ui;
 use crate::app::message::{Message, AppTab};
-use crate::app::state::{RawEditor, EditorStatus};
+use crate::app::state::{RawEditor, EditorReadiness};
 use crate::state::data::Image as ImageData;
 
 // Phase 69: Brand Identity
@@ -391,9 +391,9 @@ fn view_develop(editor: &RawEditor) -> Element<'_, Message> {
         .push(button(row![text(if editor.is_cropping { "Done" } else { "Crop Tool" }).size(14), text(ui::icons::CROP).font(ICON_FONT).size(14)].spacing(5).align_y(Alignment::Center)).style(if editor.is_cropping { ui::styles::AccentButton::style } else { ui::styles::NeutralButton::style }).on_press(Message::ToggleCrop).width(Length::Fill))
         .push(row![
             button(text("Reset").size(12)).style(ui::styles::NeutralButton::style).on_press(Message::SetCrop([0.0, 0.0, 1.0, 1.0])),
-            button(text("1:1").size(12)).style(ui::styles::NeutralButton::style).on_press_maybe(if let EditorStatus::Ready(pipeline) = &editor.editor_status { Some(Message::SetCrop(RawEditor::calculate_center_crop(1.0, pipeline.width, pipeline.height))) } else { None }),
-            button(text("16:9").size(12)).style(ui::styles::NeutralButton::style).on_press_maybe(if let EditorStatus::Ready(pipeline) = &editor.editor_status { Some(Message::SetCrop(RawEditor::calculate_center_crop(16.0/9.0, pipeline.width, pipeline.height))) } else { None }),
-            button(text("2:3").size(12)).style(ui::styles::NeutralButton::style).on_press_maybe(if let EditorStatus::Ready(pipeline) = &editor.editor_status { Some(Message::SetCrop(RawEditor::calculate_center_crop(2.0/3.0, pipeline.width, pipeline.height))) } else { None }),
+            button(text("1:1").size(12)).style(ui::styles::NeutralButton::style).on_press_maybe(if let Some(res) = &editor.image_resources { Some(Message::SetCrop(RawEditor::calculate_center_crop(1.0, res.width, res.height))) } else { None }),
+            button(text("16:9").size(12)).style(ui::styles::NeutralButton::style).on_press_maybe(if let Some(res) = &editor.image_resources { Some(Message::SetCrop(RawEditor::calculate_center_crop(16.0/9.0, res.width, res.height))) } else { None }),
+            button(text("2:3").size(12)).style(ui::styles::NeutralButton::style).on_press_maybe(if let Some(res) = &editor.image_resources { Some(Message::SetCrop(RawEditor::calculate_center_crop(2.0/3.0, res.width, res.height))) } else { None }),
         ].spacing(5));
 
     let mut sidebar = sidebar;
@@ -410,55 +410,68 @@ fn view_develop(editor: &RawEditor) -> Element<'_, Message> {
     let sidebar = sidebar.push(button(row![text(ui::icons::SAVE).font(ICON_FONT).size(14), text(" Export Image").size(14)].spacing(5).align_y(Alignment::Center)).style(ui::styles::AccentButton::style).on_press(Message::OpenExportModal).padding(12).width(Length::Fill)).spacing(10).padding(15);
     let sidebar_container = container(scrollable(sidebar).width(Length::Fixed(300.0)).height(Length::Fill)).style(|_theme| container::Style { background: Some(Background::Color(Color::from_rgb(0.15, 0.15, 0.15))), ..Default::default() });
 
-    let (image_handle, overlay_content) = match &editor.editor_status {
-        EditorStatus::NoSelection => (None, Option::<Element<Message>>::None),
-        EditorStatus::Loading(_) => {
+    // Phase 95: Render using SharedContext + ImageResources
+    let (image_handle, overlay_content) = match &editor.editor_readiness {
+        EditorReadiness::NoSelection => (None, Option::<Element<Message>>::None),
+        EditorReadiness::Loading(_) => {
             let handle = editor.working_preview.clone();
             let overlay = container(column![row![text(ui::icons::HOURGLASS).font(ICON_FONT).size(14).style(|_| text::Style { color: Some(Color::WHITE) }), text(" Loading RAW...").size(14).style(|_| text::Style { color: Some(Color::WHITE) })]].padding(8)).style(|_theme| container::Style { background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.5))), border: Border { radius: 4.0.into(), ..Default::default() }, ..Default::default() }).padding(20).align_x(iced::Alignment::End).align_y(iced::Alignment::End);
             (handle, Some(overlay.into()))
         }
-        EditorStatus::Ready(pipeline) => {
-            let mut params_to_render = if editor.show_before { crate::state::edit::EditParams::default() } else { editor.current_edit_params.clone() };
-            if editor.is_cropping { params_to_render.crop = [0.0, 0.0, 1.0, 1.0]; pipeline.update_uniforms_with_zoom(&params_to_render, 1.0, 0.0, 0.0); } else { pipeline.update_uniforms_with_zoom(&params_to_render, editor.zoom, editor.pan_offset.x, editor.pan_offset.y); }
-            
-            let crop = params_to_render.crop;
-            let original_aspect = pipeline.width as f32 / pipeline.height as f32;
-            let crop_aspect = original_aspect * (crop[2] / crop[3]);
-            const MAX_PREVIEW_SIZE: u32 = 1280;
-            let (target_w, target_h) = if crop_aspect > 1.0 { let w = MAX_PREVIEW_SIZE; (w, (w as f32 / crop_aspect) as u32) } else { let h = MAX_PREVIEW_SIZE; ((h as f32 * crop_aspect) as u32, h) };
-            
-            let rgba_bytes = pipeline.render_to_bytes(target_w, target_h);
-            if editor.histogram_enabled {
-                let histogram_bytes = pipeline.render_to_histogram_bytes();
-                *editor.histogram_data.borrow_mut() = pipeline.calculate_histogram(&histogram_bytes);
-                // editor.histogram_cache.clear(); // Already cleared in update
+        EditorReadiness::Ready(_) => {
+            if let (Some(ctx), Some(resources)) = (&editor.gpu_context, &editor.image_resources) {
+                let mut params_to_render = if editor.show_before { crate::state::edit::EditParams::default() } else { editor.current_edit_params.clone() };
+                if editor.is_cropping {
+                    params_to_render.crop = [0.0, 0.0, 1.0, 1.0];
+                    resources.update_uniforms_with_zoom(ctx, &params_to_render, 1.0, 0.0, 0.0);
+                } else {
+                    resources.update_uniforms_with_zoom(ctx, &params_to_render, editor.zoom, editor.pan_offset.x, editor.pan_offset.y);
+                }
+                
+                let crop = params_to_render.crop;
+                let original_aspect = resources.width as f32 / resources.height as f32;
+                let crop_aspect = original_aspect * (crop[2] / crop[3]);
+                const MAX_PREVIEW_SIZE: u32 = 1280;
+                let (target_w, target_h) = if crop_aspect > 1.0 { let w = MAX_PREVIEW_SIZE; (w, (w as f32 / crop_aspect) as u32) } else { let h = MAX_PREVIEW_SIZE; ((h as f32 * crop_aspect) as u32, h) };
+                
+                let rgba_bytes = crate::gpu::render_functions::render_to_bytes(ctx, resources, target_w, target_h);
+                if editor.histogram_enabled {
+                    let histogram_bytes = crate::gpu::render_functions::render_to_histogram_bytes(ctx, resources);
+                    *editor.histogram_data.borrow_mut() = crate::gpu::render_functions::calculate_histogram(&histogram_bytes);
+                }
+                (Some(iced::widget::image::Handle::from_rgba(target_w, target_h, rgba_bytes)), None)
+            } else {
+                (None, None)
             }
-            (Some(iced::widget::image::Handle::from_rgba(target_w, target_h, rgba_bytes)), None)
         }
-        EditorStatus::Failed(_, error) => {
+        EditorReadiness::Failed(_, error) => {
             let overlay = container(column![row![text(ui::icons::TIMES).font(ICON_FONT).size(24), text(" Preview Failed").size(24)], text("").size(20), text(error.clone()).size(14).style(|theme: &Theme| text::Style { color: Some(theme.palette().danger) })].padding(40).align_x(Alignment::Center));
             (None, Some(overlay.into()))
         }
     };
 
-    let main_content: Element<Message> = if let EditorStatus::NoSelection = editor.editor_status {
+    let main_content: Element<Message> = if matches!(editor.editor_readiness, EditorReadiness::NoSelection) {
         container(column![text("No Image Selected").size(32), text("").size(20), text("← Switch to Library tab to select an image").size(18).style(|theme: &Theme| text::Style { color: Some(theme.palette().text.scale_alpha(0.6)) })].padding(40).align_x(Alignment::Center)).width(Length::Fill).height(Length::Fill).center_x(Length::Fill).center_y(Length::Fill).into()
     } else {
         let image_widget: Element<Message> = if let Some(handle) = image_handle {
-            match &editor.editor_status {
-                EditorStatus::Loading(_) => {
+            match &editor.editor_readiness {
+                EditorReadiness::Loading(_) => {
                     use iced::widget::canvas::Canvas;
                     use crate::ui::preview_renderer::PreviewRenderer;
                     Canvas::new(PreviewRenderer { handle, zoom: editor.zoom, offset: editor.pan_offset, is_cropping: false, crop: [0.0, 0.0, 1.0, 1.0], image_width: 3, image_height: 2, draw_image: true }).width(Length::Fill).height(Length::Fill).into()
                 }
-                EditorStatus::Ready(pipeline) => {
-                    if editor.is_cropping {
-                        use iced::widget::canvas::Canvas;
-                        use crate::ui::preview_renderer::PreviewRenderer;
-                        stack![
-                            Canvas::new(PreviewRenderer { handle: handle.clone(), zoom: editor.zoom, offset: editor.pan_offset, is_cropping: false, crop: editor.current_edit_params.crop, image_width: pipeline.width, image_height: pipeline.height, draw_image: true }).width(Length::Fill).height(Length::Fill),
-                            Canvas::new(PreviewRenderer { handle: handle.clone(), zoom: editor.zoom, offset: editor.pan_offset, is_cropping: true, crop: editor.current_edit_params.crop, image_width: pipeline.width, image_height: pipeline.height, draw_image: false }).width(Length::Fill).height(Length::Fill)
-                        ].width(Length::Fill).height(Length::Fill).into()
+                EditorReadiness::Ready(_) => {
+                    if let Some(resources) = &editor.image_resources {
+                        if editor.is_cropping {
+                            use iced::widget::canvas::Canvas;
+                            use crate::ui::preview_renderer::PreviewRenderer;
+                            stack![
+                                Canvas::new(PreviewRenderer { handle: handle.clone(), zoom: editor.zoom, offset: editor.pan_offset, is_cropping: false, crop: editor.current_edit_params.crop, image_width: resources.width, image_height: resources.height, draw_image: true }).width(Length::Fill).height(Length::Fill),
+                                Canvas::new(PreviewRenderer { handle: handle.clone(), zoom: editor.zoom, offset: editor.pan_offset, is_cropping: true, crop: editor.current_edit_params.crop, image_width: resources.width, image_height: resources.height, draw_image: false }).width(Length::Fill).height(Length::Fill)
+                            ].width(Length::Fill).height(Length::Fill).into()
+                        } else {
+                            Image::new(handle).width(Length::Fill).height(Length::Fill).content_fit(iced::ContentFit::Contain).into()
+                        }
                     } else {
                         Image::new(handle).width(Length::Fill).height(Length::Fill).content_fit(iced::ContentFit::Contain).into()
                     }
@@ -496,7 +509,7 @@ fn view_develop(editor: &RawEditor) -> Element<'_, Message> {
         container(content_stack).width(Length::Fill).height(Length::Fill).center_x(Length::Fill).center_y(Length::Fill).clip(true).style(|_| container::Style { background: Some(Background::Color(Color::BLACK)), ..Default::default() }).into()
     };
 
-    if matches!(editor.editor_status, EditorStatus::NoSelection) { return main_content; }
+    if matches!(editor.editor_readiness, EditorReadiness::NoSelection) { return main_content; }
     
     let editor_content = column![row![main_content, sidebar_container].spacing(0).height(Length::Fill)].width(Length::Fill).height(Length::Fill);
     let filtered_images: Vec<&ImageData> = editor.images.iter().filter(|img| editor.min_filter_rating == 0 || img.rating >= editor.min_filter_rating).collect();

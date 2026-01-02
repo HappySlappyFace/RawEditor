@@ -14,6 +14,7 @@ use crate::state::edit::EditParams;
 
 /// Shared GPU context (created once, reused for all images)
 /// Contains all the persistent GPU resources that don't change between images
+#[derive(Debug)]
 pub struct SharedContext {
     pub device: Arc<wgpu::Device>,
     pub queue: Arc<wgpu::Queue>,
@@ -160,6 +161,7 @@ impl SharedContext {
 
 /// Per-image GPU resources (created for each image)
 /// Contains all the image-specific data that changes when switching images
+#[derive(Debug)]
 pub struct ImageResources {
     pub texture: wgpu::Texture,
     pub texture_view: wgpu::TextureView,

@@ -10,29 +10,20 @@ use crate::ui::preview_renderer::CropHandle;
 use crate::app::message::{Message, AppTab};
 use crate::state::data::Image as ImageData;
 
-/// State of the editor and GPU pipeline
-#[derive(Clone)]
-pub enum EditorStatus {
+/// Phase 95: Simplified editor status (pipeline is now in separate fields)
+#[derive(Clone, Debug, PartialEq)]
+pub enum EditorReadiness {
     /// No image selected
     NoSelection,
-    /// Loading RAW data and initializing GPU pipeline
+    /// Loading RAW data
     Loading(i64),
-    /// GPU pipeline ready for rendering
-    Ready(Arc<gpu::RenderPipeline>),
-    /// Failed to initialize pipeline
+    /// Image loaded and ready
+    Ready(i64),
+    /// Failed to load
     Failed(i64, String),
 }
 
-impl std::fmt::Debug for EditorStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            EditorStatus::NoSelection => write!(f, "NoSelection"),
-            EditorStatus::Loading(id) => write!(f, "Loading({})", id),
-            EditorStatus::Ready(_) => write!(f, "Ready(pipeline)"),
-            EditorStatus::Failed(id, err) => write!(f, "Failed({}, {})", id, err),
-        }
-    }
-}
+
 
 /// Phase 67: Drag mode for mouse interaction
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -136,8 +127,15 @@ pub struct RawEditor {
     pub current_tab: AppTab,
     /// Current edit parameters for the selected image
     pub current_edit_params: state::edit::EditParams,
-    /// GPU pipeline status (holds the pipeline when ready)
-    pub editor_status: EditorStatus,
+    
+    // Phase 95: Unified GPU Pipeline Architecture
+    /// Shared GPU context (created once, reused for all images)
+    pub gpu_context: Option<Arc<gpu::shared::SharedContext>>,
+    /// Current image resources (created per image, wrapped in Arc)
+    pub image_resources: Option<Arc<gpu::shared::ImageResources>>,
+    /// Editor readiness status
+    pub editor_readiness: EditorReadiness,
+    
     /// Phase 21: Histogram data [R[256], G[256], B[256]]
     pub histogram_data: std::cell::RefCell<[[u32; 256]; 3]>,
     /// Phase 21: Histogram canvas cache
@@ -266,7 +264,12 @@ impl RawEditor {
                 preview_cache: LruCache::new(NonZeroUsize::new(CACHE_CAPACITY).unwrap()),
                 current_tab: AppTab::Library, // Start in Library view
                 current_edit_params: state::edit::EditParams::default(),
-                editor_status: EditorStatus::NoSelection,
+                
+                // Phase 95: Unified GPU Pipeline Architecture
+                gpu_context: None,  // Will be initialized on first image load
+                image_resources: None,
+                editor_readiness: EditorReadiness::NoSelection,
+                
                 histogram_data: std::cell::RefCell::new([[0; 256]; 3]),
                 histogram_cache: iced::widget::canvas::Cache::default(),
                 histogram_enabled: true,
@@ -345,12 +348,12 @@ impl RawEditor {
     }
 
     // Phase 67: Calculate image screen bounds for interaction
-    pub fn get_image_screen_bounds(&self, pipeline: &gpu::RenderPipeline) -> Rectangle {
+    pub fn get_image_screen_bounds(&self, resources: &crate::gpu::shared::ImageResources) -> Rectangle {
         let viewport_width = self.viewport_size.0;
         let viewport_height = self.viewport_size.1;
         
         // Use actual image aspect ratio
-        let image_aspect = pipeline.width as f32 / pipeline.height as f32;
+        let image_aspect = resources.width as f32 / resources.height as f32;
         let viewport_aspect = viewport_width / viewport_height;
         
         // Calculate fitted size (contain mode)
@@ -387,8 +390,8 @@ impl RawEditor {
 
     // Phase 67: Detect if cursor is over a crop handle
     pub fn detect_crop_handle(&self, cursor_pos: Point) -> Option<CropHandle> {
-        if let EditorStatus::Ready(pipeline) = &self.editor_status {
-            let bounds = self.get_image_screen_bounds(pipeline);
+        if let Some(resources) = &self.image_resources {
+            let bounds = self.get_image_screen_bounds(resources);
             let crop = self.current_edit_params.crop;
             
             let crop_x = bounds.x + (crop[0] * bounds.width);
