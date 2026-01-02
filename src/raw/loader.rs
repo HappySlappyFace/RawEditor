@@ -246,15 +246,30 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
     // which are guaranteed to be in correct [R, G1, G2, B] order.
 
     
-    let white_level = if !raw_image.whitelevels.is_empty() {
-        raw_image.whitelevels[0] as u32
+    // CRITICAL FIX: Use bit depth-based white level, not metadata white point
+    // The metadata whitelevel is often the "clipping point" for this specific exposure,
+    // but we need the full sensor range for proper normalization.
+    // Detect bit depth by finding the maximum value in the RAW data
+    let max_value = *data.iter().max().unwrap_or(&0);
+    let white_level = if max_value > 8191 {
+        // 14-bit: max is 16383 (2^14 - 1)
+        println!("📸 Detected 14-bit RAW data (max value: {})", max_value);
+        16383
+    } else if max_value > 2047 {
+        // 12-bit: max is 4095 (2^12 - 1)
+        println!("📸 Detected 12-bit RAW data (max value: {})", max_value);
+        4095
     } else {
-        65535 // Default to full 16-bit range if unknown
+        // 10-bit: max is 1023 (2^10 - 1)
+        println!("📸 Detected 10-bit RAW data (max value: {})", max_value);
+        1023
     };
     
     println!("⚫ Black Levels: [{}, {}, {}, {}]", 
         black_levels[0], black_levels[1], black_levels[2], black_levels[3]);
-    println!("⚪ White Level: {}", white_level);
+    println!("⚪ White Level: {} (sensor max, ignoring metadata white point {})", 
+        white_level, 
+        if !raw_image.whitelevels.is_empty() { raw_image.whitelevels[0] } else { 0 });
     
     // Phase 60: Extract EXIF metadata
     let metadata = extract_metadata(path.to_str().unwrap_or_default());

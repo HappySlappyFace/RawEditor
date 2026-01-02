@@ -621,14 +621,24 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
             }
         }
         Message::ExportRawLoaded(image_id, result) => {
-             match result {
+            match result {
                 Ok(raw_data) => {
-                    // Load params for this image
-                    let params = if let Some(library) = &editor.library {
-                        library.load_edit_params(image_id).unwrap_or_default()
-                    } else {
-                        state::edit::EditParams::default()
-                    };
+                    // CRITICAL FIX: Try to reuse the existing Develop pipeline if it's for the same image
+                    // This avoids creating a new pipeline which might have initialization issues
+                    if let EditorStatus::Ready(existing_pipeline) = &editor.editor_status {
+                       if Some(image_id) == editor.selected_image_id {
+                            // Same image! Reuse the existing pipeline
+                            println!("✅ Reusing existing Develop pipeline for export");
+                            let pipeline_clone = existing_pipeline.clone();
+                            return Task::perform(async move { 
+                                Ok(pipeline_clone) 
+                            }, move |res| Message::ExportPipelineReady(image_id, res));
+                        }
+                    }
+                    
+                    // Different image or no pipeline - create new one
+                    println!("🔨 Creating new pipeline for export");
+                    let params = editor.current_edit_params.clone();
                     
                     // Spawn pipeline creation
                     let width = raw_data.width;
@@ -649,29 +659,21 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
                     editor.status = format!("Failed to load RAW: {}", e);
                     Task::perform(async {}, |_| Message::ProcessNextExport)
                 }
-             }
+            }
         }
         Message::ExportPipelineReady(image_id, result) => {
             match result {
                 Ok(pipeline) => {
-                    // Load params again (or pass them? Pipeline has them now)
-                    // Pipeline::new initialized params.
-                    
-                    // Render
-                    // We need to access params from pipeline or library.
-                    // Pipeline has current_params.
-                    // But we need crop.
-                    // Let's reload params from library to be safe, or assume pipeline has them.
-                    // Pipeline::new took params, so it has them.
-                    // But we can't easily access them from Arc<RenderPipeline> unless we expose them.
-                    // We can just reload them.
-                     let params = if let Some(library) = &editor.library {
-                        library.load_edit_params(image_id).unwrap_or_default()
+                    // Get filename first
+                    let filename = if let Some(img) = editor.images.iter().find(|i| i.id == image_id) {
+                        Path::new(&img.path).file_stem().unwrap_or_default().to_string_lossy().to_string()
                     } else {
-                        state::edit::EditParams::default()
+                        format!("image_{}", image_id)
                     };
                     
-                    let crop = params.crop;
+                    // Export full resolution
+                    // Use current editor params (already loaded above for pipeline creation)
+                    let crop = editor.current_edit_params.crop;
                     let format = iced_wgpu::wgpu::TextureFormat::Rgba8Unorm;
                     
                     match pipeline.render_full_res_to_bytes(format, crop) {
@@ -725,13 +727,14 @@ async fn save_export_async(
     height: u32,
     settings: ExportSettings,
 ) -> Result<PathBuf, String> {
+
     tokio::task::spawn_blocking(move || {
-        use std::fs;
+        use std::fs::File;
         use std::io::BufWriter;
         
-        // 1. Create output path
+        // Create output directory
         let output_dir = settings.base_path.join(&settings.subfolder);
-        fs::create_dir_all(&output_dir).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(&output_dir).map_err(|e| e.to_string())?;
         
         let extension = match settings.format {
             ExportFormat::Jpeg => "jpg",
@@ -739,34 +742,30 @@ async fn save_export_async(
         };
         
         let output_path = output_dir.join(format!("{}.{}", filename, extension));
+        let file = File::create(&output_path).map_err(|e| e.to_string())?;
+        let writer = BufWriter::new(file);
         
-        // 2. Save directly using image::save_buffer (no intermediate transformations)
-        // This avoids any potential issues with ImageBuffer/DynamicImage conversions
         match settings.format {
             ExportFormat::Png => {
-                // PNG supports RGBA8 directly
-                image::save_buffer(
-                    &output_path,
-                    &bytes,
-                    width,
-                    height,
-                    image::ColorType::Rgba8,
-                ).map_err(|e| e.to_string())?;
+                // Use PNG encoder directly
+                let mut encoder = png::Encoder::new(writer, width, height);
+                encoder.set_color(png::ColorType::Rgba);
+                encoder.set_depth(png::BitDepth::Eight);
+                
+                let mut png_writer = encoder.write_header().map_err(|e| e.to_string())?;
+                png_writer.write_image_data(&bytes).map_err(|e| e.to_string())?;
             }
             ExportFormat::Jpeg => {
-                // JPEG requires RGB8, so convert RGBA to RGB by dropping alpha
+                // Convert RGBA to RGB for JPEG
                 let rgb_bytes: Vec<u8> = bytes
                     .chunks_exact(4)
                     .flat_map(|rgba| [rgba[0], rgba[1], rgba[2]])
                     .collect();
                 
-                image::save_buffer(
-                    &output_path,
-                    &rgb_bytes,
-                    width,
-                    height,
-                    image::ColorType::Rgb8,
-                ).map_err(|e| e.to_string())?;
+                // Use JPEG encoder directly
+                let encoder = jpeg_encoder::Encoder::new(writer, 95);
+                encoder.encode(&rgb_bytes, width as u16, height as u16, jpeg_encoder::ColorType::Rgb)
+                    .map_err(|e| e.to_string())?;
             }
         }
         

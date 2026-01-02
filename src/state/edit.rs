@@ -131,7 +131,7 @@ impl Default for EditParams {
             contrast: 0.0,
             highlights: 0.0,
             shadows: 0.0,
-            whites: 1.0,   // Phase 16: Default white point (no adjustment)
+            whites: 1.0,   // Phase 16: Default white point - must match slider center (0.8..1.2)
             blacks: 0.0,   // Phase 16: Default black point (no adjustment)
             black_offsets: [0.0, 0.0, 0.0, 0.0], // Phase 38: Manual black level tuning
             black_phase_x: 0, // Phase 39: Black level phase correction

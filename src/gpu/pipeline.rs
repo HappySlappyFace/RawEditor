@@ -705,6 +705,7 @@ impl RenderPipeline {
         
         export_params.crop = crop; // Set the crop
         
+
         // Write to buffer
         self.queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[export_params]));
         
@@ -757,7 +758,6 @@ impl RenderPipeline {
         match rx.recv() {
             Ok(Ok(())) => {
                 let data = buffer_slice.get_mapped_range();
-                println!("✅ GPU Readback success! Data size: {} bytes", data.len());
                 let mut output = Vec::with_capacity((target_width * target_height * 4) as usize);
                 for y in 0..target_height {
                     let start = (y * padded_bytes_per_row) as usize;
@@ -765,9 +765,10 @@ impl RenderPipeline {
                     if end <= data.len() {
                         output.extend_from_slice(&data[start..end]);
                     } else {
-                        println!("⚠️  Buffer underrun at row {}", y);
+                        println!("⚠️  Export buffer underrun at row {}", y);
                     }
                 }
+                
                 drop(data);
                 output_buffer.unmap();
                 Ok(output)

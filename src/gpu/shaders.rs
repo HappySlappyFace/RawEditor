@@ -538,11 +538,15 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     
     // Highlights: Affects bright pixels more (lum=1.0 gets full effect, lum=0.0 gets none)
     // Negative values recover blown highlights, positive values boost them
-    color = color * (1.0 + (lum_for_tone * params.highlights));
+    // Scale to ±20% range to prevent extreme overflow
+    let highlights_adjustment = lum_for_tone * params.highlights * 0.2;
+    color = color * max(1.0 + highlights_adjustment, 0.1);
     
     // Shadows: Affects dark pixels more (lum=0.0 gets full effect, lum=1.0 gets none)
     // Positive values lift shadows, negative values crush them
-    color = color * (1.0 + ((1.0 - lum_for_tone) * params.shadows));
+    // Scale to ±20% range to prevent extreme overflow
+    let shadows_adjustment = (1.0 - lum_for_tone) * params.shadows * 0.2;
+    color = color * max(1.0 + shadows_adjustment, 0.1);
     
     // 6. Apply Contrast (around midpoint 0.5)
     let contrast_factor = 1.0 + (params.contrast / 100.0);
