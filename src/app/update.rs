@@ -637,8 +637,12 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
                     }
                     
                     // Different image or no pipeline - create new one
-                    println!("🔨 Creating new pipeline for export");
+                    println!("🔨 Creating new pipeline for export (image {})", image_id);
+                    
+                    // Use current editor params for ALL exports (batch export uses same adjustments)
                     let params = editor.current_edit_params.clone();
+                    
+                    println!("   Using current editor params: exposure={}, whites={}", params.exposure, params.whites);
                     
                     // Spawn pipeline creation
                     let width = raw_data.width;
