@@ -1,0 +1,64 @@
+name: RawEditor CI & Release
+
+on:
+  push:
+    branches: [ "main" ]
+    tags: [ "v*" ]
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Prepare release directory
+        shell: bash
+        run: |
+          APP=raw-editor
+          VERSION=${GITHUB_REF_NAME}
+
+          mkdir -p dist
+
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            OUT=$APP-windows
+            mkdir dist/$OUT
+            cp target/release/$APP.exe dist/$OUT/
+          else
+            OUT=$APP-linux
+            mkdir dist/$OUT
+            cp target/release/$APP dist/$OUT/
+            cp target/release/$APP.d dist/$OUT/ || true
+          fi
+
+          cp -r assets dist/$OUT/
+          cp README.md dist/$OUT/ || true
+          cp LICENSE dist/$OUT/ || true
+
+          cd dist
+          zip -r "$OUT-$VERSION.zip" "$OUT"
+
+      - name: Upload artifact (CI)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.os }}-zip
+          path: dist/*.zip
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
