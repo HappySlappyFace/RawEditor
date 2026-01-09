@@ -25,31 +25,41 @@ jobs:
       - name: Build release
         run: cargo build --release
 
-      - name: Prepare release directory
+      - name: Prepare release directory (Linux)
+        if: matrix.os == 'ubuntu-latest'
         shell: bash
         run: |
           APP=raw-editor
           VERSION=${GITHUB_REF_NAME}
 
-          mkdir -p dist
+          mkdir -p dist/$APP-linux
 
-          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            OUT=$APP-windows
-            mkdir dist/$OUT
-            cp target/release/$APP.exe dist/$OUT/
-          else
-            OUT=$APP-linux
-            mkdir dist/$OUT
-            cp target/release/$APP dist/$OUT/
-            cp target/release/$APP.d dist/$OUT/ || true
-          fi
-
-          cp -r assets dist/$OUT/
-          cp README.md dist/$OUT/ || true
-          cp LICENSE dist/$OUT/ || true
+          cp target/release/$APP dist/$APP-linux/
+          cp target/release/$APP.d dist/$APP-linux/ || true
+          cp -r assets dist/$APP-linux/
+          cp README.md dist/$APP-linux/ || true
+          cp LICENSE dist/$APP-linux/ || true
 
           cd dist
-          zip -r "$OUT-$VERSION.zip" "$OUT"
+          zip -r "$APP-linux-$VERSION.zip" "$APP-linux"
+
+      - name: Prepare release directory (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $APP = "raw-editor"
+          $VERSION = "${env:GITHUB_REF_NAME}"
+          $OUT = "dist\$APP-windows"
+
+          New-Item -ItemType Directory -Force -Path $OUT | Out-Null
+
+          Copy-Item "target\release\$APP.exe" $OUT
+          Copy-Item "assets" $OUT -Recurse
+          Copy-Item "README.md" $OUT -ErrorAction SilentlyContinue
+          Copy-Item "LICENSE" $OUT -ErrorAction SilentlyContinue
+
+          Compress-Archive -Path $OUT -DestinationPath "dist\$APP-windows-$VERSION.zip"
+
 
       - name: Upload artifact (CI)
         uses: actions/upload-artifact@v4
