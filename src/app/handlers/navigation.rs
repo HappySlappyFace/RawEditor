@@ -28,31 +28,7 @@ pub fn handle_image_selected(editor: &mut RawEditor, image_id: i64) -> Task<Mess
         };
         
         if needs_load {
-            editor.working_preview = None;
-            if let Some(img) = editor.images.iter().find(|i| i.id == image_id) {
-                // Phase 73: Check RAM cache first
-                if let Some(handle) = editor.preview_cache.get(&image_id) {
-                    editor.working_preview = Some(handle.clone());
-                } else if let Some(path) = &img.cache_path_working {
-                    editor.working_preview = Some(Handle::from_path(path.clone()));
-                }
-                
-                editor.editor_readiness = EditorReadiness::Loading(image_id);
-                let mut tasks = Vec::new();
-                if let Some(path) = &img.cache_path_working {
-                    tasks.push(Task::perform(load_image_handle(image_id, path.clone()), |(id, h)| Message::WorkingPreviewReady(id, h)));
-                }
-                
-                // Only load full RAW data if we are in Develop mode
-                if editor.current_tab == AppTab::Develop {
-                    tasks.push(Task::perform(raw::loader::load_raw_data(img.path.clone()), Message::RawDataLoaded));
-                }
-                
-                // Schedule preloads for adjacent images
-                tasks.push(schedule_preloads(editor));
-                
-                return Task::batch(tasks);
-            }
+            return trigger_image_load(editor, image_id);
         }
     }
     Task::none()
@@ -173,53 +149,11 @@ pub fn handle_mouse_moved(editor: &mut RawEditor, pos: Point) -> Task<Message> {
     if (nw - editor.viewport_size.0).abs() > 10.0 { editor.viewport_size.0 = nw; }
     if (nh - editor.viewport_size.1).abs() > 10.0 { editor.viewport_size.1 = nh; }
     
-    if editor.is_dragging {
-        if let Some(last) = editor.last_cursor_position {
-            let delta = pos - last;
-            match editor.drag_mode {
-                DragMode::Pan => {
-                    let (sx, sy) = if let Some(res) = &editor.image_resources { (1.0/res.preview_width as f32, 1.0/res.preview_height as f32) } else { (0.001, 0.001) };
-                    editor.last_cursor_position = Some(pos);
-                    return Task::done(Message::Pan(cgmath::Vector2::new(delta.x * sx, delta.y * sy)));
-                }
-                DragMode::CropHandle(h) => {
-                    let (bw, bh) = editor.viewport_size;
-                    let dx = delta.x / bw;
-                    let dy = delta.y / bh;
-                    let c = editor.current_edit_params.crop;
-                    let (mut l, mut t, mut r, mut b) = (c[0], c[1], c[0]+c[2], c[1]+c[3]);
-                    
-                    match h {
-                        CropHandle::TopLeft => { l += dx; t += dy; }
-                        CropHandle::TopRight => { t += dy; r += dx; }
-                        CropHandle::BottomLeft => { l += dx; b += dy; }
-                        CropHandle::BottomRight => { r += dx; b += dy; }
-                        CropHandle::Body => { l += dx; t += dy; r += dx; b += dy; if l < 0.0 { r -= l; l = 0.0; } if r > 1.0 { l -= r - 1.0; r = 1.0; } if t < 0.0 { b -= t; t = 0.0; } if b > 1.0 { t -= b - 1.0; b = 1.0; } }
-                    }
-                    
-                    if h != CropHandle::Body {
-                        let min = 0.01;
-                        match h {
-                            CropHandle::TopLeft => { l = l.min(r - min).max(0.0); t = t.min(b - min).max(0.0); }
-                            CropHandle::TopRight => { r = r.max(l + min).min(1.0); t = t.min(b - min).max(0.0); }
-                            CropHandle::BottomLeft => { l = l.min(r - min).max(0.0); b = b.max(t + min).min(1.0); }
-                            CropHandle::BottomRight => { r = r.max(l + min).min(1.0); b = b.max(t + min).min(1.0); }
-                            _ => {}
-                        }
-                    }
-                    
-                    editor.current_edit_params.crop = [l, t, r - l, b - t];
-                    if let (Some(ctx), Some(res)) = (&editor.gpu_context, &editor.image_resources) { res.update_uniforms(ctx, &editor.current_edit_params); }
-                    editor.last_cursor_position = Some(pos);
-                    editor.canvas_cache.clear();
-                }
-                _ => {}
-            }
-        }
+    if editor.is_cropping {
+        handle_crop_interaction(editor, pos)
     } else {
-        editor.last_cursor_position = Some(pos);
+        handle_pan_interaction(editor, pos)
     }
-    Task::none()
 }
 
 pub fn handle_working_preview_ready(editor: &mut RawEditor, id: i64, handle: Handle) -> Task<Message> {
@@ -244,7 +178,105 @@ pub fn handle_preview_cached(editor: &mut RawEditor, id: i64, result: Result<(u3
 
 // Helpers
 
+fn handle_pan_interaction(editor: &mut RawEditor, pos: Point) -> Task<Message> {
+    if editor.is_dragging && editor.drag_mode == DragMode::Pan {
+        if let Some(last) = editor.last_cursor_position {
+             let delta = pos - last;
+             let (sx, sy) = if let Some(res) = &editor.image_resources { (1.0/res.preview_width as f32, 1.0/res.preview_height as f32) } else { (0.001, 0.001) };
+             editor.last_cursor_position = Some(pos);
+             return Task::done(Message::Pan(cgmath::Vector2::new(delta.x * sx, delta.y * sy)));
+        }
+    }
+    editor.last_cursor_position = Some(pos);
+    Task::none()
+}
+
+fn handle_crop_interaction(editor: &mut RawEditor, pos: Point) -> Task<Message> {
+    if editor.is_dragging {
+        if let DragMode::CropHandle(h) = editor.drag_mode {
+            if let Some(last) = editor.last_cursor_position {
+                apply_crop_drag(editor, pos, last, h);
+                editor.last_cursor_position = Some(pos);
+                editor.canvas_cache.clear();
+            }
+        }
+    } else {
+        editor.last_cursor_position = Some(pos);
+    }
+    Task::none()
+}
+
+fn apply_crop_drag(editor: &mut RawEditor, pos: Point, last: Point, h: CropHandle) {
+    let delta = pos - last;
+    let (bw, bh) = editor.viewport_size;
+    let dx = delta.x / bw;
+    let dy = delta.y / bh;
+    let c = editor.current_edit_params.crop;
+    let (mut l, mut t, mut r, mut b) = (c[0], c[1], c[0]+c[2], c[1]+c[3]);
+    
+    match h {
+        CropHandle::TopLeft => { l += dx; t += dy; }
+        CropHandle::TopRight => { t += dy; r += dx; }
+        CropHandle::BottomLeft => { l += dx; b += dy; }
+        CropHandle::BottomRight => { r += dx; b += dy; }
+        CropHandle::Body => { l += dx; t += dy; r += dx; b += dy; if l < 0.0 { r -= l; l = 0.0; } if r > 1.0 { l -= r - 1.0; r = 1.0; } if t < 0.0 { b -= t; t = 0.0; } if b > 1.0 { t -= b - 1.0; b = 1.0; } }
+    }
+    
+    if h != CropHandle::Body {
+        let min = 0.01;
+        match h {
+            CropHandle::TopLeft => { l = l.min(r - min).max(0.0); t = t.min(b - min).max(0.0); }
+            CropHandle::TopRight => { r = r.max(l + min).min(1.0); t = t.min(b - min).max(0.0); }
+            CropHandle::BottomLeft => { l = l.min(r - min).max(0.0); b = b.max(t + min).min(1.0); }
+            CropHandle::BottomRight => { r = r.max(l + min).min(1.0); b = b.max(t + min).min(1.0); }
+            _ => {}
+        }
+    }
+    
+    editor.current_edit_params.crop = [l, t, r - l, b - t];
+    if let (Some(ctx), Some(res)) = (&editor.gpu_context, &editor.image_resources) { res.update_uniforms(ctx, &editor.current_edit_params); }
+}
+
+fn trigger_image_load(editor: &mut RawEditor, image_id: i64) -> Task<Message> {
+    editor.working_preview = None;
+    if let Some(img) = editor.images.iter().find(|i| i.id == image_id) {
+        // Phase 73: Check RAM cache first
+        if let Some(handle) = editor.preview_cache.get(&image_id) {
+            editor.working_preview = Some(handle.clone());
+        } else if let Some(path) = &img.cache_path_working {
+            editor.working_preview = Some(Handle::from_path(path.clone()));
+        }
+        
+        editor.editor_readiness = EditorReadiness::Loading(image_id);
+        let mut tasks = Vec::new();
+        if let Some(path) = &img.cache_path_working {
+            tasks.push(Task::perform(load_image_handle(image_id, path.clone()), |(id, h)| Message::WorkingPreviewReady(id, h)));
+        }
+        
+        // Only load full RAW data if we are in Develop mode
+        if editor.current_tab == AppTab::Develop {
+            tasks.push(Task::perform(raw::loader::load_raw_data(img.path.clone()), Message::RawDataLoaded));
+        }
+        
+        // Schedule preloads for adjacent images
+        tasks.push(schedule_preloads(editor));
+        
+        return Task::batch(tasks);
+    }
+    Task::none()
+}
+
 fn schedule_preloads(editor: &mut RawEditor) -> Task<Message> {
+    let missing = identify_missing_preloads(editor);
+    for (id, path) in missing {
+        editor.pending_loads.insert(id);
+        editor.queued_loads.push((id, path));
+    }
+    Task::none()
+}
+
+fn identify_missing_preloads(editor: &RawEditor) -> Vec<(i64, String)> {
+    let mut missing = Vec::new();
     if let Some(current_id) = editor.selected_image_id {
         if let Some(current_idx) = editor.images.iter().position(|i| i.id == current_id) {
             let total = editor.images.len() as isize;
@@ -268,17 +300,13 @@ fn schedule_preloads(editor: &mut RawEditor) -> Task<Message> {
                     }
 
                     if let Some(path) = &img.cache_path_working {
-                        let path_clone = path.clone();
-                        let id = img.id;
-                        
-                        editor.pending_loads.insert(id);
-                        editor.queued_loads.push((id, path_clone));
+                        missing.push((img.id, path.clone()));
                     }
                 }
             }
         }
     }
-    Task::none()
+    missing
 }
 
 async fn load_preview_pixels(path: String) -> Result<(u32, u32, Vec<u8>), String> {
