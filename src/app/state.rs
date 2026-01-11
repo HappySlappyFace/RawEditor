@@ -3,12 +3,12 @@ use std::sync::Arc;
 use std::collections::{HashMap, HashSet};
 use iced::{Point, Rectangle, Task};
 use iced::widget::image::Handle;
-use crate::state;
+use crate::database;
 use crate::gpu;
 use crate::raw;
 use crate::ui::preview_renderer::CropHandle;
 use crate::app::message::{Message, AppTab};
-use crate::state::data::Image as ImageData;
+use crate::database::models::Image as ImageData;
 
 /// Phase 95: Simplified editor status (pipeline is now in separate fields)
 #[derive(Clone, Debug, PartialEq)]
@@ -112,7 +112,7 @@ pub struct RawEditor {
     pub is_exporting: bool,
 
     /// The catalog database (Phase 23: Optional during startup)
-    pub library: Option<state::library::Library>,
+    pub library: Option<database::library::Library>,
     /// Status message to display to the user
     pub status: String,
     /// All images loaded from the database
@@ -126,7 +126,7 @@ pub struct RawEditor {
     /// Currently active tab
     pub current_tab: AppTab,
     /// Current edit parameters for the selected image
-    pub current_edit_params: state::edit::EditParams,
+    pub current_edit_params: crate::core::types::EditParams,
     
     // Phase 95: Unified GPU Pipeline Architecture
     /// Shared GPU context (created once, reused for all images)
@@ -162,7 +162,7 @@ pub struct RawEditor {
     /// Phase 41: Current image metadata for inspection
     pub current_metadata: Option<raw::loader::RawDataResult>,
     /// Phase 54: Edit settings clipboard for copy/paste
-    pub edit_clipboard: Option<state::edit::EditParams>,
+    pub edit_clipboard: Option<crate::core::types::EditParams>,
     /// Phase 55: Multi-selection set (image IDs)
     pub multi_selection: HashSet<i64>,
     /// Phase 55: Track modifier keys for Ctrl/Cmd+Click
@@ -174,7 +174,7 @@ pub struct RawEditor {
     /// Phase 79: Modular Info Overlay state
     pub info_overlay: InfoOverlayState,
     /// Phase 65: Undo/Redo History Map<ImageID, (HistoryStack, CurrentIndex)>
-    pub history_map: HashMap<i64, (Vec<state::edit::EditParams>, usize)>,
+    pub history_map: HashMap<i64, (Vec<crate::core::types::EditParams>, usize)>,
     /// Phase 67: Interactive crop mode
     pub is_cropping: bool,
     /// Phase 67: Drag mode for interaction
@@ -211,7 +211,7 @@ async fn load_database_async() -> Result<Vec<ImageData>, String> {
     // Use spawn_blocking because rusqlite is synchronous
     tokio::task::spawn_blocking(|| {
         // Initialize the database
-        let library = state::library::Library::new()
+        let library = database::library::Library::new()
             .map_err(|e| format!("Failed to initialize database: {:?}", e))?;
         
         // Verify thumbnails exist on disk (reset if deleted)
@@ -252,7 +252,7 @@ impl RawEditor {
         let preview_cache_dir = raw::preview::get_preview_cache_dir();
         
         // Determine the database path (e.g., in the application's data directory)
-        let _db_path = state::library::Library::get_db_path();
+        let _db_path = database::library::Library::get_db_path();
 
         (
             RawEditor { 
@@ -263,7 +263,7 @@ impl RawEditor {
                 preview_cache_dir,
                 preview_cache: LruCache::new(NonZeroUsize::new(CACHE_CAPACITY).unwrap()),
                 current_tab: AppTab::Library, // Start in Library view
-                current_edit_params: state::edit::EditParams::default(),
+                current_edit_params: crate::core::types::EditParams::default(),
                 
                 // Phase 95: Unified GPU Pipeline Architecture
                 gpu_context: None,  // Will be initialized on first image load
@@ -309,7 +309,7 @@ impl RawEditor {
                 queued_loads: Vec::new(),
             },
             Task::perform(
-                state::library::load_database("".to_string()),
+                database::library::load_database("".to_string()),
                 Message::DatabaseLoaded
             )
         )
@@ -318,7 +318,7 @@ impl RawEditor {
     // Phase 65: Undo/Redo Helper
     // Returns a mutable reference to the (Stack, Index) tuple for the current image.
     // Initializes it if missing.
-    pub fn get_current_history(&mut self) -> Option<&mut (Vec<state::edit::EditParams>, usize)> {
+    pub fn get_current_history(&mut self) -> Option<&mut (Vec<crate::core::types::EditParams>, usize)> {
         if let Some(image_id) = self.selected_image_id {
             // Ensure entry exists
             self.history_map.entry(image_id).or_insert_with(|| {

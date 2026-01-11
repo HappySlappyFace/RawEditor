@@ -3,7 +3,7 @@ use iced::{Background, Border, Color, Element, Length, Theme};
 use std::path::PathBuf;
 use std::collections::HashSet;  // Phase 55: Multi-selection
 
-use crate::state::data::Image;
+use crate::database::models::Image;
 use crate::app::message::Message;
 use crate::ui::icons;  // Phase 58: Icon constants
 

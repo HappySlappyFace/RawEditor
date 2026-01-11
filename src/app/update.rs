@@ -5,29 +5,24 @@ use iced::widget::image::Handle;
 use rusqlite::{Connection, OptionalExtension};
 use walkdir::WalkDir;
 use rfd::FileDialog;
-use iced_wgpu::wgpu;
 use chrono::Utc;
 use iced::Point;
 
-use crate::state;
+use crate::database;
 use crate::gpu;
 use crate::ui;
 use crate::app::message::{Message, AppTab, ImportResult};
-use crate::app::state::{self as app_state, EditorReadiness, RawEditor, ExportSettings, ExportFormat, Modal, DragMode};
-use crate::state::data::Image as ImageData;
-use crate::app::view;
-use crate::gpu::pipeline::RenderPipeline;
+use crate::app::state::{EditorReadiness, RawEditor, ExportSettings, ExportFormat, Modal, DragMode};
 use crate::raw;
 use crate::ui::preview_renderer::CropHandle;
 use std::path::Path;
-use std::collections::HashSet;
 
 pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
     match message {
         Message::DatabaseLoaded(result) => {
             match result {
                 Ok(images) => {
-                    match state::library::Library::new() {
+                    match database::library::Library::new() {
                         Ok(library) => {
                             let image_count = images.len();
                             editor.library = Some(library);

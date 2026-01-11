@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use crate::gpu::shaders;
 use super::pipeline::GpuEditParams;
-use crate::state::edit::EditParams;
+use crate::core::types::EditParams;
 
 /// Shared GPU context (created once, reused for all images)
 /// Contains all the persistent GPU resources that don't change between images

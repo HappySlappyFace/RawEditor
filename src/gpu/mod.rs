@@ -15,4 +15,3 @@ pub mod pipeline;
 pub mod shared;  // Phase 95: Unified pipeline architecture
 pub mod render_functions; // Phase 95: Standalone rendering functions
 
-pub use pipeline::RenderPipeline;

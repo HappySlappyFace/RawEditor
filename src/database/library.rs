@@ -1,6 +1,7 @@
 use rusqlite::{Connection, Result as SqlResult};
 use std::path::PathBuf;
-use super::data::Image;
+use super::models::Image;
+use crate::core::types::EditParams;
 
 /// The Library manages the SQLite catalog database.
 /// It stores image metadata, edit history, and references to RAW files.
@@ -327,7 +328,7 @@ impl Library {
     
     /// Save edit parameters for an image to the database
     /// Creates a new edit record or updates the most recent one
-    pub fn save_edit_params(&self, image_id: i64, params: &super::edit::EditParams) -> SqlResult<()> {
+    pub fn save_edit_params(&self, image_id: i64, params: &EditParams) -> SqlResult<()> {
         // Serialize params to JSON
         let json = params.to_json()
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
@@ -358,7 +359,7 @@ impl Library {
     
     /// Load edit parameters for an image from the database
     /// Returns Default if no edits exist for this image
-    pub fn load_edit_params(&self, image_id: i64) -> SqlResult<super::edit::EditParams> {
+    pub fn load_edit_params(&self, image_id: i64) -> SqlResult<EditParams> {
         let json: String = self.conn.query_row(
             "SELECT settings_json FROM edits WHERE image_id = ?1 ORDER BY id DESC LIMIT 1",
             [image_id],
@@ -366,7 +367,7 @@ impl Library {
         )?;
         
         // Parse JSON to EditParams
-        super::edit::EditParams::from_json(&json)
+        EditParams::from_json(&json)
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
     }
     
@@ -375,7 +376,7 @@ impl Library {
         let count: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM edits WHERE image_id = ?1",
             [image_id],
-            |row| row.get(0)
+            |row| row.get(0),
         )?;
         Ok(count > 0)
     }
@@ -439,7 +440,7 @@ impl std::fmt::Debug for Library {
 }
 
 /// Async helper to load the database
-pub async fn load_database(_path: String) -> Result<Vec<super::data::Image>, String> {
+pub async fn load_database(_path: String) -> Result<Vec<super::models::Image>, String> {
     // In a real app, we might want to pass the path, but Library::new() determines it automatically.
     // We'll just use Library::new() here.
     match Library::new() {

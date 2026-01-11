@@ -1,9 +1,7 @@
 use std::path::PathBuf;
-use std::sync::Arc;
 use iced::{Point, Rectangle};
-use crate::gpu;
 use crate::raw;
-use crate::state::data::Image as ImageData;
+use crate::database::models::Image as ImageData;
 use crate::ui::preview_renderer::CropHandle;
 
 /// Application tabs/modules

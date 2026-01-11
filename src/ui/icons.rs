@@ -3,6 +3,12 @@
 //! JetBrainsMono Nerd Font includes FontAwesome icons in the Private Use Area.
 //! These codepoints render correctly with the embedded font.
 
+use iced::font::Font;
+
+// Phase 57: Embedded font for icons and typography
+pub const ICON_FONT: Font = Font::with_name("JetBrainsMono Nerd Font");
+pub const ICON_FONT_BYTES: &[u8] = include_bytes!("../../assets/fonts/icons.ttf");
+
 /// Solid star icon (FontAwesome)
 pub const STAR: &str = "\u{f005}";
 

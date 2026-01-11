@@ -6,8 +6,9 @@ pub mod color;
 mod debug;
 mod gpu;
 mod raw;
-mod state;
 mod ui;
+mod core;
+mod database;
 
 use iced::Font;
 

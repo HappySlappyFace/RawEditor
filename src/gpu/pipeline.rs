@@ -10,7 +10,7 @@
 // Use wgpu from iced to avoid dependency conflicts
 use iced_wgpu::wgpu;
 use wgpu::util::DeviceExt;
-use crate::state::edit::EditParams;
+use crate::core::types::EditParams;
 
 /// Represents the edit parameters in a GPU-friendly format
 /// Must match the WGSL struct layout with proper alignment
