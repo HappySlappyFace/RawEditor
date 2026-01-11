@@ -11,3 +11,5 @@ pub mod thumbnail;
 pub mod preview;
 pub mod loader;
 pub mod processor;  // Phase 28: Multi-tier cache processor
+#[cfg(test)]
+mod tests;

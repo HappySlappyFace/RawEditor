@@ -123,3 +123,21 @@ fn extract_largest_jpeg(raw_path: &Path) -> Option<Vec<u8>> {
     all_jpegs.sort_by(|a, b| b.0.cmp(&a.0)); // Sort descending by size
     all_jpegs.into_iter().next().map(|(_, data)| data)
 }
+
+/// Normalize a raw pixel value based on black and white levels
+/// 
+/// This function implements the standard normalization math:
+/// result = (value - black) / (white - black)
+/// Clamped to [0.0, 1.0]
+pub fn normalize_pixel(value: u16, black_level: u32, white_level: u32) -> f32 {
+    let val = value as f32;
+    let bl = black_level as f32;
+    let wl = white_level as f32;
+    
+    if val <= bl {
+        0.0
+    } else {
+        ((val - bl) / (wl - bl)).clamp(0.0, 1.0)
+    }
+}
+
