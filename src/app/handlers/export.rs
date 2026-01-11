@@ -1,0 +1,269 @@
+use iced::Task;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use crate::app::state::{RawEditor, ExportFormat, ExportSettings, Modal, EditorReadiness};
+use crate::app::message::Message;
+use crate::raw;
+use crate::gpu;
+
+pub fn handle_set_export_format(editor: &mut RawEditor, format: ExportFormat) -> Task<Message> {
+    editor.export_settings.format = format;
+    Task::none()
+}
+
+pub fn handle_set_export_quality(editor: &mut RawEditor, quality: u8) -> Task<Message> {
+    editor.export_settings.quality = quality;
+    Task::none()
+}
+
+pub fn handle_toggle_export_resize(editor: &mut RawEditor, resize: bool) -> Task<Message> {
+    editor.export_settings.resize = resize;
+    Task::none()
+}
+
+pub fn handle_set_export_width(editor: &mut RawEditor, width: u32) -> Task<Message> {
+    editor.export_settings.max_width = width;
+    Task::none()
+}
+
+pub fn handle_set_export_subfolder(editor: &mut RawEditor, subfolder: String) -> Task<Message> {
+    editor.export_settings.subfolder = subfolder;
+    Task::none()
+}
+
+pub fn handle_pick_export_base_path(editor: &mut RawEditor) -> Task<Message> {
+    let current = editor.export_settings.base_path.clone();
+    Task::perform(async move {
+        rfd::AsyncFileDialog::new()
+            .set_directory(current)
+            .pick_folder()
+            .await
+            .map(|handle| handle.path().to_path_buf())
+    }, |opt| if let Some(path) = opt { Message::SetExportBasePath(path) } else { Message::ModalNoOp }) 
+}
+
+pub fn handle_set_export_base_path(editor: &mut RawEditor, path: PathBuf) -> Task<Message> {
+    if !path.as_os_str().is_empty() {
+        editor.export_settings.base_path = path;
+    }
+    Task::none()
+}
+
+pub fn handle_open_export_modal(editor: &mut RawEditor) -> Task<Message> {
+    editor.active_modal = Modal::Export;
+    
+    let default_dir = dirs::picture_dir().unwrap_or_else(|| PathBuf::from("."));
+    if editor.export_settings.base_path == default_dir {
+            if let Some(id) = editor.selected_image_id {
+            if let Some(img) = editor.images.iter().find(|i| i.id == id) {
+                if let Some(parent) = Path::new(&img.path).parent() {
+                    editor.export_settings.base_path = parent.to_path_buf();
+                }
+            }
+        }
+    }
+    
+    Task::none()
+}
+
+pub fn handle_export_confirmed(editor: &mut RawEditor) -> Task<Message> {
+    editor.active_modal = Modal::None;
+    
+    if editor.multi_selection.is_empty() {
+        if let Some(id) = editor.selected_image_id {
+            editor.export_queue = vec![id];
+        }
+    } else {
+        editor.export_queue = editor.multi_selection.iter().cloned().collect();
+    }
+    
+    if editor.export_queue.is_empty() {
+        editor.status = "Nothing to export.".to_string();
+        return Task::none();
+    }
+    
+    editor.is_exporting = true;
+    editor.status = format!("Starting export of {} images...", editor.export_queue.len());
+    Task::perform(async {}, |_| Message::ProcessNextExport)
+}
+
+pub fn handle_process_next_export(editor: &mut RawEditor) -> Task<Message> {
+    if let Some(image_id) = editor.export_queue.pop() {
+        editor.status = format!("Exporting image {}...", image_id);
+        if let Some(img) = editor.images.iter().find(|i| i.id == image_id) {
+            let path = img.path.clone();
+            return Task::perform(raw::loader::load_raw_data(path), move |res| Message::ExportRawLoaded(image_id, res));
+        }
+        return Task::perform(async {}, |_| Message::ProcessNextExport);
+    } else {
+        editor.is_exporting = false;
+        editor.status = "Export Complete!".to_string();
+        Task::none()
+    }
+}
+
+pub fn handle_export_raw_loaded(editor: &mut RawEditor, image_id: i64, result: Result<raw::loader::RawDataResult, String>) -> Task<Message> {
+    match result {
+        Ok(raw_data) => {
+            if let (EditorReadiness::Ready(ready_id), Some(ctx), Some(resources)) = 
+                (&editor.editor_readiness, &editor.gpu_context, &editor.image_resources) 
+            {
+                if *ready_id == image_id {
+                    println!("✅ Exporting currently loaded image directly");
+                    
+                    let crop = editor.current_edit_params.crop;
+                    let crop_w = crop[2];
+                    let crop_h = crop[3];
+                    let target_width = (resources.width as f32 * crop_w) as u32;
+                    let target_height = (resources.height as f32 * crop_h) as u32;
+                    
+                    let bytes = crate::gpu::render_functions::render_to_bytes(ctx, resources, target_width, target_height);
+                    
+                    let settings = editor.export_settings.clone();
+                    let filename = if let Some(img) = editor.images.iter().find(|i| i.id == image_id) {
+                        Path::new(&img.path).file_stem().unwrap_or_default().to_string_lossy().to_string()
+                    } else {
+                        format!("image_{}", image_id)
+                    };
+                    
+                    return Task::perform(
+                        save_export_async(filename, bytes, target_width, target_height, settings),
+                        move |res| Message::ExportSaveComplete(image_id, res)
+                    );
+                }
+            }
+            
+            println!("🔨 Creating ImageResources for export (image {})", image_id);
+            
+            let params = editor.current_edit_params.clone();
+            let ctx = editor.gpu_context.clone();
+            
+            let xyz_to_cam = raw_data.color_matrix;
+            let cam_to_srgb = crate::color::calculate_cam_to_srgb(xyz_to_cam);
+            
+            Task::perform(async move {
+                let context = if let Some(c) = ctx {
+                    c
+                } else {
+                    match gpu::shared::SharedContext::new().await {
+                        Ok(c) => Arc::new(c),
+                        Err(e) => return Err(e),
+                    }
+                };
+                
+                gpu::shared::ImageResources::new(
+                    &context,
+                    image_id,
+                    raw_data.data,
+                    raw_data.width,
+                    raw_data.height,
+                    &params,
+                    raw_data.wb_multipliers,
+                    cam_to_srgb,
+                    raw_data.cfa_pattern,
+                    raw_data.black_levels,
+                    raw_data.white_level
+                ).map(|res| (context, Arc::new(res)))
+            }, move |res| Message::ExportPipelineReady(image_id, res))
+        }
+        Err(e) => {
+            editor.status = format!("Failed to load RAW: {}", e);
+            Task::perform(async {}, |_| Message::ProcessNextExport)
+        }
+    }
+}
+
+pub fn handle_export_pipeline_ready(editor: &mut RawEditor, image_id: i64, result: Result<(Arc<gpu::shared::SharedContext>, Arc<gpu::shared::ImageResources>), String>) -> Task<Message> {
+    match result {
+        Ok((context, resources)) => {
+            let crop = editor.current_edit_params.crop;
+            let crop_w = crop[2];
+            let crop_h = crop[3];
+            let target_width = (resources.width as f32 * crop_w) as u32;
+            let target_height = (resources.height as f32 * crop_h) as u32;
+            
+            let bytes = crate::gpu::render_functions::render_to_bytes(&context, &resources, target_width, target_height);
+            
+            let settings = editor.export_settings.clone();
+            let filename = if let Some(img) = editor.images.iter().find(|i| i.id == image_id) {
+                Path::new(&img.path).file_stem().unwrap_or_default().to_string_lossy().to_string()
+            } else {
+                format!("image_{}", image_id)
+            };
+            
+            Task::perform(
+                save_export_async(filename, bytes, target_width, target_height, settings),
+                move |res| Message::ExportSaveComplete(image_id, res)
+            )
+        }
+        Err(e) => {
+            editor.status = format!("Export failed: {}", e);
+            Task::perform(async {}, |_| Message::ProcessNextExport)
+        }
+    }
+}
+
+pub fn handle_export_save_complete(editor: &mut RawEditor, _id: i64, result: Result<PathBuf, String>) -> Task<Message> {
+    match result {
+        Ok(path) => {
+            println!("✅ Export saved successfully: {}", path.display());
+            editor.status = format!("Saved: {}", path.display());
+        }
+        Err(e) => {
+            println!("❌ Export save failed: {}", e);
+            editor.status = format!("Save failed: {}", e);
+        }
+    }
+    Task::perform(async {}, |_| Message::ProcessNextExport)
+}
+
+// Helpers
+
+async fn save_export_async(
+    filename: String,
+    bytes: Vec<u8>,
+    width: u32,
+    height: u32,
+    settings: ExportSettings,
+) -> Result<PathBuf, String> {
+
+    tokio::task::spawn_blocking(move || {
+        use std::fs::File;
+        use std::io::BufWriter;
+        
+        let output_dir = settings.base_path.join(&settings.subfolder);
+        std::fs::create_dir_all(&output_dir).map_err(|e| e.to_string())?;
+        
+        let extension = match settings.format {
+            ExportFormat::Jpeg => "jpg",
+            ExportFormat::Png => "png",
+        };
+        
+        let output_path = output_dir.join(format!("{}.{}", filename, extension));
+        let file = File::create(&output_path).map_err(|e| e.to_string())?;
+        let writer = BufWriter::new(file);
+        
+        match settings.format {
+            ExportFormat::Png => {
+                let mut encoder = png::Encoder::new(writer, width, height);
+                encoder.set_color(png::ColorType::Rgba);
+                encoder.set_depth(png::BitDepth::Eight);
+                
+                let mut png_writer = encoder.write_header().map_err(|e| e.to_string())?;
+                png_writer.write_image_data(&bytes).map_err(|e| e.to_string())?;
+            }
+            ExportFormat::Jpeg => {
+                let rgb_bytes: Vec<u8> = bytes
+                    .chunks_exact(4)
+                    .flat_map(|rgba| [rgba[0], rgba[1], rgba[2]])
+                    .collect();
+                
+                let encoder = jpeg_encoder::Encoder::new(writer, settings.quality);
+                encoder.encode(&rgb_bytes, width as u16, height as u16, jpeg_encoder::ColorType::Rgb)
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        
+        Ok(output_path)
+    }).await.map_err(|e| e.to_string())?
+}
