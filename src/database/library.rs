@@ -29,7 +29,7 @@ impl Library {
         // Open or create the database
         let conn = Connection::open(&db_path)?;
         
-        println!("📁 Database initialized at: {}", db_path.display());
+        tracing::info!("Database initialized at: {}", db_path.display());
         
         let mut library = Library { conn, db_path };
         library.init_schema()?;
@@ -133,7 +133,7 @@ impl Library {
             [],
         )?;
 
-        println!("✅ Database schema initialized");
+        tracing::info!("Database schema initialized");
         
         Ok(())
     }
@@ -284,7 +284,7 @@ impl Library {
         }
 
         if reset_count > 0 {
-            println!("🔄 Reset {} missing thumbnails to pending", reset_count);
+            tracing::warn!("Reset {} missing thumbnails to pending", reset_count);
         }
 
         Ok(reset_count)
@@ -318,7 +318,7 @@ impl Library {
         }
 
         if deleted_count > 0 {
-            println!("⚠️  Marked {} missing files as deleted", deleted_count);
+            tracing::warn!("Marked {} missing files as deleted", deleted_count);
         }
 
         Ok(deleted_count)

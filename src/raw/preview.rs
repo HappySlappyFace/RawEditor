@@ -43,7 +43,7 @@ fn generate_full_preview_blocking(
         file.write_all(&jpeg_data)
             .map_err(|e| format!("Failed to write preview: {}", e))?;
         
-        println!("📸 Generated full preview: {}", preview_path.display());
+        tracing::debug!("Generated full preview: {}", preview_path.display());
         Ok(preview_path.to_string_lossy().to_string())
     } else {
         Err(format!("No embedded JPEG found in: {:?}", raw_path.file_name()))
@@ -63,13 +63,13 @@ fn extract_largest_jpeg(raw_path: &Path) -> Result<Option<Vec<u8>>, String> {
     
     // Try rawloader first (extracts largest JPEG)
     if let Some(jpeg) = extract_with_rawloader(raw_path)? {
-        println!("🔥 Extracted {:.1}MB JPEG using rawloader", jpeg.len() as f64 / 1024.0 / 1024.0);
+        tracing::debug!("Extracted {:.1}MB JPEG using rawloader", jpeg.len() as f64 / 1024.0 / 1024.0);
         return Ok(Some(jpeg));
     }
     
     // Fallback: scan for JPEG markers
     if let Some(jpeg) = scan_for_largest_jpeg(&buffer) {
-        println!("🔍 Found {:.1}MB JPEG via marker scan", jpeg.len() as f64 / 1024.0 / 1024.0);
+        tracing::debug!("Found {:.1}MB JPEG via marker scan", jpeg.len() as f64 / 1024.0 / 1024.0);
         return Ok(Some(jpeg));
     }
     

@@ -224,7 +224,7 @@ async fn load_database_async() -> Result<Vec<ImageData>, String> {
         let images = library.get_all_images()
             .map_err(|e| format!("Failed to load images: {:?}", e))?;
         
-        println!("🎨 RAW Editor initialized with {} images", images.len());
+        tracing::info!("RAW Editor initialized with {} images", images.len());
         
         Ok(images)
     })
@@ -246,7 +246,7 @@ impl RawEditor {
     /// Phase 23: Create a new instance of the application (INSTANT!)
     /// The database now loads in the background to show splash screen immediately
     pub fn new() -> (Self, Task<Message>) {
-        println!("🚀 RAW Editor starting (instant splash screen)...");
+        tracing::info!("RAW Editor starting (instant splash screen)...");
         
         // Initialize preview cache directory (fast)
         let preview_cache_dir = raw::preview::get_preview_cache_dir();
@@ -343,7 +343,7 @@ impl RawEditor {
             stack.push(params_to_push);
             *index += 1;
             
-            println!("📝 History Commit: Stack size {}, Index {}", stack.len(), *index);
+            tracing::debug!("History Commit: Stack size {}, Index {}", stack.len(), *index);
         }
     }
 
@@ -427,9 +427,9 @@ impl RawEditor {
         if let Some(library) = &self.library {
             if let Some(image_id) = self.selected_image_id {
                 if let Err(e) = library.save_edit_params(image_id, &self.current_edit_params) {
-                    eprintln!("⚠️  Failed to save edits for image {}: {:?}", image_id, e);
+                    tracing::error!("Failed to save edits for image {}: {:?}", image_id, e);
                 } else {
-                    println!("💾 Saved edits for image {}", image_id);
+                    tracing::info!("Saved edits for image {}", image_id);
                 }
             }
         }

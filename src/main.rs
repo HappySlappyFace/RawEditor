@@ -13,6 +13,7 @@ mod database;
 use iced::Font;
 
 pub fn main() -> iced::Result {
+    let _guard = core::logging::init();
     iced::application(
         app::state::RawEditor::title,
         app::update::update,

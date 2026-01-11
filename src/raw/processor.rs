@@ -43,7 +43,7 @@ pub fn process_image(
     let jpeg_data = extract_largest_jpeg(raw_path)
         .ok_or_else(|| format!("Failed to extract JPEG from {:?}", raw_path.file_name()))?;
     
-    println!("📦 Extracted {}KB JPEG from {:?}", 
+    tracing::debug!("Extracted {}KB JPEG from {:?}", 
              jpeg_data.len() / 1024, 
              raw_path.file_name().unwrap_or_default());
     
@@ -51,14 +51,14 @@ pub fn process_image(
     let img = image::load_from_memory_with_format(&jpeg_data, ImageFormat::Jpeg)
         .map_err(|e| format!("Failed to decode JPEG: {}", e))?;
     
-    println!("   Original size: {}x{}", img.width(), img.height());
+    tracing::debug!("   Original size: {}x{}", img.width(), img.height());
     
     // Step 3: Generate all 3 tiers from this single JPEG
     let thumb_path = generate_tier(&img, TIER_THUMB, "thumb", image_id)?;
     let instant_path = generate_tier(&img, TIER_INSTANT, "instant", image_id)?;
     let working_path = generate_tier(&img, TIER_WORKING, "working", image_id)?;
     
-    println!("✅ Generated 3 cache tiers for image {}", image_id);
+    tracing::info!("Generated 3 cache tiers for image {}", image_id);
     
     Ok((thumb_path, instant_path, working_path))
 }
@@ -81,7 +81,7 @@ fn generate_tier(
     resized.save(&file_path)
         .map_err(|e| format!("Failed to save {} tier: {}", tier_name, e))?;
     
-    println!("   → {}px tier: {}", target_width, file_path.display());
+    tracing::debug!("   → {}px tier: {}", target_width, file_path.display());
     
     // Return as string (for database storage)
     Ok(file_path.to_string_lossy().to_string())

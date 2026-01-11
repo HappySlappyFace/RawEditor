@@ -147,7 +147,7 @@ impl SharedContext {
             ..Default::default()
         });
         
-        println!("✅ SharedContext initialized successfully");
+        tracing::info!("SharedContext initialized successfully");
         
         Ok(Self {
             device,
@@ -209,7 +209,7 @@ impl ImageResources {
         let histogram_width = HISTOGRAM_WIDTH;
         let histogram_height = (histogram_width as f32 / aspect_ratio) as u32;
         
-        println!("📐 Image {}x{}, Preview {}x{}, Histogram {}x{}", 
+        tracing::debug!("Image {}x{}, Preview {}x{}, Histogram {}x{}", 
             width, height, preview_width, preview_height, histogram_width, histogram_height);
         
         // Create texture for RAW data

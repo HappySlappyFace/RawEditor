@@ -96,7 +96,7 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
         let bottom = raw_image.crops[2];
         let left = raw_image.crops[3];
         
-        println!("✂️  Applying crop margins: top={}, right={}, bottom={}, left={}", top, right, bottom, left);
+        tracing::debug!("Applying crop margins: top={}, right={}, bottom={}, left={}", top, right, bottom, left);
         
         let full_width = raw_image.width;
         let full_height = raw_image.height;
@@ -106,7 +106,7 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
         let crop_height = full_height.saturating_sub(top + bottom);
         
         if crop_width == 0 || crop_height == 0 {
-            println!("⚠️  Crop resulted in empty image, using full sensor dump");
+            tracing::warn!("Crop resulted in empty image, using full sensor dump");
             (full_data, full_width as u32, full_height as u32)
         } else {
             let mut cropped_data = Vec::with_capacity(crop_width * crop_height);
@@ -127,7 +127,7 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
         }
     } else {
         // No crop, use full image
-        println!("⚠️  No crop data found, using full sensor dump");
+        tracing::warn!("No crop data found, using full sensor dump");
         (full_data, raw_image.width as u32, raw_image.height as u32)
     };
     
@@ -140,7 +140,7 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
         raw_image.cfa.clone() // Pass rawloader's CFA pattern
     );
     
-    println!("📷 Loaded RAW data: {}x{} ({} pixels)", width, height, data.len());
+    tracing::info!("Loaded RAW data: {}x{} ({} pixels)", width, height, data.len());
     
     // Use the measured black levels for the pipeline (converted to u32)
     // This ensures they are in the correct [R, G1, G2, B] order and match the actual data
@@ -169,7 +169,7 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
         ]
     } else {
         // Fallback: neutral (no correction)
-        println!("⚠️  No white balance data found, using neutral [1.0, 1.0, 1.0, 1.0]");
+        tracing::warn!("No white balance data found, using neutral [1.0, 1.0, 1.0, 1.0]");
         [1.0, 1.0, 1.0, 1.0]
     };
     
@@ -194,7 +194,7 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
     
     let xyz_to_cam_matrix: [f32; 9] = if has_matrix {
         // Extract first 3 columns (4th column is usually white point info)
-        println!("🎨 Found xyz_to_cam matrix from camera");
+        tracing::debug!("Found xyz_to_cam matrix from camera");
         [
             xyz_cam[0][0], xyz_cam[0][1], xyz_cam[0][2],  // Row 0
             xyz_cam[1][0], xyz_cam[1][1], xyz_cam[1][2],  // Row 1
@@ -202,7 +202,7 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
         ]
     } else {
         // No matrix available, use identity
-        println!("⚠️  No xyz_to_cam matrix found, using identity");
+        tracing::warn!("No xyz_to_cam matrix found, using identity");
         [
             1.0, 0.0, 0.0,
             0.0, 1.0, 0.0,
@@ -210,13 +210,13 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
         ]
     };
     
-    println!("🎨 White Balance: R={:.3}, G={:.3}, B={:.3}, G2={:.3}", 
+    tracing::debug!("White Balance: R={:.3}, G={:.3}, B={:.3}, G2={:.3}", 
         wb_normalized[0], wb_normalized[1], wb_normalized[2], wb_normalized[3]);
-    println!("🎨 XYZ-to-CAM Matrix: [{:.3}, {:.3}, {:.3}]", 
+    tracing::debug!("XYZ-to-CAM Matrix: [{:.3}, {:.3}, {:.3}]", 
         xyz_to_cam_matrix[0], xyz_to_cam_matrix[1], xyz_to_cam_matrix[2]);
-    println!("                     [{:.3}, {:.3}, {:.3}]", 
+    tracing::debug!("                     [{:.3}, {:.3}, {:.3}]", 
         xyz_to_cam_matrix[3], xyz_to_cam_matrix[4], xyz_to_cam_matrix[5]);
-    println!("                     [{:.3}, {:.3}, {:.3}]", 
+    tracing::debug!("                     [{:.3}, {:.3}, {:.3}]", 
         xyz_to_cam_matrix[6], xyz_to_cam_matrix[7], xyz_to_cam_matrix[8]);
     
     // Extract CFA pattern
@@ -233,12 +233,12 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
         "GBRG" => 2,
         "BGGR" => 3,
         _ => {
-            println!("⚠️  Unknown CFA pattern '{}', defaulting to RGGB (0)", cfa_name);
+            tracing::warn!("Unknown CFA pattern '{}', defaulting to RGGB (0)", cfa_name);
             0
         }
     };
     
-    println!("🎨 CFA Pattern: {} (Index: {})", cfa_name, cfa_pattern);
+    tracing::debug!("CFA Pattern: {} (Index: {})", cfa_name, cfa_pattern);
     
     // Extract Black and White Levels
     // Extract Black and White Levels
@@ -253,21 +253,21 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
     let max_value = *data.iter().max().unwrap_or(&0);
     let white_level = if max_value > 8191 {
         // 14-bit: max is 16383 (2^14 - 1)
-        println!("📸 Detected 14-bit RAW data (max value: {})", max_value);
+        tracing::debug!("Detected 14-bit RAW data (max value: {})", max_value);
         16383
     } else if max_value > 2047 {
         // 12-bit: max is 4095 (2^12 - 1)
-        println!("📸 Detected 12-bit RAW data (max value: {})", max_value);
+        tracing::debug!("Detected 12-bit RAW data (max value: {})", max_value);
         4095
     } else {
         // 10-bit: max is 1023 (2^10 - 1)
-        println!("📸 Detected 10-bit RAW data (max value: {})", max_value);
+        tracing::debug!("Detected 10-bit RAW data (max value: {})", max_value);
         1023
     };
     
-    println!("⚫ Black Levels: [{}, {}, {}, {}]", 
+    tracing::debug!("Black Levels: [{}, {}, {}, {}]", 
         black_levels[0], black_levels[1], black_levels[2], black_levels[3]);
-    println!("⚪ White Level: {} (sensor max, ignoring metadata white point {})", 
+    tracing::debug!("White Level: {} (sensor max, ignoring metadata white point {})", 
         white_level, 
         if !raw_image.whitelevels.is_empty() { raw_image.whitelevels[0] } else { 0 });
     
@@ -408,7 +408,7 @@ fn compute_cfa_black_levels_percentile(
     height: usize, 
     cfa: rawloader::CFA
 ) -> [f32; 4] {
-    println!("📊 Computing per-CFA black levels using P0.1 percentile on {}x{} cropped mosaic", width, height);
+    tracing::debug!("Computing per-CFA black levels using P0.1 percentile on {}x{} cropped mosaic", width, height);
     
     // Build histograms for each CFA phase (0-65535 range, but we'll use bins)
     const MAX_VALUE: usize = 65536;
@@ -447,7 +447,7 @@ fn compute_cfa_black_levels_percentile(
     for phase in 0..4 {
         let count = phase_counts[phase];
         if count == 0 {
-            println!("⚠️  Phase {} has no pixels!", phase);
+            tracing::warn!("Phase {} has no pixels!", phase);
             continue;
         }
         
@@ -490,7 +490,7 @@ fn compute_cfa_black_levels_percentile(
             if found_median { break; }
         }
         
-        println!("Phase {}: Min={}, P0.1={:.1}, P1={:.1}, P5={:.1}, Median={} (N={})", 
+        tracing::debug!("Phase {}: Min={}, P0.1={:.1}, P1={:.1}, P5={:.1}, Median={} (N={})", 
             phase, min_values[phase], p01_values[phase], p1_values[phase], 
             p5_values[phase], median_values[phase], count);
     }
@@ -522,11 +522,11 @@ fn compute_cfa_black_levels_percentile(
         ordered_blacks[2] = p01_values[2]; // G2 (1,0)
         ordered_blacks[3] = p01_values[0]; // B  (0,0)
     } else {
-        println!("⚠️  Unknown CFA pattern '{}', assuming RGGB mapping", pattern_name);
+        tracing::warn!("Unknown CFA pattern '{}', assuming RGGB mapping", pattern_name);
         ordered_blacks = p01_values;
     }
     
-    println!("📊 Measured Black Levels (P0.1): R={:.1}, G1={:.1}, G2={:.1}, B={:.1}", 
+    tracing::debug!("Measured Black Levels (P0.1): R={:.1}, G1={:.1}, G2={:.1}, B={:.1}", 
         ordered_blacks[0], ordered_blacks[1], ordered_blacks[2], ordered_blacks[3]);
         
     ordered_blacks

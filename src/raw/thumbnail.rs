@@ -34,7 +34,7 @@ pub fn generate_thumbnail_fast(raw_path: &Path, image_id: i64) -> Option<PathBuf
     // Tier 2: Extended embedded JPEG search (512KB)
     if let Some(thumbnail_data) = extract_embedded_jpeg_extended(raw_path) {
         if let Some(path) = save_thumbnail(thumbnail_data, image_id) {
-            println!("📸 Generated thumbnail (tier 2): {}", path.display());
+            tracing::debug!("Generated thumbnail (tier 2): {}", path.display());
             return Some(path);
         }
     }
@@ -42,7 +42,7 @@ pub fn generate_thumbnail_fast(raw_path: &Path, image_id: i64) -> Option<PathBuf
     // Tier 3: Full embedded JPEG search (5MB)
     if let Some(thumbnail_data) = extract_embedded_jpeg_full(raw_path) {
         if let Some(path) = save_thumbnail(thumbnail_data, image_id) {
-            println!("📸 Generated thumbnail (tier 3): {}", path.display());
+            tracing::debug!("Generated thumbnail (tier 3): {}", path.display());
             return Some(path);
         }
     }
@@ -56,14 +56,14 @@ pub fn generate_thumbnail_fast(raw_path: &Path, image_id: i64) -> Option<PathBuf
 pub fn generate_thumbnail_slow(raw_path: &Path, image_id: i64) -> Option<PathBuf> {
     // Tier 4: Decode actual RAW data (slowest but always works)
     if let Some(path) = decode_raw_to_thumbnail(raw_path, image_id) {
-        println!("🔥 Generated thumbnail from RAW decode: {}", path.display());
+        tracing::info!("Generated thumbnail from RAW decode: {}", path.display());
         return Some(path);
     }
     
-    eprintln!("❌ All methods failed for: {:?}", raw_path.file_name());
-    eprintln!("   File exists: {}", raw_path.exists());
-    eprintln!("   File size: {:?}", std::fs::metadata(raw_path).ok().map(|m| m.len()));
-    eprintln!("   Suggestion: File might be corrupted. Try re-importing or deleting it.");
+    tracing::error!("All methods failed for: {:?}", raw_path.file_name());
+    tracing::error!("   File exists: {}", raw_path.exists());
+    tracing::error!("   File size: {:?}", std::fs::metadata(raw_path).ok().map(|m| m.len()));
+    tracing::error!("   Suggestion: File might be corrupted. Try re-importing or deleting it.");
     None
 }
 
@@ -82,7 +82,7 @@ fn save_thumbnail(jpeg_data: Vec<u8>, image_id: i64) -> Option<PathBuf> {
     // Save to disk
     thumbnail.save(&thumbnail_path).ok()?;
     
-    println!("📸 Generated thumbnail: {}", thumbnail_path.display());
+    tracing::debug!("Generated thumbnail: {}", thumbnail_path.display());
     Some(thumbnail_path)
 }
 
@@ -198,7 +198,7 @@ fn decode_raw_to_thumbnail(raw_path: &Path, image_id: i64) -> Option<PathBuf> {
             let thumbnail_path = cache_dir.join(format!("{}.jpg", image_id));
             
             if thumbnail.save(&thumbnail_path).is_ok() {
-                println!("🔥 RAW decode: Found {}KB JPEG in file", size / 1024);
+                tracing::debug!("RAW decode: Found {}KB JPEG in file", size / 1024);
                 return Some(thumbnail_path);
             }
         }

@@ -211,11 +211,11 @@ impl RenderPipeline {
         let histogram_width = HISTOGRAM_WIDTH;
         let histogram_height = (histogram_width as f32 / aspect_ratio) as u32;
         
-        println!("📐 Full resolution: {}x{}", width, height);
-        println!("📐 Preview resolution: {}x{} ({:.1}% of full)", 
+        tracing::debug!("Full resolution: {}x{}", width, height);
+        tracing::debug!("Preview resolution: {}x{} ({:.1}% of full)", 
             preview_width, preview_height,
             (preview_width * preview_height) as f32 / (width * height) as f32 * 100.0);
-        println!("📐 Histogram resolution: {}x{} ({:.3}% of full)", 
+        tracing::debug!("Histogram resolution: {}x{} ({:.3}% of full)", 
             histogram_width, histogram_height,
             (histogram_width * histogram_height) as f32 / (width * height) as f32 * 100.0);
         
@@ -275,7 +275,7 @@ impl RenderPipeline {
         
         if unpadded_bytes_per_row == padded_bytes_per_row {
             // Already aligned, upload directly
-            println!("💾 Uploading {} bytes of RAW u16 data to GPU (Aligned)", raw_bytes.len());
+            tracing::debug!("Uploading {} bytes of RAW u16 data to GPU (Aligned)", raw_bytes.len());
             queue.write_texture(
                 wgpu::ImageCopyTexture {
                     texture: &texture,
@@ -293,7 +293,7 @@ impl RenderPipeline {
             );
         } else {
             // Need to pad rows
-            println!("💾 Uploading RAW u16 data with padding (Row: {} -> {})", unpadded_bytes_per_row, padded_bytes_per_row);
+            tracing::debug!("Uploading RAW u16 data with padding (Row: {} -> {})", unpadded_bytes_per_row, padded_bytes_per_row);
             let mut padded_data = Vec::with_capacity((padded_bytes_per_row * height) as usize);
             for y in 0..height {
                 let start = (y * unpadded_bytes_per_row) as usize;
@@ -319,7 +319,7 @@ impl RenderPipeline {
                 texture_size,
             );
         }
-        println!("✅ RAW texture uploaded to GPU!");
+        tracing::debug!("RAW texture uploaded to GPU!");
         
         let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         
@@ -672,7 +672,7 @@ impl RenderPipeline {
         let target_width = (self.width as f32 * crop_w) as u32;
         let target_height = (self.height as f32 * crop_h) as u32;
         
-        println!("📷 Exporting crop: {}x{} (Original: {}x{})", target_width, target_height, self.width, self.height);
+        tracing::info!("Exporting crop: {}x{} (Original: {}x{})", target_width, target_height, self.width, self.height);
 
         // Create FULL-SIZED (or cropped) output texture
         let output_texture = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -765,7 +765,7 @@ impl RenderPipeline {
                     if end <= data.len() {
                         output.extend_from_slice(&data[start..end]);
                     } else {
-                        println!("⚠️  Export buffer underrun at row {}", y);
+                        tracing::warn!("Export buffer underrun at row {}", y);
                     }
                 }
                 
@@ -774,11 +774,11 @@ impl RenderPipeline {
                 Ok(output)
             }
             Ok(Err(e)) => {
-                println!("❌ GPU Readback failed: {:?}", e);
+                tracing::error!("GPU Readback failed: {:?}", e);
                 Err(format!("GPU Readback failed: {:?}", e))
             }
             Err(e) => {
-                println!("❌ GPU Readback channel error: {:?}", e);
+                tracing::error!("GPU Readback channel error: {:?}", e);
                 Err(format!("GPU Readback channel error: {:?}", e))
             }
         }

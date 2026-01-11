@@ -109,7 +109,7 @@ pub fn handle_export_raw_loaded(editor: &mut RawEditor, image_id: i64, result: R
                 (&editor.editor_readiness, &editor.gpu_context, &editor.image_resources) 
             {
                 if *ready_id == image_id {
-                    println!("✅ Exporting currently loaded image directly");
+                    tracing::info!("Exporting currently loaded image directly");
                     
                     let crop = editor.current_edit_params.crop;
                     let crop_w = crop[2];
@@ -133,7 +133,7 @@ pub fn handle_export_raw_loaded(editor: &mut RawEditor, image_id: i64, result: R
                 }
             }
             
-            println!("🔨 Creating ImageResources for export (image {})", image_id);
+            tracing::info!("Creating ImageResources for export (image {})", image_id);
             
             let params = editor.current_edit_params.clone();
             let ctx = editor.gpu_context.clone();
@@ -206,11 +206,11 @@ pub fn handle_export_pipeline_ready(editor: &mut RawEditor, image_id: i64, resul
 pub fn handle_export_save_complete(editor: &mut RawEditor, _id: i64, result: Result<PathBuf, String>) -> Task<Message> {
     match result {
         Ok(path) => {
-            println!("✅ Export saved successfully: {}", path.display());
+            tracing::info!("Export saved successfully: {}", path.display());
             editor.status = format!("Saved: {}", path.display());
         }
         Err(e) => {
-            println!("❌ Export save failed: {}", e);
+            tracing::error!("Export save failed: {}", e);
             editor.status = format!("Save failed: {}", e);
         }
     }

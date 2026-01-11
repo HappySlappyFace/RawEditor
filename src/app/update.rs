@@ -59,7 +59,7 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::ToggleBeforeAfter => { editor.show_before = !editor.show_before; editor.histogram_cache.clear(); Task::none() },
         Message::ModifiersChanged(m) => { editor.last_modifiers = m; Task::none() },
         Message::SetMinRating(r) => { editor.min_filter_rating = r; Task::none() },
-        Message::DeleteImage => { println!("Delete image requested (not implemented yet)"); Task::none() },
+        Message::DeleteImage => { tracing::warn!("Delete image requested (not implemented yet)"); Task::none() },
         
         // Export
         Message::SetExportFormat(f) => handlers::export::handle_set_export_format(editor, f),
