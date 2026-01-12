@@ -11,13 +11,13 @@ pub fn get_thumbnail_cache_dir() -> PathBuf {
     let mut path = dirs_next::cache_dir()
         .or_else(|| dirs_next::home_dir())
         .expect("Could not determine cache directory");
-    
+
     path.push("raw-editor");
     path.push("thumbnails");
-    
+
     // Ensure the directory exists
     fs::create_dir_all(&path).expect("Failed to create thumbnail cache directory");
-    
+
     path
 }
 
@@ -30,7 +30,7 @@ pub fn generate_thumbnail_fast(raw_path: &Path, image_id: i64) -> Option<PathBuf
             return Some(path);
         }
     }
-    
+
     // Tier 2: Extended embedded JPEG search (512KB)
     if let Some(thumbnail_data) = extract_embedded_jpeg_extended(raw_path) {
         if let Some(path) = save_thumbnail(thumbnail_data, image_id) {
@@ -38,7 +38,7 @@ pub fn generate_thumbnail_fast(raw_path: &Path, image_id: i64) -> Option<PathBuf
             return Some(path);
         }
     }
-    
+
     // Tier 3: Full embedded JPEG search (5MB)
     if let Some(thumbnail_data) = extract_embedded_jpeg_full(raw_path) {
         if let Some(path) = save_thumbnail(thumbnail_data, image_id) {
@@ -46,7 +46,7 @@ pub fn generate_thumbnail_fast(raw_path: &Path, image_id: i64) -> Option<PathBuf
             return Some(path);
         }
     }
-    
+
     // Fast methods didn't work - needs slow tier 4 processing
     None
 }
@@ -59,10 +59,13 @@ pub fn generate_thumbnail_slow(raw_path: &Path, image_id: i64) -> Option<PathBuf
         tracing::info!("Generated thumbnail from RAW decode: {}", path.display());
         return Some(path);
     }
-    
+
     tracing::error!("All methods failed for: {:?}", raw_path.file_name());
     tracing::error!("   File exists: {}", raw_path.exists());
-    tracing::error!("   File size: {:?}", std::fs::metadata(raw_path).ok().map(|m| m.len()));
+    tracing::error!(
+        "   File size: {:?}",
+        std::fs::metadata(raw_path).ok().map(|m| m.len())
+    );
     tracing::error!("   Suggestion: File might be corrupted. Try re-importing or deleting it.");
     None
 }
@@ -71,17 +74,17 @@ pub fn generate_thumbnail_slow(raw_path: &Path, image_id: i64) -> Option<PathBuf
 fn save_thumbnail(jpeg_data: Vec<u8>, image_id: i64) -> Option<PathBuf> {
     // Decode the JPEG
     let img = image::load_from_memory_with_format(&jpeg_data, ImageFormat::Jpeg).ok()?;
-    
+
     // Resize to thumbnail size
     let thumbnail = img.resize(THUMBNAIL_SIZE, THUMBNAIL_SIZE, FilterType::Lanczos3);
-    
+
     // Generate thumbnail filename
     let cache_dir = get_thumbnail_cache_dir();
     let thumbnail_path = cache_dir.join(format!("{}.jpg", image_id));
-    
+
     // Save to disk
     thumbnail.save(&thumbnail_path).ok()?;
-    
+
     tracing::debug!("Generated thumbnail: {}", thumbnail_path.display());
     Some(thumbnail_path)
 }
@@ -105,12 +108,12 @@ fn extract_embedded_jpeg_full(raw_path: &Path) -> Option<Vec<u8>> {
 /// Core JPEG extraction logic
 fn extract_jpeg_from_raw(raw_path: &Path, max_bytes: usize, min_size: usize) -> Option<Vec<u8>> {
     use std::io::Read;
-    
+
     let mut file = std::fs::File::open(raw_path).ok()?;
     let mut data = vec![0u8; max_bytes];
     let bytes_read = file.read(&mut data).ok()?;
     data.truncate(bytes_read);
-    
+
     extract_jpeg_from_data(&data, min_size)
 }
 
@@ -118,7 +121,7 @@ fn extract_jpeg_from_raw(raw_path: &Path, max_bytes: usize, min_size: usize) -> 
 fn extract_jpeg_from_data(data: &[u8], min_size: usize) -> Option<Vec<u8>> {
     let jpeg_start = [0xFF, 0xD8];
     let jpeg_end = [0xFF, 0xD9];
-    
+
     // Find JPEG start positions - stop after finding a few
     let mut jpeg_starts = Vec::new();
     for (i, window) in data.windows(2).enumerate() {
@@ -129,7 +132,7 @@ fn extract_jpeg_from_data(data: &[u8], min_size: usize) -> Option<Vec<u8>> {
             }
         }
     }
-    
+
     // Return first JPEG that's large enough
     for &start in &jpeg_starts {
         if let Some(end_offset) = data[start..]
@@ -138,13 +141,13 @@ fn extract_jpeg_from_data(data: &[u8], min_size: usize) -> Option<Vec<u8>> {
         {
             let end = start + end_offset + 1;
             let size = end - start + 1;
-            
+
             if size > min_size {
                 return Some(data[start..=end].to_vec());
             }
         }
     }
-    
+
     None
 }
 
@@ -162,18 +165,18 @@ pub fn thumbnail_exists(image_id: i64) -> bool {
 /// Decode RAW file and generate thumbnail using rawloader's JPEG extraction
 fn decode_raw_to_thumbnail(raw_path: &Path, image_id: i64) -> Option<PathBuf> {
     use std::io::Read;
-    
+
     // Try reading entire file and extracting ALL JPEGs (no size limit)
     let mut file = std::fs::File::open(raw_path).ok()?;
     let mut data = Vec::new();
     file.read_to_end(&mut data).ok()?;
-    
+
     // Search for ALL embedded JPEGs with NO size filter
     let jpeg_start = [0xFF, 0xD8];
     let jpeg_end = [0xFF, 0xD9];
-    
+
     let mut all_jpegs = Vec::new();
-    
+
     // Find all JPEG boundaries
     for (i, window) in data.windows(2).enumerate() {
         if window == jpeg_start {
@@ -185,10 +188,10 @@ fn decode_raw_to_thumbnail(raw_path: &Path, image_id: i64) -> Option<PathBuf> {
             }
         }
     }
-    
+
     // Try JPEGs from largest to smallest
     all_jpegs.sort_by(|a, b| b.0.cmp(&a.0));
-    
+
     for (size, jpeg_data) in all_jpegs {
         // Try to decode this JPEG
         if let Ok(img) = image::load_from_memory_with_format(&jpeg_data, ImageFormat::Jpeg) {
@@ -196,14 +199,13 @@ fn decode_raw_to_thumbnail(raw_path: &Path, image_id: i64) -> Option<PathBuf> {
             let thumbnail = img.resize(THUMBNAIL_SIZE, THUMBNAIL_SIZE, FilterType::Lanczos3);
             let cache_dir = get_thumbnail_cache_dir();
             let thumbnail_path = cache_dir.join(format!("{}.jpg", image_id));
-            
+
             if thumbnail.save(&thumbnail_path).is_ok() {
                 tracing::debug!("RAW decode: Found {}KB JPEG in file", size / 1024);
                 return Some(thumbnail_path);
             }
         }
     }
-    
+
     None
 }
-

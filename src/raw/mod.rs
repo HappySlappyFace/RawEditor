@@ -1,3 +1,8 @@
+pub mod loader;
+pub mod preview;
+pub mod processor; // Phase 28: Multi-tier cache processor
+#[cfg(test)]
+mod tests;
 /// RAW image decoding module
 ///
 /// This module handles:
@@ -6,10 +11,4 @@
 /// - Generating full-size previews
 /// - Caching thumbnails and previews to disk
 /// - Loading raw sensor data for GPU processing
-
 pub mod thumbnail;
-pub mod preview;
-pub mod loader;
-pub mod processor;  // Phase 28: Multi-tier cache processor
-#[cfg(test)]
-mod tests;

@@ -7,11 +7,15 @@ fn test_normalization() {
     let black = 0;
     let white = 4095;
     let input = 2048;
-    
+
     let result = normalize_pixel(input, black, white);
-    
+
     // 2048 / 4095 = 0.500122...
-    assert!((result - 0.5).abs() < 0.001, "Expected approx 0.5, got {}", result);
+    assert!(
+        (result - 0.5).abs() < 0.001,
+        "Expected approx 0.5, got {}",
+        result
+    );
 }
 
 #[test]
@@ -21,9 +25,9 @@ fn test_black_level_subtraction() {
     let black = 100;
     let white = 4095;
     let input = 100;
-    
+
     let result = normalize_pixel(input, black, white);
-    
+
     assert_eq!(result, 0.0, "Expected 0.0 for input == black level");
 }
 
@@ -31,10 +35,10 @@ fn test_black_level_subtraction() {
 fn test_clipping() {
     let black = 100;
     let white = 4095;
-    
+
     // Below black
     assert_eq!(normalize_pixel(50, black, white), 0.0);
-    
+
     // Above white
     assert_eq!(normalize_pixel(5000, black, white), 1.0);
 }

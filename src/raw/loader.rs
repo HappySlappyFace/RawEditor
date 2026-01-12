@@ -2,7 +2,6 @@
 ///
 /// This module loads the actual sensor data from RAW files (not embedded JPEGs).
 /// The data is returned as raw u16 values which will be processed by the GPU.
-
 use std::path::Path;
 use tokio::task;
 
@@ -28,7 +27,7 @@ pub struct RawDataResult {
     pub cfa_name: String,
     /// Measured Black Levels from Optical Black [f32; 4]
     pub measured_black_levels: [f32; 4],
-    
+
     // Phase 60: Metadata
     pub make: String,
     pub model: String,
@@ -51,28 +50,27 @@ pub struct RawDataResult {
 /// * `Err(String)` - Error message if loading fails
 pub async fn load_raw_data(path: String) -> Result<RawDataResult, String> {
     // Spawn blocking because rawloader is CPU-intensive
-    task::spawn_blocking(move || {
-        load_raw_data_blocking(&path)
-    })
-    .await
-    .map_err(|e| format!("Task join error: {}", e))?
+    task::spawn_blocking(move || load_raw_data_blocking(&path))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
 }
 
 /// Blocking implementation of RAW data loading
 fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
     let path = Path::new(path);
-    
+
     // Verify file exists
     if !path.exists() {
         return Err(format!("File not found: {}", path.display()));
     }
-    
+
     let decoder = rawloader::RawLoader::new();
-    
+
     // Decode the RAW file (rawloader expects &Path)
-    let raw_image = decoder.decode_file(path)
+    let raw_image = decoder
+        .decode_file(path)
         .map_err(|e| format!("Failed to decode RAW: {:?}", e))?;
-    
+
     // Extract raw sensor data (full buffer)
     // rawloader returns data in different formats, we need to normalize to u16
     let full_data: Vec<u16> = match &raw_image.data {
@@ -82,12 +80,13 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
         }
         rawloader::RawImageData::Float(values) => {
             // Convert f32 (0.0-1.0) to u16 (0-65535)
-            values.iter()
+            values
+                .iter()
                 .map(|&v| (v * 65535.0).clamp(0.0, 65535.0) as u16)
                 .collect()
         }
     };
-    
+
     // Phase 40: Apply Crop (Active Area) FIRST
     // rawloader.crops is [top, right, bottom, left] in pixels to be removed
     let (data, width, height) = if raw_image.crops.len() == 4 {
@@ -95,34 +94,42 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
         let right = raw_image.crops[1];
         let bottom = raw_image.crops[2];
         let left = raw_image.crops[3];
-        
-        tracing::debug!("Applying crop margins: top={}, right={}, bottom={}, left={}", top, right, bottom, left);
-        
+
+        tracing::debug!(
+            "Applying crop margins: top={}, right={}, bottom={}, left={}",
+            top,
+            right,
+            bottom,
+            left
+        );
+
         let full_width = raw_image.width;
         let full_height = raw_image.height;
-        
+
         // Calculate active area dimensions
         let crop_width = full_width.saturating_sub(left + right);
         let crop_height = full_height.saturating_sub(top + bottom);
-        
+
         if crop_width == 0 || crop_height == 0 {
             tracing::warn!("Crop resulted in empty image, using full sensor dump");
             (full_data, full_width as u32, full_height as u32)
         } else {
             let mut cropped_data = Vec::with_capacity(crop_width * crop_height);
-            
+
             for y in 0..crop_height {
                 let src_y = top + y;
-                if src_y >= full_height { break; }
-                
+                if src_y >= full_height {
+                    break;
+                }
+
                 let src_start = src_y * full_width + left;
                 let src_end = src_start + crop_width;
-                
+
                 if src_end <= full_data.len() {
                     cropped_data.extend_from_slice(&full_data[src_start..src_end]);
                 }
             }
-            
+
             (cropped_data, crop_width as u32, crop_height as u32)
         }
     } else {
@@ -130,18 +137,23 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
         tracing::warn!("No crop data found, using full sensor dump");
         (full_data, raw_image.width as u32, raw_image.height as u32)
     };
-    
+
     // Phase 43: Compute per-CFA black levels from cropped mosaic (Step 3 of checklist)
     // We do this AFTER cropping to analyze the actual active image data
     let measured_black_levels = compute_cfa_black_levels_percentile(
-        &data, 
-        width as usize, 
-        height as usize, 
-        raw_image.cfa.clone() // Pass rawloader's CFA pattern
+        &data,
+        width as usize,
+        height as usize,
+        raw_image.cfa.clone(), // Pass rawloader's CFA pattern
     );
-    
-    tracing::info!("Loaded RAW data: {}x{} ({} pixels)", width, height, data.len());
-    
+
+    tracing::info!(
+        "Loaded RAW data: {}x{} ({} pixels)",
+        width,
+        height,
+        data.len()
+    );
+
     // Use the measured black levels for the pipeline (converted to u32)
     // This ensures they are in the correct [R, G1, G2, B] order and match the actual data
     let black_levels = [
@@ -172,7 +184,7 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
         tracing::warn!("No white balance data found, using neutral [1.0, 1.0, 1.0, 1.0]");
         [1.0, 1.0, 1.0, 1.0]
     };
-    
+
     // Normalize white balance (divide by green to make green = 1.0)
     let g_ref = wb_multipliers[1].max(0.001); // Avoid division by zero
     let wb_normalized = [
@@ -182,43 +194,62 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
         if wb_multipliers[3].is_finite() && wb_multipliers[3] > 0.0 {
             wb_multipliers[3] / g_ref
         } else {
-            wb_multipliers[1] / g_ref  // Use same as G1 if G2 is invalid
+            wb_multipliers[1] / g_ref // Use same as G1 if G2 is invalid
         },
     ];
-    
+
     // Extract xyz_to_cam matrix (3x3) from camera metadata
     // Phase 15: Return the actual matrix, will be converted to cam_to_srgb in main.rs
     // rawloader provides xyz_to_cam as [3][4], we only need first 3 columns
     let xyz_cam = &raw_image.xyz_to_cam;
     let has_matrix = xyz_cam[0][0] != 0.0 || xyz_cam[1][1] != 0.0;
-    
+
     let xyz_to_cam_matrix: [f32; 9] = if has_matrix {
         // Extract first 3 columns (4th column is usually white point info)
         tracing::debug!("Found xyz_to_cam matrix from camera");
         [
-            xyz_cam[0][0], xyz_cam[0][1], xyz_cam[0][2],  // Row 0
-            xyz_cam[1][0], xyz_cam[1][1], xyz_cam[1][2],  // Row 1
-            xyz_cam[2][0], xyz_cam[2][1], xyz_cam[2][2],  // Row 2
+            xyz_cam[0][0],
+            xyz_cam[0][1],
+            xyz_cam[0][2], // Row 0
+            xyz_cam[1][0],
+            xyz_cam[1][1],
+            xyz_cam[1][2], // Row 1
+            xyz_cam[2][0],
+            xyz_cam[2][1],
+            xyz_cam[2][2], // Row 2
         ]
     } else {
         // No matrix available, use identity
         tracing::warn!("No xyz_to_cam matrix found, using identity");
-        [
-            1.0, 0.0, 0.0,
-            0.0, 1.0, 0.0,
-            0.0, 0.0, 1.0,
-        ]
+        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
     };
-    
-    tracing::debug!("White Balance: R={:.3}, G={:.3}, B={:.3}, G2={:.3}", 
-        wb_normalized[0], wb_normalized[1], wb_normalized[2], wb_normalized[3]);
-    tracing::debug!("XYZ-to-CAM Matrix: [{:.3}, {:.3}, {:.3}]", 
-        xyz_to_cam_matrix[0], xyz_to_cam_matrix[1], xyz_to_cam_matrix[2]);
-    tracing::debug!("                     [{:.3}, {:.3}, {:.3}]", 
-        xyz_to_cam_matrix[3], xyz_to_cam_matrix[4], xyz_to_cam_matrix[5]);
-    tracing::debug!("                     [{:.3}, {:.3}, {:.3}]", 
-        xyz_to_cam_matrix[6], xyz_to_cam_matrix[7], xyz_to_cam_matrix[8]);
-    
+
+    tracing::debug!(
+        "White Balance: R={:.3}, G={:.3}, B={:.3}, G2={:.3}",
+        wb_normalized[0],
+        wb_normalized[1],
+        wb_normalized[2],
+        wb_normalized[3]
+    );
+    tracing::debug!(
+        "XYZ-to-CAM Matrix: [{:.3}, {:.3}, {:.3}]",
+        xyz_to_cam_matrix[0],
+        xyz_to_cam_matrix[1],
+        xyz_to_cam_matrix[2]
+    );
+    tracing::debug!(
+        "                     [{:.3}, {:.3}, {:.3}]",
+        xyz_to_cam_matrix[3],
+        xyz_to_cam_matrix[4],
+        xyz_to_cam_matrix[5]
+    );
+    tracing::debug!(
+        "                     [{:.3}, {:.3}, {:.3}]",
+        xyz_to_cam_matrix[6],
+        xyz_to_cam_matrix[7],
+        xyz_to_cam_matrix[8]
+    );
+
     // Extract CFA pattern
     // rawloader provides a string name like "RGGB", "GRBG", etc.
     // We map this to an integer for the GPU shader:
@@ -237,15 +268,14 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
             0
         }
     };
-    
+
     tracing::debug!("CFA Pattern: {} (Index: {})", cfa_name, cfa_pattern);
-    
+
     // Extract Black and White Levels
     // Extract Black and White Levels
     // Old black level extraction logic removed in favor of measured black levels
     // which are guaranteed to be in correct [R, G1, G2, B] order.
 
-    
     // CRITICAL FIX: Use bit depth-based white level, not metadata white point
     // The metadata whitelevel is often the "clipping point" for this specific exposure,
     // but we need the full sensor range for proper normalization.
@@ -264,33 +294,49 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
         tracing::debug!("Detected 10-bit RAW data (max value: {})", max_value);
         1023
     };
-    
-    tracing::debug!("Black Levels: [{}, {}, {}, {}]", 
-        black_levels[0], black_levels[1], black_levels[2], black_levels[3]);
-    tracing::debug!("White Level: {} (sensor max, ignoring metadata white point {})", 
-        white_level, 
-        if !raw_image.whitelevels.is_empty() { raw_image.whitelevels[0] } else { 0 });
-    
+
+    tracing::debug!(
+        "Black Levels: [{}, {}, {}, {}]",
+        black_levels[0],
+        black_levels[1],
+        black_levels[2],
+        black_levels[3]
+    );
+    tracing::debug!(
+        "White Level: {} (sensor max, ignoring metadata white point {})",
+        white_level,
+        if !raw_image.whitelevels.is_empty() {
+            raw_image.whitelevels[0]
+        } else {
+            0
+        }
+    );
+
     // Phase 60: Extract EXIF metadata
     let metadata = extract_metadata(path.to_str().unwrap_or_default());
-    
+
     Ok(RawDataResult {
         data,
         width,
         height,
         wb_multipliers: wb_normalized,
-        color_matrix: xyz_to_cam_matrix,  // Return xyz_to_cam, will convert in main.rs
+        color_matrix: xyz_to_cam_matrix, // Return xyz_to_cam, will convert in main.rs
         cfa_pattern,
         black_levels,
         white_level,
         crops: if raw_image.crops.len() == 4 {
-            [raw_image.crops[0], raw_image.crops[1], raw_image.crops[2], raw_image.crops[3]]
+            [
+                raw_image.crops[0],
+                raw_image.crops[1],
+                raw_image.crops[2],
+                raw_image.crops[3],
+            ]
         } else {
             [0, 0, 0, 0]
         },
         cfa_name: raw_image.cfa.name.clone(),
         measured_black_levels,
-        
+
         // Phase 60: Metadata extraction
         make: raw_image.make.clone(),
         model: raw_image.model.clone(),
@@ -312,13 +358,15 @@ fn extract_metadata(path: &str) -> (String, String, String, String) {
     if let Ok(file) = std::fs::File::open(path) {
         let mut bufreader = std::io::BufReader::new(&file);
         let reader = exif::Reader::new();
-        
+
         if let Ok(exif_data) = reader.read_from_container(&mut bufreader) {
             // ISO
-            if let Some(field) = exif_data.get_field(exif::Tag::PhotographicSensitivity, exif::In::PRIMARY) {
+            if let Some(field) =
+                exif_data.get_field(exif::Tag::PhotographicSensitivity, exif::In::PRIMARY)
+            {
                 iso = field.display_value().to_string();
             }
-            
+
             // Shutter Speed
             if let Some(field) = exif_data.get_field(exif::Tag::ExposureTime, exif::In::PRIMARY) {
                 let val = field.display_value().to_string();
@@ -326,14 +374,14 @@ fn extract_metadata(path: &str) -> (String, String, String, String) {
                 // Actually, let's just keep the number/fraction.
                 shutter = val.replace(" s", "");
             }
-            
+
             // Aperture
             if let Some(field) = exif_data.get_field(exif::Tag::FNumber, exif::In::PRIMARY) {
                 let val = field.display_value().to_string();
                 // Remove "f/" if present
                 aperture = val.replace("f/", "");
             }
-            
+
             // Lens Model
             // Search in all IFDs (including MakerNote)
             // for f in exif_data.fields() {
@@ -344,18 +392,22 @@ fn extract_metadata(path: &str) -> (String, String, String, String) {
             //          }
             //     }
             // }
-            
+
             // Clean up quotes if present
             // lens = lens.trim_matches('"').to_string();
         }
     }
-    
+
     // Fallback to rexif if 'exif' failed or returned empty values (legacy support)
     if iso == "---" || shutter == "---" || aperture == "---" || lens == "---" {
         if let Ok(exif) = rexif::parse_file(path) {
             for entry in exif.entries {
                 match entry.tag {
-                    rexif::ExifTag::ISOSpeedRatings => if iso == "---" { iso = entry.value.to_string() },
+                    rexif::ExifTag::ISOSpeedRatings => {
+                        if iso == "---" {
+                            iso = entry.value.to_string()
+                        }
+                    }
                     rexif::ExifTag::ExposureTime => {
                         if shutter == "---" {
                             match entry.value {
@@ -375,7 +427,7 @@ fn extract_metadata(path: &str) -> (String, String, String, String) {
                                 _ => shutter = entry.value.to_string(),
                             }
                         }
-                    },
+                    }
                     rexif::ExifTag::FNumber => {
                         if aperture == "---" {
                             match entry.value {
@@ -388,8 +440,12 @@ fn extract_metadata(path: &str) -> (String, String, String, String) {
                                 _ => aperture = entry.value.to_string(),
                             }
                         }
-                    },
-                    rexif::ExifTag::LensModel => if lens == "---" { lens = entry.value.to_string() },
+                    }
+                    rexif::ExifTag::LensModel => {
+                        if lens == "---" {
+                            lens = entry.value.to_string()
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -399,17 +455,20 @@ fn extract_metadata(path: &str) -> (String, String, String, String) {
     (iso, shutter, aperture, lens)
 }
 
-
 /// Compute P0.1 percentile black level for each CFA phase from cropped mosaic
 /// This follows Step 3 of the diagnostic checklist exactly
 fn compute_cfa_black_levels_percentile(
-    data: &[u16], 
-    width: usize, 
-    height: usize, 
-    cfa: rawloader::CFA
+    data: &[u16],
+    width: usize,
+    height: usize,
+    cfa: rawloader::CFA,
 ) -> [f32; 4] {
-    tracing::debug!("Computing per-CFA black levels using P0.1 percentile on {}x{} cropped mosaic", width, height);
-    
+    tracing::debug!(
+        "Computing per-CFA black levels using P0.1 percentile on {}x{} cropped mosaic",
+        width,
+        height
+    );
+
     // Build histograms for each CFA phase (0-65535 range, but we'll use bins)
     const MAX_VALUE: usize = 65536;
     let mut phase_histograms: [Vec<u32>; 4] = [
@@ -418,54 +477,56 @@ fn compute_cfa_black_levels_percentile(
         vec![0; MAX_VALUE],
         vec![0; MAX_VALUE],
     ];
-    
+
     let mut phase_counts: [usize; 4] = [0, 0, 0, 0];
-    
+
     // Build histogram for each phase
     for y in 0..height {
         for x in 0..width {
             let idx = y * width + x;
-            if idx >= data.len() { break; }
-            
+            if idx >= data.len() {
+                break;
+            }
+
             let value = data[idx] as usize;
             let phase_idx = ((y & 1) << 1) | (x & 1);
-            
+
             if value < MAX_VALUE {
                 phase_histograms[phase_idx][value] += 1;
                 phase_counts[phase_idx] += 1;
             }
         }
     }
-    
+
     // Compute percentiles for each phase
-    let mut p01_values = [0.0; 4];  // 0.1%
-    let mut p1_values = [0.0; 4];   // 1%
-    let mut p5_values = [0.0; 4];   // 5%
+    let mut p01_values = [0.0; 4]; // 0.1%
+    let mut p1_values = [0.0; 4]; // 1%
+    let mut p5_values = [0.0; 4]; // 5%
     let mut min_values = [0; 4];
     let mut median_values = [0; 4];
-    
+
     for phase in 0..4 {
         let count = phase_counts[phase];
         if count == 0 {
             tracing::warn!("Phase {} has no pixels!", phase);
             continue;
         }
-        
-        let p01_threshold = (count as f64 * 0.001) as usize;  // 0.1%
-        let p1_threshold = (count as f64 * 0.01) as usize;    // 1%
-        let p5_threshold = (count as f64 * 0.05) as usize;    // 5%
+
+        let p01_threshold = (count as f64 * 0.001) as usize; // 0.1%
+        let p1_threshold = (count as f64 * 0.01) as usize; // 1%
+        let p5_threshold = (count as f64 * 0.05) as usize; // 5%
         let median_threshold = count / 2;
-        
+
         let mut cumsum = 0usize;
         let mut found_min = false;
         let mut found_p01 = false;
         let mut found_p1 = false;
         let mut found_p5 = false;
         let mut found_median = false;
-        
+
         for value in 0..MAX_VALUE {
             cumsum += phase_histograms[phase][value] as usize;
-            
+
             if !found_min && phase_histograms[phase][value] > 0 {
                 min_values[phase] = value;
                 found_min = true;
@@ -486,20 +547,29 @@ fn compute_cfa_black_levels_percentile(
                 median_values[phase] = value;
                 found_median = true;
             }
-            
-            if found_median { break; }
+
+            if found_median {
+                break;
+            }
         }
-        
-        tracing::debug!("Phase {}: Min={}, P0.1={:.1}, P1={:.1}, P5={:.1}, Median={} (N={})", 
-            phase, min_values[phase], p01_values[phase], p1_values[phase], 
-            p5_values[phase], median_values[phase], count);
+
+        tracing::debug!(
+            "Phase {}: Min={}, P0.1={:.1}, P1={:.1}, P5={:.1}, Median={} (N={})",
+            phase,
+            min_values[phase],
+            p01_values[phase],
+            p1_values[phase],
+            p5_values[phase],
+            median_values[phase],
+            count
+        );
     }
-    
+
     // Map phases to CFA colors based on pattern
     // rawloader CFA pattern names: "RGGB", "GRBG", "GBRG", "BGGR"
     let pattern_name = cfa.name.as_str();
     let mut ordered_blacks = [0.0; 4];
-    
+
     // Use P0.1 as the black level estimate
     if pattern_name == "RGGB" {
         ordered_blacks[0] = p01_values[0]; // R  (0,0)
@@ -522,14 +592,20 @@ fn compute_cfa_black_levels_percentile(
         ordered_blacks[2] = p01_values[2]; // G2 (1,0)
         ordered_blacks[3] = p01_values[0]; // B  (0,0)
     } else {
-        tracing::warn!("Unknown CFA pattern '{}', assuming RGGB mapping", pattern_name);
+        tracing::warn!(
+            "Unknown CFA pattern '{}', assuming RGGB mapping",
+            pattern_name
+        );
         ordered_blacks = p01_values;
     }
-    
-    tracing::debug!("Measured Black Levels (P0.1): R={:.1}, G1={:.1}, G2={:.1}, B={:.1}", 
-        ordered_blacks[0], ordered_blacks[1], ordered_blacks[2], ordered_blacks[3]);
-        
+
+    tracing::debug!(
+        "Measured Black Levels (P0.1): R={:.1}, G1={:.1}, G2={:.1}, B={:.1}",
+        ordered_blacks[0],
+        ordered_blacks[1],
+        ordered_blacks[2],
+        ordered_blacks[3]
+    );
+
     ordered_blacks
 }
-
-
