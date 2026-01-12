@@ -614,7 +614,7 @@ impl RenderPipeline {
     /// Phase 13: Render to preview resolution for fast updates
     /// Renders full RAW texture to smaller output (GPU downsamples automatically)
     /// Phase 66: Added width/height args to support dynamic aspect ratios for cropping
-    pub fn render_to_bytes(&self, width: u32, height: u32) -> Vec<u8> {
+    pub async fn render_to_bytes(&self, width: u32, height: u32) -> Vec<u8> {
         // Create PREVIEW-SIZED output texture (Phase 13 optimization!)
         let output_texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Output Texture (Preview)"),
@@ -678,24 +678,28 @@ impl RenderPipeline {
         self.queue.submit(Some(encoder.finish()));
 
         let buffer_slice = output_buffer.slice(..);
-        let (tx, rx) = std::sync::mpsc::channel();
+        let (tx, rx) = tokio::sync::oneshot::channel();
         buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
-            tx.send(result).unwrap();
+            let _ = tx.send(result);
         });
-        self.device.poll(wgpu::Maintain::Wait);
-        rx.recv().unwrap().unwrap();
 
-        let data = buffer_slice.get_mapped_range();
-        let mut output = Vec::with_capacity((width * height * 4) as usize);
-        for y in 0..height {
-            let start = (y * padded_bytes_per_row) as usize;
-            let end = start + (width * 4) as usize;
-            output.extend_from_slice(&data[start..end]);
+        // Phase 102: Removed poll(Wait)
+
+        if let Ok(Ok(())) = rx.await {
+            let data = buffer_slice.get_mapped_range();
+            let mut output = Vec::with_capacity((width * height * 4) as usize);
+            for y in 0..height {
+                let start = (y * padded_bytes_per_row) as usize;
+                let end = start + (width * 4) as usize;
+                output.extend_from_slice(&data[start..end]);
+            }
+
+            drop(data);
+            output_buffer.unmap();
+            output
+        } else {
+            Vec::new()
         }
-
-        drop(data);
-        output_buffer.unmap();
-        output
     }
 
     /// Phase 19: Render to FULL resolution for export
@@ -704,7 +708,7 @@ impl RenderPipeline {
     /// Phase 67: Added crop parameter
     /// Phase 17: Render full resolution to bytes (for export)
     /// Phase 67: Added crop parameter
-    pub fn render_full_res_to_bytes(
+    pub async fn render_full_res_to_bytes(
         &self,
         output_format: wgpu::TextureFormat,
         crop: [f32; 4],
@@ -804,13 +808,14 @@ impl RenderPipeline {
         self.queue.submit(Some(encoder.finish()));
 
         let buffer_slice = output_buffer.slice(..);
-        let (tx, rx) = std::sync::mpsc::channel();
+        let (tx, rx) = tokio::sync::oneshot::channel();
         buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
-            tx.send(result).unwrap();
+            let _ = tx.send(result);
         });
-        self.device.poll(wgpu::Maintain::Wait);
 
-        match rx.recv() {
+        // Phase 102: Removed poll(Wait)
+
+        match rx.await {
             Ok(Ok(())) => {
                 let data = buffer_slice.get_mapped_range();
                 let mut output = Vec::with_capacity((target_width * target_height * 4) as usize);
@@ -842,133 +847,5 @@ impl RenderPipeline {
     /// Get the texture dimensions
     pub fn dimensions(&self) -> (u32, u32) {
         (self.width, self.height)
-    }
-
-    /// Phase 22: Render to tiny histogram-sized bytes (256px wide)
-    /// This is ~100x faster than rendering full preview for histogram calculation
-    pub fn render_to_histogram_bytes(&self) -> Vec<u8> {
-        // Create tiny output texture for histogram (256px wide)
-        let output_texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Histogram Output Texture"),
-            size: wgpu::Extent3d {
-                width: self.histogram_width,
-                height: self.histogram_height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-
-        let output_view = output_texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-        // Create command encoder and render pass
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Histogram Render Encoder"),
-            });
-
-        {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Histogram Render Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &output_view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-
-            render_pass.set_pipeline(&self.pipeline);
-            render_pass.set_bind_group(0, &self.bind_group, &[]);
-            render_pass.draw(0..3, 0..1);
-        }
-
-        // Read back the tiny rendered image
-        let bytes_per_pixel = 4;
-        let unpadded_bytes_per_row = self.histogram_width * bytes_per_pixel;
-        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-        let padded_bytes_per_row = (unpadded_bytes_per_row + align - 1) / align * align;
-        let buffer_size = (padded_bytes_per_row * self.histogram_height) as u64;
-
-        let output_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Histogram Output Buffer"),
-            size: buffer_size,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-
-        encoder.copy_texture_to_buffer(
-            wgpu::ImageCopyTexture {
-                texture: &output_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::ImageCopyBuffer {
-                buffer: &output_buffer,
-                layout: wgpu::ImageDataLayout {
-                    offset: 0,
-                    bytes_per_row: Some(padded_bytes_per_row),
-                    rows_per_image: Some(self.histogram_height),
-                },
-            },
-            wgpu::Extent3d {
-                width: self.histogram_width,
-                height: self.histogram_height,
-                depth_or_array_layers: 1,
-            },
-        );
-
-        self.queue.submit(Some(encoder.finish()));
-
-        // Read the data
-        let buffer_slice = output_buffer.slice(..);
-        buffer_slice.map_async(wgpu::MapMode::Read, |_| {});
-        self.device.poll(wgpu::Maintain::Wait);
-
-        let data = buffer_slice.get_mapped_range();
-
-        // Copy to output vector (remove padding)
-        let mut output =
-            Vec::with_capacity((self.histogram_width * self.histogram_height * 4) as usize);
-        for row in 0..self.histogram_height {
-            let start = (row * padded_bytes_per_row) as usize;
-            let end = start + unpadded_bytes_per_row as usize;
-            output.extend_from_slice(&data[start..end]);
-        }
-
-        drop(data);
-        output_buffer.unmap();
-        output
-    }
-
-    /// Phase 21: Calculate RGB histogram from rendered RGBA bytes
-    /// Returns [R[256], G[256], B[256]] histogram data
-    pub fn calculate_histogram(&self, rgba_bytes: &[u8]) -> [[u32; 256]; 3] {
-        let mut histograms = [[0u32; 256]; 3];
-
-        // Process pixels in chunks of 4 (RGBA)
-        for pixel in rgba_bytes.chunks_exact(4) {
-            let r = pixel[0] as usize;
-            let g = pixel[1] as usize;
-            let b = pixel[2] as usize;
-            // pixel[3] is alpha, ignore it
-
-            histograms[0][r] += 1; // Red channel
-            histograms[1][g] += 1; // Green channel
-            histograms[2][b] += 1; // Blue channel
-        }
-
-        histograms
     }
 }

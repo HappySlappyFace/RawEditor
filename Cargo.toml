@@ -15,7 +15,7 @@ iced_wgpu = "0.13"  # Direct access to wgpu types from iced
 iced_aw = { version = "0.10", default-features = false, features = ["wrap"] }
 
 # Async runtime for background tasks
-tokio = { version = "1", features = ["rt", "fs"] }
+tokio = { version = "1", features = ["rt", "fs", "sync"] }
 
 # Database for catalog management (bundled = includes SQLite, no system dependency)
 rusqlite = { version = "0.32", features = ["bundled"] }

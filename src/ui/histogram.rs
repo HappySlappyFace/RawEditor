@@ -8,8 +8,8 @@ use crate::app::message::Message;
 /// Histogram data structure
 #[derive(Debug, Clone)]
 pub struct Histogram {
-    /// RGB histogram data: [R[256], G[256], B[256]]
-    pub data: [[u32; 256]; 3],
+    /// Histogram data
+    pub data: crate::core::histogram::HistogramData,
 }
 
 impl canvas::Program<Message> for Histogram {
@@ -26,11 +26,10 @@ impl canvas::Program<Message> for Histogram {
         let mut frame = canvas::Frame::new(renderer, bounds.size());
 
         // Find maximum value across all channels for normalization
-        let max_value = self.data.iter()
-            .flat_map(|channel| channel.iter())
-            .copied()
-            .max()
-            .unwrap_or(1) as f32;
+        let max_r = self.data.r.iter().max().copied().unwrap_or(0);
+        let max_g = self.data.g.iter().max().copied().unwrap_or(0);
+        let max_b = self.data.b.iter().max().copied().unwrap_or(0);
+        let max_value = max_r.max(max_g).max(max_b).max(1) as f32;
 
         if max_value < 1.0 {
             return vec![frame.into_geometry()];
@@ -41,13 +40,13 @@ impl canvas::Program<Message> for Histogram {
         let bar_width = width / 256.0;
 
         // Draw three histogram channels (R, G, B)
-        let colors = [
-            Color::from_rgba(1.0, 0.0, 0.0, 0.5), // Red
-            Color::from_rgba(0.0, 1.0, 0.0, 0.5), // Green
-            Color::from_rgba(0.0, 0.0, 1.0, 0.5), // Blue
+        let channels = [
+            (&self.data.r, Color::from_rgba(1.0, 0.0, 0.0, 0.5)),
+            (&self.data.g, Color::from_rgba(0.0, 1.0, 0.0, 0.5)),
+            (&self.data.b, Color::from_rgba(0.0, 0.0, 1.0, 0.5)),
         ];
 
-        for (channel_idx, channel_data) in self.data.iter().enumerate() {
+        for (channel_data, color) in channels.iter() {
             let mut path_builder = canvas::path::Builder::new();
 
             for (i, &count) in channel_data.iter().enumerate() {
@@ -67,7 +66,7 @@ impl canvas::Program<Message> for Histogram {
             frame.stroke(
                 &path,
                 Stroke::default()
-                    .with_color(colors[channel_idx])
+                    .with_color(*color)
                     .with_width(bar_width.max(1.0)),
             );
         }

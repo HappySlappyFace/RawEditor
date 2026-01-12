@@ -1,32 +1,37 @@
-use iced::{Task, Point};
-use iced::widget::image::Handle;
-use crate::app::state::{RawEditor, EditorReadiness, DragMode};
-use crate::app::message::{Message, AppTab};
+use crate::app::message::{AppTab, Message};
+use crate::app::state::{DragMode, EditorReadiness, RawEditor};
 use crate::raw;
 use crate::ui::preview_renderer::CropHandle;
+use iced::widget::image::Handle;
+use iced::{Point, Task};
 
 pub fn handle_image_selected(editor: &mut RawEditor, image_id: i64) -> Task<Message> {
     if editor.last_modifiers.command() {
-        if !editor.multi_selection.remove(&image_id) { editor.multi_selection.insert(image_id); }
+        if !editor.multi_selection.remove(&image_id) {
+            editor.multi_selection.insert(image_id);
+        }
     } else {
         editor.multi_selection.clear();
         editor.multi_selection.insert(image_id);
     }
     editor.selected_image_id = Some(image_id);
     editor.canvas_cache.clear();
-    
+
     if let Some(library) = &editor.library {
         editor.current_edit_params = library.load_edit_params(image_id).unwrap_or_default();
-        editor.history_map.entry(image_id).or_insert_with(|| (vec![editor.current_edit_params.clone()], 0));
+        editor
+            .history_map
+            .entry(image_id)
+            .or_insert_with(|| (vec![editor.current_edit_params.clone()], 0));
     }
-    
+
     if editor.current_tab == AppTab::Develop || editor.current_tab == AppTab::Cull {
         let needs_load = match &editor.editor_readiness {
             EditorReadiness::Ready(id) => *id != image_id,
             EditorReadiness::Loading(id) => *id != image_id,
             _ => true,
         };
-        
+
         if needs_load {
             return trigger_image_load(editor, image_id);
         }
@@ -46,7 +51,10 @@ pub fn handle_tab_changed(editor: &mut RawEditor, tab: AppTab) -> Task<Message> 
             if needs_load {
                 if let Some(img) = editor.images.iter().find(|i| i.id == image_id) {
                     editor.editor_readiness = EditorReadiness::Loading(image_id);
-                    return Task::perform(raw::loader::load_raw_data(img.path.clone()), Message::RawDataLoaded);
+                    return Task::perform(
+                        raw::loader::load_raw_data(img.path.clone()),
+                        Message::RawDataLoaded,
+                    );
                 }
             }
         }
@@ -67,7 +75,12 @@ pub fn handle_select_next_image(editor: &mut RawEditor) -> Task<Message> {
 pub fn handle_select_previous_image(editor: &mut RawEditor) -> Task<Message> {
     if let Some(id) = editor.selected_image_id {
         if let Some(idx) = editor.images.iter().position(|i| i.id == id) {
-            let prev = editor.images[if idx == 0 { editor.images.len() - 1 } else { idx - 1 }].id;
+            let prev = editor.images[if idx == 0 {
+                editor.images.len() - 1
+            } else {
+                idx - 1
+            }]
+            .id;
             return Task::done(Message::ImageSelected(prev));
         }
     }
@@ -75,9 +88,13 @@ pub fn handle_select_previous_image(editor: &mut RawEditor) -> Task<Message> {
 }
 
 pub fn handle_zoom(editor: &mut RawEditor, d: f32, mut p: Point) -> Task<Message> {
-    if editor.is_cropping { return Task::none(); }
-    if p.x < 0.0 { p = editor.last_cursor_position.unwrap_or(Point::ORIGIN); }
-    
+    if editor.is_cropping {
+        return Task::none();
+    }
+    if p.x < 0.0 {
+        p = editor.last_cursor_position.unwrap_or(Point::ORIGIN);
+    }
+
     if let Some(resources) = &editor.image_resources {
         let old_zoom = editor.zoom;
         let iw = resources.preview_width as f32;
@@ -87,10 +104,15 @@ pub fn handle_zoom(editor: &mut RawEditor, d: f32, mut p: Point) -> Task<Message
         let yo = (vh - ih) / 2.0;
         let icx = (p.x - xo).clamp(0.0, iw);
         let icy = (p.y - yo).clamp(0.0, ih);
-        
-        let new_zoom = if d > 0.0 { old_zoom * (1.0 + d * 0.8) } else { old_zoom / (1.0 + (-d * 0.8)) }.clamp(0.1, 10.0);
+
+        let new_zoom = if d > 0.0 {
+            old_zoom * (1.0 + d * 0.8)
+        } else {
+            old_zoom / (1.0 + (-d * 0.8))
+        }
+        .clamp(0.1, 10.0);
         editor.zoom = new_zoom;
-        
+
         let nx = icx / iw;
         let ny = icy / ih;
         let tx = ((nx - 0.5) / old_zoom - editor.pan_offset.x) + 0.5;
@@ -98,14 +120,21 @@ pub fn handle_zoom(editor: &mut RawEditor, d: f32, mut p: Point) -> Task<Message
         editor.pan_offset.x = (nx - 0.5) / editor.zoom - tx + 0.5;
         editor.pan_offset.y = (ny - 0.5) / editor.zoom - ty + 0.5;
     } else {
-        editor.zoom = if d > 0.0 { editor.zoom * (1.0 + d * 0.8) } else { editor.zoom / (1.0 + (-d * 0.8)) }.clamp(0.1, 10.0);
+        editor.zoom = if d > 0.0 {
+            editor.zoom * (1.0 + d * 0.8)
+        } else {
+            editor.zoom / (1.0 + (-d * 0.8))
+        }
+        .clamp(0.1, 10.0);
     }
     editor.canvas_cache.clear();
     Task::none()
 }
 
 pub fn handle_pan(editor: &mut RawEditor, d: cgmath::Vector2<f32>) -> Task<Message> {
-    if editor.is_cropping { return Task::none(); }
+    if editor.is_cropping {
+        return Task::none();
+    }
     let s = 1.0 / editor.zoom;
     editor.pan_offset.x += d.x * s;
     editor.pan_offset.y += d.y * s;
@@ -122,10 +151,18 @@ pub fn handle_reset_view(editor: &mut RawEditor) -> Task<Message> {
 
 pub fn handle_mouse_pressed(editor: &mut RawEditor) -> Task<Message> {
     let now = std::time::Instant::now();
-    let double = editor.last_click_time.map(|t| now.duration_since(t).as_millis() < 300).unwrap_or(false);
+    let double = editor
+        .last_click_time
+        .map(|t| now.duration_since(t).as_millis() < 300)
+        .unwrap_or(false);
     editor.last_click_time = Some(now);
-    if double { return Task::done(Message::ResetView); }
-    if !editor.is_cropping { editor.is_dragging = true; editor.drag_mode = DragMode::Pan; }
+    if double {
+        return Task::done(Message::ResetView);
+    }
+    if !editor.is_cropping {
+        editor.is_dragging = true;
+        editor.drag_mode = DragMode::Pan;
+    }
     Task::none()
 }
 
@@ -134,7 +171,9 @@ pub fn handle_mouse_released(editor: &mut RawEditor) -> Task<Message> {
         if let DragMode::CropHandle(_) = editor.drag_mode {
             editor.save_current_edits();
             editor.commit_current_state();
-            if let (Some(ctx), Some(res)) = (&editor.gpu_context, &editor.image_resources) { res.update_uniforms(ctx, &editor.current_edit_params); }
+            if let (Some(ctx), Some(res)) = (&editor.gpu_context, &editor.image_resources) {
+                res.update_uniforms(ctx, &editor.current_edit_params);
+            }
         }
     }
     editor.is_dragging = false;
@@ -146,9 +185,13 @@ pub fn handle_mouse_released(editor: &mut RawEditor) -> Task<Message> {
 pub fn handle_mouse_moved(editor: &mut RawEditor, pos: Point) -> Task<Message> {
     let nw = (pos.x * 1.01).max(editor.viewport_size.0);
     let nh = (pos.y * 1.01).max(editor.viewport_size.1);
-    if (nw - editor.viewport_size.0).abs() > 10.0 { editor.viewport_size.0 = nw; }
-    if (nh - editor.viewport_size.1).abs() > 10.0 { editor.viewport_size.1 = nh; }
-    
+    if (nw - editor.viewport_size.0).abs() > 10.0 {
+        editor.viewport_size.0 = nw;
+    }
+    if (nh - editor.viewport_size.1).abs() > 10.0 {
+        editor.viewport_size.1 = nh;
+    }
+
     if editor.is_cropping {
         handle_crop_interaction(editor, pos)
     } else {
@@ -156,19 +199,28 @@ pub fn handle_mouse_moved(editor: &mut RawEditor, pos: Point) -> Task<Message> {
     }
 }
 
-pub fn handle_working_preview_ready(editor: &mut RawEditor, id: i64, handle: Handle) -> Task<Message> {
+pub fn handle_working_preview_ready(
+    editor: &mut RawEditor,
+    id: i64,
+    handle: Handle,
+) -> Task<Message> {
     if Some(id) == editor.selected_image_id {
         editor.working_preview = Some(handle);
+        return crate::app::handlers::develop::trigger_async_render(editor);
     }
     Task::none()
 }
 
-pub fn handle_preview_cached(editor: &mut RawEditor, id: i64, result: Result<(u32, u32, Vec<u8>), String>) -> Task<Message> {
+pub fn handle_preview_cached(
+    editor: &mut RawEditor,
+    id: i64,
+    result: Result<(u32, u32, Vec<u8>), String>,
+) -> Task<Message> {
     // Phase 78: Cleanup pending load
     editor.pending_loads.remove(&id);
     // Phase 81: Cleanup queued load
     editor.queued_loads.retain(|(i, _)| *i != id);
-    
+
     if let Ok((width, height, pixels)) = result {
         let handle = iced::widget::image::Handle::from_rgba(width, height, pixels);
         editor.preview_cache.put(id, handle);
@@ -181,10 +233,20 @@ pub fn handle_preview_cached(editor: &mut RawEditor, id: i64, result: Result<(u3
 fn handle_pan_interaction(editor: &mut RawEditor, pos: Point) -> Task<Message> {
     if editor.is_dragging && editor.drag_mode == DragMode::Pan {
         if let Some(last) = editor.last_cursor_position {
-             let delta = pos - last;
-             let (sx, sy) = if let Some(res) = &editor.image_resources { (1.0/res.preview_width as f32, 1.0/res.preview_height as f32) } else { (0.001, 0.001) };
-             editor.last_cursor_position = Some(pos);
-             return Task::done(Message::Pan(cgmath::Vector2::new(delta.x * sx, delta.y * sy)));
+            let delta = pos - last;
+            let (sx, sy) = if let Some(res) = &editor.image_resources {
+                (
+                    1.0 / res.preview_width as f32,
+                    1.0 / res.preview_height as f32,
+                )
+            } else {
+                (0.001, 0.001)
+            };
+            editor.last_cursor_position = Some(pos);
+            return Task::done(Message::Pan(cgmath::Vector2::new(
+                delta.x * sx,
+                delta.y * sy,
+            )));
         }
     }
     editor.last_cursor_position = Some(pos);
@@ -212,29 +274,76 @@ fn apply_crop_drag(editor: &mut RawEditor, pos: Point, last: Point, h: CropHandl
     let dx = delta.x / bw;
     let dy = delta.y / bh;
     let c = editor.current_edit_params.crop;
-    let (mut l, mut t, mut r, mut b) = (c[0], c[1], c[0]+c[2], c[1]+c[3]);
-    
+    let (mut l, mut t, mut r, mut b) = (c[0], c[1], c[0] + c[2], c[1] + c[3]);
+
     match h {
-        CropHandle::TopLeft => { l += dx; t += dy; }
-        CropHandle::TopRight => { t += dy; r += dx; }
-        CropHandle::BottomLeft => { l += dx; b += dy; }
-        CropHandle::BottomRight => { r += dx; b += dy; }
-        CropHandle::Body => { l += dx; t += dy; r += dx; b += dy; if l < 0.0 { r -= l; l = 0.0; } if r > 1.0 { l -= r - 1.0; r = 1.0; } if t < 0.0 { b -= t; t = 0.0; } if b > 1.0 { t -= b - 1.0; b = 1.0; } }
+        CropHandle::TopLeft => {
+            l += dx;
+            t += dy;
+        }
+        CropHandle::TopRight => {
+            t += dy;
+            r += dx;
+        }
+        CropHandle::BottomLeft => {
+            l += dx;
+            b += dy;
+        }
+        CropHandle::BottomRight => {
+            r += dx;
+            b += dy;
+        }
+        CropHandle::Body => {
+            l += dx;
+            t += dy;
+            r += dx;
+            b += dy;
+            if l < 0.0 {
+                r -= l;
+                l = 0.0;
+            }
+            if r > 1.0 {
+                l -= r - 1.0;
+                r = 1.0;
+            }
+            if t < 0.0 {
+                b -= t;
+                t = 0.0;
+            }
+            if b > 1.0 {
+                t -= b - 1.0;
+                b = 1.0;
+            }
+        }
     }
-    
+
     if h != CropHandle::Body {
         let min = 0.01;
         match h {
-            CropHandle::TopLeft => { l = l.min(r - min).max(0.0); t = t.min(b - min).max(0.0); }
-            CropHandle::TopRight => { r = r.max(l + min).min(1.0); t = t.min(b - min).max(0.0); }
-            CropHandle::BottomLeft => { l = l.min(r - min).max(0.0); b = b.max(t + min).min(1.0); }
-            CropHandle::BottomRight => { r = r.max(l + min).min(1.0); b = b.max(t + min).min(1.0); }
+            CropHandle::TopLeft => {
+                l = l.min(r - min).max(0.0);
+                t = t.min(b - min).max(0.0);
+            }
+            CropHandle::TopRight => {
+                r = r.max(l + min).min(1.0);
+                t = t.min(b - min).max(0.0);
+            }
+            CropHandle::BottomLeft => {
+                l = l.min(r - min).max(0.0);
+                b = b.max(t + min).min(1.0);
+            }
+            CropHandle::BottomRight => {
+                r = r.max(l + min).min(1.0);
+                b = b.max(t + min).min(1.0);
+            }
             _ => {}
         }
     }
-    
+
     editor.current_edit_params.crop = [l, t, r - l, b - t];
-    if let (Some(ctx), Some(res)) = (&editor.gpu_context, &editor.image_resources) { res.update_uniforms(ctx, &editor.current_edit_params); }
+    if let (Some(ctx), Some(res)) = (&editor.gpu_context, &editor.image_resources) {
+        res.update_uniforms(ctx, &editor.current_edit_params);
+    }
 }
 
 fn trigger_image_load(editor: &mut RawEditor, image_id: i64) -> Task<Message> {
@@ -246,21 +355,27 @@ fn trigger_image_load(editor: &mut RawEditor, image_id: i64) -> Task<Message> {
         } else if let Some(path) = &img.cache_path_working {
             editor.working_preview = Some(Handle::from_path(path.clone()));
         }
-        
+
         editor.editor_readiness = EditorReadiness::Loading(image_id);
         let mut tasks = Vec::new();
         if let Some(path) = &img.cache_path_working {
-            tasks.push(Task::perform(load_image_handle(image_id, path.clone()), |(id, h)| Message::WorkingPreviewReady(id, h)));
+            tasks.push(Task::perform(
+                load_image_handle(image_id, path.clone()),
+                |(id, h)| Message::WorkingPreviewReady(id, h),
+            ));
         }
-        
+
         // Only load full RAW data if we are in Develop mode
         if editor.current_tab == AppTab::Develop {
-            tasks.push(Task::perform(raw::loader::load_raw_data(img.path.clone()), Message::RawDataLoaded));
+            tasks.push(Task::perform(
+                raw::loader::load_raw_data(img.path.clone()),
+                Message::RawDataLoaded,
+            ));
         }
-        
+
         // Schedule preloads for adjacent images
         tasks.push(schedule_preloads(editor));
-        
+
         return Task::batch(tasks);
     }
     Task::none()
@@ -284,18 +399,26 @@ fn identify_missing_preloads(editor: &RawEditor) -> Vec<(i64, String)> {
             let ahead = crate::app::state::PRELOAD_AHEAD as isize;
 
             for offset in -behind..=ahead {
-                if offset == 0 { continue; }
-                
+                if offset == 0 {
+                    continue;
+                }
+
                 let mut target_idx = current_idx as isize + offset;
-                
-                if target_idx < 0 { target_idx += total; }
-                if target_idx >= total { target_idx -= total; }
-                
+
+                if target_idx < 0 {
+                    target_idx += total;
+                }
+                if target_idx >= total {
+                    target_idx -= total;
+                }
+
                 let target_idx = target_idx as usize;
                 if target_idx < editor.images.len() {
                     let img = &editor.images[target_idx];
-                    
-                    if editor.preview_cache.contains(&img.id) || editor.pending_loads.contains(&img.id) {
+
+                    if editor.preview_cache.contains(&img.id)
+                        || editor.pending_loads.contains(&img.id)
+                    {
                         continue;
                     }
 
@@ -314,7 +437,9 @@ async fn load_preview_pixels(path: String) -> Result<(u32, u32, Vec<u8>), String
         let img = image::open(&path).map_err(|e| e.to_string())?;
         let rgba = img.to_rgba8();
         Ok((rgba.width(), rgba.height(), rgba.into_raw()))
-    }).await.map_err(|e| e.to_string())?
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 async fn load_image_handle(id: i64, path: String) -> (i64, iced::widget::image::Handle) {
