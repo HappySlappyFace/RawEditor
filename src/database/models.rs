@@ -1,5 +1,4 @@
 /// Shared data structures for the application state
-/// 
 /// These structs represent the data model that flows between
 /// the database layer and the UI layer.
 

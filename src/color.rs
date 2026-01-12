@@ -4,16 +4,15 @@
 /// - Camera RGB (sensor-native color space)
 /// - XYZ (device-independent color space)
 /// - sRGB (standard display color space)
-
 use cgmath::{Matrix3, SquareMatrix};
 
 /// Standard XYZ to sRGB conversion matrix (D65 white point)
 /// This is the industry-standard matrix for converting from CIE XYZ to sRGB
 /// Source: IEC 61966-2-1:1999 (sRGB standard)
 const XYZ_TO_SRGB: [[f32; 3]; 3] = [
-    [ 3.2406, -1.5372, -0.4986],
-    [-0.9689,  1.8758,  0.0415],
-    [ 0.0557, -0.2040,  1.0570],
+    [3.2406, -1.5372, -0.4986],
+    [-0.9689, 1.8758, 0.0415],
+    [0.0557, -0.2040, 1.0570],
 ];
 
 /// Calculate the camera-to-sRGB color conversion matrix
@@ -43,21 +42,33 @@ const XYZ_TO_SRGB: [[f32; 3]; 3] = [
 /// # Returns
 /// * Camera-to-sRGB conversion matrix as a flat [f32; 9] array (row-major)
 pub fn calculate_cam_to_srgb(raw_matrix: [f32; 9]) -> [f32; 9] {
-    crate::debug_log!(crate::debug::DEBUG_APP, "🎨 Phase 48: Calculating Cam-to-sRGB with Bradford Adaptation...");
+    crate::debug_log!(
+        crate::debug::DEBUG_APP,
+        "🎨 Phase 48: Calculating Cam-to-sRGB with Bradford Adaptation..."
+    );
 
     // Step 1: Load xyz_to_cam matrix (Camera's XYZ -> Cam conversion in D50)
     // Input is row-major [r0c0, r0c1, r0c2, r1c0, ...], cgmath needs column-major
     let xyz_to_cam = Matrix3::new(
-        raw_matrix[0], raw_matrix[3], raw_matrix[6], // Column 0
-        raw_matrix[1], raw_matrix[4], raw_matrix[7], // Column 1
-        raw_matrix[2], raw_matrix[5], raw_matrix[8], // Column 2
+        raw_matrix[0],
+        raw_matrix[3],
+        raw_matrix[6], // Column 0
+        raw_matrix[1],
+        raw_matrix[4],
+        raw_matrix[7], // Column 1
+        raw_matrix[2],
+        raw_matrix[5],
+        raw_matrix[8], // Column 2
     );
 
     // Step 2: Invert to get Cam -> XYZ_D50
     let cam_to_xyz_d50 = match xyz_to_cam.invert() {
         Some(m) => m,
         None => {
-            crate::debug_log!(crate::debug::DEBUG_APP, "⚠️ Failed to invert XYZ-to-Cam matrix, using identity");
+            crate::debug_log!(
+                crate::debug::DEBUG_APP,
+                "⚠️ Failed to invert XYZ-to-Cam matrix, using identity"
+            );
             return [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
         }
     };
@@ -87,7 +98,7 @@ pub fn calculate_cam_to_srgb(raw_matrix: [f32; 9]) -> [f32; 9] {
     // Step 6: CRITICAL - Normalize rows to prevent pink tint!
     // Each row sum should equal 1.0 so that neutral (1,1,1) -> (1,1,1)
     // This prevents highlights from clipping incorrectly
-    
+
     // Row 0: (c0.x, c1.x, c2.x)
     let r0_sum = final_matrix.x.x + final_matrix.y.x + final_matrix.z.x;
     // Row 1: (c0.y, c1.y, c2.y)
@@ -114,24 +125,45 @@ pub fn calculate_cam_to_srgb(raw_matrix: [f32; 9]) -> [f32; 9] {
 
     // Convert back to flat row-major array [r0c0, r0c1, r0c2, r1c0...]
     let result = [
-        final_matrix.x.x, final_matrix.y.x, final_matrix.z.x, // Row 0
-        final_matrix.x.y, final_matrix.y.y, final_matrix.z.y, // Row 1
-        final_matrix.x.z, final_matrix.y.z, final_matrix.z.z, // Row 2
+        final_matrix.x.x,
+        final_matrix.y.x,
+        final_matrix.z.x, // Row 0
+        final_matrix.x.y,
+        final_matrix.y.y,
+        final_matrix.z.y, // Row 1
+        final_matrix.x.z,
+        final_matrix.y.z,
+        final_matrix.z.z, // Row 2
     ];
 
-    crate::debug_log!(crate::debug::DEBUG_APP, "✅ Bradford-adapted Cam-to-sRGB matrix calculated");
-    crate::debug_log!(crate::debug::DEBUG_APP, "   Row sums: {:.4}, {:.4}, {:.4}", r0_sum, r1_sum, r2_sum);
-    
+    crate::debug_log!(
+        crate::debug::DEBUG_APP,
+        "✅ Bradford-adapted Cam-to-sRGB matrix calculated"
+    );
+    crate::debug_log!(
+        crate::debug::DEBUG_APP,
+        "   Row sums: {:.4}, {:.4}, {:.4}",
+        r0_sum,
+        r1_sum,
+        r2_sum
+    );
+
     result
 }
 
 /// Check if a color matrix is the identity matrix (no conversion)
 pub fn is_identity_matrix(matrix: &[f32; 9]) -> bool {
     const EPSILON: f32 = 0.001;
-    
-    (matrix[0] - 1.0).abs() < EPSILON && matrix[1].abs() < EPSILON && matrix[2].abs() < EPSILON &&
-    matrix[3].abs() < EPSILON && (matrix[4] - 1.0).abs() < EPSILON && matrix[5].abs() < EPSILON &&
-    matrix[6].abs() < EPSILON && matrix[7].abs() < EPSILON && (matrix[8] - 1.0).abs() < EPSILON
+
+    (matrix[0] - 1.0).abs() < EPSILON
+        && matrix[1].abs() < EPSILON
+        && matrix[2].abs() < EPSILON
+        && matrix[3].abs() < EPSILON
+        && (matrix[4] - 1.0).abs() < EPSILON
+        && matrix[5].abs() < EPSILON
+        && matrix[6].abs() < EPSILON
+        && matrix[7].abs() < EPSILON
+        && (matrix[8] - 1.0).abs() < EPSILON
 }
 
 #[cfg(test)]
@@ -142,7 +174,7 @@ mod tests {
     fn test_identity_matrix_detection() {
         let identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
         assert!(is_identity_matrix(&identity));
-        
+
         let non_identity = [1.5, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
         assert!(!is_identity_matrix(&non_identity));
     }
@@ -150,14 +182,10 @@ mod tests {
     #[test]
     fn test_cam_to_srgb_calculation() {
         // Example xyz_to_cam matrix (simplified)
-        let xyz_to_cam = [
-            1.0, 0.0, 0.0,
-            0.0, 1.0, 0.0,
-            0.0, 0.0, 1.0,
-        ];
-        
+        let xyz_to_cam = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+
         let result = calculate_cam_to_srgb(xyz_to_cam);
-        
+
         // Result should not be all zeros
         assert!(result.iter().any(|&x| x != 0.0));
     }

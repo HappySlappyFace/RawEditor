@@ -1,7 +1,7 @@
-use rusqlite::{Connection, Result as SqlResult};
-use std::path::PathBuf;
 use super::models::Image;
 use crate::core::types::EditParams;
+use rusqlite::{Connection, Result as SqlResult};
+use std::path::PathBuf;
 
 /// The Library manages the SQLite catalog database.
 /// It stores image metadata, edit history, and references to RAW files.
@@ -12,28 +12,27 @@ pub struct Library {
 
 impl Library {
     /// Create a new Library instance and initialize the database.
-    /// 
+    ///
     /// The database file is created in the user's data directory:
     /// - Linux: ~/.local/share/raw-editor/raw_editor.db
     /// - macOS: ~/Library/Application Support/raw-editor/raw_editor.db
     /// - Windows: %APPDATA%\raw-editor\raw_editor.db
     pub fn new() -> SqlResult<Self> {
         let db_path = Self::get_db_path();
-        
+
         // Ensure the parent directory exists
         if let Some(parent) = db_path.parent() {
-            std::fs::create_dir_all(parent)
-                .expect("Failed to create application data directory");
+            std::fs::create_dir_all(parent).expect("Failed to create application data directory");
         }
 
         // Open or create the database
         let conn = Connection::open(&db_path)?;
-        
+
         tracing::info!("Database initialized at: {}", db_path.display());
-        
+
         let mut library = Library { conn, db_path };
         library.init_schema()?;
-        
+
         Ok(library)
     }
 
@@ -42,7 +41,7 @@ impl Library {
         let mut path = dirs::data_dir()
             .or_else(|| dirs::home_dir())
             .expect("Could not determine user data directory");
-        
+
         path.push("raw-editor");
         path.push("raw_editor.db");
         path
@@ -94,25 +93,24 @@ impl Library {
         // Phase 28: Multi-tier cache system
         // Add 3 cache path columns for different resolution tiers
         let _ = self.conn.execute(
-            "ALTER TABLE images ADD COLUMN cache_path_thumb TEXT",  // 256px
+            "ALTER TABLE images ADD COLUMN cache_path_thumb TEXT", // 256px
             [],
         );
         let _ = self.conn.execute(
-            "ALTER TABLE images ADD COLUMN cache_path_instant TEXT",  // 384px
+            "ALTER TABLE images ADD COLUMN cache_path_instant TEXT", // 384px
             [],
         );
         let _ = self.conn.execute(
-            "ALTER TABLE images ADD COLUMN cache_path_working TEXT",  // 1280px
+            "ALTER TABLE images ADD COLUMN cache_path_working TEXT", // 1280px
             [],
         );
-        
+
         // Phase 56: Ratings & Culling
         // Add rating column for 0-5 star ratings
-        let _ = self.conn.execute(
-            "ALTER TABLE images ADD COLUMN rating INTEGER DEFAULT 0",
-            [],
-        );
-        
+        let _ = self
+            .conn
+            .execute("ALTER TABLE images ADD COLUMN rating INTEGER DEFAULT 0", []);
+
         // Add file_status column for tracking deleted files
         let _ = self.conn.execute(
             "ALTER TABLE images ADD COLUMN file_status TEXT DEFAULT 'exists'",
@@ -121,10 +119,9 @@ impl Library {
 
         // Phase 83: Culling Flags
         // Add flag column: 0=Unflagged, 1=Pick, -1=Reject
-        let _ = self.conn.execute(
-            "ALTER TABLE images ADD COLUMN flag INTEGER DEFAULT 0",
-            [],
-        );
+        let _ = self
+            .conn
+            .execute("ALTER TABLE images ADD COLUMN flag INTEGER DEFAULT 0", []);
 
         // Create index for cache_status to quickly find pending thumbnails
         self.conn.execute(
@@ -134,7 +131,7 @@ impl Library {
         )?;
 
         tracing::info!("Database schema initialized");
-        
+
         Ok(())
     }
 
@@ -142,7 +139,7 @@ impl Library {
     pub fn path(&self) -> &PathBuf {
         &self.db_path
     }
-    
+
     /// Get a reference to the database connection
     pub fn conn(&self) -> &Connection {
         &self.conn
@@ -150,11 +147,9 @@ impl Library {
 
     /// Get a count of images in the library
     pub fn image_count(&self) -> SqlResult<i64> {
-        let count: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM images",
-            [],
-            |row| row.get(0),
-        )?;
+        let count: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM images", [], |row| row.get(0))?;
         Ok(count)
     }
 
@@ -162,7 +157,7 @@ impl Library {
     /// Returns the new image ID
     pub fn import_image(&self, path: &str, filename: &str) -> SqlResult<i64> {
         use std::time::{SystemTime, UNIX_EPOCH};
-        
+
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -184,7 +179,7 @@ impl Library {
              FROM images 
              ORDER BY imported_at DESC"
         )?;
-        
+
         let image_iter = stmt.query_map([], |row| {
             Ok(Image {
                 id: row.get(0)?,
@@ -194,16 +189,16 @@ impl Library {
                 cache_path_instant: row.get(4)?,
                 cache_path_working: row.get(5)?,
                 file_status: row.get(6)?,
-                rating: row.get(7)?,  // Phase 56
+                rating: row.get(7)?,           // Phase 56
                 flag: row.get(8).unwrap_or(0), // Phase 83
             })
         })?;
-        
+
         let mut images = Vec::new();
         for image in image_iter {
             images.push(image?);
         }
-        
+
         Ok(images)
     }
 
@@ -225,7 +220,7 @@ impl Library {
                 cache_path_instant: row.get(4)?,
                 cache_path_working: row.get(5)?,
                 file_status: row.get(6)?,
-                rating: row.get(7)?,  // Phase 56
+                rating: row.get(7)?,           // Phase 56
                 flag: row.get(8).unwrap_or(0), // Phase 83
             })
         })?;
@@ -264,9 +259,7 @@ impl Library {
         )?;
 
         let cached_images: Vec<(i64, String)> = stmt
-            .query_map([], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
             .filter_map(|r| r.ok())
             .collect();
 
@@ -293,14 +286,12 @@ impl Library {
     /// Verify that RAW files still exist on disk
     /// Mark as 'deleted' if file is missing
     pub fn verify_files(&self) -> SqlResult<usize> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, path FROM images WHERE file_status = 'exists'"
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, path FROM images WHERE file_status = 'exists'")?;
 
         let existing_images: Vec<(i64, String)> = stmt
-            .query_map([], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
             .filter_map(|r| r.ok())
             .collect();
 
@@ -323,23 +314,27 @@ impl Library {
 
         Ok(deleted_count)
     }
-    
+
     // ========== Edit Parameters Management ==========
-    
+
     /// Save edit parameters for an image to the database
     /// Creates a new edit record or updates the most recent one
     pub fn save_edit_params(&self, image_id: i64, params: &EditParams) -> SqlResult<()> {
         // Serialize params to JSON
-        let json = params.to_json()
+        let json = params
+            .to_json()
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-        
+
         // Check if an edit record already exists for this image
-        let existing_id: Option<i64> = self.conn.query_row(
-            "SELECT id FROM edits WHERE image_id = ?1 ORDER BY id DESC LIMIT 1",
-            [image_id],
-            |row| row.get(0)
-        ).ok();
-        
+        let existing_id: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT id FROM edits WHERE image_id = ?1 ORDER BY id DESC LIMIT 1",
+                [image_id],
+                |row| row.get(0),
+            )
+            .ok();
+
         if let Some(edit_id) = existing_id {
             // Update existing edit
             self.conn.execute(
@@ -353,24 +348,24 @@ impl Library {
                 rusqlite::params![image_id, json],
             )?;
         }
-        
+
         Ok(())
     }
-    
+
     /// Load edit parameters for an image from the database
     /// Returns Default if no edits exist for this image
     pub fn load_edit_params(&self, image_id: i64) -> SqlResult<EditParams> {
         let json: String = self.conn.query_row(
             "SELECT settings_json FROM edits WHERE image_id = ?1 ORDER BY id DESC LIMIT 1",
             [image_id],
-            |row| row.get(0)
+            |row| row.get(0),
         )?;
-        
+
         // Parse JSON to EditParams
         EditParams::from_json(&json)
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
     }
-    
+
     /// Check if an image has any edits applied
     pub fn has_edits(&self, image_id: i64) -> SqlResult<bool> {
         let count: i64 = self.conn.query_row(
@@ -380,16 +375,14 @@ impl Library {
         )?;
         Ok(count > 0)
     }
-    
+
     /// Delete all edits for an image (reset to unedited)
     pub fn delete_edits(&self, image_id: i64) -> SqlResult<()> {
-        self.conn.execute(
-            "DELETE FROM edits WHERE image_id = ?1",
-            [image_id],
-        )?;
+        self.conn
+            .execute("DELETE FROM edits WHERE image_id = ?1", [image_id])?;
         Ok(())
     }
-    
+
     /// Phase 56: Set star rating for an image (0-5)
     pub fn set_image_rating(&self, image_id: i64, rating: u8) -> SqlResult<()> {
         self.conn.execute(
@@ -407,7 +400,7 @@ impl Library {
         )?;
         Ok(())
     }
-    
+
     /// Phase 28: Set all 3 cache tier paths for an image
     /// Updates cache_status to 'cached' and stores paths for thumb, instant, and working tiers
     pub fn set_image_cache_paths(
@@ -444,11 +437,9 @@ pub async fn load_database(_path: String) -> Result<Vec<super::models::Image>, S
     // In a real app, we might want to pass the path, but Library::new() determines it automatically.
     // We'll just use Library::new() here.
     match Library::new() {
-        Ok(lib) => {
-            match lib.get_all_images() {
-                Ok(images) => Ok(images),
-                Err(e) => Err(format!("Failed to load images: {}", e)),
-            }
+        Ok(lib) => match lib.get_all_images() {
+            Ok(images) => Ok(images),
+            Err(e) => Err(format!("Failed to load images: {}", e)),
         },
         Err(e) => Err(format!("Failed to initialize library: {}", e)),
     }

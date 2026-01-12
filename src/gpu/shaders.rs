@@ -5,7 +5,7 @@
 /// Phase 11+: Full debayering, color science, and advanced adjustments
 
 /// Passthrough shader for RAW image rendering
-/// 
+///
 /// This is a simple shader that:
 /// 1. Samples the input texture (RAW data as RGB for now)
 /// 2. Applies exposure adjustment (additive)

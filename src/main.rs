@@ -3,12 +3,12 @@
 
 mod app;
 pub mod color;
+mod core;
+mod database;
 mod debug;
 mod gpu;
 mod raw;
 mod ui;
-mod core;
-mod database;
 
 use iced::Font;
 

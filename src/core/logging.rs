@@ -17,7 +17,7 @@ pub fn init() -> Option<WorkerGuard> {
         // Release mode: Write to rolling log files
         if let Some(data_dir) = dirs::data_dir() {
             let log_dir = data_dir.join("raw-editor").join("logs");
-            
+
             // Ensure directory exists
             if let Err(e) = std::fs::create_dir_all(&log_dir) {
                 eprintln!("Failed to create log directory: {}", e);
@@ -31,7 +31,7 @@ pub fn init() -> Option<WorkerGuard> {
                 .with_writer(non_blocking)
                 .with_ansi(false)
                 .init();
-            
+
             Some(guard)
         } else {
             eprintln!("Failed to find data directory for logging!");
