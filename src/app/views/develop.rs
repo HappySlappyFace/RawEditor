@@ -551,11 +551,21 @@ fn view_main_content<'a>(
                         .height(Length::Fill)
                         .into()
                     } else {
-                        Image::new(handle)
-                            .width(Length::Fill)
-                            .height(Length::Fill)
-                            .content_fit(iced::ContentFit::Contain)
-                            .into()
+                        use crate::ui::preview_renderer::PreviewRenderer;
+                        use iced::widget::canvas::Canvas;
+                        Canvas::new(PreviewRenderer {
+                            handle: handle.clone(),
+                            zoom: editor.zoom,
+                            offset: editor.pan_offset,
+                            is_cropping: false,
+                            crop: editor.current_edit_params.crop,
+                            image_width: resources.width,
+                            image_height: resources.height,
+                            draw_image: true
+                        })
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .into()
                     }
                 } else {
                     Image::new(handle)
