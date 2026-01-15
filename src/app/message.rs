@@ -1,15 +1,15 @@
-use std::path::PathBuf;
-use iced::{Point, Rectangle};
-use crate::raw;
 use crate::database::models::Image as ImageData;
+use crate::raw;
 use crate::ui::preview_renderer::CropHandle;
+use iced::{Point, Rectangle};
+use std::path::PathBuf;
 
 /// Application tabs/modules
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppTab {
-    Library,  // Browse, import, organize images
+    Library, // Browse, import, organize images
     Cull,
-    Develop,  // Edit selected image with full preview
+    Develop, // Edit selected image with full preview
 }
 
 /// Result of a folder import operation
@@ -39,7 +39,7 @@ pub enum Message {
     /// Database loading completed (async background task)
     /// Phase 23: Only send images Vec, Library created on main thread (not Send)
     DatabaseLoaded(Result<Vec<ImageData>, String>),
-    
+
     /// User clicked the "Import Folder" button
     ImportFolder,
     /// Background import completed with results
@@ -49,15 +49,15 @@ pub enum Message {
     /// Phase 28: Multi-tier cache processing completed
     /// Result is (image_id, thumb_path, instant_path, working_path) or (image_id, error)
     CacheProcessed(Result<(i64, String, String, String), (i64, String)>),
-    
+
     /// Background preview generation completed
     PreviewGenerated(PreviewResult),
     /// User switched to a different tab
     TabChanged(AppTab),
-    
+
     /// Phase 88: Resize thumbnails
     SetThumbnailSize(f32),
-    
+
     // ========== Edit Parameter Changes ==========
     /// User changed exposure slider
     ExposureChanged(f32),
@@ -75,7 +75,7 @@ pub enum Message {
     BlackOffsetChanged(usize, f32),
     /// User changed black level phase (is_y, value)
     BlackPhaseChanged(bool, u32),
-    
+
     // ========== Color Messages ==========
     /// User changed vibrance slider
     VibranceChanged(f32),
@@ -97,7 +97,7 @@ pub enum Message {
     SetCrop([f32; 4]),
     /// User clicked Reset button to clear all edits
     ResetEdits,
-    
+
     // ========== Export Messages (Phase 89) ==========
     SetExportFormat(crate::app::state::ExportFormat),
     SetExportQuality(u8),
@@ -110,9 +110,18 @@ pub enum Message {
     ExportConfirmed,
     ProcessNextExport,
     ExportRawLoaded(i64, Result<raw::loader::RawDataResult, String>),
-    ExportPipelineReady(i64, Result<(std::sync::Arc<crate::gpu::shared::SharedContext>, std::sync::Arc<crate::gpu::shared::ImageResources>), String>),
+    ExportPipelineReady(
+        i64,
+        Result<
+            (
+                std::sync::Arc<crate::gpu::shared::SharedContext>,
+                std::sync::Arc<crate::gpu::shared::ImageResources>,
+            ),
+            String,
+        >,
+    ),
     ExportSaveComplete(i64, Result<PathBuf, String>),
-    
+
     /// Phase 60: Toggle for HUD overlay (ISO, Shutter, etc.)
     ToggleInfoHud,
     /// Phase 67: Interactive Crop
@@ -125,7 +134,7 @@ pub enum Message {
     Redo,
     /// Phase 65: Commit current edit state to history
     CommitEdit,
-    
+
     // ========== Phase 54: Settings Clipboard ==========
     /// Copy current edit settings to clipboard (Ctrl/Cmd+C)
     CopySettings,
@@ -135,7 +144,7 @@ pub enum Message {
     // ========== Phase 55: Multi-Selection ==========
     /// Modifier keys changed (for Ctrl/Cmd+Click detection)
     ModifiersChanged(iced::keyboard::Modifiers),
-    
+
     // ========== Phase 56: Ratings & Culling ==========
     /// Set rating for selected image(s) (0-5 stars)
     SetRating(u8),
@@ -143,16 +152,16 @@ pub enum Message {
     SetFlag(i8),
     /// Phase 83: Toggle auto-advance feature
     ToggleAutoAdvance,
-    
+
     // Phase 84: Generic Modal System
     OpenModal(crate::app::state::Modal),
     CloseModal,
     ModalNoOp, // Swallows clicks
     Escape,    // Global Escape key
-    
+
     // Phase 85: Preferences
     SetCacheCapacity(f32),
-    
+
     /// User selected an image from the grid
     ImageSelected(i64),
     // ========== Phase 59: Filtering ==========
@@ -167,7 +176,7 @@ pub enum Message {
     SelectNextImage,
     /// Select previous image (Left arrow)
     SelectPreviousImage,
-    
+
     /// Phase 73: Preload preview for adjacent image
     PreloadPreview(i64),
     /// Phase 73: Preview loaded from cache/disk
@@ -187,28 +196,47 @@ pub enum Message {
     MouseReleased,
     /// Mouse moved - track for panning
     MouseMoved(Point),
-    
+
     // ========== Phase 26: Advanced Zoom Polish ==========
     /// Reset zoom and pan to default (1.0, 0.0)
     ResetView,
-    
+
     // ========== GPU Pipeline Messages ==========
     /// Background RAW data loading completed
     RawDataLoaded(Result<raw::loader::RawDataResult, String>),
     /// GPU pipeline initialization completed
     // Phase 95: GPU ImageResources loaded (wrapped in Arc for Clone)
-    ImageResourcesReady(i64, Result<(std::sync::Arc<crate::gpu::shared::SharedContext>, std::sync::Arc<crate::gpu::shared::ImageResources>), String>),
-    
+    ImageResourcesReady(
+        i64,
+        Result<
+            (
+                std::sync::Arc<crate::gpu::shared::SharedContext>,
+                std::sync::Arc<crate::gpu::shared::ImageResources>,
+            ),
+            String,
+        >,
+    ),
+
     // ========== Export Messages (Phase 19) ==========
     // Legacy export messages removed
-    
+
     // Window Controls
     MinimizeWindow,
     MaximizeWindow,
     CloseWindow,
     DragWindow,
-    
+
     // ========== Histogram Messages (Phase 22) ==========
-    /// User toggled histogram on/off
+    /// Phase 104: Async Render Finished (Preview + Histogram + Timing)
+    RenderFinished(
+        iced::widget::image::Handle,
+        crate::core::histogram::HistogramData,
+        f32, // Upload ms
+        f32, // Render ms
+    ),
+    /// Phase 104: Toggle Profiler Overlay
+    ToggleProfiler,
+
+    /// Phase 22: User toggled histogram on/off
     HistogramToggled(bool),
 }

@@ -4,12 +4,15 @@ use super::shared::{ImageResources, SharedContext};
 use iced_wgpu::wgpu;
 
 /// Render to bytes at specified resolution
-pub fn render_to_bytes(
+/// Render to bytes at specified resolution (Async + Instrumented)
+pub async fn render_to_bytes(
     context: &SharedContext,
     resources: &ImageResources,
     width: u32,
     height: u32,
-) -> Vec<u8> {
+) -> (Vec<u8>, f32, f32) {
+    let t_upload_start = std::time::Instant::now();
+
     // Create output texture
     let output_texture = context.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("Output Texture"),
@@ -26,6 +29,9 @@ pub fn render_to_bytes(
         view_formats: &[],
     });
     let output_view = output_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+    let upload_ms = t_upload_start.elapsed().as_secs_f32() * 1000.0;
+    let t_render_start = std::time::Instant::now();
 
     // Render
     let mut encoder = context
@@ -87,39 +93,26 @@ pub fn render_to_bytes(
     context.queue.submit(Some(encoder.finish()));
 
     let buffer_slice = readback_buffer.slice(..);
-    buffer_slice.map_async(wgpu::MapMode::Read, |_| {});
-    context.device.poll(wgpu::Maintain::Wait);
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    buffer_slice.map_async(wgpu::MapMode::Read, move |res| {
+        let _ = tx.send(res);
+    });
 
-    let data = buffer_slice.get_mapped_range();
-    let mut result = Vec::with_capacity((width * height * 4) as usize);
-    for y in 0..height {
-        let start = (y * bytes_per_row) as usize;
-        let end = start + (width * 4) as usize;
-        result.extend_from_slice(&data[start..end]);
+    // Phase 104: Async wait (no poll(Wait))
+    if let Ok(Ok(())) = rx.await {
+        let data = buffer_slice.get_mapped_range();
+        let mut result = Vec::with_capacity((width * height * 4) as usize);
+        for y in 0..height {
+            let start = (y * bytes_per_row) as usize;
+            let end = start + (width * 4) as usize;
+            result.extend_from_slice(&data[start..end]);
+        }
+        drop(data);
+        readback_buffer.unmap();
+
+        let render_ms = t_render_start.elapsed().as_secs_f32() * 1000.0;
+        (result, upload_ms, render_ms)
+    } else {
+        (Vec::new(), upload_ms, 0.0)
     }
-    drop(data);
-    readback_buffer.unmap();
-
-    result
-}
-
-/// Render to histogram resolution
-pub fn render_to_histogram_bytes(context: &SharedContext, resources: &ImageResources) -> Vec<u8> {
-    render_to_bytes(
-        context,
-        resources,
-        resources.histogram_width,
-        resources.histogram_height,
-    )
-}
-
-/// Calculate histogram from RGBA bytes
-pub fn calculate_histogram(rgba_bytes: &[u8]) -> [[u32; 256]; 3] {
-    let mut histogram = [[0u32; 256]; 3];
-    for chunk in rgba_bytes.chunks_exact(4) {
-        histogram[0][chunk[0] as usize] += 1;
-        histogram[1][chunk[1] as usize] += 1;
-        histogram[2][chunk[2] as usize] += 1;
-    }
-    histogram
 }
