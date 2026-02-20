@@ -211,6 +211,14 @@ pub fn handle_render_finished(
             total_ms: upload_ms + render_ms,
         });
 
+    // Phase 106: Throttling
+    editor.is_rendering_preview = false;
+    if editor.pending_preview_update {
+        editor.pending_preview_update = false;
+        editor.is_rendering_preview = true;
+        return trigger_async_render(editor);
+    }
+
     Task::none()
 }
 
@@ -265,5 +273,13 @@ fn update_pipeline(editor: &mut RawEditor) -> Task<Message> {
         resources.update_uniforms(ctx, &editor.current_edit_params);
         editor.canvas_cache.clear();
     }
+    
+    // Phase 106: Throttling
+    if editor.is_rendering_preview {
+        editor.pending_preview_update = true;
+        return Task::none();
+    }
+    
+    editor.is_rendering_preview = true;
     trigger_async_render(editor)
 }
