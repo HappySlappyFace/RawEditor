@@ -138,13 +138,28 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
         (full_data, raw_image.width as u32, raw_image.height as u32)
     };
 
+    // Extract base CFA pattern
+    let cfa_name = raw_image.cfa.name.to_uppercase();
+    let mut cfa_pattern = match cfa_name.as_str() {
+        "RGGB" => 0, "GRBG" => 1, "GBRG" => 2, "BGGR" => 3,
+        _ => 0,
+    };
+
+    // PHASE 111: Apply CFA Shift based on crop parity
+    // Bit 1 (value 2) controls the Row shift (top crop). Bit 0 (value 1) controls Col shift (left crop).
+    if raw_image.crops.len() == 4 {
+        let top_crop = raw_image.crops[0] as u32;
+        let left_crop = raw_image.crops[3] as u32;
+        cfa_pattern = cfa_pattern ^ ((top_crop % 2) << 1) ^ (left_crop % 2);
+    }
+    
     // Phase 43: Compute per-CFA black levels from cropped mosaic (Step 3 of checklist)
     // We do this AFTER cropping to analyze the actual active image data
     let measured_black_levels = compute_cfa_black_levels_percentile(
         &data,
         width as usize,
         height as usize,
-        raw_image.cfa.clone(), // Pass rawloader's CFA pattern
+        cfa_pattern, // Pass the shifted integer, NOT the raw_image.cfa string!
     );
 
     tracing::info!(
@@ -250,26 +265,7 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
         xyz_to_cam_matrix[8]
     );
 
-    // Extract CFA pattern
-    // rawloader provides a string name like "RGGB", "GRBG", etc.
-    // We map this to an integer for the GPU shader:
-    // 0 = RGGB
-    // 1 = GRBG
-    // 2 = GBRG
-    // 3 = BGGR
-    let cfa_name = raw_image.cfa.name.to_uppercase();
-    let cfa_pattern = match cfa_name.as_str() {
-        "RGGB" => 0,
-        "GRBG" => 1,
-        "GBRG" => 2,
-        "BGGR" => 3,
-        _ => {
-            tracing::warn!("Unknown CFA pattern '{}', defaulting to RGGB (0)", cfa_name);
-            0
-        }
-    };
-
-    tracing::debug!("CFA Pattern: {} (Index: {})", cfa_name, cfa_pattern);
+    tracing::debug!("CFA Pattern Index: {}", cfa_pattern);
 
     // Extract Black and White Levels
     // Extract Black and White Levels
@@ -461,7 +457,7 @@ fn compute_cfa_black_levels_percentile(
     data: &[u16],
     width: usize,
     height: usize,
-    cfa: rawloader::CFA,
+    cfa_pattern: u32,
 ) -> [f32; 4] {
     tracing::debug!(
         "Computing per-CFA black levels using P0.1 percentile on {}x{} cropped mosaic",
@@ -565,38 +561,20 @@ fn compute_cfa_black_levels_percentile(
         );
     }
 
-    // Map phases to CFA colors based on pattern
-    // rawloader CFA pattern names: "RGGB", "GRBG", "GBRG", "BGGR"
-    let pattern_name = cfa.name.as_str();
+    // Map using the shifted integer: 0=RGGB, 1=GRBG, 2=GBRG, 3=BGGR
     let mut ordered_blacks = [0.0; 4];
-
-    // Use P0.1 as the black level estimate
-    if pattern_name == "RGGB" {
-        ordered_blacks[0] = p01_values[0]; // R  (0,0)
-        ordered_blacks[1] = p01_values[1]; // G1 (0,1)
-        ordered_blacks[2] = p01_values[2]; // G2 (1,0)
-        ordered_blacks[3] = p01_values[3]; // B  (1,1)
-    } else if pattern_name == "GRBG" {
-        ordered_blacks[0] = p01_values[1]; // R  (0,1)
-        ordered_blacks[1] = p01_values[0]; // G1 (0,0)
-        ordered_blacks[2] = p01_values[3]; // G2 (1,1)
-        ordered_blacks[3] = p01_values[2]; // B  (1,0)
-    } else if pattern_name == "GBRG" {
-        ordered_blacks[0] = p01_values[2]; // R  (1,0)
-        ordered_blacks[1] = p01_values[0]; // G1 (0,0)
-        ordered_blacks[2] = p01_values[3]; // G2 (1,1)
-        ordered_blacks[3] = p01_values[1]; // B  (0,1)
-    } else if pattern_name == "BGGR" {
-        ordered_blacks[0] = p01_values[3]; // R  (1,1)
-        ordered_blacks[1] = p01_values[1]; // G1 (0,1)
-        ordered_blacks[2] = p01_values[2]; // G2 (1,0)
-        ordered_blacks[3] = p01_values[0]; // B  (0,0)
-    } else {
-        tracing::warn!(
-            "Unknown CFA pattern '{}', assuming RGGB mapping",
-            pattern_name
-        );
-        ordered_blacks = p01_values;
+    if cfa_pattern == 0 {
+        ordered_blacks[0] = p01_values[0]; ordered_blacks[1] = p01_values[1];
+        ordered_blacks[2] = p01_values[2]; ordered_blacks[3] = p01_values[3];
+    } else if cfa_pattern == 1 {
+        ordered_blacks[0] = p01_values[1]; ordered_blacks[1] = p01_values[0];
+        ordered_blacks[2] = p01_values[3]; ordered_blacks[3] = p01_values[2];
+    } else if cfa_pattern == 2 {
+        ordered_blacks[0] = p01_values[2]; ordered_blacks[1] = p01_values[0];
+        ordered_blacks[2] = p01_values[3]; ordered_blacks[3] = p01_values[1];
+    } else { // 3
+        ordered_blacks[0] = p01_values[3]; ordered_blacks[1] = p01_values[1];
+        ordered_blacks[2] = p01_values[2]; ordered_blacks[3] = p01_values[0];
     }
 
     tracing::debug!(
