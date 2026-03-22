@@ -509,11 +509,12 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // Detect sensor clipping BEFORE white balance
     let pre_wb_max = max(color.r, max(color.g, color.b));
     
-    // Lowered threshold: 0.85 to 0.96. 
-    // This safely catches cameras (like Nikon 12-bit) that clip around ~3900 instead of 4095.
-    let clip_blend = smoothstep(0.85, 0.96, pre_wb_max);
+    // TIGHTENED THRESHOLD: 0.94 to 0.98. 
+    // This stops us from destroying valid detail in the 0.85-0.94 range, 
+    // but safely catches Nikon's ~0.95 hardware clipping point.
+    let clip_blend = smoothstep(0.94, 0.98, pre_wb_max);
     
-    // 2. Apply White Balance (Normally!)
+    // 2. Apply White Balance
     color = color * params.wb_multipliers.rgb;
     
     // 2.5. Apply Manual White Balance (Phase 18: Temperature & Tint)
@@ -534,11 +535,11 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     ));
     color = color_matrix * color;
     
-    // 3.5 Highlight Neutralization (Fixes Pistachio / Pink Artifacts)
-    // Desaturate the color to a neutral gray/white based on how close it was to sensor clipping.
-    // This happens AFTER the matrix so we don't feed the matrix unbalanced garbage.
-    let luma_neutral = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
-    color = mix(color, vec3<f32>(luma_neutral), clip_blend);
+    // 3.5 Highlight Neutralization (Fixes Dim/Inverted Whites)
+    // Instead of averaging down to Luma, we pull the lower channels UP to the max channel.
+    // This guarantees the clipped highlight remains the brightest pixel in the area.
+    let max_c = max(color.r, max(color.g, color.b));
+    color = mix(color, vec3<f32>(max_c), clip_blend);
     
     // 4. Apply Exposure (still in linear space)
     let exposure_multiplier = pow(2.0, params.exposure);
