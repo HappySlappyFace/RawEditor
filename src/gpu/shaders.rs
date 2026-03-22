@@ -506,8 +506,16 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         color = color + (detail * params.sharpening * mask_val);
     }
     
-    // 2. Apply White Balance (normalize sensor response)
-    color = color * params.wb_multipliers.rgb;
+    // 2. Apply White Balance with Highlight Neutralization
+    // Find how close the pixel is to sensor clipping (1.0) BEFORE white balance
+    let pre_wb_max = max(color.r, max(color.g, color.b));
+
+    // Roll-off starts at 0.95 (almost clipped), full neutral at 1.0 (clipped)
+    let clip_blend = smoothstep(0.95, 1.0, pre_wb_max);
+
+    // Blend the WB multipliers towards 1.0 (neutral white) for blown-out areas
+    let effective_wb = mix(params.wb_multipliers.rgb, vec3<f32>(1.0, 1.0, 1.0), clip_blend);
+    color = color * effective_wb;
     
     // 2.5. Apply Manual White Balance (Phase 18: Temperature & Tint)
     // Temperature: Blue/Yellow axis (cooler/warmer)
@@ -519,13 +527,13 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // Positive = more green, Negative = more magenta (less green)
     color.g = color.g * (1.0 + params.tint * 0.3);
     
-    // 3. Apply Color Matrix (camera RGB → sRGB color space)
-    // Reconstruct 3x3 matrix from padded vec3 rows
-    let color_matrix = mat3x3<f32>(
+    // 3. Apply Color Matrix (camera RGB -> sRGB)
+    // CRITICAL: transpose() is required because Rust sends rows, but WGSL expects columns!
+    let color_matrix = transpose(mat3x3<f32>(
         params.color_matrix_0,
         params.color_matrix_1,
         params.color_matrix_2
-    );
+    ));
     color = color_matrix * color;
     
     // 4. Apply Exposure (still in linear space)
@@ -575,6 +583,15 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     luma = dot(color.rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
     color = mix(vec3<f32>(luma), color, 1.0 + vibrance_amount);
     
+    // 9.5 Base Tone Curve (ACES Filmic-like S-curve for punchy contrast)
+    // This maps linear HDR values gracefully into the [0,1] display range
+    let a = 2.51;
+    let b = 0.03;
+    let c = 2.43;
+    let d = 0.59;
+    let e = 0.14;
+    color = clamp((color * (a * color + b)) / (color * (c * color + d) + e), vec3<f32>(0.0), vec3<f32>(1.0));
+
     // 10. Apply sRGB Gamma Correction (linear → sRGB for display)
     // This is critical for proper brightness perception!
     color = pow(color, vec3<f32>(1.0 / 2.2));
