@@ -106,9 +106,9 @@ pub fn handle_zoom(editor: &mut RawEditor, d: f32, mut p: Point) -> Task<Message
 
 pub fn handle_pan(editor: &mut RawEditor, d: cgmath::Vector2<f32>) -> Task<Message> {
     if editor.is_cropping { return Task::none(); }
-    let s = 1.0 / editor.zoom;
-    editor.pan_offset.x += d.x * s;
-    editor.pan_offset.y += d.y * s;
+    // Phase 116: Remove 1/zoom scaling. Standardised to 1:1 mapping with screen pixels.
+    editor.pan_offset.x += d.x;
+    editor.pan_offset.y += d.y;
     editor.canvas_cache.clear();
     Task::none()
 }
@@ -144,10 +144,8 @@ pub fn handle_mouse_released(editor: &mut RawEditor) -> Task<Message> {
 }
 
 pub fn handle_mouse_moved(editor: &mut RawEditor, pos: Point) -> Task<Message> {
-    let nw = (pos.x * 1.01).max(editor.viewport_size.0);
-    let nh = (pos.y * 1.01).max(editor.viewport_size.1);
-    if (nw - editor.viewport_size.0).abs() > 10.0 { editor.viewport_size.0 = nw; }
-    if (nh - editor.viewport_size.1).abs() > 10.0 { editor.viewport_size.1 = nh; }
+    // Phase 116: Remove broken viewport_size auto-inflation loop.
+    // viewport_size is now managed via Message::ViewportResized.
     
     if editor.is_cropping {
         handle_crop_interaction(editor, pos)
@@ -194,9 +192,10 @@ fn handle_pan_interaction(editor: &mut RawEditor, pos: Point) -> Task<Message> {
     if editor.is_dragging && editor.drag_mode == DragMode::Pan {
         if let Some(last) = editor.last_cursor_position {
              let delta = pos - last;
-             let (sx, sy) = if let Some(res) = &editor.image_resources { (1.0/res.preview_width as f32, 1.0/res.preview_height as f32) } else { (0.001, 0.001) };
+             // Phase 116: Normalized delta based on 1000px virtual width for consistent feel.
+             let sx = 1.0 / 1000.0;
              editor.last_cursor_position = Some(pos);
-             return Task::done(Message::Pan(cgmath::Vector2::new(delta.x * sx, delta.y * sy)));
+             return Task::done(Message::Pan(cgmath::Vector2::new(delta.x * sx, delta.y * sx)));
         }
     }
     editor.last_cursor_position = Some(pos);

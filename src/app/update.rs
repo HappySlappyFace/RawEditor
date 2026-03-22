@@ -129,6 +129,10 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::RenderFinished(h, bytes, dims, d, u, r, cpu) => {
             handlers::develop::handle_render_finished(editor, h, bytes, dims, d, u, r, cpu)
         }
+        Message::ViewportResized(w, h) => {
+            editor.viewport_size = (w, h);
+            iced::Task::none()
+        }
 
         // Loading
         Message::RawDataLoaded(res) => handlers::loading::handle_raw_data_loaded(editor, res),

@@ -344,8 +344,10 @@ impl shader::Program<Message> for ViewportProgram {
             (bounds.height * image_aspect, bounds.height)
         };
         // pan_x / pan_y in normalised image-space (matches GPU shader coordinate system).
-        let pan_x = (self.offset.x * fitted_w) / self.zoom;
-        let pan_y = (self.offset.y * fitted_w / image_aspect) / self.zoom;
+        // Phase 116: Normalise pixels to [0, 1] for the GPU shader.
+        // We divide pixels by viewport width to get 0-1 range.
+        let pan_x = (self.offset.x * fitted_w) / bounds.width;
+        let pan_y = (self.offset.y * fitted_w / image_aspect) / bounds.height;
 
         // Placeholder 1×1 white pixel if no image is loaded yet.
         let (pixels, w, h) = match &self.pixels {
@@ -382,7 +384,7 @@ pub struct CropOverlay {
 }
 
 impl canvas::Program<Message> for CropOverlay {
-    type State = ();
+    type State = (f32, f32); // Phase 116: Track (width, height) for resize sensing
 
     fn draw(
         &self,
@@ -415,11 +417,10 @@ impl canvas::Program<Message> for CropOverlay {
         let center_y = viewport_height / 2.0;
         let zoomed_width = fitted_width * self.zoom;
         let zoomed_height = fitted_height * self.zoom;
-        let pan_x = (self.offset.x * fitted_width) / self.zoom;
-        let pan_y = (self.offset.y * fitted_height) / self.zoom;
-
-        let image_x = center_x - (zoomed_width / 2.0) + pan_x;
-        let image_y = center_y - (zoomed_height / 2.0) + pan_y;
+        let pan_px_x = self.offset.x * fitted_width;
+        let pan_px_y = self.offset.y * fitted_height;
+        let image_x = center_x - (zoomed_width / 2.0) + pan_px_x;
+        let image_y = center_y - (zoomed_height / 2.0) + pan_px_y;
 
         let image_bounds = Rectangle {
             x: image_x,
@@ -473,19 +474,24 @@ impl canvas::Program<Message> for CropOverlay {
 
     fn update(
         &self,
-        _state: &mut Self::State,
+        state: &mut Self::State,
         event: canvas::Event,
         bounds: Rectangle,
         cursor: Cursor,
     ) -> (canvas::event::Status, Option<Message>) {
+        // Detect resize
+        if state.0 != bounds.width || state.1 != bounds.height {
+            *state = (bounds.width, bounds.height);
+            return (canvas::event::Status::Captured, Some(Message::ViewportResized(bounds.width, bounds.height)));
+        }
+
         if !self.is_cropping {
             return (canvas::event::Status::Ignored, None);
         }
 
-        let cursor_position = if let Some(pos) = cursor.position_in(bounds) {
-            pos
-        } else {
-            return (canvas::event::Status::Ignored, None);
+        let cursor_position = match cursor.position_in(bounds) {
+            Some(p) => p,
+            None => return (canvas::event::Status::Ignored, None),
         };
 
         match event {
@@ -503,10 +509,10 @@ impl canvas::Program<Message> for CropOverlay {
                 let center_y = viewport_height / 2.0;
                 let zoomed_width = fitted_width * self.zoom;
                 let zoomed_height = fitted_height * self.zoom;
-                let pan_x = (self.offset.x * fitted_width) / self.zoom;
-                let pan_y = (self.offset.y * fitted_height) / self.zoom;
-                let image_x = center_x - (zoomed_width / 2.0) + pan_x;
-                let image_y = center_y - (zoomed_height / 2.0) + pan_y;
+                let pan_px_x = self.offset.x * fitted_width;
+                let pan_px_y = self.offset.y * fitted_height;
+                let image_x = center_x - (zoomed_width / 2.0) + pan_px_x;
+                let image_y = center_y - (zoomed_height / 2.0) + pan_px_y;
 
                 let image_bounds = Rectangle { x: image_x, y: image_y, width: zoomed_width, height: zoomed_height };
                 let crop_x = image_bounds.x + (self.crop[0] * image_bounds.width);
@@ -555,9 +561,9 @@ impl canvas::Program<Message> for CropOverlay {
         let cy = bounds.height / 2.0;
         let zw = fw * self.zoom;
         let zh = fh * self.zoom;
-        let px = (self.offset.x * fw) / self.zoom;
-        let py = (self.offset.y * fh) / self.zoom;
-        let image_bounds = Rectangle { x: cx - zw / 2.0 + px, y: cy - zh / 2.0 + py, width: zw, height: zh };
+        let px_x = self.offset.x * fw;
+        let px_y = self.offset.y * fh;
+        let image_bounds = Rectangle { x: cx - zw / 2.0 + px_x, y: cy - zh / 2.0 + px_y, width: zw, height: zh };
 
         let crop_x = image_bounds.x + (self.crop[0] * image_bounds.width);
         let crop_y = image_bounds.y + (self.crop[1] * image_bounds.height);

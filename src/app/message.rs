@@ -233,6 +233,9 @@ pub enum Message {
     DragWindow,
 
     // ========== Histogram Messages (Phase 22) ==========
+    /// Phase 116: Interaction & Coordinate System Fixes
+    ViewportResized(f32, f32),
+
     /// Phase 104/105: Async Render Finished (Preview + Histogram + Timing)
     RenderFinished(
         iced::widget::image::Handle,
