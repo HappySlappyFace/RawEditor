@@ -288,13 +288,7 @@ impl shader::Primitive for ViewportPrimitive {
                 view: target,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    // Clear with the background colour (avoids separate bg draw call)
-                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: self.background.r as f64,
-                        g: self.background.g as f64,
-                        b: self.background.b as f64,
-                        a: 1.0,
-                    }),
+                    load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
                 },
             })],

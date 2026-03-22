@@ -96,7 +96,16 @@ fn view_main(editor: &RawEditor) -> Element<'_, Message> {
         AppTab::Develop => view_develop(editor),
     };
     
-    column![title_bar, content].into()
+    // Phase 116: Root layout container with sleek dark polish
+    container(column![title_bar, content])
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .style(|_theme| container::Style {
+            background: Some(Background::Color(Color::from_rgb(0.08, 0.08, 0.08))),
+            text_color: Some(Color::WHITE),
+            ..Default::default()
+        })
+        .into()
 }
 
 /// Build the custom window title bar
