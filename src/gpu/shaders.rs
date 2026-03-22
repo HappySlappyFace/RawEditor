@@ -229,87 +229,73 @@ fn debayer(coords: vec2<i32>, dimensions: vec2<u32>) -> vec3<f32> {
         else { is_red = true; }
     }
     
-    // Phase 47: Bilinear Interpolation Demosaicing
-    // For each CFA color, properly interpolate missing channels using 4 neighbors
+    // Phase 112: Edge-Aware Gradient Demosaicing
+    // Pre-fetch the 8 immediate neighbors
+    let n  = get_neighbor(coords + vec2<i32>(0, -1), dimensions);
+    let s  = get_neighbor(coords + vec2<i32>(0, 1), dimensions);
+    let w  = get_neighbor(coords + vec2<i32>(-1, 0), dimensions);
+    let e  = get_neighbor(coords + vec2<i32>(1, 0), dimensions);
+    let nw = get_neighbor(coords + vec2<i32>(-1, -1), dimensions);
+    let ne = get_neighbor(coords + vec2<i32>(1, -1), dimensions);
+    let sw = get_neighbor(coords + vec2<i32>(-1, 1), dimensions);
+    let se = get_neighbor(coords + vec2<i32>(1, 1), dimensions);
+    
     var rgb: vec3<f32>;
     
     if (is_red) {
-        // Red pixel: R is native, interpolate G and B
         let r = normalized;
         
-        // Green: Average of 4 orthogonal neighbors (↑↓←→)
-        let g = (
-            get_neighbor(coords + vec2<i32>(0, -1), dimensions) +  // up
-            get_neighbor(coords + vec2<i32>(0, 1), dimensions) +   // down
-            get_neighbor(coords + vec2<i32>(-1, 0), dimensions) +  // left
-            get_neighbor(coords + vec2<i32>(1, 0), dimensions)     // right
-        ) * 0.25;
+        // Edge-aware Green interpolation
+        let grad_v = abs(n - s);
+        let grad_h = abs(e - w);
+        var g: f32;
+        if (grad_v < grad_h) { g = (n + s) * 0.5; }
+        else if (grad_h < grad_v) { g = (e + w) * 0.5; }
+        else { g = (n + s + e + w) * 0.25; }
         
-        // Blue: Average of 4 diagonal neighbors (↖↗↙↘)
-        let b = (
-            get_neighbor(coords + vec2<i32>(-1, -1), dimensions) + // top-left
-            get_neighbor(coords + vec2<i32>(1, -1), dimensions) +  // top-right
-            get_neighbor(coords + vec2<i32>(-1, 1), dimensions) +  // bottom-left
-            get_neighbor(coords + vec2<i32>(1, 1), dimensions)     // bottom-right
-        ) * 0.25;
+        // Edge-aware Blue (Diagonal)
+        let grad_nesw = abs(ne - sw);
+        let grad_nwse = abs(nw - se);
+        var b: f32;
+        if (grad_nesw < grad_nwse) { b = (ne + sw) * 0.5; }
+        else if (grad_nwse < grad_nesw) { b = (nw + se) * 0.5; }
+        else { b = (ne + sw + nw + se) * 0.25; }
         
         rgb = vec3<f32>(r, g, b);
         
     } else if (is_even_row && !is_even_col) {
-        // Green Pixel (Red Row): G is native, R left/right, B top/bottom
+        // Green Pixel (Red Row)
         let g = normalized;
-        
-        // Red: Average of left and right neighbors
-        let r = (
-            get_neighbor(coords + vec2<i32>(-1, 0), dimensions) +  // left
-            get_neighbor(coords + vec2<i32>(1, 0), dimensions)     // right
-        ) * 0.5;
-        
-        // Blue: Average of top and bottom neighbors
-        let b = (
-            get_neighbor(coords + vec2<i32>(0, -1), dimensions) +  // top
-            get_neighbor(coords + vec2<i32>(0, 1), dimensions)     // bottom
-        ) * 0.5;
-        
+        let r = (w + e) * 0.5; // Red is strictly horizontal
+        let b = (n + s) * 0.5; // Blue is strictly vertical
         rgb = vec3<f32>(r, g, b);
         
     } else if (!is_even_row && is_even_col) {
-        // Green Pixel (Blue Row): G is native, B left/right, R top/bottom
+        // Green Pixel (Blue Row)
         let g = normalized;
-        
-        // Red: Average of top and bottom neighbors
-        let r = (
-            get_neighbor(coords + vec2<i32>(0, -1), dimensions) +  // top
-            get_neighbor(coords + vec2<i32>(0, 1), dimensions)     // bottom
-        ) * 0.5;
-        
-        // Blue: Average of left and right neighbors
-        let b = (
-            get_neighbor(coords + vec2<i32>(-1, 0), dimensions) +  // left
-            get_neighbor(coords + vec2<i32>(1, 0), dimensions)     // right
-        ) * 0.5;
-        
+        let r = (n + s) * 0.5; // Red is strictly vertical
+        let b = (w + e) * 0.5; // Blue is strictly horizontal
         rgb = vec3<f32>(r, g, b);
         
     } else {
-        // Blue pixel: B is native, interpolate G and R
+        // Blue Pixel
         let b = normalized;
         
-        // Green: Average of 4 orthogonal neighbors (↑↓←→)
-        let g = (
-            get_neighbor(coords + vec2<i32>(0, -1), dimensions) +  // up
-            get_neighbor(coords + vec2<i32>(0, 1), dimensions) +   // down
-            get_neighbor(coords + vec2<i32>(-1, 0), dimensions) +  // left
-            get_neighbor(coords + vec2<i32>(1, 0), dimensions)     // right
-        ) * 0.25;
+        // Edge-aware Green
+        let grad_v = abs(n - s);
+        let grad_h = abs(e - w);
+        var g: f32;
+        if (grad_v < grad_h) { g = (n + s) * 0.5; }
+        else if (grad_h < grad_v) { g = (e + w) * 0.5; }
+        else { g = (n + s + e + w) * 0.25; }
         
-        // Red: Average of 4 diagonal neighbors (↖↗↙↘)
-        let r = (
-            get_neighbor(coords + vec2<i32>(-1, -1), dimensions) + // top-left
-            get_neighbor(coords + vec2<i32>(1, -1), dimensions) +  // top-right
-            get_neighbor(coords + vec2<i32>(-1, 1), dimensions) +  // bottom-left
-            get_neighbor(coords + vec2<i32>(1, 1), dimensions)     // bottom-right
-        ) * 0.25;
+        // Edge-aware Red (Diagonal)
+        let grad_nesw = abs(ne - sw);
+        let grad_nwse = abs(nw - se);
+        var r: f32;
+        if (grad_nesw < grad_nwse) { r = (ne + sw) * 0.5; }
+        else if (grad_nwse < grad_nesw) { r = (nw + se) * 0.5; }
+        else { r = (ne + sw + nw + se) * 0.25; }
         
         rgb = vec3<f32>(r, g, b);
     }
