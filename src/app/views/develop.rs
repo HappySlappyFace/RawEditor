@@ -503,7 +503,7 @@ fn view_main_content<'a>(
             EditorReadiness::Loading(_) => {
                 use crate::ui::preview_renderer::PreviewRenderer;
                 use iced::widget::canvas::Canvas;
-                let canvas_content = Canvas::new(PreviewRenderer {
+                let canvas_content: Element<'_, Message> = Canvas::new(PreviewRenderer {
                     handle,
                     zoom: editor.zoom,
                     offset: editor.pan_offset,
@@ -515,7 +515,8 @@ fn view_main_content<'a>(
                     background_color: Color::from_rgb(0.12, 0.12, 0.12),
                 })
                 .width(Length::Fill)
-                .height(Length::Fill);
+                .height(Length::Fill)
+                .into();
 
                 container(canvas_content)
                     .width(Length::Fill)
@@ -525,10 +526,10 @@ fn view_main_content<'a>(
             }
             EditorReadiness::Ready(_) => {
                 if let Some(resources) = &editor.image_resources {
-                    if editor.is_cropping {
+                    let canvas_content: Element<'_, Message> = if editor.is_cropping {
                         use crate::ui::preview_renderer::PreviewRenderer;
                         use iced::widget::canvas::Canvas;
-                        let canvas_content = stack![
+                        stack![
                             Canvas::new(PreviewRenderer {
                                 handle: handle.clone(),
                                 zoom: editor.zoom,
@@ -557,17 +558,12 @@ fn view_main_content<'a>(
                             .height(Length::Fill)
                         ]
                         .width(Length::Fill)
-                        .height(Length::Fill);
-
-                        container(canvas_content)
-                            .width(Length::Fill)
-                            .height(Length::Fill)
-                            .clip(true)
-                            .into()
+                        .height(Length::Fill)
+                        .into()
                     } else {
                         use crate::ui::preview_renderer::PreviewRenderer;
                         use iced::widget::canvas::Canvas;
-                        let canvas_content = Canvas::new(PreviewRenderer {
+                        Canvas::new(PreviewRenderer {
                             handle: handle.clone(),
                             zoom: editor.zoom,
                             offset: editor.pan_offset,
@@ -579,14 +575,15 @@ fn view_main_content<'a>(
                             background_color: Color::from_rgb(0.12, 0.12, 0.12),
                         })
                         .width(Length::Fill)
-                        .height(Length::Fill);
+                        .height(Length::Fill)
+                        .into()
+                    };
 
-                        container(canvas_content)
-                            .width(Length::Fill)
-                            .height(Length::Fill)
-                            .clip(true)
-                            .into()
-                    }
+                    container(canvas_content)
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .clip(true)
+                        .into()
                 } else {
                     Image::new(handle)
                         .width(Length::Fill)
@@ -737,7 +734,6 @@ fn view_main_content<'a>(
         .height(Length::Fill)
         .center_x(Length::Fill)
         .center_y(Length::Fill)
-        .clip(true)
         .style(|_| container::Style {
             background: Some(Background::Color(Color::BLACK)),
             ..Default::default()
