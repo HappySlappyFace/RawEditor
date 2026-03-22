@@ -26,8 +26,8 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::MousePressed => handlers::navigation::handle_mouse_pressed(editor),
         Message::MouseReleased => handlers::navigation::handle_mouse_released(editor),
         Message::MouseMoved(p) => handlers::navigation::handle_mouse_moved(editor, p),
-        Message::WorkingPreviewReady(id, h) => {
-            handlers::navigation::handle_working_preview_ready(editor, id, h)
+        Message::WorkingPreviewReady(id, h, p, d) => {
+            handlers::navigation::handle_working_preview_ready(editor, id, h, p, d)
         }
         Message::PreviewCached(id, res) => {
             handlers::navigation::handle_preview_cached(editor, id, res)
@@ -126,8 +126,8 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
             editor.show_profiler = !editor.show_profiler;
             Task::none()
         }
-        Message::RenderFinished(h, d, u, r, cpu) => {
-            handlers::develop::handle_render_finished(editor, h, d, u, r, cpu)
+        Message::RenderFinished(h, bytes, dims, d, u, r, cpu) => {
+            handlers::develop::handle_render_finished(editor, h, bytes, dims, d, u, r, cpu)
         }
 
         // Loading

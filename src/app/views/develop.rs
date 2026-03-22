@@ -498,106 +498,79 @@ fn view_main_content<'a>(
         .into();
     }
 
-    let image_widget: Element<Message> = if let Some(handle) = image_handle {
+    let image_widget: Element<Message> = if let Some(_handle) = image_handle {
+        use crate::ui::preview_renderer::{ViewportProgram, CropOverlay};
+        use iced::widget::shader::Shader;
+        use iced::widget::canvas::Canvas;
+
+        // Helper closure to pick the right pixel source.
+        // Priority: GPU-rendered bytes > working preview bytes.
+        let active_bytes = editor.rendered_preview_bytes.clone()
+            .or_else(|| editor.working_preview_bytes.clone());
+        
+        // Phase 115: Use the stored byte buffer dimensions (CRITICAL: not raw file dims!)
+        // Priority matches the bytes priority: rendered > working > fallback.
+        let (img_w, img_h) = if editor.rendered_preview_bytes.is_some() {
+            editor.rendered_preview_dims
+        } else if editor.working_preview_bytes.is_some() {
+            editor.working_preview_dims
+        } else {
+            (1280, 853)
+        };
+
         match &editor.editor_readiness {
-            EditorReadiness::Loading(_) => {
-                use crate::ui::preview_renderer::PreviewRenderer;
-                use iced::widget::canvas::Canvas;
-                let canvas_content: Element<'_, Message> = Canvas::new(PreviewRenderer {
-                    handle,
+            EditorReadiness::Loading(_) | EditorReadiness::Ready(_) => {
+                // Phase 115: Bottom layer – native GPU shader viewport (respects scissor rects!)
+                let viewport: Element<'_, Message> = Shader::new(ViewportProgram {
+                    pixels: active_bytes,
+                    image_width: img_w,
+                    image_height: img_h,
                     zoom: editor.zoom,
                     offset: editor.pan_offset,
-                    is_cropping: false,
-                    crop: [0.0, 0.0, 1.0, 1.0],
-                    image_width: 3,
-                    image_height: 2,
-                    draw_image: true,
                     background_color: Color::from_rgb(0.12, 0.12, 0.12),
                 })
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .into();
 
-                container(canvas_content)
+                if editor.is_cropping {
+                    // Phase 115: Top layer – transparent crop overlay canvas.
+                    let overlay: Element<'_, Message> = Canvas::new(CropOverlay {
+                        zoom: editor.zoom,
+                        offset: editor.pan_offset,
+                        image_width: img_w,
+                        image_height: img_h,
+                        is_cropping: true,
+                        crop: editor.current_edit_params.crop,
+                    })
                     .width(Length::Fill)
                     .height(Length::Fill)
-                    .clip(true)
-                    .into()
-            }
-            EditorReadiness::Ready(_) => {
-                if let Some(resources) = &editor.image_resources {
-                    let canvas_content: Element<'_, Message> = if editor.is_cropping {
-                        use crate::ui::preview_renderer::PreviewRenderer;
-                        use iced::widget::canvas::Canvas;
-                        stack![
-                            Canvas::new(PreviewRenderer {
-                                handle: handle.clone(),
-                                zoom: editor.zoom,
-                                offset: editor.pan_offset,
-                                is_cropping: false,
-                                crop: editor.current_edit_params.crop,
-                                image_width: resources.width,
-                                image_height: resources.height,
-                                draw_image: true,
-                                background_color: Color::from_rgb(0.12, 0.12, 0.12),
-                            })
-                            .width(Length::Fill)
-                            .height(Length::Fill),
-                            Canvas::new(PreviewRenderer {
-                                handle: handle.clone(),
-                                zoom: editor.zoom,
-                                offset: editor.pan_offset,
-                                is_cropping: true,
-                                crop: editor.current_edit_params.crop,
-                                image_width: resources.width,
-                                image_height: resources.height,
-                                draw_image: false,
-                                background_color: Color::from_rgb(0.12, 0.12, 0.12),
-                            })
-                            .width(Length::Fill)
-                            .height(Length::Fill)
-                        ]
-                        .width(Length::Fill)
-                        .height(Length::Fill)
-                        .into()
-                    } else {
-                        use crate::ui::preview_renderer::PreviewRenderer;
-                        use iced::widget::canvas::Canvas;
-                        Canvas::new(PreviewRenderer {
-                            handle: handle.clone(),
-                            zoom: editor.zoom,
-                            offset: editor.pan_offset,
-                            is_cropping: false,
-                            crop: editor.current_edit_params.crop,
-                            image_width: resources.width,
-                            image_height: resources.height,
-                            draw_image: true,
-                            background_color: Color::from_rgb(0.12, 0.12, 0.12),
-                        })
-                        .width(Length::Fill)
-                        .height(Length::Fill)
-                        .into()
-                    };
+                    .into();
 
-                    container(canvas_content)
+                    container(stack![viewport, overlay].width(Length::Fill).height(Length::Fill))
                         .width(Length::Fill)
                         .height(Length::Fill)
                         .clip(true)
                         .into()
                 } else {
-                    Image::new(handle)
+                    container(viewport)
                         .width(Length::Fill)
                         .height(Length::Fill)
-                        .content_fit(iced::ContentFit::Contain)
+                        .clip(true)
                         .into()
                 }
             }
-            _ => Image::new(handle)
+            _ => container(
+                    Image::new(_handle)
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .content_fit(iced::ContentFit::Contain),
+                )
                 .width(Length::Fill)
                 .height(Length::Fill)
-                .content_fit(iced::ContentFit::Contain)
                 .into(),
         }
+
     } else {
         iced::widget::Space::new(Length::Fill, Length::Fill).into()
     };

@@ -144,6 +144,12 @@ pub struct RawEditor {
     pub show_before: bool,
     /// Phase 25: Zoom level (1.0 = 100%, 2.0 = 200%, etc.)
     pub zoom: f32,
+    /// Phase 115: Native GPU Shader Viewport raw pixel buffers
+    pub working_preview_bytes: Option<std::sync::Arc<[u8]>>,
+    pub rendered_preview_bytes: Option<std::sync::Arc<[u8]>>,
+    /// Phase 115: Pixel dimensions for the above preview byte buffers
+    pub working_preview_dims: (u32, u32),
+    pub rendered_preview_dims: (u32, u32),
     /// Phase 25: Pan offset in normalized coordinates
     pub pan_offset: cgmath::Vector2<f32>,
     /// Phase 25: Canvas cache for main image rendering
@@ -295,6 +301,10 @@ impl RawEditor {
                 viewport_size: (800.0, 400.0),
                 working_preview: None,
                 rendered_preview: None,
+                working_preview_bytes: None,
+                rendered_preview_bytes: None,
+                working_preview_dims: (1, 1),
+                rendered_preview_dims: (1, 1),
                 current_metadata: None,
                 edit_clipboard: None,
                 multi_selection: HashSet::new(),

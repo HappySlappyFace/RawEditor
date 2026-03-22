@@ -181,9 +181,15 @@ pub enum Message {
     PreloadPreview(i64),
     /// Phase 73: Preview loaded from cache/disk
     /// Phase 76: Eager Background Decoding (width, height, pixels)
-    PreviewCached(i64, Result<(u32, u32, Vec<u8>), String>),
-    /// Phase 77: Working Preview Ready (id, handle)
-    WorkingPreviewReady(i64, iced::widget::image::Handle),
+    PreviewCached(i64, Result<(u32, u32, std::sync::Arc<[u8]>), String>),
+    /// Phase 77: Working Preview Ready
+    WorkingPreviewReady(
+        i64,
+        iced::widget::image::Handle,
+        Option<std::sync::Arc<[u8]>>,
+        /// Phase 115: Actual pixel dimensions of the byte buffer
+        (u32, u32),
+    ),
 
     // ========== Phase 25: Zoom & Pan Messages ==========
     /// User zoomed with mouse wheel (delta, cursor position)
@@ -230,6 +236,8 @@ pub enum Message {
     /// Phase 104/105: Async Render Finished (Preview + Histogram + Timing)
     RenderFinished(
         iced::widget::image::Handle,
+        std::sync::Arc<[u8]>, // Phase 115: bytes for Shader Viewport
+        (u32, u32),           // Phase 115: rendered pixel dimensions
         crate::core::histogram::HistogramData,
         f32, // Upload ms
         f32, // Render ms

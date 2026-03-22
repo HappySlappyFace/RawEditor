@@ -53,7 +53,8 @@ async fn process_load_request(id: i64, path: String) -> Message {
     }).await;
 
     let final_result = match result {
-        Ok(res) => res,
+        Ok(Ok((w, h, bytes))) => Ok((w, h, std::sync::Arc::from(bytes))),
+        Ok(Err(e)) => Err(e),
         Err(e) => Err(e.to_string()),
     };
     

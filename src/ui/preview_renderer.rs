@@ -1,31 +1,18 @@
-use iced::widget::canvas::{self, Program};
+// Phase 115: Dual-layer preview architecture.
+// - ViewportProgram implements iced::widget::shader::Program for the image (GPU native, respects scissor rects).
+// - CropOverlay implements iced::widget::canvas::Program for the crop UI (transparent overlay on top).
+
+use iced::widget::canvas::{self};
 use iced::mouse::Cursor;
-use iced::{Rectangle, Renderer, Theme, Point, Size, Color};
+use iced::{Rectangle, Color};
+
+use iced::widget::shader;
+use iced::widget::shader::wgpu;
+use wgpu::util::DeviceExt;
 
 use crate::app::message::Message;
 
-/// Canvas-based JPEG preview renderer (Phase 32)
-/// 
-/// This renderer displays JPEG previews using Canvas instead of Image widget.
-/// It uses the SAME coordinate system as GpuRenderer, ensuring zoom/pan state
-/// transfers seamlessly when transitioning from preview to RAW.
-pub struct PreviewRenderer {
-    /// The JPEG image handle to display
-    pub handle: iced::widget::image::Handle,
-    /// Current zoom level (1.0 = 100%, 2.0 = 200%, etc.)
-    pub zoom: f32,
-    /// Pan offset in normalized coordinates
-    pub offset: cgmath::Vector2<f32>,
-    /// Phase 67: Interactive crop mode
-    pub is_cropping: bool,
-    pub crop: [f32; 4],
-    pub image_width: u32,
-    pub image_height: u32,
-    /// Phase 67: Control rendering layers
-    pub draw_image: bool,
-    /// Phase 114: Workspace background
-    pub background_color: Color,
-}
+// ─────────────────────────────── CropHandle ────────────────────────────────
 
 /// Phase 67: Crop handles
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -38,57 +25,399 @@ pub enum CropHandle {
     Body,
 }
 
-impl Program<Message> for PreviewRenderer {
+// ─────────────────────────────── ViewportPrimitive ────────────────────────
+
+/// Data passed from ViewportProgram::draw() to the GPU prepare/render calls.
+#[derive(Debug)]
+pub struct ViewportPrimitive {
+    /// RGBA pixels, width × height
+    pub pixels: std::sync::Arc<[u8]>,
+    pub width: u32,
+    pub height: u32,
+    /// Zoom level (1.0 = fit-to-screen)
+    pub zoom: f32,
+    /// Pan offset (normalised, same coordinate space as shaders)
+    pub pan_x: f32,
+    pub pan_y: f32,
+    /// Background colour (displayed behind the image)
+    pub background: Color,
+}
+
+/// Cached GPU state kept in iced's Storage between frames.
+struct ViewportPipeline {
+    pipeline: wgpu::RenderPipeline,
+    bind_group_layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+    // Cached texture identity – rebuilt whenever pixel dimensions change.
+    texture: Option<wgpu::Texture>,
+    texture_view: Option<wgpu::TextureView>,
+    texture_width: u32,
+    texture_height: u32,
+    // Uniform buffer: [zoom, pan_x, pan_y, aspect_px (image_w/image_h), 4 background floats]
+    uniform_buf: wgpu::Buffer,
+    bind_group: Option<wgpu::BindGroup>,
+    // Vertex buffer: 6 vertices × (2 pos + 2 uv) floats
+    vertex_buf: wgpu::Buffer,
+}
+
+/// Per-frame uniforms matching the WGSL `Uniforms` struct exactly (std140 / 16-byte aligned).
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct Uniforms {
+    zoom:      f32,
+    pan_x:     f32,
+    pan_y:     f32,
+    /// image width / image height
+    img_aspect: f32,
+    /// viewport width / viewport height (pass in via primitive bounds)
+    vp_aspect:  f32,
+    _pad: [f32; 3],
+    /// background RGBA (linear)
+    bg: [f32; 4],
+}
+
+impl shader::Primitive for ViewportPrimitive {
+    fn prepare(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        format: wgpu::TextureFormat,
+        storage: &mut shader::Storage,
+        bounds: &Rectangle,
+        _viewport: &shader::Viewport,
+    ) {
+        // First call: create the pipeline and companion resources.
+        if !storage.has::<ViewportPipeline>() {
+            let shader_src = wgpu::include_wgsl!("viewport.wgsl");
+            let shader_module = device.create_shader_module(shader_src);
+
+            let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("viewport_bgl"),
+                entries: &[
+                    // binding 0 – uniforms
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // binding 1 – texture
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    // binding 2 – sampler
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+
+            let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("viewport_layout"),
+                bind_group_layouts: &[&bgl],
+                push_constant_ranges: &[],
+            });
+
+            let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("viewport_pipeline"),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader_module,
+                    entry_point: "vs_main",
+                    buffers: &[wgpu::VertexBufferLayout {
+                        array_stride: (4 * std::mem::size_of::<f32>()) as wgpu::BufferAddress,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2],
+                    }],
+                },
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader_module,
+                    entry_point: "fs_main",
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview: None,
+            });
+
+            let uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("viewport_uniforms"),
+                size: std::mem::size_of::<Uniforms>() as wgpu::BufferAddress,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+
+            // Full-screen quad: two triangles covering clip-space.
+            // (pos_x, pos_y, uv_x, uv_y) – Y is flipped in UV so image appears right-side-up.
+            let quad: &[f32] = &[
+                -1.0, -1.0,   0.0, 1.0,
+                 1.0, -1.0,   1.0, 1.0,
+                -1.0,  1.0,   0.0, 0.0,
+                -1.0,  1.0,   0.0, 0.0,
+                 1.0, -1.0,   1.0, 1.0,
+                 1.0,  1.0,   1.0, 0.0,
+            ];
+            let vertex_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("viewport_verts"),
+                contents: bytemuck::cast_slice(quad),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+
+            let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("viewport_sampler"),
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                mipmap_filter: wgpu::FilterMode::Linear,
+                ..Default::default()
+            });
+
+            storage.store(ViewportPipeline {
+                pipeline,
+                bind_group_layout: bgl,
+                sampler,
+                texture: None,
+                texture_view: None,
+                texture_width: 0,
+                texture_height: 0,
+                uniform_buf,
+                bind_group: None,
+                vertex_buf,
+            });
+        }
+
+        let state = storage.get_mut::<ViewportPipeline>().unwrap();
+
+        // Rebuild texture if resolution changed.
+        if self.width != state.texture_width || self.height != state.texture_height || state.texture.is_none() {
+            let tex = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("viewport_tex"),
+                size: wgpu::Extent3d { width: self.width, height: self.height, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("viewport_bg"),
+                layout: &state.bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: state.uniform_buf.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&view) },
+                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&state.sampler) },
+                ],
+            });
+
+            state.texture_width = self.width;
+            state.texture_height = self.height;
+            state.texture_view = Some(view);
+            state.texture = Some(tex);
+            state.bind_group = Some(bind_group);
+        }
+
+        // Upload pixels every frame (they may have changed after a render).
+        if let Some(tex) = &state.texture {
+            queue.write_texture(
+                tex.as_image_copy(),
+                &self.pixels,
+                wgpu::ImageDataLayout {
+                    offset: 0,
+                    bytes_per_row: Some(4 * self.width),
+                    rows_per_image: None,
+                },
+                wgpu::Extent3d { width: self.width, height: self.height, depth_or_array_layers: 1 },
+            );
+        }
+
+        // Update uniforms.
+        let vp_aspect = bounds.width / bounds.height;
+        let img_aspect = self.width as f32 / self.height as f32;
+        let uniforms = Uniforms {
+            zoom: self.zoom,
+            pan_x: self.pan_x,
+            pan_y: self.pan_y,
+            img_aspect,
+            vp_aspect,
+            _pad: [0.0; 3],
+            bg: [self.background.r, self.background.g, self.background.b, self.background.a],
+        };
+        queue.write_buffer(&state.uniform_buf, 0, bytemuck::bytes_of(&uniforms));
+    }
+
+    fn render(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        storage: &shader::Storage,
+        target: &wgpu::TextureView,
+        clip_bounds: &Rectangle<u32>,
+    ) {
+        let state = match storage.get::<ViewportPipeline>() {
+            Some(s) => s,
+            None => return,
+        };
+        let bind_group = match &state.bind_group {
+            Some(bg) => bg,
+            None => return,
+        };
+
+        let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("viewport_pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    // Clear with the background colour (avoids separate bg draw call)
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: self.background.r as f64,
+                        g: self.background.g as f64,
+                        b: self.background.b as f64,
+                        a: 1.0,
+                    }),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+
+        // Apply the exact scissor rect that iced hands us – this is the key clipping fix.
+        rpass.set_scissor_rect(clip_bounds.x, clip_bounds.y, clip_bounds.width, clip_bounds.height);
+        rpass.set_pipeline(&state.pipeline);
+        rpass.set_bind_group(0, bind_group, &[]);
+        rpass.set_vertex_buffer(0, state.vertex_buf.slice(..));
+        rpass.draw(0..6, 0..1);
+    }
+}
+
+// ─────────────────────────────── ViewportProgram ───────────────────────────
+
+/// Phase 115: The native GPU image viewer.
+/// Implements `iced::widget::shader::Program` – the scissor rect is respected natively.
+pub struct ViewportProgram {
+    pub pixels: Option<std::sync::Arc<[u8]>>,
+    pub image_width: u32,
+    pub image_height: u32,
+    pub zoom: f32,
+    pub offset: cgmath::Vector2<f32>,
+    pub background_color: Color,
+}
+
+impl shader::Program<Message> for ViewportProgram {
+    type State = ();
+    type Primitive = ViewportPrimitive;
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        _cursor: iced::mouse::Cursor,
+        bounds: Rectangle,
+    ) -> Self::Primitive {
+        // Mirror the pan math from the old canvas renderer so zoom/pan feel identical.
+        let image_aspect = self.image_width as f32 / self.image_height.max(1) as f32;
+        let viewport_aspect = bounds.width / bounds.height;
+        let (fitted_w, _fitted_h) = if image_aspect > viewport_aspect {
+            (bounds.width, bounds.width / image_aspect)
+        } else {
+            (bounds.height * image_aspect, bounds.height)
+        };
+        // pan_x / pan_y in normalised image-space (matches GPU shader coordinate system).
+        let pan_x = (self.offset.x * fitted_w) / self.zoom;
+        let pan_y = (self.offset.y * fitted_w / image_aspect) / self.zoom;
+
+        // Placeholder 1×1 white pixel if no image is loaded yet.
+        let (pixels, w, h) = match &self.pixels {
+            Some(p) if !p.is_empty() => (p.clone(), self.image_width, self.image_height),
+            _ => {
+                let white: std::sync::Arc<[u8]> = std::sync::Arc::from([255u8, 255, 255, 255].as_ref());
+                (white, 1, 1)
+            }
+        };
+
+        ViewportPrimitive {
+            pixels,
+            width: w,
+            height: h,
+            zoom: self.zoom,
+            pan_x,
+            pan_y,
+            background: self.background_color,
+        }
+    }
+}
+
+// ─────────────────────────────── CropOverlay ───────────────────────────────
+
+/// Transparent Canvas overlay drawn on top of ViewportProgram.
+/// Only draws crop UI elements (dim mask, rule-of-thirds, handles).
+pub struct CropOverlay {
+    pub zoom: f32,
+    pub offset: cgmath::Vector2<f32>,
+    pub image_width: u32,
+    pub image_height: u32,
+    pub is_cropping: bool,
+    pub crop: [f32; 4],
+}
+
+impl canvas::Program<Message> for CropOverlay {
     type State = ();
 
     fn draw(
         &self,
         _state: &Self::State,
-        renderer: &Renderer,
-        _theme: &Theme,
+        renderer: &iced::Renderer,
+        _theme: &iced::Theme,
         bounds: Rectangle,
         _cursor: Cursor,
     ) -> Vec<canvas::Geometry> {
-        let _frame = canvas::Frame::new(renderer, bounds.size());
+        if !self.is_cropping {
+            return vec![];
+        }
 
-        // The bounds give us the viewport size (canvas container size)
         let viewport_width = bounds.width;
         let viewport_height = bounds.height;
-
-        // Use actual image aspect ratio
-        let image_aspect = self.image_width as f32 / self.image_height as f32;
+        let image_aspect = self.image_width as f32 / self.image_height.max(1) as f32;
         let viewport_aspect = viewport_width / viewport_height;
 
-        // Calculate fitted size (contain mode - image fits entirely within viewport)
         let (fitted_width, fitted_height) = if image_aspect > viewport_aspect {
-            // Image is wider - fit to width
             let w = viewport_width;
             let h = w / image_aspect;
             (w, h)
         } else {
-            // Image is taller - fit to height
             let h = viewport_height;
             let w = h * image_aspect;
             (w, h)
         };
 
-        // Start with the image centered in the viewport
         let center_x = viewport_width / 2.0;
         let center_y = viewport_height / 2.0;
-
-        // Apply zoom to the fitted size
         let zoomed_width = fitted_width * self.zoom;
         let zoomed_height = fitted_height * self.zoom;
-
-        // Apply pan offset
-        // CRITICAL: Pan offset must account for zoom!
-        // GPU shader applies pan in texture space AFTER zoom division
-        // In screen space, same texture pan = less screen movement when zoomed
-        // So we divide by zoom to match the shader's coordinate system
         let pan_x = (self.offset.x * fitted_width) / self.zoom;
         let pan_y = (self.offset.y * fitted_height) / self.zoom;
-        
-        // Calculate final image bounds
+
         let image_x = center_x - (zoomed_width / 2.0) + pan_x;
         let image_y = center_y - (zoomed_height / 2.0) + pan_y;
 
@@ -99,148 +428,47 @@ impl Program<Message> for PreviewRenderer {
             height: zoomed_height,
         };
 
-        let mut geometries = Vec::new();
+        let crop_x = image_bounds.x + (self.crop[0] * image_bounds.width);
+        let crop_y = image_bounds.y + (self.crop[1] * image_bounds.height);
+        let crop_w = self.crop[2] * image_bounds.width;
+        let crop_h = self.crop[3] * image_bounds.height;
 
-        if self.draw_image {
-            // 1. Draw neutral background
-            let mut bg_frame = canvas::Frame::new(renderer, bounds.size());
-            bg_frame.fill_rectangle(
-                Point::ORIGIN,
-                bounds.size(),
-                self.background_color,
-            );
-            geometries.push(bg_frame.into_geometry());
+        let mut overlay_frame = canvas::Frame::new(renderer, bounds.size());
 
-            // 2. Draw the image
-            let mut image_frame = canvas::Frame::new(renderer, bounds.size());
-            let canvas_image = iced::widget::canvas::Image::new(self.handle.clone());
-            image_frame.draw_image(image_bounds, canvas_image);
-            
-            geometries.push(image_frame.into_geometry());
-        }
+        // Dim outer regions
+        let dim = Color::from_rgba(0.0, 0.0, 0.0, 0.7);
+        overlay_frame.fill_rectangle(iced::Point::new(image_bounds.x, image_bounds.y), iced::Size::new(image_bounds.width, crop_y - image_bounds.y), dim);
+        overlay_frame.fill_rectangle(iced::Point::new(image_bounds.x, crop_y + crop_h), iced::Size::new(image_bounds.width, (image_bounds.y + image_bounds.height) - (crop_y + crop_h)), dim);
+        overlay_frame.fill_rectangle(iced::Point::new(image_bounds.x, crop_y), iced::Size::new(crop_x - image_bounds.x, crop_h), dim);
+        overlay_frame.fill_rectangle(iced::Point::new(crop_x + crop_w, crop_y), iced::Size::new((image_bounds.x + image_bounds.width) - (crop_x + crop_w), crop_h), dim);
 
-        // Phase 67: Draw Crop Overlay
-        if self.is_cropping {
-            let mut overlay_frame = canvas::Frame::new(renderer, bounds.size());
-            
-            // Calculate crop rect in screen coordinates
-            // crop is [x, y, w, h] in normalized image coordinates
-            
-            let crop_x = image_bounds.x + (self.crop[0] * image_bounds.width);
-            let crop_y = image_bounds.y + (self.crop[1] * image_bounds.height);
-            let crop_w = self.crop[2] * image_bounds.width;
-            let crop_h = self.crop[3] * image_bounds.height;
+        // Rule of thirds grid
+        let third_w = crop_w / 3.0;
+        let third_h = crop_h / 3.0;
+        let grid_stroke = canvas::Stroke::default().with_color(Color::from_rgba(1.0, 1.0, 1.0, 0.8)).with_width(1.0);
+        overlay_frame.stroke(&canvas::Path::line(iced::Point::new(crop_x + third_w, crop_y), iced::Point::new(crop_x + third_w, crop_y + crop_h)), grid_stroke.clone());
+        overlay_frame.stroke(&canvas::Path::line(iced::Point::new(crop_x + third_w * 2.0, crop_y), iced::Point::new(crop_x + third_w * 2.0, crop_y + crop_h)), grid_stroke.clone());
+        overlay_frame.stroke(&canvas::Path::line(iced::Point::new(crop_x, crop_y + third_h), iced::Point::new(crop_x + crop_w, crop_y + third_h)), grid_stroke.clone());
+        overlay_frame.stroke(&canvas::Path::line(iced::Point::new(crop_x, crop_y + third_h * 2.0), iced::Point::new(crop_x + crop_w, crop_y + third_h * 2.0)), grid_stroke.clone());
 
-            // Draw Dimming Overlay (outside crop area)
-            let dim_color = Color::from_rgba(0.0, 0.0, 0.0, 0.7); // Dark overlay
-            
-            // Top rect
-            overlay_frame.fill_rectangle(
-                Point::new(image_bounds.x, image_bounds.y),
-                Size::new(image_bounds.width, crop_y - image_bounds.y),
-                dim_color,
-            );
-            // Bottom rect
-            overlay_frame.fill_rectangle(
-                Point::new(image_bounds.x, crop_y + crop_h),
-                Size::new(image_bounds.width, (image_bounds.y + image_bounds.height) - (crop_y + crop_h)),
-                dim_color,
-            );
-            // Left rect
-            overlay_frame.fill_rectangle(
-                Point::new(image_bounds.x, crop_y),
-                Size::new(crop_x - image_bounds.x, crop_h),
-                dim_color,
-            );
-            // Right rect
-            overlay_frame.fill_rectangle(
-                Point::new(crop_x + crop_w, crop_y),
-                Size::new((image_bounds.x + image_bounds.width) - (crop_x + crop_w), crop_h),
-                dim_color,
-            );
+        // Crop border
+        let border_rect = Rectangle { x: crop_x, y: crop_y, width: crop_w, height: crop_h };
+        overlay_frame.stroke(&canvas::Path::rectangle(border_rect.position(), border_rect.size()), canvas::Stroke::default().with_color(Color::WHITE).with_width(2.0));
 
-            // Draw Rule of Thirds grid
-            let third_w = crop_w / 3.0;
-            let third_h = crop_h / 3.0;
-            
-            let grid_stroke = canvas::Stroke::default()
-                .with_color(Color::from_rgba(1.0, 1.0, 1.0, 0.8)) // Increased opacity
-                .with_width(1.0);
-                
-            // Vertical lines
-            overlay_frame.stroke(
-                &canvas::Path::line(
-                    Point::new(crop_x + third_w, crop_y),
-                    Point::new(crop_x + third_w, crop_y + crop_h)
-                ),
-                grid_stroke.clone(),
-            );
-            overlay_frame.stroke(
-                &canvas::Path::line(
-                    Point::new(crop_x + third_w * 2.0, crop_y),
-                    Point::new(crop_x + third_w * 2.0, crop_y + crop_h)
-                ),
-                grid_stroke.clone(),
-            );
-            
-            // Horizontal lines
-            overlay_frame.stroke(
-                &canvas::Path::line(
-                    Point::new(crop_x, crop_y + third_h),
-                    Point::new(crop_x + crop_w, crop_y + third_h)
-                ),
-                grid_stroke.clone(),
-            );
-            overlay_frame.stroke(
-                &canvas::Path::line(
-                    Point::new(crop_x, crop_y + third_h * 2.0),
-                    Point::new(crop_x + crop_w, crop_y + third_h * 2.0)
-                ),
-                grid_stroke.clone(),
-            );
-            
-            // Draw white border
-            let border_rect = Rectangle {
-                x: crop_x,
-                y: crop_y,
-                width: crop_w,
-                height: crop_h,
-            };
-            overlay_frame.stroke(
-                &canvas::Path::rectangle(border_rect.position(), border_rect.size()),
-                canvas::Stroke::default().with_color(Color::WHITE).with_width(2.0),
-            );
-            
-            // Draw corner handles
-            let handle_size = 12.0; // Slightly larger
-            let handle_color = Color::WHITE;
-            let handle_stroke = canvas::Stroke::default().with_color(Color::BLACK).with_width(1.0);
-            
-            let draw_handle = |frame: &mut canvas::Frame, x: f32, y: f32| {
-                let pos = Point::new(x - handle_size/2.0, y - handle_size/2.0);
-                let size = Size::new(handle_size, handle_size);
-                // Fill
-                frame.fill_rectangle(pos, size, handle_color);
-                // Stroke (outline for visibility)
-                frame.stroke(
-                    &canvas::Path::rectangle(pos, size),
-                    handle_stroke.clone(),
-                );
-            };
-            
-            // Top-Left
-            draw_handle(&mut overlay_frame, crop_x, crop_y);
-            // Top-Right
-            draw_handle(&mut overlay_frame, crop_x + crop_w, crop_y);
-            // Bottom-Left
-            draw_handle(&mut overlay_frame, crop_x, crop_y + crop_h);
-            // Bottom-Right
-            draw_handle(&mut overlay_frame, crop_x + crop_w, crop_y + crop_h);
-            
-            geometries.push(overlay_frame.into_geometry());
-        }
+        // Corner handles
+        let handle_size = 12.0;
+        let draw_handle = |frame: &mut canvas::Frame, x: f32, y: f32| {
+            let pos = iced::Point::new(x - handle_size / 2.0, y - handle_size / 2.0);
+            let size = iced::Size::new(handle_size, handle_size);
+            frame.fill_rectangle(pos, size, Color::WHITE);
+            frame.stroke(&canvas::Path::rectangle(pos, size), canvas::Stroke::default().with_color(Color::BLACK).with_width(1.0));
+        };
+        draw_handle(&mut overlay_frame, crop_x, crop_y);
+        draw_handle(&mut overlay_frame, crop_x + crop_w, crop_y);
+        draw_handle(&mut overlay_frame, crop_x, crop_y + crop_h);
+        draw_handle(&mut overlay_frame, crop_x + crop_w, crop_y + crop_h);
 
-        geometries
+        vec![overlay_frame.into_geometry()]
     }
 
     fn update(
@@ -262,68 +490,43 @@ impl Program<Message> for PreviewRenderer {
 
         match event {
             canvas::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left)) => {
-                // Calculate image bounds (same logic as draw)
                 let viewport_width = bounds.width;
                 let viewport_height = bounds.height;
-                let image_aspect = self.image_width as f32 / self.image_height as f32;
+                let image_aspect = self.image_width as f32 / self.image_height.max(1) as f32;
                 let viewport_aspect = viewport_width / viewport_height;
-
                 let (fitted_width, fitted_height) = if image_aspect > viewport_aspect {
-                    let w = viewport_width;
-                    let h = w / image_aspect;
-                    (w, h)
+                    (viewport_width, viewport_width / image_aspect)
                 } else {
-                    let h = viewport_height;
-                    let w = h * image_aspect;
-                    (w, h)
+                    (viewport_height * image_aspect, viewport_height)
                 };
-
                 let center_x = viewport_width / 2.0;
                 let center_y = viewport_height / 2.0;
                 let zoomed_width = fitted_width * self.zoom;
                 let zoomed_height = fitted_height * self.zoom;
                 let pan_x = (self.offset.x * fitted_width) / self.zoom;
                 let pan_y = (self.offset.y * fitted_height) / self.zoom;
-                
                 let image_x = center_x - (zoomed_width / 2.0) + pan_x;
                 let image_y = center_y - (zoomed_height / 2.0) + pan_y;
-                
-                let image_bounds = Rectangle {
-                    x: image_x,
-                    y: image_y,
-                    width: zoomed_width,
-                    height: zoomed_height,
-                };
 
-                // Calculate handle positions
+                let image_bounds = Rectangle { x: image_x, y: image_y, width: zoomed_width, height: zoomed_height };
                 let crop_x = image_bounds.x + (self.crop[0] * image_bounds.width);
                 let crop_y = image_bounds.y + (self.crop[1] * image_bounds.height);
                 let crop_w = self.crop[2] * image_bounds.width;
                 let crop_h = self.crop[3] * image_bounds.height;
-                
-                let handle_radius = 15.0;
-                let check_handle = |x, y| {
+                let hr = 15.0_f32;
+                let chk = |x: f32, y: f32| -> bool {
                     let dx = cursor_position.x - x;
                     let dy = cursor_position.y - y;
-                    (dx*dx + dy*dy) < handle_radius * handle_radius
+                    dx * dx + dy * dy < hr * hr
                 };
-                
-                if check_handle(crop_x, crop_y) {
-                    return (canvas::event::Status::Captured, Some(Message::CropHandleGrabbed(CropHandle::TopLeft, image_bounds)));
-                }
-                if check_handle(crop_x + crop_w, crop_y) {
-                    return (canvas::event::Status::Captured, Some(Message::CropHandleGrabbed(CropHandle::TopRight, image_bounds)));
-                }
-                if check_handle(crop_x, crop_y + crop_h) {
-                    return (canvas::event::Status::Captured, Some(Message::CropHandleGrabbed(CropHandle::BottomLeft, image_bounds)));
-                }
-                if check_handle(crop_x + crop_w, crop_y + crop_h) {
-                    return (canvas::event::Status::Captured, Some(Message::CropHandleGrabbed(CropHandle::BottomRight, image_bounds)));
-                }
-                
-                // Phase 70: Check if inside body
-                if cursor_position.x >= crop_x && cursor_position.x <= crop_x + crop_w &&
-                   cursor_position.y >= crop_y && cursor_position.y <= crop_y + crop_h {
+
+                if chk(crop_x, crop_y) { return (canvas::event::Status::Captured, Some(Message::CropHandleGrabbed(CropHandle::TopLeft, image_bounds))); }
+                if chk(crop_x + crop_w, crop_y) { return (canvas::event::Status::Captured, Some(Message::CropHandleGrabbed(CropHandle::TopRight, image_bounds))); }
+                if chk(crop_x, crop_y + crop_h) { return (canvas::event::Status::Captured, Some(Message::CropHandleGrabbed(CropHandle::BottomLeft, image_bounds))); }
+                if chk(crop_x + crop_w, crop_y + crop_h) { return (canvas::event::Status::Captured, Some(Message::CropHandleGrabbed(CropHandle::BottomRight, image_bounds))); }
+
+                if cursor_position.x >= crop_x && cursor_position.x <= crop_x + crop_w
+                    && cursor_position.y >= crop_y && cursor_position.y <= crop_y + crop_h {
                     return (canvas::event::Status::Captured, Some(Message::CropHandleGrabbed(CropHandle::Body, image_bounds)));
                 }
             }
@@ -339,81 +542,34 @@ impl Program<Message> for PreviewRenderer {
         bounds: Rectangle,
         cursor: Cursor,
     ) -> iced::mouse::Interaction {
-        if !self.is_cropping {
-            return iced::mouse::Interaction::default();
-        }
-
+        if !self.is_cropping { return iced::mouse::Interaction::default(); }
         let cursor_position = match cursor.position_in(bounds) {
             Some(p) => p,
             None => return iced::mouse::Interaction::default(),
         };
 
-        // Re-calculate bounds (duplicate logic, but necessary for stateless Program)
-        // In a real app, we might cache this layout, but for now it's cheap enough
-        let viewport_width = bounds.width;
-        let viewport_height = bounds.height;
-        let image_aspect = self.image_width as f32 / self.image_height as f32;
-        let viewport_aspect = viewport_width / viewport_height;
-
-        let (fitted_width, fitted_height) = if image_aspect > viewport_aspect {
-            let w = viewport_width;
-            let h = w / image_aspect;
-            (w, h)
-        } else {
-            let h = viewport_height;
-            let w = h * image_aspect;
-            (w, h)
-        };
-
-        let center_x = viewport_width / 2.0;
-        let center_y = viewport_height / 2.0;
-        let zoomed_width = fitted_width * self.zoom;
-        let zoomed_height = fitted_height * self.zoom;
-        let pan_x = (self.offset.x * fitted_width) / self.zoom;
-        let pan_y = (self.offset.y * fitted_height) / self.zoom;
-        
-        let image_x = center_x - (zoomed_width / 2.0) + pan_x;
-        let image_y = center_y - (zoomed_height / 2.0) + pan_y;
-        
-        let image_bounds = Rectangle {
-            x: image_x,
-            y: image_y,
-            width: zoomed_width,
-            height: zoomed_height,
-        };
+        let image_aspect = self.image_width as f32 / self.image_height.max(1) as f32;
+        let vp_aspect = bounds.width / bounds.height;
+        let (fw, fh) = if image_aspect > vp_aspect { (bounds.width, bounds.width / image_aspect) } else { (bounds.height * image_aspect, bounds.height) };
+        let cx = bounds.width / 2.0;
+        let cy = bounds.height / 2.0;
+        let zw = fw * self.zoom;
+        let zh = fh * self.zoom;
+        let px = (self.offset.x * fw) / self.zoom;
+        let py = (self.offset.y * fh) / self.zoom;
+        let image_bounds = Rectangle { x: cx - zw / 2.0 + px, y: cy - zh / 2.0 + py, width: zw, height: zh };
 
         let crop_x = image_bounds.x + (self.crop[0] * image_bounds.width);
         let crop_y = image_bounds.y + (self.crop[1] * image_bounds.height);
         let crop_w = self.crop[2] * image_bounds.width;
         let crop_h = self.crop[3] * image_bounds.height;
-        
-        let handle_radius = 15.0;
-        let check_handle = |x, y| {
-            let dx = cursor_position.x - x;
-            let dy = cursor_position.y - y;
-            (dx*dx + dy*dy) < handle_radius * handle_radius
-        };
-        
-        if check_handle(crop_x, crop_y) { return iced::mouse::Interaction::ResizingDiagonallyUp; } // TopLeft (NW)
-        if check_handle(crop_x + crop_w, crop_y) { return iced::mouse::Interaction::ResizingDiagonallyDown; } // TopRight (NE) - Wait, NE is Up?
-        // Let's check standard cursors.
-        // NWSE = ResizingDiagonallyUp (/) or Down (\)?
-        // Usually:
-        // NW-SE (\) = ResizingDiagonallyDown (if defined as top-left to bottom-right)
-        // NE-SW (/) = ResizingDiagonallyUp
-        
-        // Iced 0.13:
-        // ResizingDiagonallyUp = / (NE-SW)
-        // ResizingDiagonallyDown = \ (NW-SE)
-        
-        if check_handle(crop_x, crop_y) { return iced::mouse::Interaction::ResizingDiagonallyDown; } // TopLeft (NW) -> SE
-        if check_handle(crop_x + crop_w, crop_y) { return iced::mouse::Interaction::ResizingDiagonallyUp; } // TopRight (NE) -> SW
-        if check_handle(crop_x, crop_y + crop_h) { return iced::mouse::Interaction::ResizingDiagonallyUp; } // BottomLeft (SW) -> NE
-        if check_handle(crop_x + crop_w, crop_y + crop_h) { return iced::mouse::Interaction::ResizingDiagonallyDown; } // BottomRight (SE) -> NW
-        
-        // Check body
-        if cursor_position.x >= crop_x && cursor_position.x <= crop_x + crop_w &&
-           cursor_position.y >= crop_y && cursor_position.y <= crop_y + crop_h {
+        let hr = 15.0_f32;
+        let chk = |x: f32, y: f32| -> bool { let dx = cursor_position.x - x; let dy = cursor_position.y - y; dx*dx+dy*dy < hr*hr };
+
+        if chk(crop_x, crop_y) || chk(crop_x + crop_w, crop_y + crop_h) { return iced::mouse::Interaction::ResizingDiagonallyDown; }
+        if chk(crop_x + crop_w, crop_y) || chk(crop_x, crop_y + crop_h) { return iced::mouse::Interaction::ResizingDiagonallyUp; }
+        if cursor_position.x >= crop_x && cursor_position.x <= crop_x + crop_w
+            && cursor_position.y >= crop_y && cursor_position.y <= crop_y + crop_h {
             return iced::mouse::Interaction::Grab;
         }
 

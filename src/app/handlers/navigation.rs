@@ -156,21 +156,33 @@ pub fn handle_mouse_moved(editor: &mut RawEditor, pos: Point) -> Task<Message> {
     }
 }
 
-pub fn handle_working_preview_ready(editor: &mut RawEditor, id: i64, handle: Handle) -> Task<Message> {
+pub fn handle_working_preview_ready(
+    editor: &mut RawEditor,
+    id: i64,
+    handle: Handle,
+    bytes: Option<std::sync::Arc<[u8]>>,
+    dims: (u32, u32),
+) -> Task<Message> {
     if Some(id) == editor.selected_image_id {
         editor.working_preview = Some(handle);
+        editor.working_preview_bytes = bytes;
+        editor.working_preview_dims = dims;
     }
     Task::none()
 }
 
-pub fn handle_preview_cached(editor: &mut RawEditor, id: i64, result: Result<(u32, u32, Vec<u8>), String>) -> Task<Message> {
+pub fn handle_preview_cached(
+    editor: &mut RawEditor,
+    id: i64,
+    result: Result<(u32, u32, std::sync::Arc<[u8]>), String>,
+) -> Task<Message> {
     // Phase 78: Cleanup pending load
     editor.pending_loads.remove(&id);
     // Phase 81: Cleanup queued load
     editor.queued_loads.retain(|(i, _)| *i != id);
     
     if let Ok((width, height, pixels)) = result {
-        let handle = iced::widget::image::Handle::from_rgba(width, height, pixels);
+        let handle = iced::widget::image::Handle::from_rgba(width, height, pixels.to_vec());
         editor.preview_cache.put(id, handle);
     }
     Task::none()
@@ -250,7 +262,10 @@ fn trigger_image_load(editor: &mut RawEditor, image_id: i64) -> Task<Message> {
         editor.editor_readiness = EditorReadiness::Loading(image_id);
         let mut tasks = Vec::new();
         if let Some(path) = &img.cache_path_working {
-            tasks.push(Task::perform(load_image_handle(image_id, path.clone()), |(id, h)| Message::WorkingPreviewReady(id, h)));
+            tasks.push(Task::perform(
+                load_image_handle(image_id, path.clone()),
+                |(id, h, p, d)| Message::WorkingPreviewReady(id, h, p, d),
+            ));
         }
         
         // Only load full RAW data if we are in Develop mode
@@ -317,9 +332,20 @@ async fn load_preview_pixels(path: String) -> Result<(u32, u32, Vec<u8>), String
     }).await.map_err(|e| e.to_string())?
 }
 
-async fn load_image_handle(id: i64, path: String) -> (i64, iced::widget::image::Handle) {
+async fn load_image_handle(
+    id: i64,
+    path: String,
+) -> (i64, iced::widget::image::Handle, Option<std::sync::Arc<[u8]>>, (u32, u32)) {
     match load_preview_pixels(path.clone()).await {
-        Ok((w, h, pixels)) => (id, iced::widget::image::Handle::from_rgba(w, h, pixels)),
-        Err(_) => (id, iced::widget::image::Handle::from_path(path)),
+        Ok((w, h, pixels)) => {
+            let buf: std::sync::Arc<[u8]> = pixels.clone().into();
+            (
+                id,
+                iced::widget::image::Handle::from_rgba(w, h, pixels),
+                Some(buf),
+                (w, h),
+            )
+        }
+        Err(_) => (id, iced::widget::image::Handle::from_path(path), None, (1280, 853)),
     }
 }

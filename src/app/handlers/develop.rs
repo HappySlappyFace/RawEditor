@@ -193,12 +193,16 @@ pub fn handle_paste_settings(editor: &mut RawEditor) -> Task<Message> {
 pub fn handle_render_finished(
     editor: &mut RawEditor,
     handle: iced::widget::image::Handle,
+    bytes: std::sync::Arc<[u8]>,
+    dims: (u32, u32),
     data: crate::core::histogram::HistogramData,
     upload_ms: f32,
     render_ms: f32,
     update_ms: f32,
 ) -> Task<Message> {
     editor.rendered_preview = Some(handle);
+    editor.rendered_preview_bytes = Some(bytes);
+    editor.rendered_preview_dims = dims;
     *editor.histogram_data.borrow_mut() = data;
     editor.histogram_cache.clear();
 
@@ -258,15 +262,17 @@ pub fn trigger_async_render(editor: &mut RawEditor) -> Task<Message> {
                 // 2. Calculate histogram & Create Handle (CPU, blocking but in async task)
                 tokio::task::spawn_blocking(move || {
                     let histogram = crate::core::histogram::calculate(&bytes);
+                    // Phase 115: Store byte arc BEFORE moving bytes into the Handle
+                    let byte_arc: std::sync::Arc<[u8]> = std::sync::Arc::from(bytes.as_slice());
                     let handle = iced::widget::image::Handle::from_rgba(target_w, target_h, bytes);
-                    (handle, histogram, upload_ms, render_ms, update_ms)
+                    (handle, byte_arc, histogram, upload_ms, render_ms, update_ms, target_w, target_h)
                 })
                 .await
                 .ok()
             },
             |res| {
-                if let Some((handle, histogram, upload_ms, render_ms, update_ms)) = res {
-                    Message::RenderFinished(handle, histogram, upload_ms, render_ms, update_ms)
+                if let Some((handle, byte_arc, histogram, upload_ms, render_ms, update_ms, tw, th)) = res {
+                    Message::RenderFinished(handle, byte_arc, (tw, th), histogram, upload_ms, render_ms, update_ms)
                 } else {
                     Message::ModalNoOp
                 }
