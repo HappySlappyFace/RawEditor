@@ -227,12 +227,13 @@ pub enum Message {
     DragWindow,
 
     // ========== Histogram Messages (Phase 22) ==========
-    /// Phase 104: Async Render Finished (Preview + Histogram + Timing)
+    /// Phase 104/105: Async Render Finished (Preview + Histogram + Timing)
     RenderFinished(
         iced::widget::image::Handle,
         crate::core::histogram::HistogramData,
         f32, // Upload ms
         f32, // Render ms
+        f32, // CPU update ms (Phase 105)
     ),
     /// Phase 104: Toggle Profiler Overlay
     ToggleProfiler,

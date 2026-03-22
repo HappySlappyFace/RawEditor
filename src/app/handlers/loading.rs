@@ -72,11 +72,15 @@ pub fn handle_image_resources_ready(editor: &mut RawEditor, image_id: i64, resul
             editor.working_preview = None;
             editor.canvas_cache.clear();
             editor.histogram_cache.clear();
+
+            // Kick off the first async render now that resources are ready
+            editor.is_rendering_preview = true;
+            crate::app::handlers::develop::trigger_async_render(editor)
         }
         Err(e) => { 
             editor.status = format!("GPU Init Failed: {}", e); 
             editor.editor_readiness = EditorReadiness::Failed(image_id, e); 
+            Task::none()
         }
     }
-    Task::none()
 }

@@ -55,7 +55,8 @@ pub fn view_develop(editor: &RawEditor) -> Element<'_, Message> {
         stack![
             content,
             container(crate::ui::widgets::profiler_graph::view_profiler_overlay(
-                &editor.profiler
+                &editor.profiler,
+                &editor.profiler_cache,
             ))
             .width(Length::Fill)
             .height(Length::Fill)

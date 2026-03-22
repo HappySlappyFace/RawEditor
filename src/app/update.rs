@@ -126,8 +126,8 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
             editor.show_profiler = !editor.show_profiler;
             Task::none()
         }
-        Message::RenderFinished(h, d, u, r) => {
-            handlers::develop::handle_render_finished(editor, h, d, u, r)
+        Message::RenderFinished(h, d, u, r, cpu) => {
+            handlers::develop::handle_render_finished(editor, h, d, u, r, cpu)
         }
 
         // Loading

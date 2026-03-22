@@ -188,6 +188,8 @@ pub struct RawEditor {
     /// Phase 104: Performance Profiler
     pub profiler: crate::core::profiler::Profiler,
     pub show_profiler: bool,
+    /// Phase 105: Cache for profiler canvas (cleared on each new frame push)
+    pub profiler_cache: iced::widget::canvas::Cache,
 
     /// Phase 106: Render Throttling
     pub is_rendering_preview: bool,
@@ -311,9 +313,10 @@ impl RawEditor {
                 export_queue: Vec::new(),
                 is_exporting: false,
 
-                // Phase 104: Profiler
+                // Phase 104/105: Profiler
                 profiler: crate::core::profiler::Profiler::new(),
                 show_profiler: false,
+                profiler_cache: iced::widget::canvas::Cache::default(),
                 is_rendering_preview: false,
                 pending_preview_update: false,
 

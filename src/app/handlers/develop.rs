@@ -196,6 +196,7 @@ pub fn handle_render_finished(
     data: crate::core::histogram::HistogramData,
     upload_ms: f32,
     render_ms: f32,
+    update_ms: f32,
 ) -> Task<Message> {
     editor.rendered_preview = Some(handle);
     *editor.histogram_data.borrow_mut() = data;
@@ -205,11 +206,13 @@ pub fn handle_render_finished(
     editor
         .profiler
         .push_frame(crate::core::profiler::ProfilerFrame {
-            update_ms: 0.0,
+            update_ms,
             upload_ms,
             render_ms,
-            total_ms: upload_ms + render_ms,
+            total_ms: update_ms + upload_ms + render_ms,
         });
+    // Phase 105: Invalidate profiler canvas so it redraws with fresh data
+    editor.profiler_cache.clear();
 
     // Phase 106: Throttling
     editor.is_rendering_preview = false;
@@ -223,6 +226,9 @@ pub fn handle_render_finished(
 }
 
 pub fn trigger_async_render(editor: &mut RawEditor) -> Task<Message> {
+    // Phase 105: Start the CPU timer — measures all synchronous work before we hand off to GPU
+    let t_update_start = std::time::Instant::now();
+
     if let (Some(ctx), Some(resources)) = (&editor.gpu_context, &editor.image_resources) {
         let ctx = ctx.clone();
         let resources = resources.clone();
@@ -238,6 +244,9 @@ pub fn trigger_async_render(editor: &mut RawEditor) -> Task<Message> {
             ((h as f32 * original_aspect) as u32, h)
         };
 
+        // Phase 105: CPU work is done — snapshot the elapsed time before the async boundary
+        let update_ms = t_update_start.elapsed().as_secs_f32() * 1000.0;
+
         return Task::perform(
             async move {
                 // 1. Render to bytes (async, on GPU)
@@ -250,14 +259,14 @@ pub fn trigger_async_render(editor: &mut RawEditor) -> Task<Message> {
                 tokio::task::spawn_blocking(move || {
                     let histogram = crate::core::histogram::calculate(&bytes);
                     let handle = iced::widget::image::Handle::from_rgba(target_w, target_h, bytes);
-                    (handle, histogram, upload_ms, render_ms)
+                    (handle, histogram, upload_ms, render_ms, update_ms)
                 })
                 .await
                 .ok()
             },
             |res| {
-                if let Some((handle, histogram, upload_ms, render_ms)) = res {
-                    Message::RenderFinished(handle, histogram, upload_ms, render_ms)
+                if let Some((handle, histogram, upload_ms, render_ms, update_ms)) = res {
+                    Message::RenderFinished(handle, histogram, upload_ms, render_ms, update_ms)
                 } else {
                     Message::ModalNoOp
                 }

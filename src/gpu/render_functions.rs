@@ -98,7 +98,13 @@ pub async fn render_to_bytes(
         let _ = tx.send(res);
     });
 
-    // Phase 104: Async wait (no poll(Wait))
+    // Fix: wgpu's map_async callback only fires when the device is polled.
+    // block_in_place runs the blocking poll(Wait) on the current thread without
+    // blocking the entire tokio executor — correct pattern for wgpu inside async.
+    tokio::task::block_in_place(|| {
+        context.device.poll(wgpu::Maintain::Wait);
+    });
+
     if let Ok(Ok(())) = rx.await {
         let data = buffer_slice.get_mapped_range();
         let mut result = Vec::with_capacity((width * height * 4) as usize);
