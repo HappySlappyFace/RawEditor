@@ -588,14 +588,29 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     luma = dot(color.rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
     color = mix(vec3<f32>(luma), color, 1.0 + vibrance_amount);
     
-    // 9.5 Base Tone Curve (ACES Filmic-like S-curve for punchy contrast)
-    // This maps linear HDR values gracefully into the [0,1] display range
-    let a = 2.51;
-    let b = 0.03;
-    let c = 2.43;
-    let d = 0.59;
-    let e = 0.14;
-    color = clamp((color * (a * color + b)) / (color * (c * color + d) + e), vec3<f32>(0.0), vec3<f32>(1.0));
+    // 9.5 Hue-Preserving Base Tone Curve (ACES Filmic-like)
+    
+    // 1. Safeguard: Prevent negative out-of-gamut values from breaking the ACES polynomial (Fixes grain/noise)
+    color = max(color, vec3<f32>(0.0));
+    
+    // 2. Find the maximum channel to drive the tone curve (Max-RGB method)
+    let pre_tone_max = max(color.r, max(color.g, color.b));
+    
+    if (pre_tone_max > 0.0) {
+        let a = 2.51;
+        let b = 0.03;
+        let c = 2.43;
+        let d = 0.59;
+        let e = 0.14;
+        
+        // 3. Apply the ACES curve ONLY to the max value
+        let post_tone_max = clamp((pre_tone_max * (a * pre_tone_max + b)) / (pre_tone_max * (c * pre_tone_max + d) + e), 0.0, 1.0);
+        
+        // 4. Scale the entire RGB vector by the exact same ratio.
+        // This compresses brightness without altering the R:G:B ratio, preventing red from shifting to yellow!
+        let tone_scale = post_tone_max / pre_tone_max;
+        color = color * tone_scale;
+    }
 
     // 10. Apply sRGB Gamma Correction (linear → sRGB for display)
     // This is critical for proper brightness perception!
