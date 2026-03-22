@@ -192,8 +192,8 @@ pub struct RawEditor {
     pub profiler_cache: iced::widget::canvas::Cache,
 
     /// Phase 106: Render Throttling
-    pub is_rendering_preview: bool,
-    pub pending_preview_update: bool,
+    pub is_rendering: bool,
+    pub pending_render: bool,
 }
 
 /// Phase 79: Modular Info Overlay States
@@ -317,8 +317,8 @@ impl RawEditor {
                 profiler: crate::core::profiler::Profiler::new(),
                 show_profiler: false,
                 profiler_cache: iced::widget::canvas::Cache::default(),
-                is_rendering_preview: false,
-                pending_preview_update: false,
+                is_rendering: false,
+                pending_render: false,
 
                 // Background task
                 // background_task: None, // This field is not defined in the struct

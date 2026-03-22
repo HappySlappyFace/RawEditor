@@ -215,10 +215,10 @@ pub fn handle_render_finished(
     editor.profiler_cache.clear();
 
     // Phase 106: Throttling
-    editor.is_rendering_preview = false;
-    if editor.pending_preview_update {
-        editor.pending_preview_update = false;
-        editor.is_rendering_preview = true;
+    editor.is_rendering = false;
+    if editor.pending_render {
+        editor.is_rendering = true;
+        editor.pending_render = false;
         return trigger_async_render(editor);
     }
 
@@ -273,6 +273,9 @@ pub fn trigger_async_render(editor: &mut RawEditor) -> Task<Message> {
             },
         );
     }
+    // GPU context not ready — release the lock so the next slider event can retry.
+    editor.is_rendering = false;
+    editor.pending_render = false;
     Task::none()
 }
 
@@ -284,11 +287,12 @@ fn update_pipeline(editor: &mut RawEditor) -> Task<Message> {
     }
     
     // Phase 106: Throttling
-    if editor.is_rendering_preview {
-        editor.pending_preview_update = true;
-        return Task::none();
+    if editor.is_rendering {
+        editor.pending_render = true;
+        Task::none()
+    } else {
+        editor.is_rendering = true;
+        editor.pending_render = false;
+        trigger_async_render(editor)
     }
-    
-    editor.is_rendering_preview = true;
-    trigger_async_render(editor)
 }

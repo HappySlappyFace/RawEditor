@@ -74,7 +74,7 @@ pub fn handle_image_resources_ready(editor: &mut RawEditor, image_id: i64, resul
             editor.histogram_cache.clear();
 
             // Kick off the first async render now that resources are ready
-            editor.is_rendering_preview = true;
+            editor.is_rendering = true;
             crate::app::handlers::develop::trigger_async_render(editor)
         }
         Err(e) => { 
