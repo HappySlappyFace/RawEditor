@@ -23,6 +23,8 @@ pub struct PreviewRenderer {
     pub image_height: u32,
     /// Phase 67: Control rendering layers
     pub draw_image: bool,
+    /// Phase 114: Workspace background
+    pub background_color: Color,
 }
 
 /// Phase 67: Crop handles
@@ -100,9 +102,17 @@ impl Program<Message> for PreviewRenderer {
         let mut geometries = Vec::new();
 
         if self.draw_image {
+            // 1. Draw neutral background
+            let mut bg_frame = canvas::Frame::new(renderer, bounds.size());
+            bg_frame.fill_rectangle(
+                Point::ORIGIN,
+                bounds.size(),
+                self.background_color,
+            );
+            geometries.push(bg_frame.into_geometry());
+
+            // 2. Draw the image
             let mut image_frame = canvas::Frame::new(renderer, bounds.size());
-            
-            // Draw the image
             let canvas_image = iced::widget::canvas::Image::new(self.handle.clone());
             image_frame.draw_image(image_bounds, canvas_image);
             
