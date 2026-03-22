@@ -506,16 +506,15 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         color = color + (detail * params.sharpening * mask_val);
     }
     
-    // 2. Apply White Balance with Highlight Neutralization
-    // Find how close the pixel is to sensor clipping (1.0) BEFORE white balance
+    // Detect sensor clipping BEFORE white balance
     let pre_wb_max = max(color.r, max(color.g, color.b));
-
-    // Roll-off starts at 0.95 (almost clipped), full neutral at 1.0 (clipped)
-    let clip_blend = smoothstep(0.95, 1.0, pre_wb_max);
-
-    // Blend the WB multipliers towards 1.0 (neutral white) for blown-out areas
-    let effective_wb = mix(params.wb_multipliers.rgb, vec3<f32>(1.0, 1.0, 1.0), clip_blend);
-    color = color * effective_wb;
+    
+    // Lowered threshold: 0.85 to 0.96. 
+    // This safely catches cameras (like Nikon 12-bit) that clip around ~3900 instead of 4095.
+    let clip_blend = smoothstep(0.85, 0.96, pre_wb_max);
+    
+    // 2. Apply White Balance (Normally!)
+    color = color * params.wb_multipliers.rgb;
     
     // 2.5. Apply Manual White Balance (Phase 18: Temperature & Tint)
     // Temperature: Blue/Yellow axis (cooler/warmer)
@@ -528,13 +527,18 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     color.g = color.g * (1.0 + params.tint * 0.3);
     
     // 3. Apply Color Matrix (camera RGB -> sRGB)
-    // CRITICAL: transpose() is required because Rust sends rows, but WGSL expects columns!
     let color_matrix = transpose(mat3x3<f32>(
         params.color_matrix_0,
         params.color_matrix_1,
         params.color_matrix_2
     ));
     color = color_matrix * color;
+    
+    // 3.5 Highlight Neutralization (Fixes Pistachio / Pink Artifacts)
+    // Desaturate the color to a neutral gray/white based on how close it was to sensor clipping.
+    // This happens AFTER the matrix so we don't feed the matrix unbalanced garbage.
+    let luma_neutral = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
+    color = mix(color, vec3<f32>(luma_neutral), clip_blend);
     
     // 4. Apply Exposure (still in linear space)
     let exposure_multiplier = pow(2.0, params.exposure);
