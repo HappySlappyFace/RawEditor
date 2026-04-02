@@ -6,15 +6,6 @@
 /// - sRGB (standard display color space)
 use cgmath::{Matrix3, SquareMatrix};
 
-/// Standard XYZ to sRGB conversion matrix (D65 white point)
-/// This is the industry-standard matrix for converting from CIE XYZ to sRGB
-/// Source: IEC 61966-2-1:1999 (sRGB standard)
-const XYZ_TO_SRGB: [[f32; 3]; 3] = [
-    [3.2406, -1.5372, -0.4986],
-    [-0.9689, 1.8758, 0.0415],
-    [0.0557, -0.2040, 1.0570],
-];
-
 /// Calculate the camera-to-sRGB color conversion matrix.
 ///
 /// This function converts a camera's XYZ-to-camera matrix into a camera-to-sRGB matrix

@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cmd.exe /c \"cd /d C:\\\\Users\\\\Amine\\\\Documents\\\\RawEditor-main && cargo run 2>&1\")",
+      "Bash(cmd.exe /c \"where cargo 2>&1 && cargo --version 2>&1\")",
+      "Bash(/c/Users/Amine/.cargo/bin/cargo run:*)",
+      "Bash(/c/Users/Amine/.cargo/bin/cargo check:*)",
+      "Bash(/c/Users/Amine/.cargo/bin/cargo test:*)",
+      "Bash(/c/Users/Amine/.cargo/bin/cargo clippy:*)"
+    ]
+  }
+}

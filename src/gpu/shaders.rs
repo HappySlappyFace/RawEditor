@@ -1,16 +1,25 @@
 /// WGSL shader code for real-time RAW image processing
 ///
 /// This shader applies non-destructive edits to RAW sensor data in real-time.
-/// Phase 10: Simple passthrough with exposure and contrast
-/// Phase 11+: Full debayering, color science, and advanced adjustments
+/// Full debayering, color science, and advanced adjustments.
 ///
-/// Passthrough shader for RAW image rendering
-///
-/// This is a simple shader that:
-/// 1. Samples the input texture (RAW data as RGB for now)
-/// 2. Applies exposure adjustment (additive)
-/// 3. Applies contrast adjustment (multiplicative)
-/// 4. Returns the final color
+/// Color pipeline order (scene-referred → display-referred):
+///   1.  Debayer          – camera-native linear RGB
+///   2.  White Balance    – camera-space per-channel multipliers
+///   3.  Color Matrix     – camera → sRGB linear (Bradford D50→D65 adapted)
+///   4.  Noise Reduction  – chroma denoising with Rec.709 luma (valid in sRGB)
+///   5.  Sharpening       – unsharp mask in sRGB linear
+///   6.  Temperature/Tint – blue-yellow and green-magenta axes in sRGB space
+///   7.  Highlight clamp  – neutralise near-clipping channels before exposure
+///   8.  Exposure         – linear stop adjustment
+///   9.  Highlights/Shadows
+///  10.  Contrast         – pivoted at 18% gray (perceptual midtone)
+///  11.  Levels           – whites / blacks
+///  12.  Saturation
+///  13.  Vibrance
+///  14.  ACES filmic tone curve
+///  15.  sRGB TRC         – IEC 61966-2-1 piecewise (γ=2.4 + linear toe)
+///  16.  Clamp
 pub const PASSTHROUGH_SHADER: &str = r#"
 // ========== Vertex Shader ==========
 // Full-screen triangle (no vertex buffers needed)
@@ -23,121 +32,112 @@ struct VertexOutput {
 @vertex
 fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     var output: VertexOutput;
-    
+
     // Full-screen triangle covering entire viewport
     // Vertex 0: (-1, -1) -> tex (0, 1)
-    // Vertex 1: ( 3, -1) -> tex (2, 1) 
+    // Vertex 1: ( 3, -1) -> tex (2, 1)
     // Vertex 2: (-1,  3) -> tex (0, -1)
     let x = f32(i32(vertex_index & 1u) * 4 - 1);
     let y = f32(i32(vertex_index >> 1u) * 4 - 1);
-    
+
     output.clip_position = vec4<f32>(x, -y, 0.0, 1.0);
-    
+
     // Phase 25: Apply zoom and pan transformations
-    // Base tex coords (0-1)
     var tex_x = (x + 1.0) * 0.5;
     var tex_y = (y + 1.0) * 0.5;
-    
-    // Center coordinates around (0.5, 0.5)
+
     tex_x -= 0.5;
     tex_y -= 0.5;
-    
-    // Apply zoom (divide by zoom to zoom in)
+
     tex_x /= params.zoom;
     tex_y /= params.zoom;
-    
-    // Apply pan offset
+
     tex_x -= params.pan_x;
     tex_y -= params.pan_y;
-    
-    // Move back to (0,0) origin
+
     tex_x += 0.5;
     tex_y += 0.5;
-    
+
     // Phase 66: Apply Crop
-    // Map the viewport (0-1) to the sub-rectangle defined by crop params
-    // crop.xy = offset, crop.zw = size
     tex_x = params.crop.x + (tex_x * params.crop.z);
     tex_y = params.crop.y + (tex_y * params.crop.w);
-    
+
     output.tex_coords = vec2<f32>(tex_x, tex_y);
-    
+
     return output;
 }
 
 // ========== Fragment Shader ==========
 
-// Uniform buffer for edit parameters
 struct EditParams {
     exposure: f32,        // -5.0 to +5.0 stops
     contrast: f32,        // -100.0 to +100.0
     highlights: f32,      // -100.0 to +100.0
     shadows: f32,         // -100.0 to +100.0
-    whites: f32,          // -100.0 to +100.0
-    blacks: f32,          // -100.0 to +100.0
+    whites: f32,          // white point (default 1.0)
+    blacks: f32,          // black point (default 0.0)
     vibrance: f32,        // -100.0 to +100.0
     saturation: f32,      // -100.0 to +100.0
-    temperature: f32,     // -100 to +100 (converted from i32)
-    tint: f32,            // -100 to +100 (converted from i32)
-    padding1: f32,        // Padding for 16-byte alignment
-    padding2: f32,        // Padding for 16-byte alignment
+    temperature: f32,     // -1.0 to +1.0
+    tint: f32,            // -1.0 to +1.0
+    padding1: f32,
+    padding2: f32,
     // Phase 14: Color science metadata
     wb_multipliers: vec4<f32>,  // White balance [R, G, B, G2]
     color_matrix_0: vec3<f32>,  // Color matrix row 0
-    padding3: f32,               // Padding after vec3
+    padding3: f32,
     color_matrix_1: vec3<f32>,  // Color matrix row 1
-    padding4: f32,               // Padding after vec3
+    padding4: f32,
     color_matrix_2: vec3<f32>,  // Color matrix row 2
-    padding5: f32,               // Padding after vec3
+    padding5: f32,
     // Phase 25: Zoom & Pan
-    zoom: f32,                   // Zoom level (1.0 = 100%)
-    pan_x: f32,                  // Pan offset X
-    pan_y: f32,                  // Pan offset Y
+    zoom: f32,
+    pan_x: f32,
+    pan_y: f32,
     // Phase 34: CFA Pattern
-    cfa_pattern: u32,            // Offset 128
-    
+    cfa_pattern: u32,
+
     // Padding to align black_levels to 16 bytes
-    // Padding to align black_levels to 16 bytes
-    pad_cfa_1: f32,              // 128
-    pad_cfa_2: f32,              // 132
-    pad_cfa_3: f32,              // 136
-    pad_cfa_4: f32,              // 140
-    
+    pad_cfa_1: f32,
+    pad_cfa_2: f32,
+    pad_cfa_3: f32,
+    pad_cfa_4: f32,
+
     // Phase 36: Per-channel Black Levels (vec4 alignment = 16 bytes)
-    black_levels: vec4<u32>,     // Offset 144
-    
-    white_level: u32,            // Offset 160
-    
+    black_levels: vec4<u32>,
+
+    white_level: u32,
+
     // Padding to reach 176 bytes
-    pad_end_1: f32,              // 164
-    pad_end_2: f32,              // 168
-    pad_end_3: f32,              // 172
-    
+    pad_end_1: f32,
+    pad_end_2: f32,
+    pad_end_3: f32,
+
     // Phase 38: Manual Black Level Offsets
-    black_offsets: vec4<f32>,    // Offset 176
-    
+    black_offsets: vec4<f32>,
+
     // Phase 39: Black Level Phase Correction
-    black_phase_x: u32,          // Offset 192
-    black_phase_y: u32,          // Offset 196
-    
+    black_phase_x: u32,
+    black_phase_y: u32,
+
     // Phase 49: Noise Reduction
-    noise_reduction: f32,        // Offset 200
-    
+    noise_reduction: f32,
+
     // Phase 50: Sharpening
-    sharpening: f32,             // Offset 204
-    
+    sharpening: f32,
+
     // Phase 51: Sharpening Masking
-    sharpen_masking: f32,        // Offset 208
-    
+    sharpen_masking: f32,
+
     // Phase 52: Rotation
-    rotation: f32,               // Offset 212
-    
+    rotation: f32,
+
     // Padding to reach 224 bytes
-    pad_phase_1: f32,            // 216
-    pad_phase_2: f32,            // 220
-    
+    pad_phase_1: f32,
+    pad_phase_2: f32,
+
     // Phase 66: Crop (vec4 alignment = 16 bytes)
-    crop: vec4<f32>,             // Offset 224. Ends at 240.
+    crop: vec4<f32>,
     // Total: 240 bytes
 }
 
@@ -145,7 +145,7 @@ struct EditParams {
 var input_texture: texture_2d<u32>;  // RAW u16 data stored as u32
 
 @group(0) @binding(1)
-var texture_sampler: sampler;  // Not used for integer textures, but kept for compatibility
+var texture_sampler: sampler;  // Not used for integer textures, kept for compatibility
 
 @group(0) @binding(2)
 var<uniform> params: EditParams;
@@ -153,176 +153,17 @@ var<uniform> params: EditParams;
 // Simple nearest-neighbor debayering with CFA pattern support
 // CFA patterns: 0=RGGB, 1=GRBG, 2=GBRG, 3=BGGR
 fn debayer(coords: vec2<i32>, dimensions: vec2<u32>) -> vec3<f32> {
-    // Load RAW pixel value (12-bit in u16, stored as u32)
     let raw_value = textureLoad(input_texture, coords, 0).r;
-    
-    // CRITICAL: Black level must be indexed by CFA COLOR, not spatial position!
-    // black_levels array is [R, G1, G2, B] indexed by color channel
-    // We need to determine which color THIS pixel is, then use that index
-    
+
     let x = u32(coords.x);
     let y = u32(coords.y);
     let is_even_row = (y & 1u) == 0u;
     let is_even_col = (x & 1u) == 0u;
-    
-    // Determine CFA color index for this pixel based on pattern
-    // black_levels[0] = R, black_levels[1] = G (red row), black_levels[2] = G (blue row), black_levels[3] = B
-    var bl_index: u32;
-    
-    if (params.cfa_pattern == 0u) { // RGGB
-        if (is_even_row && is_even_col) { bl_index = 0u; }       // R
-        else if (is_even_row && !is_even_col) { bl_index = 1u; } // G1 (red row)
-        else if (!is_even_row && is_even_col) { bl_index = 2u; } // G2 (blue row)  
-        else { bl_index = 3u; }                                   // B
-    } else if (params.cfa_pattern == 1u) { // GRBG
-        if (is_even_row && is_even_col) { bl_index = 1u; }       // G1
-        else if (is_even_row && !is_even_col) { bl_index = 0u; } // R
-        else if (!is_even_row && is_even_col) { bl_index = 3u; } // B
-        else { bl_index = 2u; }                                   // G2
-    } else if (params.cfa_pattern == 2u) { // GBRG
-        if (is_even_row && is_even_col) { bl_index = 1u; }       // G1
-        else if (is_even_row && !is_even_col) { bl_index = 3u; } // B
-        else if (!is_even_row && is_even_col) { bl_index = 0u; } // R
-        else { bl_index = 2u; }                                   // G2
-    } else { // BGGR (3)
-        if (is_even_row && is_even_col) { bl_index = 3u; }       // B
-        else if (is_even_row && !is_even_col) { bl_index = 1u; } // G1
-        else if (!is_even_row && is_even_col) { bl_index = 2u; } // G2
-        else { bl_index = 0u; }                                   // R
-    }
-    
-    // Apply black level correction BEFORE normalization
-    // This is the critical step: subtract black per-CFA-color, then clamp to 0
-    let black = f32(params.black_levels[bl_index]) + params.black_offsets[bl_index];
-    let white = f32(params.white_level);
-    let corrected = max(0.0, f32(raw_value) - black);
-    
-    // Normalize to [0,1] range
-    let range = max(1.0, white - black);
-    let normalized = corrected / range;
-    
-    // Determine what color this pixel is for demosaicing
-    // (Reusing the CFA pattern logic from above)
-    var is_red = false;
-    var is_green = false;
-    var is_blue = false;
-    
-    if (params.cfa_pattern == 0u) { // RGGB
-        if (is_even_row && is_even_col) { is_red = true; }
-        else if (is_even_row && !is_even_col) { is_green = true; }
-        else if (!is_even_row && is_even_col) { is_green = true; }
-        else { is_blue = true; }
-    } else if (params.cfa_pattern == 1u) { // GRBG
-        if (is_even_row && is_even_col) { is_green = true; }
-        else if (is_even_row && !is_even_col) { is_red = true; }
-        else if (!is_even_row && is_even_col) { is_blue = true; }
-        else { is_green = true; }
-    } else if (params.cfa_pattern == 2u) { // GBRG
-        if (is_even_row && is_even_col) { is_green = true; }
-        else if (is_even_row && !is_even_col) { is_blue = true; }
-        else if (!is_even_row && is_even_col) { is_red = true; }
-        else { is_green = true; }
-    } else { // BGGR (3)
-        if (is_even_row && is_even_col) { is_blue = true; }
-        else if (is_even_row && !is_even_col) { is_green = true; }
-        else if (!is_even_row && is_even_col) { is_green = true; }
-        else { is_red = true; }
-    }
-    
-    // Phase 112: Edge-Aware Gradient Demosaicing
-    // Pre-fetch the 8 immediate neighbors
-    let n  = get_neighbor(coords + vec2<i32>(0, -1), dimensions);
-    let s  = get_neighbor(coords + vec2<i32>(0, 1), dimensions);
-    let w  = get_neighbor(coords + vec2<i32>(-1, 0), dimensions);
-    let e  = get_neighbor(coords + vec2<i32>(1, 0), dimensions);
-    let nw = get_neighbor(coords + vec2<i32>(-1, -1), dimensions);
-    let ne = get_neighbor(coords + vec2<i32>(1, -1), dimensions);
-    let sw = get_neighbor(coords + vec2<i32>(-1, 1), dimensions);
-    let se = get_neighbor(coords + vec2<i32>(1, 1), dimensions);
-    
-    var rgb: vec3<f32>;
-    
-    if (is_red) {
-        let r = normalized;
-        
-        // Edge-aware Green interpolation
-        let grad_v = abs(n - s);
-        let grad_h = abs(e - w);
-        var g: f32;
-        if (grad_v < grad_h) { g = (n + s) * 0.5; }
-        else if (grad_h < grad_v) { g = (e + w) * 0.5; }
-        else { g = (n + s + e + w) * 0.25; }
-        
-        // Edge-aware Blue (Diagonal)
-        let grad_nesw = abs(ne - sw);
-        let grad_nwse = abs(nw - se);
-        var b: f32;
-        if (grad_nesw < grad_nwse) { b = (ne + sw) * 0.5; }
-        else if (grad_nwse < grad_nesw) { b = (nw + se) * 0.5; }
-        else { b = (ne + sw + nw + se) * 0.25; }
-        
-        rgb = vec3<f32>(r, g, b);
-        
-    } else if (is_even_row && !is_even_col) {
-        // Green Pixel (Red Row)
-        let g = normalized;
-        let r = (w + e) * 0.5; // Red is strictly horizontal
-        let b = (n + s) * 0.5; // Blue is strictly vertical
-        rgb = vec3<f32>(r, g, b);
-        
-    } else if (!is_even_row && is_even_col) {
-        // Green Pixel (Blue Row)
-        let g = normalized;
-        let r = (n + s) * 0.5; // Red is strictly vertical
-        let b = (w + e) * 0.5; // Blue is strictly horizontal
-        rgb = vec3<f32>(r, g, b);
-        
-    } else {
-        // Blue Pixel
-        let b = normalized;
-        
-        // Edge-aware Green
-        let grad_v = abs(n - s);
-        let grad_h = abs(e - w);
-        var g: f32;
-        if (grad_v < grad_h) { g = (n + s) * 0.5; }
-        else if (grad_h < grad_v) { g = (e + w) * 0.5; }
-        else { g = (n + s + e + w) * 0.25; }
-        
-        // Edge-aware Red (Diagonal)
-        let grad_nesw = abs(ne - sw);
-        let grad_nwse = abs(nw - se);
-        var r: f32;
-        if (grad_nesw < grad_nwse) { r = (ne + sw) * 0.5; }
-        else if (grad_nwse < grad_nesw) { r = (nw + se) * 0.5; }
-        else { r = (ne + sw + nw + se) * 0.25; }
-        
-        rgb = vec3<f32>(r, g, b);
-    }
-    
-    return rgb;
-}
 
-// Helper to safely load neighbor pixel WITH CORRECT BLACK LEVEL CORRECTION
-// CRITICAL: This must match the processing in debayer() for the current pixel!
-fn get_neighbor(coords: vec2<i32>, dimensions: vec2<u32>) -> f32 {
-    // Clamp to texture bounds
-    let clamped = vec2<i32>(
-        clamp(coords.x, 0, i32(dimensions.x) - 1),
-        clamp(coords.y, 0, i32(dimensions.y) - 1)
-    );
-    
-    let raw_value = textureLoad(input_texture, clamped, 0).r;
-    
-    // Apply same black level correction as debayer()
-    let x = u32(clamped.x);
-    let y = u32(clamped.y);
-    let is_even_row = (y & 1u) == 0u;
-    let is_even_col = (x & 1u) == 0u;
-    
-    // Determine CFA color index for this neighbor pixel
+    // Determine CFA color index for this pixel based on pattern
+    // black_levels[0]=R, [1]=G1 (red row), [2]=G2 (blue row), [3]=B
     var bl_index: u32;
-    
+
     if (params.cfa_pattern == 0u) { // RGGB
         if (is_even_row && is_even_col) { bl_index = 0u; }
         else if (is_even_row && !is_even_col) { bl_index = 1u; }
@@ -344,267 +185,358 @@ fn get_neighbor(coords: vec2<i32>, dimensions: vec2<u32>) -> f32 {
         else if (!is_even_row && is_even_col) { bl_index = 2u; }
         else { bl_index = 0u; }
     }
-    
-    // Apply black level correction and normalization (same as debayer())
+
     let black = f32(params.black_levels[bl_index]) + params.black_offsets[bl_index];
     let white = f32(params.white_level);
     let corrected = max(0.0, f32(raw_value) - black);
     let range = max(1.0, white - black);
     let normalized = corrected / range;
-    
-    return normalized;
+
+    // Determine pixel color for demosaicing
+    var is_red = false;
+    var is_green = false;
+    var is_blue = false;
+
+    if (params.cfa_pattern == 0u) { // RGGB
+        if (is_even_row && is_even_col) { is_red = true; }
+        else if (is_even_row && !is_even_col) { is_green = true; }
+        else if (!is_even_row && is_even_col) { is_green = true; }
+        else { is_blue = true; }
+    } else if (params.cfa_pattern == 1u) { // GRBG
+        if (is_even_row && is_even_col) { is_green = true; }
+        else if (is_even_row && !is_even_col) { is_red = true; }
+        else if (!is_even_row && is_even_col) { is_blue = true; }
+        else { is_green = true; }
+    } else if (params.cfa_pattern == 2u) { // GBRG
+        if (is_even_row && is_even_col) { is_green = true; }
+        else if (is_even_row && !is_even_col) { is_blue = true; }
+        else if (!is_even_row && is_even_col) { is_red = true; }
+        else { is_green = true; }
+    } else { // BGGR (3)
+        if (is_even_row && is_even_col) { is_blue = true; }
+        else if (is_even_row && !is_even_col) { is_green = true; }
+        else if (!is_even_row && is_even_col) { is_green = true; }
+        else { is_red = true; }
+    }
+
+    // Phase 112: Edge-Aware Gradient Demosaicing
+    let n  = get_neighbor(coords + vec2<i32>( 0, -1), dimensions);
+    let s  = get_neighbor(coords + vec2<i32>( 0,  1), dimensions);
+    let w  = get_neighbor(coords + vec2<i32>(-1,  0), dimensions);
+    let e  = get_neighbor(coords + vec2<i32>( 1,  0), dimensions);
+    let nw = get_neighbor(coords + vec2<i32>(-1, -1), dimensions);
+    let ne = get_neighbor(coords + vec2<i32>( 1, -1), dimensions);
+    let sw = get_neighbor(coords + vec2<i32>(-1,  1), dimensions);
+    let se = get_neighbor(coords + vec2<i32>( 1,  1), dimensions);
+
+    var rgb: vec3<f32>;
+
+    if (is_red) {
+        let r = normalized;
+
+        let grad_v = abs(n - s);
+        let grad_h = abs(e - w);
+        var g: f32;
+        if (grad_v < grad_h) { g = (n + s) * 0.5; }
+        else if (grad_h < grad_v) { g = (e + w) * 0.5; }
+        else { g = (n + s + e + w) * 0.25; }
+
+        let grad_nesw = abs(ne - sw);
+        let grad_nwse = abs(nw - se);
+        var b: f32;
+        if (grad_nesw < grad_nwse) { b = (ne + sw) * 0.5; }
+        else if (grad_nwse < grad_nesw) { b = (nw + se) * 0.5; }
+        else { b = (ne + sw + nw + se) * 0.25; }
+
+        rgb = vec3<f32>(r, g, b);
+
+    } else if (is_even_row && !is_even_col) {
+        // Green Pixel (Red Row): red neighbours are E/W, blue neighbours are N/S
+        let g = normalized;
+        let r = (w + e) * 0.5;
+        let b = (n + s) * 0.5;
+        rgb = vec3<f32>(r, g, b);
+
+    } else if (!is_even_row && is_even_col) {
+        // Green Pixel (Blue Row): red neighbours are N/S, blue neighbours are E/W
+        let g = normalized;
+        let r = (n + s) * 0.5;
+        let b = (w + e) * 0.5;
+        rgb = vec3<f32>(r, g, b);
+
+    } else {
+        // Blue Pixel
+        let b = normalized;
+
+        let grad_v = abs(n - s);
+        let grad_h = abs(e - w);
+        var g: f32;
+        if (grad_v < grad_h) { g = (n + s) * 0.5; }
+        else if (grad_h < grad_v) { g = (e + w) * 0.5; }
+        else { g = (n + s + e + w) * 0.25; }
+
+        let grad_nesw = abs(ne - sw);
+        let grad_nwse = abs(nw - se);
+        var r: f32;
+        if (grad_nesw < grad_nwse) { r = (ne + sw) * 0.5; }
+        else if (grad_nwse < grad_nesw) { r = (nw + se) * 0.5; }
+        else { r = (ne + sw + nw + se) * 0.25; }
+
+        rgb = vec3<f32>(r, g, b);
+    }
+
+    return rgb;
+}
+
+// Helper to safely load a neighbour pixel with correct per-channel black-level correction.
+fn get_neighbor(coords: vec2<i32>, dimensions: vec2<u32>) -> f32 {
+    let clamped = vec2<i32>(
+        clamp(coords.x, 0, i32(dimensions.x) - 1),
+        clamp(coords.y, 0, i32(dimensions.y) - 1)
+    );
+
+    let raw_value = textureLoad(input_texture, clamped, 0).r;
+
+    let x = u32(clamped.x);
+    let y = u32(clamped.y);
+    let is_even_row = (y & 1u) == 0u;
+    let is_even_col = (x & 1u) == 0u;
+
+    var bl_index: u32;
+
+    if (params.cfa_pattern == 0u) { // RGGB
+        if (is_even_row && is_even_col) { bl_index = 0u; }
+        else if (is_even_row && !is_even_col) { bl_index = 1u; }
+        else if (!is_even_row && is_even_col) { bl_index = 2u; }
+        else { bl_index = 3u; }
+    } else if (params.cfa_pattern == 1u) { // GRBG
+        if (is_even_row && is_even_col) { bl_index = 1u; }
+        else if (is_even_row && !is_even_col) { bl_index = 0u; }
+        else if (!is_even_row && is_even_col) { bl_index = 3u; }
+        else { bl_index = 2u; }
+    } else if (params.cfa_pattern == 2u) { // GBRG
+        if (is_even_row && is_even_col) { bl_index = 1u; }
+        else if (is_even_row && !is_even_col) { bl_index = 3u; }
+        else if (!is_even_row && is_even_col) { bl_index = 0u; }
+        else { bl_index = 2u; }
+    } else { // BGGR (3)
+        if (is_even_row && is_even_col) { bl_index = 3u; }
+        else if (is_even_row && !is_even_col) { bl_index = 1u; }
+        else if (!is_even_row && is_even_col) { bl_index = 2u; }
+        else { bl_index = 0u; }
+    }
+
+    let black = f32(params.black_levels[bl_index]) + params.black_offsets[bl_index];
+    let white = f32(params.white_level);
+    let corrected = max(0.0, f32(raw_value) - black);
+    let range = max(1.0, white - black);
+
+    return corrected / range;
+}
+
+// Debayer a neighbour pixel and convert it through white-balance and the
+// colour matrix, yielding sRGB linear.  Used by noise-reduction and
+// sharpening so those operations work in the same colour space as the
+// centre pixel (Rec.709 luma coefficients are only valid in sRGB).
+fn cam_to_srgb_linear(coords: vec2<i32>, dimensions: vec2<u32>, cm: mat3x3<f32>) -> vec3<f32> {
+    let cam = debayer(coords, dimensions);
+    return cm * (cam * params.wb_multipliers.rgb);
+}
+
+// IEC 61966-2-1 sRGB transfer function.
+// Uses γ = 2.4 with a linear toe segment, NOT the 1/2.2 approximation.
+// The difference is ~5% in the shadows and midtones.
+fn linear_to_srgb(x: f32) -> f32 {
+    if x <= 0.0031308 {
+        return 12.92 * x;
+    }
+    return 1.055 * pow(x, 1.0 / 2.4) - 0.055;
 }
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    // Phase 25: Discard fragments outside texture bounds (when zoomed out)
+    // Discard fragments outside texture bounds (letterboxing when zoomed out)
     if input.tex_coords.x < 0.0 || input.tex_coords.x > 1.0 ||
        input.tex_coords.y < 0.0 || input.tex_coords.y > 1.0 {
-        // Return black for areas outside the image
         return vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
-    
+
     // Phase 52: Apply rotation to texture coordinates
     var tex_coords = input.tex_coords;
-    
+
     if (abs(params.rotation) > 0.01) {
-        // Get texture dimensions for aspect ratio
-        let dimensions = textureDimensions(input_texture);
-        let aspect = f32(dimensions.x) / f32(dimensions.y);
-        
-        // Convert degrees to radians
+        let dimensions_r = textureDimensions(input_texture);
+        let aspect = f32(dimensions_r.x) / f32(dimensions_r.y);
         let angle_rad = params.rotation * 3.14159265359 / 180.0;
         let cos_a = cos(angle_rad);
         let sin_a = sin(angle_rad);
-        
-        // Translate to origin (center of rotation at 0.5, 0.5)
+
         var centered = tex_coords - vec2<f32>(0.5, 0.5);
-        
-        // Scale to square space (compensate for aspect ratio)
         centered.x *= aspect;
-        
-        // Apply 2D rotation matrix in square space
+
         let rotated = vec2<f32>(
             centered.x * cos_a - centered.y * sin_a,
             centered.x * sin_a + centered.y * cos_a
         );
-        
-        // Scale back from square space
+
         var unscaled = rotated;
         unscaled.x /= aspect;
-        
-        // Translate back
         tex_coords = unscaled + vec2<f32>(0.5, 0.5);
-        
-        // Bounds check: if rotated coordinates are outside [0, 1], return black
+
         if (tex_coords.x < 0.0 || tex_coords.x > 1.0 ||
             tex_coords.y < 0.0 || tex_coords.y > 1.0) {
             return vec4<f32>(0.0, 0.0, 0.0, 1.0);
         }
     }
-    
-    // Get texture dimensions
+
     let dimensions = textureDimensions(input_texture);
-    
-    // Convert normalized texture coordinates to pixel coordinates
+
     let pixel_coords = vec2<i32>(
         i32(tex_coords.x * f32(dimensions.x)),
         i32(tex_coords.y * f32(dimensions.y))
     );
-    
-    // Phase 14: Color Science Pipeline (in correct order!)
-    
-    // 1. Debayer to get RAW RGB color (still in linear camera space)
+
+    // ── Step 1: Debayer → camera-native linear RGB ───────────────────────────
     var color = debayer(pixel_coords, dimensions);
-    
-    // Phase 49: Chroma Noise Reduction (if enabled)
-    if (params.noise_reduction > 0.0) {
-        // RGB to YUV conversion (ITU-R BT.601)
-        // Y = luminance (detail), U and V = chrominance (color)
-        let y = 0.299 * color.r + 0.587 * color.g + 0.114 * color.b;
-        let u = (color.b - y) * 0.565;
-        let v = (color.r - y) * 0.713;
-        
-        // Sample 4 diagonal neighbors and convert to YUV
-        let tl = debayer(pixel_coords + vec2<i32>(-1, -1), dimensions);
-        let tr = debayer(pixel_coords + vec2<i32>(1, -1), dimensions);
-        let bl = debayer(pixel_coords + vec2<i32>(-1, 1), dimensions);
-        let br = debayer(pixel_coords + vec2<i32>(1, 1), dimensions);
-        
-        // Convert neighbors to YUV
-        let tl_y = 0.299 * tl.r + 0.587 * tl.g + 0.114 * tl.b;
-        let tl_u = (tl.b - tl_y) * 0.565;
-        let tl_v = (tl.r - tl_y) * 0.713;
-        
-        let tr_y = 0.299 * tr.r + 0.587 * tr.g + 0.114 * tr.b;
-        let tr_u = (tr.b - tr_y) * 0.565;
-        let tr_v = (tr.r - tr_y) * 0.713;
-        
-        let bl_y = 0.299 * bl.r + 0.587 * bl.g + 0.114 * bl.b;
-        let bl_u = (bl.b - bl_y) * 0.565;
-        let bl_v = (bl.r - bl_y) * 0.713;
-        
-        let br_y = 0.299 * br.r + 0.587 * br.g + 0.114 * br.b;
-        let br_u = (br.b - br_y) * 0.565;
-        let br_v = (br.r - br_y) * 0.713;
-        
-        // Average the UV channels of neighbors
-        let avg_u = (tl_u + tr_u + bl_u + br_u) * 0.25;
-        let avg_v = (tl_v + tr_v + bl_v + br_v) * 0.25;
-        
-        // Mix original UV with averaged UV based on strength
-        let denoised_u = mix(u, avg_u, params.noise_reduction);
-        let denoised_v = mix(v, avg_v, params.noise_reduction);
-        
-        // Convert YUV back to RGB (keep original Y for sharpness!)
-        color.r = y + 1.403 * denoised_v;
-        color.g = y - 0.344 * denoised_u - 0.714 * denoised_v;
-        color.b = y + 1.770 * denoised_u;
-    }
-    
-    // Phase 50-51: Unsharp Mask Sharpening with Edge Masking
-    if (params.sharpening > 0.0) {
-        // Sample 4 orthogonal neighbors for blur calculation
-        let up = debayer(pixel_coords + vec2<i32>(0, -1), dimensions);
-        let down = debayer(pixel_coords + vec2<i32>(0, 1), dimensions);
-        let left = debayer(pixel_coords + vec2<i32>(-1, 0), dimensions);
-        let right = debayer(pixel_coords + vec2<i32>(1, 0), dimensions);
-        
-        // Calculate blur (local average)
-        let blur = (up + down + left + right) * 0.25;
-        
-        // Extract high-frequency detail
-        let detail = color - blur;
-        
-        // Phase 51: Edge-weighted masking to prevent noise amplification
-        // Calculate detail magnitude (edge strength)
-        let detail_luma = length(detail);
-        
-        // Apply smoothstep threshold:
-        // - If masking = 0.0, mask_val = 1.0 (sharpen everything)
-        // - If masking > 0.0, only areas with detail_luma > masking get sharpened
-        // - Soft transition over 0.05 range for smooth falloff
-        let mask_val = smoothstep(params.sharpen_masking, params.sharpen_masking + 0.05, detail_luma);
-        
-        // Apply sharpening weighted by mask
-        // Strong edges: mask_val ≈ 1.0 → full sharpening
-        // Smooth areas: mask_val ≈ 0.0 → no sharpening (noise protected!)
-        color = color + (detail * params.sharpening * mask_val);
-    }
-    
-    // Detect sensor clipping BEFORE white balance
-    let pre_wb_max = max(color.r, max(color.g, color.b));
-    
-    // TIGHTENED THRESHOLD: 0.94 to 0.98. 
-    // This stops us from destroying valid detail in the 0.85-0.94 range, 
-    // but safely catches Nikon's ~0.95 hardware clipping point.
-    let clip_blend = smoothstep(0.94, 0.98, pre_wb_max);
-    
-    // 2. Apply White Balance
-    color = color * params.wb_multipliers.rgb;
-    
-    // 2.5. Apply Manual White Balance (Phase 18: Temperature & Tint)
-    // Temperature: Blue/Yellow axis (cooler/warmer)
-    // Scale by 0.3 for noticeable but not extreme adjustments
-    color.r = color.r * (1.0 + params.temperature * 0.3);  // More yellow when positive
-    color.b = color.b * (1.0 - params.temperature * 0.3);  // Less blue when positive
-    
-    // Tint: Green/Magenta axis
-    // Positive = more green, Negative = more magenta (less green)
-    color.g = color.g * (1.0 + params.tint * 0.3);
-    
-    // 3. Apply Color Matrix (camera RGB -> sRGB)
+
+    // ── Step 2 & 3: White Balance + Colour Matrix (camera → sRGB linear) ─────
+    // Combine into one pass so neighbour helpers reuse the same matrix.
     let color_matrix = transpose(mat3x3<f32>(
         params.color_matrix_0,
         params.color_matrix_1,
         params.color_matrix_2
     ));
-    color = color_matrix * color;
-    
-    // 3.5 Highlight Neutralization (Fixes Dim/Inverted Whites)
-    // Instead of averaging down to Luma, we pull the lower channels UP to the max channel.
-    // This guarantees the clipped highlight remains the brightest pixel in the area.
-    let max_c = max(color.r, max(color.g, color.b));
-    color = mix(color, vec3<f32>(max_c), clip_blend);
-    
-    // 4. Apply Exposure (still in linear space)
+    color = color_matrix * (color * params.wb_multipliers.rgb);
+
+    // ── Step 4: Chroma Noise Reduction (Rec.709 luma — valid in sRGB space) ──
+    // Neighbours are fetched via cam_to_srgb_linear so they share the same
+    // colour space as the centre pixel.
+    if (params.noise_reduction > 0.0) {
+        let y = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
+        let u = (color.b - y) * 0.565;
+        let v = (color.r - y) * 0.713;
+
+        let tl = cam_to_srgb_linear(pixel_coords + vec2<i32>(-1, -1), dimensions, color_matrix);
+        let tr = cam_to_srgb_linear(pixel_coords + vec2<i32>( 1, -1), dimensions, color_matrix);
+        let bl = cam_to_srgb_linear(pixel_coords + vec2<i32>(-1,  1), dimensions, color_matrix);
+        let br = cam_to_srgb_linear(pixel_coords + vec2<i32>( 1,  1), dimensions, color_matrix);
+
+        let tl_y = dot(tl, vec3<f32>(0.2126, 0.7152, 0.0722));
+        let tl_u = (tl.b - tl_y) * 0.565; let tl_v = (tl.r - tl_y) * 0.713;
+        let tr_y = dot(tr, vec3<f32>(0.2126, 0.7152, 0.0722));
+        let tr_u = (tr.b - tr_y) * 0.565; let tr_v = (tr.r - tr_y) * 0.713;
+        let bl_y = dot(bl, vec3<f32>(0.2126, 0.7152, 0.0722));
+        let bl_u = (bl.b - bl_y) * 0.565; let bl_v = (bl.r - bl_y) * 0.713;
+        let br_y = dot(br, vec3<f32>(0.2126, 0.7152, 0.0722));
+        let br_u = (br.b - br_y) * 0.565; let br_v = (br.r - br_y) * 0.713;
+
+        let avg_u = (tl_u + tr_u + bl_u + br_u) * 0.25;
+        let avg_v = (tl_v + tr_v + bl_v + br_v) * 0.25;
+
+        let den_u = mix(u, avg_u, params.noise_reduction);
+        let den_v = mix(v, avg_v, params.noise_reduction);
+
+        color.r = y + 1.403 * den_v;
+        color.g = y - 0.344 * den_u - 0.714 * den_v;
+        color.b = y + 1.770 * den_u;
+    }
+
+    // ── Step 5: Unsharp Mask Sharpening (in sRGB linear space) ───────────────
+    if (params.sharpening > 0.0) {
+        let s_up    = cam_to_srgb_linear(pixel_coords + vec2<i32>( 0, -1), dimensions, color_matrix);
+        let s_down  = cam_to_srgb_linear(pixel_coords + vec2<i32>( 0,  1), dimensions, color_matrix);
+        let s_left  = cam_to_srgb_linear(pixel_coords + vec2<i32>(-1,  0), dimensions, color_matrix);
+        let s_right = cam_to_srgb_linear(pixel_coords + vec2<i32>( 1,  0), dimensions, color_matrix);
+
+        let blur   = (s_up + s_down + s_left + s_right) * 0.25;
+        let detail = color - blur;
+
+        let detail_luma = length(detail);
+        let mask_val = smoothstep(params.sharpen_masking, params.sharpen_masking + 0.05, detail_luma);
+
+        color = color + (detail * params.sharpening * mask_val);
+    }
+
+    // ── Step 6: Temperature & Tint (in sRGB space) ───────────────────────────
+    // Applied here where R/G/B channels map to the display primaries, so
+    // the blue-yellow and green-magenta axes behave consistently across cameras.
+    color.r *= (1.0 + params.temperature * 0.3);
+    color.b *= (1.0 - params.temperature * 0.3);
+    color.g *= (1.0 + params.tint * 0.3);
+
+    // ── Step 7: Highlight Clipping Detection & Neutralisation ─────────────────
+    // Both detection and blending are in the same sRGB linear space, so the
+    // 0.85–1.0 threshold maps consistently across cameras.
+    let pre_clip_max = max(color.r, max(color.g, color.b));
+    let clip_blend   = smoothstep(0.85, 1.0, pre_clip_max);
+    color = mix(color, vec3<f32>(pre_clip_max), clip_blend);
+
+    // ── Step 8: Exposure ──────────────────────────────────────────────────────
     let exposure_multiplier = pow(2.0, params.exposure);
     color = color * exposure_multiplier;
-    
-    // 5. Apply Highlights & Shadows (Phase 17: Smart Tone - Luminance-weighted adjustments)
-    // Calculate luminance to determine which pixels are bright vs dark
+
+    // ── Step 9: Highlights & Shadows ─────────────────────────────────────────
+    // Luminance-weighted adjustments using Rec.709 coefficients (valid in sRGB).
     let lum_for_tone = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
-    
-    // Highlights: Affects bright pixels more (lum=1.0 gets full effect, lum=0.0 gets none)
-    // Negative values recover blown highlights, positive values boost them
-    // Scale to ±20% range to prevent extreme overflow
+
     let highlights_adjustment = lum_for_tone * params.highlights * 0.2;
     color = color * max(1.0 + highlights_adjustment, 0.1);
-    
-    // Shadows: Affects dark pixels more (lum=0.0 gets full effect, lum=1.0 gets none)
-    // Positive values lift shadows, negative values crush them
-    // Scale to ±20% range to prevent extreme overflow
+
     let shadows_adjustment = (1.0 - lum_for_tone) * params.shadows * 0.2;
     color = color * max(1.0 + shadows_adjustment, 0.1);
-    
-    // 6. Apply Contrast (around midpoint 0.5)
+
+    // ── Step 10: Contrast ─────────────────────────────────────────────────────
+    // Pivot at 18% gray (the perceptual midtone in linear light), not 0.5
+    // (which is photometrically middle but perceptually bright at ~73% display).
     let contrast_factor = 1.0 + (params.contrast / 100.0);
-    color = (color - 0.5) * contrast_factor + 0.5;
-    
-    // 7. Apply Levels (Phase 16: Whites & Blacks tone control)
-    // Standard levels formula: (color - black_point) / (white_point - black_point)
-    // This controls the dynamic range by remapping black and white points
-    color = (color - vec3<f32>(params.blacks)) / (vec3<f32>(params.whites - params.blacks + 0.0001));
-    
-    // 8. Apply Saturation (Phase 15 color boost)
-    // Calculate luminance using Rec. 709 coefficients
+    color = (color - 0.18) * contrast_factor + 0.18;
+
+    // ── Step 11: Levels (Whites & Blacks) ────────────────────────────────────
+    color = (color - vec3<f32>(params.blacks)) / vec3<f32>(params.whites - params.blacks + 0.0001);
+
+    // ── Step 12: Saturation ───────────────────────────────────────────────────
     var luma = dot(color.rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
-    // Saturation factor: -100 = grayscale, 0 = original, +100 = 2x saturation
     let sat_factor = 1.0 + (params.saturation / 100.0);
-    // Mix between grayscale and original color
     color = mix(vec3<f32>(luma), color, sat_factor);
-    
-    // 9. Apply Vibrance (Phase 27: Smart saturation protecting skin tones)
-    // Calculate pixel's saturation (max(r,g,b) - min(r,g,b))
-    let sat = max(color.r, max(color.g, color.b)) - min(color.r, min(color.g, color.b));
-    // Calculate vibrance amount, weighted by (1.0 - saturation)
-    // This applies *less* vibrance to *more* saturated pixels (protects skin tones)
-    let vibrance_amount = params.vibrance * (1.0 - sat);
-    // Apply vibrance (mix from grayscale)
+
+    // ── Step 13: Vibrance ─────────────────────────────────────────────────────
+    let chroma = max(color.r, max(color.g, color.b)) - min(color.r, min(color.g, color.b));
+    let vibrance_amount = params.vibrance * (1.0 - chroma);
     luma = dot(color.rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
     color = mix(vec3<f32>(luma), color, 1.0 + vibrance_amount);
-    
-    // 9.5 Hue-Preserving Base Tone Curve (ACES Filmic-like)
-    
-    // 1. Safeguard: Prevent negative out-of-gamut values from breaking the ACES polynomial (Fixes grain/noise)
+
+    // ── Step 14: ACES Filmic Tone Curve (Max-RGB, hue-preserving) ─────────────
+    // Drive the curve with the maximum channel so the R:G:B ratio is preserved,
+    // preventing bright saturated colours from shifting in hue.
     color = max(color, vec3<f32>(0.0));
-    
-    // 2. Find the maximum channel to drive the tone curve (Max-RGB method)
+
     let pre_tone_max = max(color.r, max(color.g, color.b));
-    
     if (pre_tone_max > 0.0) {
         let a = 2.51;
         let b = 0.03;
         let c = 2.43;
         let d = 0.59;
         let e = 0.14;
-        
-        // 3. Apply the ACES curve ONLY to the max value
-        let post_tone_max = clamp((pre_tone_max * (a * pre_tone_max + b)) / (pre_tone_max * (c * pre_tone_max + d) + e), 0.0, 1.0);
-        
-        // 4. Scale the entire RGB vector by the exact same ratio.
-        // This compresses brightness without altering the R:G:B ratio, preventing red from shifting to yellow!
-        let tone_scale = post_tone_max / pre_tone_max;
-        color = color * tone_scale;
+        let post_tone_max = clamp(
+            (pre_tone_max * (a * pre_tone_max + b)) /
+            (pre_tone_max * (c * pre_tone_max + d) + e),
+            0.0, 1.0
+        );
+        color = color * (post_tone_max / pre_tone_max);
     }
 
-    // 10. Apply sRGB Gamma Correction (linear → sRGB for display)
-    // This is critical for proper brightness perception!
-    color = pow(color, vec3<f32>(1.0 / 2.2));
-    
-    // 11. Clamp to valid range
+    // ── Step 15: sRGB Transfer Function (IEC 61966-2-1) ──────────────────────
+    // Piecewise: linear toe below 0.0031308, γ = 2.4 above.
+    // Replaces the incorrect pow(x, 1/2.2) approximation used previously.
+    color = vec3<f32>(
+        linear_to_srgb(color.r),
+        linear_to_srgb(color.g),
+        linear_to_srgb(color.b)
+    );
+
+    // ── Step 16: Clamp to display range ──────────────────────────────────────
     color = clamp(color, vec3<f32>(0.0), vec3<f32>(1.0));
-    
+
     return vec4<f32>(color, 1.0);
 }
 "#;
