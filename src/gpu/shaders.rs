@@ -476,14 +476,37 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     color = color * exposure_multiplier;
 
     // ── Step 9: Highlights & Shadows ─────────────────────────────────────────
-    // Luminance-weighted adjustments using Rec.709 coefficients (valid in sRGB).
-    let lum_for_tone = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
+    //
+    // Highlights — per-channel smooth compression/expansion above the pivot.
+    //
+    // Operating per-channel (not on luma) is critical for partial highlight
+    // recovery: when only the red Bayer channel clips, the green and blue
+    // channels still carry colour information.  A luma-weighted scalar
+    // multiplier would destroy that information.
+    //
+    // pivot = 0.5 linear (≈ 73% display).  Everything below is untouched.
+    // highlights = -100 → hl_scale = 0 → all per-channel values above pivot
+    //   collapse to the pivot, recovering detail from partially-clipped pixels.
+    // highlights =  0   → hl_scale = 1 → identity (no change).
+    // highlights = +100 → hl_scale = 2 → expands the upper range.
+    if (params.highlights != 0.0) {
+        let hl_scale = max(1.0 + params.highlights / 100.0, 0.0);
+        let hl_over  = max(color - vec3<f32>(0.5), vec3<f32>(0.0));
+        color = min(color, vec3<f32>(0.5)) + hl_over * hl_scale;
+    }
 
-    let highlights_adjustment = lum_for_tone * params.highlights * 0.2;
-    color = color * max(1.0 + highlights_adjustment, 0.1);
-
-    let shadows_adjustment = (1.0 - lum_for_tone) * params.shadows * 0.2;
-    color = color * max(1.0 + shadows_adjustment, 0.1);
+    // Shadows — luma-weighted additive lift/crush below the pivot.
+    //
+    // Additive (not multiplicative) so neutral tones stay neutral.
+    // sh_weight = 1 at pure black, smoothly falls to 0 at the pivot.
+    // shadows = +100 → lift blacks up to +0.4 linear (significant lift).
+    // shadows = -100 → push blacks down by -0.4 linear (crush).
+    if (params.shadows != 0.0) {
+        let sh_norm   = params.shadows / 100.0;
+        let sh_luma   = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
+        let sh_weight = clamp(1.0 - sh_luma / 0.5, 0.0, 1.0);
+        color = color + vec3<f32>(sh_weight * sh_norm * 0.4);
+    }
 
     // ── Step 10: Contrast ─────────────────────────────────────────────────────
     // Pivot at 18% gray (the perceptual midtone in linear light), not 0.5
