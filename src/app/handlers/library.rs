@@ -3,7 +3,7 @@ use rusqlite::{Connection, OptionalExtension};
 use std::path::PathBuf;
 use rfd::FileDialog;
 use walkdir::WalkDir;
-use chrono::Utc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::app::state::RawEditor;
 use crate::app::message::{Message, ImportResult};
@@ -69,8 +69,11 @@ pub fn handle_cache_processed(editor: &mut RawEditor, result: Result<(i64, Strin
             Ok((image_id, thumb, instant, working)) => {
                 let _ = library.set_image_cache_paths(image_id, &thumb, &instant, &working);
             },
-            Err((image_id, _)) if image_id != 0 => {
-                let _ = library.conn().execute("UPDATE images SET cache_status = 'failed' WHERE id = ?1", [image_id]);
+            Err((image_id, ref err)) if image_id != 0 => {
+                if let Err(db_err) = library.conn().execute("UPDATE images SET cache_status = 'failed' WHERE id = ?1", [image_id]) {
+                    tracing::error!("Failed to mark image {} as failed: {}", image_id, db_err);
+                }
+                tracing::warn!("Cache processing failed for image {}: {}", image_id, err);
             },
             _ => {}
         }
@@ -156,7 +159,10 @@ async fn import_folder_async(folder_path: PathBuf, db_path: PathBuf) -> ImportRe
                         let filename = path.file_name().unwrap().to_string_lossy().to_string();
                         let exists: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM images WHERE path = ?1)", [&path_str], |row| row.get(0)).unwrap_or(false);
                         if !exists {
-                            let now = Utc::now().to_rfc3339();
+                            let now = SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs() as i64;
                             conn.execute("INSERT INTO images (path, filename, imported_at, cache_status) VALUES (?1, ?2, ?3, 'pending')", (&path_str, &filename, &now)).expect("Failed to insert image");
                             imported_count += 1;
                         } else { skipped_count += 1; }

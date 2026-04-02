@@ -28,7 +28,8 @@ async fn process_load_request(id: i64, path: String) -> Message {
             
             // zune-jpeg typically returns RGB8. We need RGBA8 for Iced.
             // Ideally we check info.options.color_space but for now assume RGB if length matches
-            if pixels.len() == (width * height * 3) as usize {
+            let expected_rgb_len = (width as usize).saturating_mul(height as usize).saturating_mul(3);
+            if pixels.len() == expected_rgb_len {
                 let mut rgba = Vec::with_capacity((width * height * 4) as usize);
                 for chunk in pixels.chunks_exact(3) {
                     rgba.extend_from_slice(chunk);

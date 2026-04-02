@@ -25,7 +25,7 @@ pub fn view(editor: &RawEditor) -> Element<'_, Message> {
     
     // Phase 84: Generic Modal System
     let modal = match editor.active_modal {
-        Modal::None => container(text("")).height(0).width(0).into(),
+        Modal::None => container(text("")).height(0).width(0),
         Modal::Help => container(view_help_modal()).style(ui::styles::modal_container_style).padding(20),
         Modal::Preferences => container(view_preferences_modal(editor)).style(ui::styles::modal_container_style).padding(20),
         Modal::Export => container(view_export_modal(editor)).style(ui::styles::modal_container_style).padding(20),

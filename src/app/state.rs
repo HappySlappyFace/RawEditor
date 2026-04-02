@@ -355,7 +355,7 @@ impl RawEditor {
             // Ensure entry exists
             self.history_map.entry(image_id).or_insert_with(|| {
                 // Initial state is the current params
-                (vec![self.current_edit_params.clone()], 0)
+                (vec![self.current_edit_params], 0)
             });
 
             self.history_map.get_mut(&image_id)
@@ -366,7 +366,7 @@ impl RawEditor {
 
     // Helper to push current state to history
     pub fn commit_current_state(&mut self) {
-        let params_to_push = self.current_edit_params.clone();
+        let params_to_push = self.current_edit_params;
         if let Some((stack, index)) = self.get_current_history() {
             // Truncate any redo history
             stack.truncate(*index + 1);

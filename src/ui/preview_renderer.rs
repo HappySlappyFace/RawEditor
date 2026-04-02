@@ -441,10 +441,10 @@ impl canvas::Program<Message> for CropOverlay {
         let third_w = crop_w / 3.0;
         let third_h = crop_h / 3.0;
         let grid_stroke = canvas::Stroke::default().with_color(Color::from_rgba(1.0, 1.0, 1.0, 0.8)).with_width(1.0);
-        overlay_frame.stroke(&canvas::Path::line(iced::Point::new(crop_x + third_w, crop_y), iced::Point::new(crop_x + third_w, crop_y + crop_h)), grid_stroke.clone());
-        overlay_frame.stroke(&canvas::Path::line(iced::Point::new(crop_x + third_w * 2.0, crop_y), iced::Point::new(crop_x + third_w * 2.0, crop_y + crop_h)), grid_stroke.clone());
-        overlay_frame.stroke(&canvas::Path::line(iced::Point::new(crop_x, crop_y + third_h), iced::Point::new(crop_x + crop_w, crop_y + third_h)), grid_stroke.clone());
-        overlay_frame.stroke(&canvas::Path::line(iced::Point::new(crop_x, crop_y + third_h * 2.0), iced::Point::new(crop_x + crop_w, crop_y + third_h * 2.0)), grid_stroke.clone());
+        overlay_frame.stroke(&canvas::Path::line(iced::Point::new(crop_x + third_w, crop_y), iced::Point::new(crop_x + third_w, crop_y + crop_h)), grid_stroke);
+        overlay_frame.stroke(&canvas::Path::line(iced::Point::new(crop_x + third_w * 2.0, crop_y), iced::Point::new(crop_x + third_w * 2.0, crop_y + crop_h)), grid_stroke);
+        overlay_frame.stroke(&canvas::Path::line(iced::Point::new(crop_x, crop_y + third_h), iced::Point::new(crop_x + crop_w, crop_y + third_h)), grid_stroke);
+        overlay_frame.stroke(&canvas::Path::line(iced::Point::new(crop_x, crop_y + third_h * 2.0), iced::Point::new(crop_x + crop_w, crop_y + third_h * 2.0)), grid_stroke);
 
         // Crop border
         let border_rect = Rectangle { x: crop_x, y: crop_y, width: crop_w, height: crop_h };
@@ -488,49 +488,46 @@ impl canvas::Program<Message> for CropOverlay {
             None => return (canvas::event::Status::Ignored, None),
         };
 
-        match event {
-            canvas::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left)) => {
-                let viewport_width = bounds.width;
-                let viewport_height = bounds.height;
-                let image_aspect = self.image_width as f32 / self.image_height.max(1) as f32;
-                let viewport_aspect = viewport_width / viewport_height;
-                let (fitted_width, fitted_height) = if image_aspect > viewport_aspect {
-                    (viewport_width, viewport_width / image_aspect)
-                } else {
-                    (viewport_height * image_aspect, viewport_height)
-                };
-                let center_x = viewport_width / 2.0;
-                let center_y = viewport_height / 2.0;
-                let zoomed_width = fitted_width * self.zoom;
-                let zoomed_height = fitted_height * self.zoom;
-                let pan_px_x = self.offset.x * fitted_width;
-                let pan_px_y = self.offset.y * fitted_height;
-                let image_x = center_x - (zoomed_width / 2.0) + pan_px_x;
-                let image_y = center_y - (zoomed_height / 2.0) + pan_px_y;
+        if let canvas::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left)) = event {
+            let viewport_width = bounds.width;
+            let viewport_height = bounds.height;
+            let image_aspect = self.image_width as f32 / self.image_height.max(1) as f32;
+            let viewport_aspect = viewport_width / viewport_height;
+            let (fitted_width, fitted_height) = if image_aspect > viewport_aspect {
+                (viewport_width, viewport_width / image_aspect)
+            } else {
+                (viewport_height * image_aspect, viewport_height)
+            };
+            let center_x = viewport_width / 2.0;
+            let center_y = viewport_height / 2.0;
+            let zoomed_width = fitted_width * self.zoom;
+            let zoomed_height = fitted_height * self.zoom;
+            let pan_px_x = self.offset.x * fitted_width;
+            let pan_px_y = self.offset.y * fitted_height;
+            let image_x = center_x - (zoomed_width / 2.0) + pan_px_x;
+            let image_y = center_y - (zoomed_height / 2.0) + pan_px_y;
 
-                let image_bounds = Rectangle { x: image_x, y: image_y, width: zoomed_width, height: zoomed_height };
-                let crop_x = image_bounds.x + (self.crop[0] * image_bounds.width);
-                let crop_y = image_bounds.y + (self.crop[1] * image_bounds.height);
-                let crop_w = self.crop[2] * image_bounds.width;
-                let crop_h = self.crop[3] * image_bounds.height;
-                let hr = 15.0_f32;
-                let chk = |x: f32, y: f32| -> bool {
-                    let dx = cursor_position.x - x;
-                    let dy = cursor_position.y - y;
-                    dx * dx + dy * dy < hr * hr
-                };
+            let image_bounds = Rectangle { x: image_x, y: image_y, width: zoomed_width, height: zoomed_height };
+            let crop_x = image_bounds.x + (self.crop[0] * image_bounds.width);
+            let crop_y = image_bounds.y + (self.crop[1] * image_bounds.height);
+            let crop_w = self.crop[2] * image_bounds.width;
+            let crop_h = self.crop[3] * image_bounds.height;
+            let hr = 15.0_f32;
+            let chk = |x: f32, y: f32| -> bool {
+                let dx = cursor_position.x - x;
+                let dy = cursor_position.y - y;
+                dx * dx + dy * dy < hr * hr
+            };
 
-                if chk(crop_x, crop_y) { return (canvas::event::Status::Captured, Some(Message::CropHandleGrabbed(CropHandle::TopLeft, image_bounds))); }
-                if chk(crop_x + crop_w, crop_y) { return (canvas::event::Status::Captured, Some(Message::CropHandleGrabbed(CropHandle::TopRight, image_bounds))); }
-                if chk(crop_x, crop_y + crop_h) { return (canvas::event::Status::Captured, Some(Message::CropHandleGrabbed(CropHandle::BottomLeft, image_bounds))); }
-                if chk(crop_x + crop_w, crop_y + crop_h) { return (canvas::event::Status::Captured, Some(Message::CropHandleGrabbed(CropHandle::BottomRight, image_bounds))); }
+            if chk(crop_x, crop_y) { return (canvas::event::Status::Captured, Some(Message::CropHandleGrabbed(CropHandle::TopLeft, image_bounds))); }
+            if chk(crop_x + crop_w, crop_y) { return (canvas::event::Status::Captured, Some(Message::CropHandleGrabbed(CropHandle::TopRight, image_bounds))); }
+            if chk(crop_x, crop_y + crop_h) { return (canvas::event::Status::Captured, Some(Message::CropHandleGrabbed(CropHandle::BottomLeft, image_bounds))); }
+            if chk(crop_x + crop_w, crop_y + crop_h) { return (canvas::event::Status::Captured, Some(Message::CropHandleGrabbed(CropHandle::BottomRight, image_bounds))); }
 
-                if cursor_position.x >= crop_x && cursor_position.x <= crop_x + crop_w
-                    && cursor_position.y >= crop_y && cursor_position.y <= crop_y + crop_h {
-                    return (canvas::event::Status::Captured, Some(Message::CropHandleGrabbed(CropHandle::Body, image_bounds)));
-                }
+            if cursor_position.x >= crop_x && cursor_position.x <= crop_x + crop_w
+                && cursor_position.y >= crop_y && cursor_position.y <= crop_y + crop_h {
+                return (canvas::event::Status::Captured, Some(Message::CropHandleGrabbed(CropHandle::Body, image_bounds)));
             }
-            _ => {}
         }
 
         (canvas::event::Status::Ignored, None)

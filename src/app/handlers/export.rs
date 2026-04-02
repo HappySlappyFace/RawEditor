@@ -105,7 +105,7 @@ pub fn handle_process_next_export(editor: &mut RawEditor) -> Task<Message> {
                 Message::ExportRawLoaded(image_id, res)
             });
         }
-        return Task::perform(async {}, |_| Message::ProcessNextExport);
+        Task::perform(async {}, |_| Message::ProcessNextExport)
     } else {
         editor.is_exporting = false;
         editor.status = "Export Complete!".to_string();
@@ -129,10 +129,10 @@ pub fn handle_export_raw_loaded(
                     tracing::info!("Exporting currently loaded image directly");
 
                     let crop = editor.current_edit_params.crop;
-                    let crop_w = crop[2];
-                    let crop_h = crop[3];
-                    let target_width = (resources.width as f32 * crop_w) as u32;
-                    let target_height = (resources.height as f32 * crop_h) as u32;
+                    let crop_w = crop[2].clamp(0.001, 1.0);
+                    let crop_h = crop[3].clamp(0.001, 1.0);
+                    let target_width = ((resources.width as f32 * crop_w) as u32).max(1);
+                    let target_height = ((resources.height as f32 * crop_h) as u32).max(1);
 
                     let ctx = ctx.clone();
                     let resources = resources.clone();
@@ -173,7 +173,7 @@ pub fn handle_export_raw_loaded(
 
             tracing::info!("Creating ImageResources for export (image {})", image_id);
 
-            let params = editor.current_edit_params.clone();
+            let params = editor.current_edit_params;
             let ctx = editor.gpu_context.clone();
 
             let xyz_to_cam = raw_data.color_matrix;
@@ -229,10 +229,10 @@ pub fn handle_export_pipeline_ready(
     match result {
         Ok((context, resources)) => {
             let crop = editor.current_edit_params.crop;
-            let crop_w = crop[2];
-            let crop_h = crop[3];
-            let target_width = (resources.width as f32 * crop_w) as u32;
-            let target_height = (resources.height as f32 * crop_h) as u32;
+            let crop_w = crop[2].clamp(0.001, 1.0);
+            let crop_h = crop[3].clamp(0.001, 1.0);
+            let target_width = ((resources.width as f32 * crop_w) as u32).max(1);
+            let target_height = ((resources.height as f32 * crop_h) as u32).max(1);
 
             let settings = editor.export_settings.clone();
             let filename = if let Some(img) = editor.images.iter().find(|i| i.id == image_id) {
@@ -321,6 +321,12 @@ async fn save_export_async(
                     .map_err(|e| e.to_string())?;
             }
             ExportFormat::Jpeg => {
+                if !bytes.len().is_multiple_of(4) {
+                    return Err(format!(
+                        "Export buffer length {} is not a multiple of 4",
+                        bytes.len()
+                    ));
+                }
                 let rgb_bytes: Vec<u8> = bytes
                     .chunks_exact(4)
                     .flat_map(|rgba| [rgba[0], rgba[1], rgba[2]])

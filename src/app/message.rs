@@ -34,6 +34,7 @@ pub struct PreviewResult {
 
 /// Application messages (events)
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum Message {
     // ========== Startup Messages (Phase 23) ==========
     /// Database loading completed (async background task)

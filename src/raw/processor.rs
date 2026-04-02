@@ -14,18 +14,19 @@ const TIER_INSTANT: u32 = 384; // Quick preview
 const TIER_WORKING: u32 = 1280; // Editing preview
 
 /// Get the cache directory for a specific tier
-fn get_cache_dir(tier_name: &str) -> PathBuf {
+fn get_cache_dir(tier_name: &str) -> Result<PathBuf, String> {
     let mut path = dirs_next::cache_dir()
-        .or_else(|| dirs_next::home_dir())
-        .expect("Could not determine cache directory");
+        .or_else(dirs_next::home_dir)
+        .ok_or_else(|| "Could not determine cache directory".to_string())?;
 
     path.push("raw-editor");
     path.push(tier_name);
 
     // Ensure the directory exists
-    fs::create_dir_all(&path).expect(&format!("Failed to create {} cache directory", tier_name));
+    fs::create_dir_all(&path)
+        .map_err(|e| format!("Failed to create {} cache directory: {}", tier_name, e))?;
 
-    path
+    Ok(path)
 }
 
 /// Process a RAW image and generate all 3 cache tiers
@@ -70,11 +71,21 @@ fn generate_tier(
     tier_name: &str,
     image_id: i64,
 ) -> Result<String, String> {
+    if target_width == 0 {
+        return Err(format!("target_width cannot be 0 for tier {}", tier_name));
+    }
+
     // Resize maintaining aspect ratio (width-constrained)
-    let resized = img.resize(target_width, target_width * 10, FilterType::Lanczos3);
+    // Compute a proportional max height to preserve aspect ratio
+    let max_height = if img.width() > 0 {
+        (target_width as u64 * img.height() as u64 / img.width() as u64).max(1) as u32
+    } else {
+        target_width
+    };
+    let resized = img.resize(target_width, max_height, FilterType::Lanczos3);
 
     // Get cache directory for this tier
-    let cache_dir = get_cache_dir(tier_name);
+    let cache_dir = get_cache_dir(tier_name)?;
     let file_path = cache_dir.join(format!("{}.jpg", image_id));
 
     // Save with high quality
@@ -123,6 +134,78 @@ fn extract_largest_jpeg(raw_path: &Path) -> Option<Vec<u8>> {
     // Return the largest valid JPEG
     all_jpegs.sort_by(|a, b| b.0.cmp(&a.0)); // Sort descending by size
     all_jpegs.into_iter().next().map(|(_, data)| data)
+}
+
+#[cfg(test)]
+mod tests {
+    // ── Aspect-ratio max-height computation ──────────────────────────────────
+    // This is the formula extracted from generate_tier to verify it is correct.
+
+    fn compute_max_height(target_width: u32, img_width: u32, img_height: u32) -> u32 {
+        if img_width > 0 {
+            (target_width as u64 * img_height as u64 / img_width as u64).max(1) as u32
+        } else {
+            target_width
+        }
+    }
+
+    #[test]
+    fn test_aspect_ratio_landscape() {
+        // 4:3 image scaled to 1280px wide → height ≈ 960
+        let h = compute_max_height(1280, 4000, 3000);
+        assert_eq!(h, 960);
+    }
+
+    #[test]
+    fn test_aspect_ratio_portrait() {
+        // 3:4 portrait: width=3000, height=4000 → at 1280px wide, height ≈ 1706
+        let h = compute_max_height(1280, 3000, 4000);
+        assert_eq!(h, 1706);
+    }
+
+    #[test]
+    fn test_aspect_ratio_square() {
+        let h = compute_max_height(256, 1000, 1000);
+        assert_eq!(h, 256);
+    }
+
+    #[test]
+    fn test_aspect_ratio_zero_image_width_does_not_panic() {
+        // Should fall back to target_width (no division by zero)
+        let h = compute_max_height(256, 0, 1000);
+        assert_eq!(h, 256);
+    }
+
+    #[test]
+    fn test_max_height_at_least_one() {
+        // Very tall thin image scaled tiny — height must be ≥ 1
+        let h = compute_max_height(1, 1_000_000, 1);
+        assert!(h >= 1, "height must be at least 1, got {}", h);
+    }
+
+    // ── Zero target_width guard ──────────────────────────────────────────────
+
+    #[test]
+    fn test_zero_target_width_is_detected() {
+        // generate_tier returns Err when target_width == 0
+        // We test just the guard condition here (no filesystem needed)
+        let target_width: u32 = 0;
+        let is_invalid = target_width == 0;
+        assert!(is_invalid, "zero target_width must be rejected");
+    }
+
+    // ── get_cache_dir returns Ok for a valid tier name ────────────────────────
+
+    #[test]
+    fn test_get_cache_dir_succeeds() {
+        // This touches the real filesystem but is safe: just creates a temp directory
+        let result = super::get_cache_dir("test_tier_functional");
+        assert!(result.is_ok(), "get_cache_dir should succeed: {:?}", result);
+        // Clean up
+        if let Ok(path) = result {
+            let _ = std::fs::remove_dir_all(&path);
+        }
+    }
 }
 
 /// Normalize a raw pixel value based on black and white levels

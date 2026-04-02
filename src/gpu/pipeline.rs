@@ -105,8 +105,8 @@ impl From<&EditParams> for GpuEditParams {
             blacks: params.blacks,
             vibrance: params.vibrance,
             saturation: params.saturation,
-            temperature: params.temperature as f32,
-            tint: params.tint as f32,
+            temperature: params.temperature,
+            tint: params.tint,
             padding1: 0.0,
             padding2: 0.0,
             // Default values (will be overwritten by set_color_metadata)
@@ -186,6 +186,7 @@ impl std::fmt::Debug for RenderPipeline {
 
 impl RenderPipeline {
     /// Create a new render pipeline with the given RAW data
+    #[allow(clippy::too_many_arguments)]
     pub async fn new(
         image_id: i64, // Phase 20: Track which image this pipeline is for
         raw_data: Vec<u16>,
@@ -313,8 +314,7 @@ impl RenderPipeline {
                 padded_data.extend_from_slice(&raw_bytes[start..end]);
                 // Add padding
                 padded_data.extend(
-                    std::iter::repeat(0)
-                        .take((padded_bytes_per_row - unpadded_bytes_per_row) as usize),
+                    std::iter::repeat_n(0, (padded_bytes_per_row - unpadded_bytes_per_row) as usize),
                 );
             }
 
@@ -680,10 +680,20 @@ impl RenderPipeline {
         let buffer_slice = output_buffer.slice(..);
         let (tx, rx) = std::sync::mpsc::channel();
         buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
-            tx.send(result).unwrap();
+            let _ = tx.send(result);
         });
         self.device.poll(wgpu::Maintain::Wait);
-        rx.recv().unwrap().unwrap();
+        match rx.recv() {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                tracing::error!("GPU buffer map failed: {:?}", e);
+                return Vec::new();
+            }
+            Err(e) => {
+                tracing::error!("GPU buffer map channel error: {:?}", e);
+                return Vec::new();
+            }
+        }
 
         let data = buffer_slice.get_mapped_range();
         let mut output = Vec::with_capacity((width * height * 4) as usize);
@@ -897,7 +907,7 @@ impl RenderPipeline {
         let bytes_per_pixel = 4;
         let unpadded_bytes_per_row = self.histogram_width * bytes_per_pixel;
         let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-        let padded_bytes_per_row = (unpadded_bytes_per_row + align - 1) / align * align;
+        let padded_bytes_per_row = unpadded_bytes_per_row.div_ceil(align) * align;
         let buffer_size = (padded_bytes_per_row * self.histogram_height) as u64;
 
         let output_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {

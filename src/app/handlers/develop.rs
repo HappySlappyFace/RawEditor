@@ -128,7 +128,7 @@ pub fn handle_undo(editor: &mut RawEditor) -> Task<Message> {
     if let Some((stack, index)) = editor.get_current_history() {
         if *index > 0 {
             *index -= 1;
-            editor.current_edit_params = stack[*index].clone();
+            editor.current_edit_params = stack[*index];
             update_pipeline(editor)
         } else {
             Task::none()
@@ -142,7 +142,7 @@ pub fn handle_redo(editor: &mut RawEditor) -> Task<Message> {
     if let Some((stack, index)) = editor.get_current_history() {
         if *index < stack.len() - 1 {
             *index += 1;
-            editor.current_edit_params = stack[*index].clone();
+            editor.current_edit_params = stack[*index];
             update_pipeline(editor)
         } else {
             Task::none()
@@ -190,6 +190,7 @@ pub fn handle_paste_settings(editor: &mut RawEditor) -> Task<Message> {
 }
 
 // Helper
+#[allow(clippy::too_many_arguments)]
 pub fn handle_render_finished(
     editor: &mut RawEditor,
     handle: iced::widget::image::Handle,

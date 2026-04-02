@@ -9,7 +9,7 @@ const THUMBNAIL_SIZE: u32 = 256;
 /// Returns ~/.cache/raw-editor/thumbnails on Linux
 pub fn get_thumbnail_cache_dir() -> PathBuf {
     let mut path = dirs_next::cache_dir()
-        .or_else(|| dirs_next::home_dir())
+        .or_else(dirs_next::home_dir)
         .expect("Could not determine cache directory");
 
     path.push("raw-editor");

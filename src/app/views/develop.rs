@@ -76,7 +76,7 @@ fn view_sidebar(editor: &RawEditor) -> iced::widget::Column<'_, Message> {
 
     let histogram_section = if editor.histogram_enabled {
         let histogram_widget = iced::widget::canvas::Canvas::new(crate::ui::histogram::Histogram {
-            data: editor.histogram_data.borrow().clone(),
+            data: *editor.histogram_data.borrow(),
         })
         .width(iced::Length::Fill)
         .height(iced::Length::Fixed(120.0));
@@ -268,35 +268,23 @@ fn view_sidebar(editor: &RawEditor) -> iced::widget::Column<'_, Message> {
                     .on_press(Message::SetCrop([0.0, 0.0, 1.0, 1.0])),
                 button(text("1:1").size(12))
                     .style(ui::styles::NeutralButton::style)
-                    .on_press_maybe(if let Some(res) = &editor.image_resources {
-                        Some(Message::SetCrop(RawEditor::calculate_center_crop(
-                            1.0, res.width, res.height,
-                        )))
-                    } else {
-                        None
-                    }),
+                    .on_press_maybe(editor.image_resources.as_ref().map(|res| Message::SetCrop(RawEditor::calculate_center_crop(
+                        1.0, res.width, res.height,
+                    )))),
                 button(text("16:9").size(12))
                     .style(ui::styles::NeutralButton::style)
-                    .on_press_maybe(if let Some(res) = &editor.image_resources {
-                        Some(Message::SetCrop(RawEditor::calculate_center_crop(
-                            16.0 / 9.0,
-                            res.width,
-                            res.height,
-                        )))
-                    } else {
-                        None
-                    }),
+                    .on_press_maybe(editor.image_resources.as_ref().map(|res| Message::SetCrop(RawEditor::calculate_center_crop(
+                        16.0 / 9.0,
+                        res.width,
+                        res.height,
+                    )))),
                 button(text("2:3").size(12))
                     .style(ui::styles::NeutralButton::style)
-                    .on_press_maybe(if let Some(res) = &editor.image_resources {
-                        Some(Message::SetCrop(RawEditor::calculate_center_crop(
-                            2.0 / 3.0,
-                            res.width,
-                            res.height,
-                        )))
-                    } else {
-                        None
-                    }),
+                    .on_press_maybe(editor.image_resources.as_ref().map(|res| Message::SetCrop(RawEditor::calculate_center_crop(
+                        2.0 / 3.0,
+                        res.width,
+                        res.height,
+                    )))),
             ]
             .spacing(5),
         );
@@ -695,7 +683,7 @@ fn view_main_content<'a>(
         })
         .on_press(Message::MousePressed)
         .on_release(Message::MouseReleased)
-        .on_move(|position| Message::MouseMoved(position));
+        .on_move(Message::MouseMoved);
 
     let content_stack = if let Some(overlay) = overlay_content {
         stack![interactive_image, overlay]

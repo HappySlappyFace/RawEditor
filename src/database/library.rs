@@ -22,7 +22,8 @@ impl Library {
 
         // Ensure the parent directory exists
         if let Some(parent) = db_path.parent() {
-            std::fs::create_dir_all(parent).expect("Failed to create application data directory");
+            std::fs::create_dir_all(parent)
+                .map_err(|e| rusqlite::Error::InvalidPath(format!("Failed to create application data directory: {}", e).into()))?;
         }
 
         // Open or create the database
@@ -39,8 +40,8 @@ impl Library {
     /// Get the path where the database should be stored
     pub fn get_db_path() -> PathBuf {
         let mut path = dirs::data_dir()
-            .or_else(|| dirs::home_dir())
-            .expect("Could not determine user data directory");
+            .or_else(dirs::home_dir)
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
 
         path.push("raw-editor");
         path.push("raw_editor.db");
@@ -160,7 +161,7 @@ impl Library {
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs() as i64;
 
         self.conn.execute(
@@ -420,6 +421,195 @@ impl Library {
             rusqlite::params![thumb_path, instant_path, working_path, image_id],
         )?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// Create an in-memory Library for testing (avoids touching the real DB file)
+    fn in_memory_library() -> Library {
+        let conn = rusqlite::Connection::open_in_memory().expect("in-memory DB");
+        let mut lib = Library {
+            conn,
+            db_path: std::path::PathBuf::from(":memory:"),
+        };
+        lib.init_schema().expect("schema init");
+        lib
+    }
+
+    // ── import_image stores an integer timestamp ──────────────────────────────
+
+    #[test]
+    fn test_import_image_stores_integer_timestamp() {
+        let lib = in_memory_library();
+        let before = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        lib.import_image("/tmp/test.nef", "test.nef").unwrap();
+
+        let after = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        // imported_at must be an integer in the expected range
+        let ts: i64 = lib
+            .conn
+            .query_row("SELECT imported_at FROM images WHERE filename = 'test.nef'", [], |r| r.get(0))
+            .expect("row must exist");
+
+        assert!(ts >= before, "timestamp {} must be >= before {}", ts, before);
+        assert!(ts <= after, "timestamp {} must be <= after {}", ts, after);
+    }
+
+    // ── ORDER BY imported_at works correctly with integer timestamps ──────────
+
+    #[test]
+    fn test_images_ordered_by_integer_timestamp() {
+        let lib = in_memory_library();
+
+        // Insert two images with explicit timestamps to control order
+        lib.conn.execute(
+            "INSERT INTO images (path, filename, imported_at) VALUES ('/a.nef', 'a.nef', 1000)",
+            [],
+        ).unwrap();
+        lib.conn.execute(
+            "INSERT INTO images (path, filename, imported_at) VALUES ('/b.nef', 'b.nef', 2000)",
+            [],
+        ).unwrap();
+
+        let images = lib.get_all_images().unwrap();
+        assert_eq!(images.len(), 2);
+        // Newest first (2000 > 1000)
+        assert_eq!(images[0].filename, "b.nef");
+        assert_eq!(images[1].filename, "a.nef");
+    }
+
+    // ── duplicate path is rejected ────────────────────────────────────────────
+
+    #[test]
+    fn test_import_duplicate_path_fails() {
+        let lib = in_memory_library();
+        lib.import_image("/dup.nef", "dup.nef").unwrap();
+        let second = lib.import_image("/dup.nef", "dup.nef");
+        assert!(second.is_err(), "Inserting duplicate path must fail");
+    }
+
+    // ── save / load edit params round-trips correctly ─────────────────────────
+
+    #[test]
+    fn test_edit_params_round_trip() {
+        let lib = in_memory_library();
+        let id = lib.import_image("/edit.nef", "edit.nef").unwrap();
+
+        let mut params = crate::core::types::EditParams::default();
+        params.exposure = 1.5;
+        params.saturation = -30.0;
+        params.crop = [0.1, 0.2, 0.7, 0.6];
+
+        lib.save_edit_params(id, &params).unwrap();
+        let loaded = lib.load_edit_params(id).unwrap();
+
+        assert_eq!(params, loaded);
+    }
+
+    // ── load_edit_params returns error when no edit exists ────────────────────
+
+    #[test]
+    fn test_load_edit_params_missing_returns_err() {
+        let lib = in_memory_library();
+        let id = lib.import_image("/no_edit.nef", "no_edit.nef").unwrap();
+        let result = lib.load_edit_params(id);
+        assert!(result.is_err(), "Missing edits must return Err, not panic");
+    }
+
+    // ── save_edit_params is idempotent (updates rather than duplicate insert) ─
+
+    #[test]
+    fn test_save_edit_params_updates_existing() {
+        let lib = in_memory_library();
+        let id = lib.import_image("/upd.nef", "upd.nef").unwrap();
+
+        let mut p1 = crate::core::types::EditParams::default();
+        p1.exposure = 0.5;
+        lib.save_edit_params(id, &p1).unwrap();
+
+        let mut p2 = crate::core::types::EditParams::default();
+        p2.exposure = 2.0;
+        lib.save_edit_params(id, &p2).unwrap();
+
+        let loaded = lib.load_edit_params(id).unwrap();
+        assert_eq!(loaded.exposure, 2.0, "Second save must overwrite first");
+
+        let count: i64 = lib
+            .conn
+            .query_row("SELECT COUNT(*) FROM edits WHERE image_id = ?1", [id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "Must have exactly one edit row, not {}", count);
+    }
+
+    // ── set_image_cache_paths marks status as cached ──────────────────────────
+
+    #[test]
+    fn test_cache_paths_mark_image_as_cached() {
+        let lib = in_memory_library();
+        let id = lib.import_image("/cache.nef", "cache.nef").unwrap();
+
+        lib.set_image_cache_paths(id, "/t.jpg", "/i.jpg", "/w.jpg").unwrap();
+
+        let status: String = lib
+            .conn
+            .query_row("SELECT cache_status FROM images WHERE id = ?1", [id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(status, "cached");
+    }
+
+    // ── star rating clamped to stored value ───────────────────────────────────
+
+    #[test]
+    fn test_set_image_rating() {
+        let lib = in_memory_library();
+        let id = lib.import_image("/rate.nef", "rate.nef").unwrap();
+
+        lib.set_image_rating(id, 5).unwrap();
+        let images = lib.get_all_images().unwrap();
+        let img = images.iter().find(|i| i.id == id).unwrap();
+        assert_eq!(img.rating, 5);
+    }
+
+    // ── pick/reject flag round-trips ──────────────────────────────────────────
+
+    #[test]
+    fn test_set_image_flag() {
+        let lib = in_memory_library();
+        let id = lib.import_image("/flag.nef", "flag.nef").unwrap();
+
+        lib.set_image_flag(id, 1).unwrap();
+        let images = lib.get_all_images().unwrap();
+        let img = images.iter().find(|i| i.id == id).unwrap();
+        assert_eq!(img.flag, 1);
+
+        lib.set_image_flag(id, -1).unwrap();
+        let images = lib.get_all_images().unwrap();
+        let img = images.iter().find(|i| i.id == id).unwrap();
+        assert_eq!(img.flag, -1);
+    }
+
+    // ── get_pending_images respects limit ─────────────────────────────────────
+
+    #[test]
+    fn test_get_pending_images_limit() {
+        let lib = in_memory_library();
+        for i in 0..5 {
+            lib.import_image(&format!("/img{}.nef", i), &format!("img{}.nef", i)).unwrap();
+        }
+        let pending = lib.get_pending_images(2).unwrap();
+        assert_eq!(pending.len(), 2);
     }
 }
 

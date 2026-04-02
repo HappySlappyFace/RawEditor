@@ -3,7 +3,7 @@
 /// This shader applies non-destructive edits to RAW sensor data in real-time.
 /// Phase 10: Simple passthrough with exposure and contrast
 /// Phase 11+: Full debayering, color science, and advanced adjustments
-
+///
 /// Passthrough shader for RAW image rendering
 ///
 /// This is a simple shader that:

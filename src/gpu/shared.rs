@@ -184,6 +184,7 @@ pub struct ImageResources {
 
 impl ImageResources {
     /// Create new image resources for a specific image
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         context: &SharedContext,
         image_id: i64,
@@ -266,8 +267,7 @@ impl ImageResources {
                 let end = start + unpadded_bytes_per_row as usize;
                 padded_data.extend_from_slice(&raw_bytes[start..end]);
                 padded_data.extend(
-                    std::iter::repeat(0)
-                        .take((padded_bytes_per_row - unpadded_bytes_per_row) as usize),
+                    std::iter::repeat_n(0, (padded_bytes_per_row - unpadded_bytes_per_row) as usize),
                 );
             }
 

@@ -17,7 +17,7 @@ pub fn handle_image_selected(editor: &mut RawEditor, image_id: i64) -> Task<Mess
     
     if let Some(library) = &editor.library {
         editor.current_edit_params = library.load_edit_params(image_id).unwrap_or_default();
-        editor.history_map.entry(image_id).or_insert_with(|| (vec![editor.current_edit_params.clone()], 0));
+        editor.history_map.entry(image_id).or_insert_with(|| (vec![editor.current_edit_params], 0));
     }
     
     if editor.current_tab == AppTab::Develop || editor.current_tab == AppTab::Cull {
@@ -230,6 +230,7 @@ fn apply_crop_drag(editor: &mut RawEditor, pos: Point, last: Point, h: CropHandl
         CropHandle::TopRight => { t += dy; r += dx; }
         CropHandle::BottomLeft => { l += dx; b += dy; }
         CropHandle::BottomRight => { r += dx; b += dy; }
+        #[allow(clippy::possible_missing_else)]
         CropHandle::Body => { l += dx; t += dy; r += dx; b += dy; if l < 0.0 { r -= l; l = 0.0; } if r > 1.0 { l -= r - 1.0; r = 1.0; } if t < 0.0 { b -= t; t = 0.0; } if b > 1.0 { t -= b - 1.0; b = 1.0; } }
     }
     
@@ -244,7 +245,13 @@ fn apply_crop_drag(editor: &mut RawEditor, pos: Point, last: Point, h: CropHandl
         }
     }
     
-    editor.current_edit_params.crop = [l, t, r - l, b - t];
+    let l = l.clamp(0.0, 1.0);
+    let t = t.clamp(0.0, 1.0);
+    let r = r.clamp(0.0, 1.0);
+    let b = b.clamp(0.0, 1.0);
+    let w = (r - l).max(0.0);
+    let h = (b - t).max(0.0);
+    editor.current_edit_params.crop = [l, t, w, h];
     if let (Some(ctx), Some(res)) = (&editor.gpu_context, &editor.image_resources) { res.update_uniforms(ctx, &editor.current_edit_params); }
 }
 

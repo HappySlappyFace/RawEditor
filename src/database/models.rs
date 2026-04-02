@@ -1,7 +1,7 @@
-/// Shared data structures for the application state
+/// Shared data structures for the application state.
 /// These structs represent the data model that flows between
 /// the database layer and the UI layer.
-
+///
 /// Represents a single image in the library
 #[derive(Debug, Clone, PartialEq)]
 pub struct Image {

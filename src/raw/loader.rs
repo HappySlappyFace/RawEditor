@@ -116,16 +116,16 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
         } else {
             let mut cropped_data = Vec::with_capacity(crop_width * crop_height);
 
-            for y in 0..crop_height {
+            'crop: for y in 0..crop_height {
                 let src_y = top + y;
                 if src_y >= full_height {
-                    break;
+                    break 'crop;
                 }
 
                 let src_start = src_y * full_width + left;
                 let src_end = src_start + crop_width;
 
-                if src_end <= full_data.len() {
+                if src_start < full_data.len() && src_end <= full_data.len() {
                     cropped_data.extend_from_slice(&full_data[src_start..src_end]);
                 }
             }
@@ -477,11 +477,11 @@ fn compute_cfa_black_levels_percentile(
     let mut phase_counts: [usize; 4] = [0, 0, 0, 0];
 
     // Build histogram for each phase
-    for y in 0..height {
+    'outer: for y in 0..height {
         for x in 0..width {
             let idx = y * width + x;
             if idx >= data.len() {
-                break;
+                break 'outer;
             }
 
             let value = data[idx] as usize;
@@ -520,6 +520,7 @@ fn compute_cfa_black_levels_percentile(
         let mut found_p5 = false;
         let mut found_median = false;
 
+        #[allow(clippy::needless_range_loop)]
         for value in 0..MAX_VALUE {
             cumsum += phase_histograms[phase][value] as usize;
 

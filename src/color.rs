@@ -15,28 +15,13 @@ const XYZ_TO_SRGB: [[f32; 3]; 3] = [
     [0.0557, -0.2040, 1.0570],
 ];
 
-/// Calculate the camera-to-sRGB color conversion matrix
-///
-/// This function converts a camera's XYZ-to-camera matrix into a camera-to-sRGB matrix
-/// by inverting it and multiplying with the standard XYZ-to-sRGB matrix.
-///
-/// # Arguments
-/// * `xyz_to_cam` - The camera's XYZ to camera RGB matrix (from RAW metadata)
-///
-/// # Returns
-/// * Camera-to-sRGB conversion matrix as a flat [f32; 9] array (row-major)
-///
-/// # Algorithm
-/// 1. Load xyz_to_cam into a 3x3 matrix
-/// 2. Invert to get cam_to_xyz: cam_to_xyz = inverse(xyz_to_cam)
-/// 3. Multiply: cam_to_srgb = XYZ_TO_SRGB × cam_to_xyz
-/// 4. Return as flat array for GPU upload
-/// Calculate the camera-to-sRGB color conversion matrix
+/// Calculate the camera-to-sRGB color conversion matrix.
 ///
 /// This function converts a camera's XYZ-to-camera matrix into a camera-to-sRGB matrix
 /// by inverting it and multiplying with the standard XYZ-to-sRGB matrix.
 /// It also performs row normalization to prevent color casts (pink tint).
 ///
+/// # Arguments
 /// * `raw_matrix` - The camera's XYZ to camera RGB matrix (from RAW metadata)
 ///
 /// # Returns
@@ -87,7 +72,7 @@ pub fn calculate_cam_to_srgb(raw_matrix: [f32; 9]) -> [f32; 9] {
     // Standard sRGB transformation matrix
     #[rustfmt::skip]
     const XYZ_TO_SRGB: Matrix3<f32> = Matrix3::new(
-         3.2404542, -0.9692660,  0.0556434, // Column 0
+         3.2404542, -0.969_266,  0.0556434, // Column 0
         -1.5371385,  1.8760108, -0.2040259, // Column 1
         -0.4985314,  0.0415560,  1.0572252, // Column 2
     );

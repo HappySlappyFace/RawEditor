@@ -134,7 +134,7 @@ fn scan_for_largest_jpeg(buffer: &[u8]) -> Option<Vec<u8>> {
 /// Get the cache directory for preview JPEGs
 pub fn get_preview_cache_dir() -> PathBuf {
     let mut path = dirs::cache_dir()
-        .or_else(|| dirs::home_dir())
+        .or_else(dirs::home_dir)
         .expect("Could not determine cache directory");
 
     path.push("raw-editor");
