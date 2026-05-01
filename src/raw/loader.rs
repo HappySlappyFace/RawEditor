@@ -147,41 +147,68 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
         measured_black_levels[3] as u32,
     ];
 
-    // White balance coefficients
-    let wb_multipliers: [f32; 4] = if raw_image.wb_coeffs[3].is_finite() && raw_image.wb_coeffs[3] > 0.0 {
-        raw_image.wb_coeffs
-    } else {
-        [raw_image.wb_coeffs[0], raw_image.wb_coeffs[1], raw_image.wb_coeffs[2], raw_image.wb_coeffs[1]]
-    };
+    // White balance coefficients — guard ALL four channels against NaN/inf/zero
+    // rawler sets NaN in wb_coeffs when no WB tag is found in the file.
+    let raw_wb = raw_image.wb_coeffs;
+    let wb_multipliers: [f32; 4] = [
+        if raw_wb[0].is_finite() && raw_wb[0] > 0.0 { raw_wb[0] } else { 1.0 },
+        if raw_wb[1].is_finite() && raw_wb[1] > 0.0 { raw_wb[1] } else { 1.0 },
+        if raw_wb[2].is_finite() && raw_wb[2] > 0.0 { raw_wb[2] } else { 1.0 },
+        if raw_wb[3].is_finite() && raw_wb[3] > 0.0 { raw_wb[3] } else {
+            if raw_wb[1].is_finite() && raw_wb[1] > 0.0 { raw_wb[1] } else { 1.0 }
+        },
+    ];
 
-    // Normalize white balance (G = 1.0)
+    // Normalize white balance (G1 = 1.0)
     let g_ref = wb_multipliers[1].max(0.001);
     let wb_normalized = [
         wb_multipliers[0] / g_ref,
         wb_multipliers[1] / g_ref,
         wb_multipliers[2] / g_ref,
-        if wb_multipliers[3].is_finite() && wb_multipliers[3] > 0.0 {
-            wb_multipliers[3] / g_ref
-        } else {
-            wb_multipliers[1] / g_ref
-        },
+        wb_multipliers[3] / g_ref,
     ];
 
-    // Phase 119: xyz_to_cam is now [[f32;3];4] (4 rows × 3 cols) — same indexing, more rows.
-    // We only use the first 3 rows (matching the 3×3 matrix our GPU pipeline expects).
-    let xyz_cam = &raw_image.xyz_to_cam;
-    let has_matrix = xyz_cam[0][0] != 0.0 || xyz_cam[1][1] != 0.0;
+    // Phase 121: Extract the color matrix from rawler's preferred color_matrix HashMap.
+    // The HashMap is keyed by Illuminant (D65, D50, etc.) and values are FlatColorMatrix (Vec<f32>)
+    // with 9 or 12 elements (3 or 4 rows × 3 cols). Semantics: XYZ → camera (same as xyz_to_cam).
+    // calculate_cam_to_srgb in color.rs will invert this correctly.
+    let xyz_to_cam_matrix: [f32; 9] = {
+        use rawler::imgop::xyz::Illuminant;
 
-    let xyz_to_cam_matrix: [f32; 9] = if has_matrix {
-        tracing::debug!("Found xyz_to_cam matrix from camera");
-        [
-            xyz_cam[0][0], xyz_cam[0][1], xyz_cam[0][2],
-            xyz_cam[1][0], xyz_cam[1][1], xyz_cam[1][2],
-            xyz_cam[2][0], xyz_cam[2][1], xyz_cam[2][2],
-        ]
-    } else {
-        tracing::warn!("No xyz_to_cam matrix found, using identity");
-        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+        // Prefer D65 (matches our Bradford adaptation target), fall back to any illuminant
+        let native_mat = raw_image.color_matrix.get(&Illuminant::D65)
+            .or_else(|| raw_image.color_matrix.values().next());
+
+        if let Some(m) = native_mat {
+            if m.len() >= 9 && (m[0] != 0.0 || m[4] != 0.0) {
+                tracing::debug!("Found color_matrix (D65/native) from rawler — {} elements", m.len());
+                [m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8]]
+            } else {
+                tracing::warn!("color_matrix present but zero/short ({} elems), falling back to xyz_to_cam", m.len());
+                let xyz_cam = &raw_image.xyz_to_cam;
+                if xyz_cam[0][0] != 0.0 || xyz_cam[1][1] != 0.0 {
+                    tracing::debug!("Using xyz_to_cam fallback");
+                    [xyz_cam[0][0], xyz_cam[0][1], xyz_cam[0][2],
+                     xyz_cam[1][0], xyz_cam[1][1], xyz_cam[1][2],
+                     xyz_cam[2][0], xyz_cam[2][1], xyz_cam[2][2]]
+                } else {
+                    tracing::warn!("No valid color matrix found, using identity");
+                    [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+                }
+            }
+        } else {
+            // color_matrix HashMap is empty — fall back to legacy xyz_to_cam field
+            let xyz_cam = &raw_image.xyz_to_cam;
+            if xyz_cam[0][0] != 0.0 || xyz_cam[1][1] != 0.0 {
+                tracing::debug!("color_matrix empty, using xyz_to_cam legacy field");
+                [xyz_cam[0][0], xyz_cam[0][1], xyz_cam[0][2],
+                 xyz_cam[1][0], xyz_cam[1][1], xyz_cam[1][2],
+                 xyz_cam[2][0], xyz_cam[2][1], xyz_cam[2][2]]
+            } else {
+                tracing::warn!("No color matrix available at all, using identity");
+                [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+            }
+        }
     };
 
     tracing::debug!(
@@ -202,28 +229,37 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
     );
     tracing::debug!("CFA Pattern Index: {}", cfa_pattern);
 
-    // Bit-depth detection via max value
-    let max_value = *data.iter().max().unwrap_or(&0);
-    let white_level = if max_value > 8191 {
-        tracing::debug!("Detected 14-bit RAW data (max value: {})", max_value);
-        16383
-    } else if max_value > 2047 {
-        tracing::debug!("Detected 12-bit RAW data (max value: {})", max_value);
-        4095
-    } else {
-        tracing::debug!("Detected 10-bit RAW data (max value: {})", max_value);
-        1023
+    // Phase 121: Prioritize metadata white level — it is the camera's actual clipping
+    // point for this specific sensor (e.g. 3880 for many Canon sensors).
+    // Only fall back to (1 << bps) - 1 if whitelevel.0 is completely absent.
+    let white_level: u32 = {
+        let bps = raw_image.bps as u32;
+        // rawler's whitelevel.0 is a Vec<u32> per channel — use the first (R) channel
+        let whitelevel_from_meta = raw_image.whitelevel.0.first().copied().filter(|&v| v > 0);
+        let whitelevel_from_bps = if bps > 0 && bps <= 16 {
+            Some((1u32 << bps) - 1)
+        } else {
+            None
+        };
+
+        // PRIORITY: from_meta > from_bps > pixel-scan fallback
+        let resolved = whitelevel_from_meta
+            .or(whitelevel_from_bps)
+            .unwrap_or_else(|| {
+                let max_v = *data.iter().max().unwrap_or(&0);
+                if max_v > 8191 { 16383 } else if max_v > 2047 { 4095 } else { 1023 }
+            });
+
+        tracing::debug!(
+            "White Level: {} (from_meta={:?}, from_bps={:?}, bps={})",
+            resolved, whitelevel_from_meta, whitelevel_from_bps, bps
+        );
+        resolved
     };
 
     tracing::debug!(
         "Black Levels: [{}, {}, {}, {}]",
         black_levels[0], black_levels[1], black_levels[2], black_levels[3]
-    );
-    // Phase 119: whitelevel is now raw_image.whitelevel.0[0]
-    let metadata_white = raw_image.whitelevel.0.first().copied().unwrap_or(0);
-    tracing::debug!(
-        "White Level: {} (sensor max, ignoring metadata white point {})",
-        white_level, metadata_white
     );
 
     // Phase 119: EXIF metadata via kamadak-exif (rawler's Exif is internal to its decoders)
