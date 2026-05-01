@@ -141,8 +141,9 @@ struct EditParams {
     // Total: 240 bytes
 }
 
+// Phase 128: Pass 2 now reads the debayered Rgba16Float intermediate texture.
 @group(0) @binding(0)
-var input_texture: texture_2d<u32>;  // RAW u16 data stored as u32
+var input_texture: texture_2d<f32>;  // Debayered camera-native linear RGB
 
 @group(0) @binding(1)
 var texture_sampler: sampler;  // Not used for integer textures, kept for compatibility
@@ -150,197 +151,16 @@ var texture_sampler: sampler;  // Not used for integer textures, kept for compat
 @group(0) @binding(2)
 var<uniform> params: EditParams;
 
-// Simple nearest-neighbor debayering with CFA pattern support
-// CFA patterns: 0=RGGB, 1=GRBG, 2=GBRG, 3=BGGR
-fn debayer(coords: vec2<i32>, dimensions: vec2<u32>) -> vec3<f32> {
-    let raw_value = textureLoad(input_texture, coords, 0).r;
-
-    let x = u32(coords.x);
-    let y = u32(coords.y);
-    let is_even_row = (y & 1u) == 0u;
-    let is_even_col = (x & 1u) == 0u;
-
-    // Determine CFA color index for this pixel based on pattern
-    // black_levels[0]=R, [1]=G1 (red row), [2]=G2 (blue row), [3]=B
-    var bl_index: u32;
-
-    if (params.cfa_pattern == 0u) { // RGGB
-        if (is_even_row && is_even_col) { bl_index = 0u; }
-        else if (is_even_row && !is_even_col) { bl_index = 1u; }
-        else if (!is_even_row && is_even_col) { bl_index = 2u; }
-        else { bl_index = 3u; }
-    } else if (params.cfa_pattern == 1u) { // GRBG
-        if (is_even_row && is_even_col) { bl_index = 1u; }
-        else if (is_even_row && !is_even_col) { bl_index = 0u; }
-        else if (!is_even_row && is_even_col) { bl_index = 3u; }
-        else { bl_index = 2u; }
-    } else if (params.cfa_pattern == 2u) { // GBRG
-        if (is_even_row && is_even_col) { bl_index = 1u; }
-        else if (is_even_row && !is_even_col) { bl_index = 3u; }
-        else if (!is_even_row && is_even_col) { bl_index = 0u; }
-        else { bl_index = 2u; }
-    } else { // BGGR (3)
-        if (is_even_row && is_even_col) { bl_index = 3u; }
-        else if (is_even_row && !is_even_col) { bl_index = 1u; }
-        else if (!is_even_row && is_even_col) { bl_index = 2u; }
-        else { bl_index = 0u; }
-    }
-
-    let black = f32(params.black_levels[bl_index]) + params.black_offsets[bl_index];
-    let white = f32(params.white_level);
-    let corrected = max(0.0, f32(raw_value) - black);
-    let range = max(1.0, white - black);
-    let normalized = corrected / range;
-
-    // Determine pixel color for demosaicing
-    var is_red = false;
-    var is_green = false;
-    var is_blue = false;
-
-    if (params.cfa_pattern == 0u) { // RGGB
-        if (is_even_row && is_even_col) { is_red = true; }
-        else if (is_even_row && !is_even_col) { is_green = true; }
-        else if (!is_even_row && is_even_col) { is_green = true; }
-        else { is_blue = true; }
-    } else if (params.cfa_pattern == 1u) { // GRBG
-        if (is_even_row && is_even_col) { is_green = true; }
-        else if (is_even_row && !is_even_col) { is_red = true; }
-        else if (!is_even_row && is_even_col) { is_blue = true; }
-        else { is_green = true; }
-    } else if (params.cfa_pattern == 2u) { // GBRG
-        if (is_even_row && is_even_col) { is_green = true; }
-        else if (is_even_row && !is_even_col) { is_blue = true; }
-        else if (!is_even_row && is_even_col) { is_red = true; }
-        else { is_green = true; }
-    } else { // BGGR (3)
-        if (is_even_row && is_even_col) { is_blue = true; }
-        else if (is_even_row && !is_even_col) { is_green = true; }
-        else if (!is_even_row && is_even_col) { is_green = true; }
-        else { is_red = true; }
-    }
-
-    // Phase 112: Edge-Aware Gradient Demosaicing
-    let n  = get_neighbor(coords + vec2<i32>( 0, -1), dimensions);
-    let s  = get_neighbor(coords + vec2<i32>( 0,  1), dimensions);
-    let w  = get_neighbor(coords + vec2<i32>(-1,  0), dimensions);
-    let e  = get_neighbor(coords + vec2<i32>( 1,  0), dimensions);
-    let nw = get_neighbor(coords + vec2<i32>(-1, -1), dimensions);
-    let ne = get_neighbor(coords + vec2<i32>( 1, -1), dimensions);
-    let sw = get_neighbor(coords + vec2<i32>(-1,  1), dimensions);
-    let se = get_neighbor(coords + vec2<i32>( 1,  1), dimensions);
-
-    var rgb: vec3<f32>;
-
-    if (is_red) {
-        let r = normalized;
-
-        let grad_v = abs(n - s);
-        let grad_h = abs(e - w);
-        var g: f32;
-        if (grad_v < grad_h) { g = (n + s) * 0.5; }
-        else if (grad_h < grad_v) { g = (e + w) * 0.5; }
-        else { g = (n + s + e + w) * 0.25; }
-
-        let grad_nesw = abs(ne - sw);
-        let grad_nwse = abs(nw - se);
-        var b: f32;
-        if (grad_nesw < grad_nwse) { b = (ne + sw) * 0.5; }
-        else if (grad_nwse < grad_nesw) { b = (nw + se) * 0.5; }
-        else { b = (ne + sw + nw + se) * 0.25; }
-
-        rgb = vec3<f32>(r, g, b);
-
-    } else if (is_even_row && !is_even_col) {
-        // Green Pixel (Red Row): red neighbours are E/W, blue neighbours are N/S
-        let g = normalized;
-        let r = (w + e) * 0.5;
-        let b = (n + s) * 0.5;
-        rgb = vec3<f32>(r, g, b);
-
-    } else if (!is_even_row && is_even_col) {
-        // Green Pixel (Blue Row): red neighbours are N/S, blue neighbours are E/W
-        let g = normalized;
-        let r = (n + s) * 0.5;
-        let b = (w + e) * 0.5;
-        rgb = vec3<f32>(r, g, b);
-
-    } else {
-        // Blue Pixel
-        let b = normalized;
-
-        let grad_v = abs(n - s);
-        let grad_h = abs(e - w);
-        var g: f32;
-        if (grad_v < grad_h) { g = (n + s) * 0.5; }
-        else if (grad_h < grad_v) { g = (e + w) * 0.5; }
-        else { g = (n + s + e + w) * 0.25; }
-
-        let grad_nesw = abs(ne - sw);
-        let grad_nwse = abs(nw - se);
-        var r: f32;
-        if (grad_nesw < grad_nwse) { r = (ne + sw) * 0.5; }
-        else if (grad_nwse < grad_nesw) { r = (nw + se) * 0.5; }
-        else { r = (ne + sw + nw + se) * 0.25; }
-
-        rgb = vec3<f32>(r, g, b);
-    }
-
-    return rgb;
-}
-
-// Helper to safely load a neighbour pixel with correct per-channel black-level correction.
-fn get_neighbor(coords: vec2<i32>, dimensions: vec2<u32>) -> f32 {
+// Phase 128: Debayer functions removed — Pass 2 reads pre-debayered float texture.
+// Neighbour helper for NR / sharpening.  One texture read per neighbour
+// instead of the 9 that debayer() required.
+fn get_srgb_neighbor(coords: vec2<i32>, dimensions: vec2<u32>, cm: mat3x3<f32>) -> vec3<f32> {
     let clamped = vec2<i32>(
         clamp(coords.x, 0, i32(dimensions.x) - 1),
         clamp(coords.y, 0, i32(dimensions.y) - 1)
     );
-
-    let raw_value = textureLoad(input_texture, clamped, 0).r;
-
-    let x = u32(clamped.x);
-    let y = u32(clamped.y);
-    let is_even_row = (y & 1u) == 0u;
-    let is_even_col = (x & 1u) == 0u;
-
-    var bl_index: u32;
-
-    if (params.cfa_pattern == 0u) { // RGGB
-        if (is_even_row && is_even_col) { bl_index = 0u; }
-        else if (is_even_row && !is_even_col) { bl_index = 1u; }
-        else if (!is_even_row && is_even_col) { bl_index = 2u; }
-        else { bl_index = 3u; }
-    } else if (params.cfa_pattern == 1u) { // GRBG
-        if (is_even_row && is_even_col) { bl_index = 1u; }
-        else if (is_even_row && !is_even_col) { bl_index = 0u; }
-        else if (!is_even_row && is_even_col) { bl_index = 3u; }
-        else { bl_index = 2u; }
-    } else if (params.cfa_pattern == 2u) { // GBRG
-        if (is_even_row && is_even_col) { bl_index = 1u; }
-        else if (is_even_row && !is_even_col) { bl_index = 3u; }
-        else if (!is_even_row && is_even_col) { bl_index = 0u; }
-        else { bl_index = 2u; }
-    } else { // BGGR (3)
-        if (is_even_row && is_even_col) { bl_index = 3u; }
-        else if (is_even_row && !is_even_col) { bl_index = 1u; }
-        else if (!is_even_row && is_even_col) { bl_index = 2u; }
-        else { bl_index = 0u; }
-    }
-
-    let black = f32(params.black_levels[bl_index]) + params.black_offsets[bl_index];
-    let white = f32(params.white_level);
-    let corrected = max(0.0, f32(raw_value) - black);
-    let range = max(1.0, white - black);
-
-    return corrected / range;
-}
-
-// Debayer a neighbour pixel and convert it through white-balance and the
-// colour matrix, yielding sRGB linear.  Used by noise-reduction and
-// sharpening so those operations work in the same colour space as the
-// centre pixel (Rec.709 luma coefficients are only valid in sRGB).
-fn cam_to_srgb_linear(coords: vec2<i32>, dimensions: vec2<u32>, cm: mat3x3<f32>) -> vec3<f32> {
-    let cam = debayer(coords, dimensions);
-    return cm * (cam * params.wb_multipliers.rgb);
+    let cam = textureLoad(input_texture, clamped, 0).rgb;
+    return max(cm * (cam * params.wb_multipliers.rgb), vec3<f32>(0.0));
 }
 
 // IEC 61966-2-1 sRGB transfer function.
@@ -396,8 +216,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         i32(tex_coords.y * f32(dimensions.y))
     );
 
-    // ── Step 1: Debayer → camera-native linear RGB ───────────────────────────
-    var color = debayer(pixel_coords, dimensions);
+    // ── Step 1: Read debayered camera-native linear RGB from intermediate ────
+    var color = textureLoad(input_texture, pixel_coords, 0).rgb;
 
     // ── STAGE 1: Sensor Clipping Detection (BEFORE WB / Exposure) ────────────
     // Measure destruction on the raw debayered values so WB gains and exposure
@@ -439,10 +259,10 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         let u = (color.b - y) * 0.565;
         let v = (color.r - y) * 0.713;
 
-        let tl = cam_to_srgb_linear(pixel_coords + vec2<i32>(-1, -1), dimensions, color_matrix);
-        let tr = cam_to_srgb_linear(pixel_coords + vec2<i32>( 1, -1), dimensions, color_matrix);
-        let bl = cam_to_srgb_linear(pixel_coords + vec2<i32>(-1,  1), dimensions, color_matrix);
-        let br = cam_to_srgb_linear(pixel_coords + vec2<i32>( 1,  1), dimensions, color_matrix);
+        let tl = get_srgb_neighbor(pixel_coords + vec2<i32>(-1, -1), dimensions, color_matrix);
+        let tr = get_srgb_neighbor(pixel_coords + vec2<i32>( 1, -1), dimensions, color_matrix);
+        let bl = get_srgb_neighbor(pixel_coords + vec2<i32>(-1,  1), dimensions, color_matrix);
+        let br = get_srgb_neighbor(pixel_coords + vec2<i32>( 1,  1), dimensions, color_matrix);
 
         let tl_y = dot(tl, vec3<f32>(0.2126, 0.7152, 0.0722));
         let tl_u = (tl.b - tl_y) * 0.565; let tl_v = (tl.r - tl_y) * 0.713;
@@ -466,10 +286,10 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
     // ── Step 8: Unsharp Mask Sharpening (in sRGB linear space) ───────────────
     if (params.sharpening > 0.0) {
-        let s_up    = cam_to_srgb_linear(pixel_coords + vec2<i32>( 0, -1), dimensions, color_matrix);
-        let s_down  = cam_to_srgb_linear(pixel_coords + vec2<i32>( 0,  1), dimensions, color_matrix);
-        let s_left  = cam_to_srgb_linear(pixel_coords + vec2<i32>(-1,  0), dimensions, color_matrix);
-        let s_right = cam_to_srgb_linear(pixel_coords + vec2<i32>( 1,  0), dimensions, color_matrix);
+        let s_up    = get_srgb_neighbor(pixel_coords + vec2<i32>( 0, -1), dimensions, color_matrix);
+        let s_down  = get_srgb_neighbor(pixel_coords + vec2<i32>( 0,  1), dimensions, color_matrix);
+        let s_left  = get_srgb_neighbor(pixel_coords + vec2<i32>(-1,  0), dimensions, color_matrix);
+        let s_right = get_srgb_neighbor(pixel_coords + vec2<i32>( 1,  0), dimensions, color_matrix);
 
         let blur   = (s_up + s_down + s_left + s_right) * 0.25;
         let detail = color - blur;
@@ -559,7 +379,256 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 }
 "#;
 
-/// Get the shader source code for the current rendering mode
+// ═══════════════════════════════════════════════════════════════════════════
+// Phase 128: DEBAYER SHADER (Pass 1)
+// Reads the R16Uint raw sensor texture and writes debayered camera-native
+// linear RGB to an Rgba16Float intermediate texture.  No color science,
+// no WB, no exposure — just geometry.
+// ═══════════════════════════════════════════════════════════════════════════
+
+pub const DEBAYER_SHADER: &str = r#"
+struct VertexOutput {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) tex_coords: vec2<f32>,
+}
+
+// Simple full-screen triangle — no zoom, pan, or crop.  1:1 mapping to the
+// intermediate texture at full sensor resolution.
+@vertex
+fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
+    var output: VertexOutput;
+    let x = f32(i32(vertex_index & 1u) * 4 - 1);
+    let y = f32(i32(vertex_index >> 1u) * 4 - 1);
+    output.clip_position = vec4<f32>(x, -y, 0.0, 1.0);
+    output.tex_coords = vec2<f32>((x + 1.0) * 0.5, (y + 1.0) * 0.5);
+    return output;
+}
+
+// ── EditParams struct (must match Rust GpuEditParams layout exactly) ─────
+struct EditParams {
+    exposure: f32,
+    contrast: f32,
+    highlights: f32,
+    shadows: f32,
+    whites: f32,
+    blacks: f32,
+    vibrance: f32,
+    saturation: f32,
+    temperature: f32,
+    tint: f32,
+    padding1: f32,
+    padding2: f32,
+    wb_multipliers: vec4<f32>,
+    color_matrix_0: vec3<f32>,
+    padding3: f32,
+    color_matrix_1: vec3<f32>,
+    padding4: f32,
+    color_matrix_2: vec3<f32>,
+    padding5: f32,
+    zoom: f32,
+    pan_x: f32,
+    pan_y: f32,
+    cfa_pattern: u32,
+    pad_cfa_1: f32,
+    pad_cfa_2: f32,
+    pad_cfa_3: f32,
+    pad_cfa_4: f32,
+    black_levels: vec4<u32>,
+    white_level: u32,
+    pad_end_1: f32,
+    pad_end_2: f32,
+    pad_end_3: f32,
+    black_offsets: vec4<f32>,
+    black_phase_x: u32,
+    black_phase_y: u32,
+    noise_reduction: f32,
+    sharpening: f32,
+    sharpen_masking: f32,
+    rotation: f32,
+    pad_phase_1: f32,
+    pad_phase_2: f32,
+    crop: vec4<f32>,
+}
+
+@group(0) @binding(0)
+var input_texture: texture_2d<u32>;
+
+@group(0) @binding(1)
+var texture_sampler: sampler;
+
+@group(0) @binding(2)
+var<uniform> params: EditParams;
+
+// ── Debayer helpers (identical to the ones in the old single-pass shader) ─
+
+fn get_neighbor(coords: vec2<i32>, dimensions: vec2<u32>) -> f32 {
+    let clamped = vec2<i32>(
+        clamp(coords.x, 0, i32(dimensions.x) - 1),
+        clamp(coords.y, 0, i32(dimensions.y) - 1)
+    );
+    let raw_value = textureLoad(input_texture, clamped, 0).r;
+    let x = u32(clamped.x);
+    let y = u32(clamped.y);
+    let is_even_row = (y & 1u) == 0u;
+    let is_even_col = (x & 1u) == 0u;
+    var bl_index: u32;
+    if (params.cfa_pattern == 0u) {
+        if (is_even_row && is_even_col) { bl_index = 0u; }
+        else if (is_even_row && !is_even_col) { bl_index = 1u; }
+        else if (!is_even_row && is_even_col) { bl_index = 2u; }
+        else { bl_index = 3u; }
+    } else if (params.cfa_pattern == 1u) {
+        if (is_even_row && is_even_col) { bl_index = 1u; }
+        else if (is_even_row && !is_even_col) { bl_index = 0u; }
+        else if (!is_even_row && is_even_col) { bl_index = 3u; }
+        else { bl_index = 2u; }
+    } else if (params.cfa_pattern == 2u) {
+        if (is_even_row && is_even_col) { bl_index = 1u; }
+        else if (is_even_row && !is_even_col) { bl_index = 3u; }
+        else if (!is_even_row && is_even_col) { bl_index = 0u; }
+        else { bl_index = 2u; }
+    } else {
+        if (is_even_row && is_even_col) { bl_index = 3u; }
+        else if (is_even_row && !is_even_col) { bl_index = 1u; }
+        else if (!is_even_row && is_even_col) { bl_index = 2u; }
+        else { bl_index = 0u; }
+    }
+    let black = f32(params.black_levels[bl_index]) + params.black_offsets[bl_index];
+    let white = f32(params.white_level);
+    let corrected = max(0.0, f32(raw_value) - black);
+    let range = max(1.0, white - black);
+    return corrected / range;
+}
+
+fn debayer(coords: vec2<i32>, dimensions: vec2<u32>) -> vec3<f32> {
+    let raw_value = textureLoad(input_texture, coords, 0).r;
+    let x = u32(coords.x);
+    let y = u32(coords.y);
+    let is_even_row = (y & 1u) == 0u;
+    let is_even_col = (x & 1u) == 0u;
+    var bl_index: u32;
+    if (params.cfa_pattern == 0u) {
+        if (is_even_row && is_even_col) { bl_index = 0u; }
+        else if (is_even_row && !is_even_col) { bl_index = 1u; }
+        else if (!is_even_row && is_even_col) { bl_index = 2u; }
+        else { bl_index = 3u; }
+    } else if (params.cfa_pattern == 1u) {
+        if (is_even_row && is_even_col) { bl_index = 1u; }
+        else if (is_even_row && !is_even_col) { bl_index = 0u; }
+        else if (!is_even_row && is_even_col) { bl_index = 3u; }
+        else { bl_index = 2u; }
+    } else if (params.cfa_pattern == 2u) {
+        if (is_even_row && is_even_col) { bl_index = 1u; }
+        else if (is_even_row && !is_even_col) { bl_index = 3u; }
+        else if (!is_even_row && is_even_col) { bl_index = 0u; }
+        else { bl_index = 2u; }
+    } else {
+        if (is_even_row && is_even_col) { bl_index = 3u; }
+        else if (is_even_row && !is_even_col) { bl_index = 1u; }
+        else if (!is_even_row && is_even_col) { bl_index = 2u; }
+        else { bl_index = 0u; }
+    }
+    let black = f32(params.black_levels[bl_index]) + params.black_offsets[bl_index];
+    let white = f32(params.white_level);
+    let corrected = max(0.0, f32(raw_value) - black);
+    let range = max(1.0, white - black);
+    let normalized = corrected / range;
+    var is_red = false;
+    var is_green = false;
+    var is_blue = false;
+    if (params.cfa_pattern == 0u) {
+        if (is_even_row && is_even_col) { is_red = true; }
+        else if (is_even_row && !is_even_col) { is_green = true; }
+        else if (!is_even_row && is_even_col) { is_green = true; }
+        else { is_blue = true; }
+    } else if (params.cfa_pattern == 1u) {
+        if (is_even_row && is_even_col) { is_green = true; }
+        else if (is_even_row && !is_even_col) { is_red = true; }
+        else if (!is_even_row && is_even_col) { is_blue = true; }
+        else { is_green = true; }
+    } else if (params.cfa_pattern == 2u) {
+        if (is_even_row && is_even_col) { is_green = true; }
+        else if (is_even_row && !is_even_col) { is_blue = true; }
+        else if (!is_even_row && is_even_col) { is_red = true; }
+        else { is_green = true; }
+    } else {
+        if (is_even_row && is_even_col) { is_blue = true; }
+        else if (is_even_row && !is_even_col) { is_green = true; }
+        else if (!is_even_row && is_even_col) { is_green = true; }
+        else { is_red = true; }
+    }
+    let n  = get_neighbor(coords + vec2<i32>( 0, -1), dimensions);
+    let s  = get_neighbor(coords + vec2<i32>( 0,  1), dimensions);
+    let w  = get_neighbor(coords + vec2<i32>(-1,  0), dimensions);
+    let e  = get_neighbor(coords + vec2<i32>( 1,  0), dimensions);
+    let nw = get_neighbor(coords + vec2<i32>(-1, -1), dimensions);
+    let ne = get_neighbor(coords + vec2<i32>( 1, -1), dimensions);
+    let sw = get_neighbor(coords + vec2<i32>(-1,  1), dimensions);
+    let se = get_neighbor(coords + vec2<i32>( 1,  1), dimensions);
+    var rgb: vec3<f32>;
+    if (is_red) {
+        let r = normalized;
+        let grad_v = abs(n - s); let grad_h = abs(e - w);
+        var g: f32;
+        if (grad_v < grad_h) { g = (n + s) * 0.5; }
+        else if (grad_h < grad_v) { g = (e + w) * 0.5; }
+        else { g = (n + s + e + w) * 0.25; }
+        let grad_nesw = abs(ne - sw); let grad_nwse = abs(nw - se);
+        var b: f32;
+        if (grad_nesw < grad_nwse) { b = (ne + sw) * 0.5; }
+        else if (grad_nwse < grad_nesw) { b = (nw + se) * 0.5; }
+        else { b = (ne + sw + nw + se) * 0.25; }
+        rgb = vec3<f32>(r, g, b);
+    } else if (is_even_row && !is_even_col) {
+        let g = normalized;
+        let r = (w + e) * 0.5;
+        let b = (n + s) * 0.5;
+        rgb = vec3<f32>(r, g, b);
+    } else if (!is_even_row && is_even_col) {
+        let g = normalized;
+        let r = (n + s) * 0.5;
+        let b = (w + e) * 0.5;
+        rgb = vec3<f32>(r, g, b);
+    } else {
+        let b = normalized;
+        let grad_v = abs(n - s); let grad_h = abs(e - w);
+        var g: f32;
+        if (grad_v < grad_h) { g = (n + s) * 0.5; }
+        else if (grad_h < grad_v) { g = (e + w) * 0.5; }
+        else { g = (n + s + e + w) * 0.25; }
+        let grad_nesw = abs(ne - sw); let grad_nwse = abs(nw - se);
+        var r: f32;
+        if (grad_nesw < grad_nwse) { r = (ne + sw) * 0.5; }
+        else if (grad_nwse < grad_nesw) { r = (nw + se) * 0.5; }
+        else { r = (ne + sw + nw + se) * 0.25; }
+        rgb = vec3<f32>(r, g, b);
+    }
+    return rgb;
+}
+
+@fragment
+fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    let dimensions = textureDimensions(input_texture);
+    let pixel_coords = vec2<i32>(
+        i32(input.tex_coords.x * f32(dimensions.x)),
+        i32(input.tex_coords.y * f32(dimensions.y))
+    );
+    let color = debayer(pixel_coords, dimensions);
+    return vec4<f32>(color, 1.0);
+}
+"#;
+
+/// Get the color science shader (Pass 2 — reads debayered Rgba16Float)
+pub fn get_color_shader() -> &'static str {
+    PASSTHROUGH_SHADER
+}
+
+/// Get the debayer shader (Pass 1 — reads R16Uint raw data)
+pub fn get_debayer_shader() -> &'static str {
+    DEBAYER_SHADER
+}
+
+/// Legacy alias — returns the color shader for backward compatibility
 pub fn get_shader() -> &'static str {
     PASSTHROUGH_SHADER
 }

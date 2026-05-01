@@ -17,8 +17,12 @@ use crate::gpu::shaders;
 pub struct SharedContext {
     pub device: Arc<wgpu::Device>,
     pub queue: Arc<wgpu::Queue>,
+    /// Phase 128: Color science pipeline (Pass 2 — reads Rgba16Float)
     pub pipeline: wgpu::RenderPipeline,
     pub bind_group_layout: wgpu::BindGroupLayout,
+    /// Phase 128: Debayer pipeline (Pass 1 — reads R16Uint, writes Rgba16Float)
+    pub debayer_pipeline: wgpu::RenderPipeline,
+    pub debayer_bind_group_layout: wgpu::BindGroupLayout,
     pub sampler: wgpu::Sampler,
 }
 
@@ -57,18 +61,23 @@ impl SharedContext {
         let device = Arc::new(device);
         let queue = Arc::new(queue);
 
-        // Load shaders
-        let shader_source = shaders::get_shader();
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("RAW Shader"),
-            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+        // Phase 128: Load both shaders
+        let color_shader_source = shaders::get_color_shader();
+        let color_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Color Shader (Pass 2)"),
+            source: wgpu::ShaderSource::Wgsl(color_shader_source.into()),
         });
 
-        // Create bind group layout
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Bind Group Layout"),
+        let debayer_shader_source = shaders::get_debayer_shader();
+        let debayer_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Debayer Shader (Pass 1)"),
+            source: wgpu::ShaderSource::Wgsl(debayer_shader_source.into()),
+        });
+
+        // Phase 128: Debayer bind group layout (reads R16Uint)
+        let debayer_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Debayer Bind Group Layout"),
             entries: &[
-                // Texture (R16Uint = unsigned integer texture)
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::FRAGMENT,
@@ -79,14 +88,12 @@ impl SharedContext {
                     },
                     count: None,
                 },
-                // Sampler
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
                     count: None,
                 },
-                // Uniform buffer
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
                     visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
@@ -100,24 +107,89 @@ impl SharedContext {
             ],
         });
 
-        // Create pipeline layout
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("RAW Pipeline Layout"),
-            bind_group_layouts: &[&bind_group_layout],
+        // Phase 128: Color bind group layout (reads Rgba16Float = Float texture)
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Color Bind Group Layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+
+        // Phase 128: Debayer pipeline (Pass 1 → Rgba16Float)
+        let debayer_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Debayer Pipeline Layout"),
+            bind_group_layouts: &[&debayer_bind_group_layout],
             push_constant_ranges: &[],
         });
 
-        // Create render pipeline
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("RAW Render Pipeline"),
-            layout: Some(&pipeline_layout),
+        let debayer_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Debayer Render Pipeline (Pass 1)"),
+            layout: Some(&debayer_pipeline_layout),
             vertex: wgpu::VertexState {
-                module: &shader,
+                module: &debayer_shader,
                 entry_point: "vs_main",
                 buffers: &[],
             },
             fragment: Some(wgpu::FragmentState {
-                module: &shader,
+                module: &debayer_shader,
+                entry_point: "fs_main",
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba16Float,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+        });
+
+        // Color pipeline (Pass 2 → Rgba8Unorm canvas)
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Color Pipeline Layout"),
+            bind_group_layouts: &[&bind_group_layout],
+            push_constant_ranges: &[],
+        });
+
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Color Render Pipeline (Pass 2)"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &color_shader,
+                entry_point: "vs_main",
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &color_shader,
                 entry_point: "fs_main",
                 targets: &[Some(wgpu::ColorTargetState {
                     format: wgpu::TextureFormat::Rgba8Unorm,
@@ -134,14 +206,14 @@ impl SharedContext {
             multiview: None,
         });
 
-        // Create sampler
+        // Create sampler (NonFiltering — both passes use textureLoad, not textureSample)
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("RAW Sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
             mipmap_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
@@ -153,6 +225,8 @@ impl SharedContext {
             queue,
             pipeline,
             bind_group_layout,
+            debayer_pipeline,
+            debayer_bind_group_layout,
             sampler,
         })
     }
@@ -164,6 +238,12 @@ impl SharedContext {
 pub struct ImageResources {
     pub texture: wgpu::Texture,
     pub texture_view: wgpu::TextureView,
+    /// Phase 128: Debayer bind group (Pass 1 input: R16Uint raw texture)
+    pub debayer_bind_group: wgpu::BindGroup,
+    /// Phase 128: Intermediate debayered texture (Rgba16Float, full resolution)
+    pub debayer_texture: wgpu::Texture,
+    pub debayer_texture_view: wgpu::TextureView,
+    /// Phase 128: Color bind group (Pass 2 input: Rgba16Float intermediate)
     pub bind_group: wgpu::BindGroup,
     pub uniform_buffer: wgpu::Buffer,
     pub width: u32,
@@ -290,6 +370,19 @@ impl ImageResources {
 
         let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
+        // Phase 128: Create the intermediate debayered texture (Rgba16Float)
+        let debayer_texture = context.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Debayered Intermediate Texture"),
+            size: texture_size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let debayer_texture_view = debayer_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
         // Create uniform buffer with initial params
         let mut gpu_params = GpuEditParams::from(params);
         gpu_params.wb_multipliers = wb_multipliers;
@@ -308,12 +401,12 @@ impl ImageResources {
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
 
-        // Create bind group
-        let bind_group = context
+        // Phase 128: Debayer bind group (Pass 1 reads R16Uint raw texture)
+        let debayer_bind_group = context
             .device
             .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Bind Group"),
-                layout: &context.bind_group_layout,
+                label: Some("Debayer Bind Group"),
+                layout: &context.debayer_bind_group_layout,
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
@@ -330,9 +423,34 @@ impl ImageResources {
                 ],
             });
 
-        Ok(Self {
+        // Phase 128: Color bind group (Pass 2 reads Rgba16Float intermediate)
+        let bind_group = context
+            .device
+            .create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Color Bind Group"),
+                layout: &context.bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&debayer_texture_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&context.sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: uniform_buffer.as_entire_binding(),
+                    },
+                ],
+            });
+
+        let resources = Self {
             texture,
             texture_view,
+            debayer_bind_group,
+            debayer_texture,
+            debayer_texture_view,
             bind_group,
             uniform_buffer,
             width,
@@ -348,7 +466,43 @@ impl ImageResources {
             black_levels,
             white_level,
             current_params: std::sync::Mutex::new(gpu_params),
-        })
+        };
+
+        // Phase 128: Run initial debayer pass
+        resources.run_debayer(context);
+        tracing::info!("Phase 128: Initial debayer pass complete for image {}", image_id);
+
+        Ok(resources)
+    }
+
+    /// Phase 128: Execute the debayer pass (Pass 1).
+    /// Renders the R16Uint raw texture into the Rgba16Float intermediate texture.
+    /// Call this when the image changes or sensor parameters (black level) change.
+    pub fn run_debayer(&self, context: &SharedContext) {
+        let mut encoder = context.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Debayer Encoder"),
+        });
+        {
+            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Debayer Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.debayer_texture_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            rpass.set_viewport(0.0, 0.0, self.width as f32, self.height as f32, 0.0, 1.0);
+            rpass.set_pipeline(&context.debayer_pipeline);
+            rpass.set_bind_group(0, &self.debayer_bind_group, &[]);
+            rpass.draw(0..3, 0..1);
+        }
+        context.queue.submit(Some(encoder.finish()));
     }
 
     /// Update uniforms with new edit parameters
