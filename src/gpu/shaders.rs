@@ -526,17 +526,22 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     luma = dot(color.rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
     color = mix(vec3<f32>(luma), color, 1.0 + vibrance_amount);
 
-    // ── Step 15: Photographic Tone Curve (Extended Reinhard, Max-RGB) ────────
-    // Replaces ACES: midtones stay linear and punchy, highlights roll cleanly
-    // to pure white rather than lingering in a compressed grey.
-    // white_point = 4.0 means a pixel 2 stops over-exposed maps to exactly 1.0.
+    // ── Step 15: Photographic Highlight Roll-off (Threshold Compression) ─────
+    // The bottom 80% of the tonal range is 100% linear — no compression, full punch.
+    // Only values above the threshold are smoothly compressed into the remaining
+    // 20% of display headroom using a local Reinhard sub-curve.
     color = max(color, vec3<f32>(0.0));
     let pre_tone_max = max(color.r, max(color.g, color.b));
     if (pre_tone_max > 0.0) {
-        let white_point = 4.0;
-        let numerator   = pre_tone_max * (1.0 + (pre_tone_max / (white_point * white_point)));
-        let denominator = 1.0 + pre_tone_max;
-        let post_tone_max = clamp(numerator / denominator, 0.0, 1.0);
+        let threshold: f32 = 0.8;
+        var post_tone_max: f32;
+        if (pre_tone_max <= threshold) {
+            post_tone_max = pre_tone_max; // strictly linear below threshold
+        } else {
+            let over_t    = pre_tone_max - threshold;
+            let headroom  = 1.0 - threshold; // == 0.2
+            post_tone_max = threshold + (headroom * over_t) / (over_t + headroom);
+        }
         color = color * (post_tone_max / pre_tone_max);
     }
 
