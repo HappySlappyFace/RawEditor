@@ -87,7 +87,8 @@ pub enum Message {
     /// User changed tint slider (Phase 18)
     TintChanged(f32),
     /// User changed noise reduction slider (Phase 49)
-    NoiseReductionChanged(f32),
+    LumaNoiseChanged(f32),
+    ColorNoiseChanged(f32),
     /// User changed sharpening slider (Phase 50)
     SharpeningChanged(f32),
     /// User changed sharpen masking slider (Phase 51)

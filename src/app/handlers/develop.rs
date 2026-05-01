@@ -71,8 +71,13 @@ pub fn handle_tint_changed(editor: &mut RawEditor, v: f32) -> Task<Message> {
     update_pipeline(editor)
 }
 
-pub fn handle_noise_reduction_changed(editor: &mut RawEditor, v: f32) -> Task<Message> {
-    editor.current_edit_params.noise_reduction = v;
+pub fn handle_luma_noise_changed(editor: &mut RawEditor, v: f32) -> Task<Message> {
+    editor.current_edit_params.luma_noise = v;
+    update_pipeline(editor)
+}
+
+pub fn handle_color_noise_changed(editor: &mut RawEditor, v: f32) -> Task<Message> {
+    editor.current_edit_params.color_noise = v;
     update_pipeline(editor)
 }
 

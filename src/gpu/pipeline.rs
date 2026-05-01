@@ -73,21 +73,21 @@ pub struct GpuEditParams {
     black_phase_x: u32, // Offset 192. Ends at 196.
     black_phase_y: u32, // Offset 196. Ends at 200.
 
-    // Phase 49: Noise Reduction
-    noise_reduction: f32, // Offset 200. Ends at 204.
+    // Phase 133: Split Luma & Chroma Noise Reduction
+    luma_noise: f32, // Offset 200. Ends at 204.
+    color_noise: f32, // Offset 204. Ends at 208.
 
     // Phase 50: Sharpening
-    sharpening: f32, // Offset 204. Ends at 208.
+    sharpening: f32, // Offset 208. Ends at 212.
 
     // Phase 51: Sharpening Masking
-    sharpen_masking: f32, // Offset 208. Ends at 212.
+    sharpen_masking: f32, // Offset 212. Ends at 216.
 
     // Phase 52: Rotation
-    rotation: f32, // Offset 212. Ends at 216.
+    rotation: f32, // Offset 216. Ends at 220.
 
     // Padding to reach 224 bytes (16-byte alignment for struct)
-    _pad_phase_1: f32, // 216
-    _pad_phase_2: f32, // 220
+    _pad_phase_1: f32, // 220
 
     // Phase 66: Crop (vec4 alignment = 16 bytes)
     crop: [f32; 4], // Offset 224. Ends at 240.
@@ -134,12 +134,12 @@ impl From<&EditParams> for GpuEditParams {
             black_offsets: params.black_offsets,
             black_phase_x: params.black_phase_x,
             black_phase_y: params.black_phase_y,
-            noise_reduction: params.noise_reduction,
+            luma_noise: params.luma_noise,
+            color_noise: params.color_noise,
             sharpening: params.sharpening,
             sharpen_masking: params.sharpen_masking,
             rotation: params.rotation,
             _pad_phase_1: 0.0,
-            _pad_phase_2: 0.0,
             crop: params.crop,
         }
     }

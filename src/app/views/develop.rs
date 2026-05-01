@@ -177,11 +177,18 @@ fn view_sidebar(editor: &RawEditor) -> iced::widget::Column<'_, Message> {
         ))
         .push(text("Detail").size(14))
         .push(slider_row(
-            "Denoise",
-            editor.current_edit_params.noise_reduction,
+            "Luma Denoise",
+            editor.current_edit_params.luma_noise,
             0.0..=2.0,
             0.01,
-            Message::NoiseReductionChanged,
+            Message::LumaNoiseChanged,
+        ))
+        .push(slider_row(
+            "Color Denoise",
+            editor.current_edit_params.color_noise,
+            0.0..=2.0,
+            0.01,
+            Message::ColorNoiseChanged,
         ))
         .push(slider_row(
             "Sharpen",

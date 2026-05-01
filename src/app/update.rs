@@ -51,8 +51,11 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::SaturationChanged(v) => handlers::develop::handle_saturation_changed(editor, v),
         Message::TemperatureChanged(v) => handlers::develop::handle_temperature_changed(editor, v),
         Message::TintChanged(v) => handlers::develop::handle_tint_changed(editor, v),
-        Message::NoiseReductionChanged(v) => {
-            handlers::develop::handle_noise_reduction_changed(editor, v)
+        Message::LumaNoiseChanged(v) => {
+            handlers::develop::handle_luma_noise_changed(editor, v)
+        }
+        Message::ColorNoiseChanged(v) => {
+            handlers::develop::handle_color_noise_changed(editor, v)
         }
         Message::SharpeningChanged(v) => handlers::develop::handle_sharpening_changed(editor, v),
         Message::SharpenMaskingChanged(v) => {

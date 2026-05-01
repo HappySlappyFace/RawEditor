@@ -83,11 +83,11 @@ pub struct EditParams {
     pub tint: f32,
 
     // ========== Noise Reduction ==========
-    /// Noise reduction strength (0.0 to 1.0)
-    /// - 0.0 = no noise reduction
-    /// - 1.0 = maximum noise reduction
-    /// - Phase 49: Chroma denoising to eliminate color speckles
-    pub noise_reduction: f32,
+    /// Luma (brightness) noise reduction strength (0.0 to 1.0)
+    pub luma_noise: f32,
+
+    /// Chroma (color) noise reduction strength (0.0 to 1.0)
+    pub color_noise: f32,
 
     /// Sharpening strength (0.0 to 1.0)
     /// - 0.0 = no sharpening
@@ -133,7 +133,8 @@ impl Default for EditParams {
             saturation: 0.0,
             temperature: 0.0,           // Phase 18: Manual white balance (as-shot)
             tint: 0.0,                  // Phase 18: Manual white balance (as-shot)
-            noise_reduction: 0.0,       // Phase 49: No noise reduction by default
+            luma_noise: 0.0,            // Phase 133: No luma noise reduction by default
+            color_noise: 0.3,           // Phase 133: Default color noise reduction to eliminate speckles
             sharpening: 0.0,            // Phase 50: No sharpening by default
             sharpen_masking: 0.0,       // Phase 51: No masking by default
             rotation: 0.0,              // Phase 52: No rotation by default

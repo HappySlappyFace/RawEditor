@@ -120,8 +120,9 @@ struct EditParams {
     black_phase_x: u32,
     black_phase_y: u32,
 
-    // Phase 49: Noise Reduction
-    noise_reduction: f32,
+    // Phase 133: Noise Reduction
+    luma_noise: f32,
+    color_noise: f32,
 
     // Phase 50: Sharpening
     sharpening: f32,
@@ -134,7 +135,6 @@ struct EditParams {
 
     // Padding to reach 224 bytes
     pad_phase_1: f32,
-    pad_phase_2: f32,
 
     // Phase 66: Crop (vec4 alignment = 16 bytes)
     crop: vec4<f32>,
@@ -228,6 +228,59 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // ── Step 2: White Balance ─────────────────────────────────────────────────
     color = color * params.wb_multipliers.rgb;
 
+    // ── Phase 133: Split Luma & Chroma Noise Reduction ───────────────────────
+    if (params.luma_noise > 0.0 || params.color_noise > 0.0) {
+        // Simple equal-weight luma for camera RGB space
+        let cam_luma_weights = vec3<f32>(0.3333, 0.3333, 0.3333);
+        
+        // Separate Center Pixel into Brightness (Y) and Color (C)
+        let c_Y = dot(color, cam_luma_weights);
+        let c_C = color - vec3<f32>(c_Y);
+        
+        var sum_Y = c_Y;
+        var weight_Y = 1.0;
+        
+        var sum_C = c_C;
+        var weight_C = 1.0;
+        
+        // The strictness of the edge-preservation for Luma
+        let edge_stop = 10.0 / (params.luma_noise + 0.001);
+        
+        // Iterate over a 3x3 grid (skip center 0,0)
+        for (var x: i32 = -1; x <= 1; x++) {
+            for (var y: i32 = -1; y <= 1; y++) {
+                if (x == 0 && y == 0) { continue; }
+                
+                // Fetch neighbor and apply WB
+                let offset = vec2<i32>(x, y);
+                let clamped_coords = clamp(pixel_coords + offset, vec2<i32>(0), vec2<i32>(dimensions) - vec2<i32>(1));
+                let n_color = textureLoad(input_texture, clamped_coords, 0).rgb * params.wb_multipliers.rgb;
+                
+                // Separate Neighbor into Y and C
+                let n_Y = dot(n_color, cam_luma_weights);
+                let n_C = n_color - vec3<f32>(n_Y);
+                
+                // LUMA DENOISE: Edge-Avoiding Bilateral Filter
+                // Only blend brightness if the neighbor is similar in brightness to the center
+                let diff_Y = abs(c_Y - n_Y);
+                let w_Y = exp(-diff_Y * edge_stop) * params.luma_noise;
+                sum_Y = sum_Y + (n_Y * w_Y);
+                weight_Y = weight_Y + w_Y;
+                
+                // COLOR DENOISE: Standard Box/Gaussian Blur
+                // We aggressively blur color because human eyes don't see color edges well
+                let w_C = params.color_noise; 
+                sum_C = sum_C + (n_C * w_C);
+                weight_C = weight_C + w_C;
+            }
+        }
+        
+        // Recombine Denoised Brightness and Denoised Color
+        let final_Y = sum_Y / weight_Y;
+        let final_C = sum_C / weight_C;
+        color = vec3<f32>(final_Y) + final_C;
+    }
+
     // ── Step 3: Highlight Neutralisation (fixes magenta sky at -5 EV) ────────
     // Blend clipped pixels toward grey proportional to clip_blend.
     // We use max_c (the WB-scaled maximum) so the grey level tracks exposure.
@@ -252,37 +305,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // negative channel would poison luma coefficients and invert colours.
     // Must clamp BEFORE luma calculations or gamut compression.
     color = max(color, vec3<f32>(0.0));
-
-    // ── Step 7: Chroma Noise Reduction (Rec.709 luma — valid in sRGB space) ──
-    if (params.noise_reduction > 0.0) {
-        let y = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
-        let u = (color.b - y) * 0.565;
-        let v = (color.r - y) * 0.713;
-
-        let tl = get_srgb_neighbor(pixel_coords + vec2<i32>(-1, -1), dimensions, color_matrix);
-        let tr = get_srgb_neighbor(pixel_coords + vec2<i32>( 1, -1), dimensions, color_matrix);
-        let bl = get_srgb_neighbor(pixel_coords + vec2<i32>(-1,  1), dimensions, color_matrix);
-        let br = get_srgb_neighbor(pixel_coords + vec2<i32>( 1,  1), dimensions, color_matrix);
-
-        let tl_y = dot(tl, vec3<f32>(0.2126, 0.7152, 0.0722));
-        let tl_u = (tl.b - tl_y) * 0.565; let tl_v = (tl.r - tl_y) * 0.713;
-        let tr_y = dot(tr, vec3<f32>(0.2126, 0.7152, 0.0722));
-        let tr_u = (tr.b - tr_y) * 0.565; let tr_v = (tr.r - tr_y) * 0.713;
-        let bl_y = dot(bl, vec3<f32>(0.2126, 0.7152, 0.0722));
-        let bl_u = (bl.b - bl_y) * 0.565; let bl_v = (bl.r - bl_y) * 0.713;
-        let br_y = dot(br, vec3<f32>(0.2126, 0.7152, 0.0722));
-        let br_u = (br.b - br_y) * 0.565; let br_v = (br.r - br_y) * 0.713;
-
-        let avg_u = (tl_u + tr_u + bl_u + br_u) * 0.25;
-        let avg_v = (tl_v + tr_v + bl_v + br_v) * 0.25;
-
-        let den_u = mix(u, avg_u, params.noise_reduction);
-        let den_v = mix(v, avg_v, params.noise_reduction);
-
-        color.r = y + 1.403 * den_v;
-        color.g = y - 0.344 * den_u - 0.714 * den_v;
-        color.b = y + 1.770 * den_u;
-    }
 
     // ── Phase 132: Perceptual Unsharp Mask ─────────────────────────────────
     // sqrt() compresses linear light into a human-vision curve so the blur
@@ -461,12 +483,12 @@ struct EditParams {
     black_offsets: vec4<f32>,
     black_phase_x: u32,
     black_phase_y: u32,
-    noise_reduction: f32,
+    luma_noise: f32,
+    color_noise: f32,
     sharpening: f32,
     sharpen_masking: f32,
     rotation: f32,
     pad_phase_1: f32,
-    pad_phase_2: f32,
     crop: vec4<f32>,
 }
 
