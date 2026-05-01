@@ -13,7 +13,7 @@ pub fn handle_raw_data_loaded(editor: &mut RawEditor, result: Result<raw::loader
             let params = editor.current_edit_params;
             
             let xyz_to_cam = raw.color_matrix;
-            let cam_to_srgb = crate::color::calculate_cam_to_srgb(xyz_to_cam);
+            let cam_to_srgb = crate::color::calculate_cam_to_srgb(xyz_to_cam, raw.wb_multipliers);
             
             let context = editor.gpu_context.clone();
             

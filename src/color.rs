@@ -6,18 +6,24 @@
 /// - sRGB (standard display color space)
 use cgmath::{Matrix3, SquareMatrix};
 
-/// Calculate the camera-to-sRGB color conversion matrix.
+/// Calculate the camera-to-sRGB colour conversion matrix.
 ///
-/// This function converts a camera's XYZ-to-camera matrix into a camera-to-sRGB matrix
-/// by inverting it and multiplying with the standard XYZ-to-sRGB matrix.
-/// It also performs row normalization to prevent color casts (pink tint).
+/// The WGSL shader pre-multiplies each camera pixel by the WB multipliers before
+/// applying this matrix. To keep the two stages independent, we embed the inverse
+/// of those WB gains as a diagonal matrix at the right side of the chain:
+///
+///   M_final = XYZ_sRGB × Bradford × Cam_to_XYZ × diag(1/wb)
+///
+/// When the shader executes `M_final × (raw × WB)`, the `diag(1/wb) × diag(WB)`
+/// cancels to identity, leaving the mathematically correct `Cam_to_sRGB × raw`.
 ///
 /// # Arguments
-/// * `raw_matrix` - The camera's XYZ to camera RGB matrix (from RAW metadata)
+/// * `raw_matrix`     - The camera's XYZ-to-Camera matrix from RAW metadata (row-major [f32;9])
+/// * `wb_multipliers` - The as-shot WB gains `[R, G, B, G2]` normalised so G = 1.0
 ///
 /// # Returns
-/// * Camera-to-sRGB conversion matrix as a flat [f32; 9] array (row-major)
-pub fn calculate_cam_to_srgb(raw_matrix: [f32; 9]) -> [f32; 9] {
+/// * Camera-to-sRGB matrix as a flat `[f32; 9]` array (row-major)
+pub fn calculate_cam_to_srgb(raw_matrix: [f32; 9], wb_multipliers: [f32; 4]) -> [f32; 9] {
     crate::debug_log!(
         crate::debug::DEBUG_APP,
         "🎨 Phase 48: Calculating Cam-to-sRGB with Bradford Adaptation..."
@@ -49,6 +55,21 @@ pub fn calculate_cam_to_srgb(raw_matrix: [f32; 9]) -> [f32; 9] {
         }
     };
 
+    // Step 2b: Phase 126 — inverse-WB diagonal.
+    // The shader does `color * wb_multipliers` BEFORE the matrix multiply.
+    // We pre-bake diag(1/wb) into the matrix so that:
+    //   M × (raw × WB) = (XYZ_sRGB × Bradford × Cam_to_XYZ × diag(1/WB)) × (raw × WB)
+    //                  = XYZ_sRGB × Bradford × Cam_to_XYZ × raw   ← correct
+    // cgmath Matrix3::new is column-major: (c0r0, c0r1, c0r2,  c1r0, c1r1, c1r2,  c2r0, c2r1, c2r2)
+    let r_inv = 1.0 / wb_multipliers[0].max(1e-6);
+    let g_inv = 1.0 / wb_multipliers[1].max(1e-6);
+    let b_inv = 1.0 / wb_multipliers[2].max(1e-6);
+    let un_wb = Matrix3::new(
+        r_inv, 0.0,   0.0,   // Column 0
+        0.0,   g_inv, 0.0,   // Column 1
+        0.0,   0.0,   b_inv, // Column 2
+    );
+
     // Step 3: Bradford Chromatic Adaptation (D50 -> D65)
     // This is the KEY to preventing green/pink tints!
     // Standard Bradford matrix from ICC profile specifications
@@ -69,7 +90,7 @@ pub fn calculate_cam_to_srgb(raw_matrix: [f32; 9]) -> [f32; 9] {
     );
 
     // Step 5: Chain transformations: Cam -> XYZ_D50 -> XYZ_D65 -> sRGB
-    let mut final_matrix = XYZ_TO_SRGB * BRADFORD_D50_TO_D65 * cam_to_xyz_d50;
+    let mut final_matrix = XYZ_TO_SRGB * BRADFORD_D50_TO_D65 * cam_to_xyz_d50 * un_wb;
 
     // Step 6: CRITICAL - Normalize rows to prevent pink tint!
     // Each row sum should equal 1.0 so that neutral (1,1,1) -> (1,1,1)
@@ -160,7 +181,7 @@ mod tests {
         // Example xyz_to_cam matrix (simplified)
         let xyz_to_cam = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
 
-        let result = calculate_cam_to_srgb(xyz_to_cam);
+        let result = calculate_cam_to_srgb(xyz_to_cam, [1.0, 1.0, 1.0, 1.0]);
 
         // Result should not be all zeros
         assert!(result.iter().any(|&x| x != 0.0));

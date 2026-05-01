@@ -177,7 +177,7 @@ pub fn handle_export_raw_loaded(
             let ctx = editor.gpu_context.clone();
 
             let xyz_to_cam = raw_data.color_matrix;
-            let cam_to_srgb = crate::color::calculate_cam_to_srgb(xyz_to_cam);
+            let cam_to_srgb = crate::color::calculate_cam_to_srgb(xyz_to_cam, raw_data.wb_multipliers);
 
             Task::perform(
                 async move {
