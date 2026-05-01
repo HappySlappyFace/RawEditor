@@ -284,20 +284,40 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         color.b = y + 1.770 * den_u;
     }
 
-    // ── Step 8: Unsharp Mask Sharpening (in sRGB linear space) ───────────────
+    // ── Phase 132: Perceptual Unsharp Mask ─────────────────────────────────
+    // sqrt() compresses linear light into a human-vision curve so the blur
+    // and detail extraction are mathematically uniform across shadows and
+    // highlights.  Squaring converts back to linear for ratio-preserving scale.
     if (params.sharpening > 0.0) {
-        let s_up    = get_srgb_neighbor(pixel_coords + vec2<i32>( 0, -1), dimensions, color_matrix);
-        let s_down  = get_srgb_neighbor(pixel_coords + vec2<i32>( 0,  1), dimensions, color_matrix);
-        let s_left  = get_srgb_neighbor(pixel_coords + vec2<i32>(-1,  0), dimensions, color_matrix);
-        let s_right = get_srgb_neighbor(pixel_coords + vec2<i32>( 1,  0), dimensions, color_matrix);
+        let luma_weights = vec3<f32>(0.2126, 0.7152, 0.0722);
 
-        let blur   = (s_up + s_down + s_left + s_right) * 0.25;
-        let detail = color - blur;
+        // 1. Sample center and neighbours in perceptual (sqrt) space
+        let c_luma  = sqrt(max(0.0001, dot(color, luma_weights)));
+        let n_luma  = sqrt(max(0.0001, dot(get_srgb_neighbor(pixel_coords + vec2<i32>( 0, -1), dimensions, color_matrix), luma_weights)));
+        let s_luma  = sqrt(max(0.0001, dot(get_srgb_neighbor(pixel_coords + vec2<i32>( 0,  1), dimensions, color_matrix), luma_weights)));
+        let e_luma  = sqrt(max(0.0001, dot(get_srgb_neighbor(pixel_coords + vec2<i32>( 1,  0), dimensions, color_matrix), luma_weights)));
+        let w_luma  = sqrt(max(0.0001, dot(get_srgb_neighbor(pixel_coords + vec2<i32>(-1,  0), dimensions, color_matrix), luma_weights)));
+        let nw_luma = sqrt(max(0.0001, dot(get_srgb_neighbor(pixel_coords + vec2<i32>(-1, -1), dimensions, color_matrix), luma_weights)));
+        let ne_luma = sqrt(max(0.0001, dot(get_srgb_neighbor(pixel_coords + vec2<i32>( 1, -1), dimensions, color_matrix), luma_weights)));
+        let sw_luma = sqrt(max(0.0001, dot(get_srgb_neighbor(pixel_coords + vec2<i32>(-1,  1), dimensions, color_matrix), luma_weights)));
+        let se_luma = sqrt(max(0.0001, dot(get_srgb_neighbor(pixel_coords + vec2<i32>( 1,  1), dimensions, color_matrix), luma_weights)));
 
-        let detail_luma = length(detail);
-        let mask_val = smoothstep(params.sharpen_masking, params.sharpen_masking + 0.05, detail_luma);
+        // 2. 3×3 Gaussian blur in perceptual space
+        let blur_luma = (c_luma * 0.25)
+                      + ((n_luma + s_luma + e_luma + w_luma) * 0.125)
+                      + ((nw_luma + ne_luma + sw_luma + se_luma) * 0.0625);
 
-        color = color + (detail * params.sharpening * mask_val);
+        // 3. Extract perceptual detail
+        let high_pass = c_luma - blur_luma;
+
+        // 4. Add detail back and convert to linear (square)
+        let sharpened_perc = max(0.0, c_luma + (high_pass * params.sharpening * 2.0));
+        let new_linear_luma = sharpened_perc * sharpened_perc;
+        let old_linear_luma = c_luma * c_luma;  // == original linear luma (clamped)
+
+        // 5. Ratio-preserving scale
+        let sharpen_scale = new_linear_luma / old_linear_luma;
+        color = color * sharpen_scale;
     }
 
     // ── STAGE 2: Gamut Compression (True Path-to-White) ──────────────────────
