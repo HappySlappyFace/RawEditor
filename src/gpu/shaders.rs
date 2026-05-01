@@ -525,16 +525,17 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     luma = dot(color.rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
     color = mix(vec3<f32>(luma), color, 1.0 + vibrance_amount);
 
-    // ── Step 15: ACES Filmic Tone Curve (Max-RGB, hue-preserving) ────────────
+    // ── Step 15: Photographic Tone Curve (Extended Reinhard, Max-RGB) ────────
+    // Replaces ACES: midtones stay linear and punchy, highlights roll cleanly
+    // to pure white rather than lingering in a compressed grey.
+    // white_point = 4.0 means a pixel 2 stops over-exposed maps to exactly 1.0.
     color = max(color, vec3<f32>(0.0));
     let pre_tone_max = max(color.r, max(color.g, color.b));
     if (pre_tone_max > 0.0) {
-        let a = 2.51; let b = 0.03; let c = 2.43; let d = 0.59; let e = 0.14;
-        let post_tone_max = clamp(
-            (pre_tone_max * (a * pre_tone_max + b)) /
-            (pre_tone_max * (c * pre_tone_max + d) + e),
-            0.0, 1.0
-        );
+        let white_point = 4.0;
+        let numerator   = pre_tone_max * (1.0 + (pre_tone_max / (white_point * white_point)));
+        let denominator = 1.0 + pre_tone_max;
+        let post_tone_max = clamp(numerator / denominator, 0.0, 1.0);
         color = color * (post_tone_max / pre_tone_max);
     }
 
