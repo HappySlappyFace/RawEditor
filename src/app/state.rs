@@ -161,6 +161,7 @@ pub struct RawEditor {
     pub last_click_time: Option<std::time::Instant>,
     /// Phase 26: Viewport size for zoom-to-cursor calculations (actual displayed size)
     pub viewport_size: (f32, f32), // (width, height) in screen pixels
+    pub scale_factor: f32,
     /// Phase 29: Instant preview handle (displayed while RAW loads)
     pub working_preview: Option<Handle>,
     /// Phase 103: High-quality rendered preview (async updated)
@@ -299,6 +300,7 @@ impl RawEditor {
                 last_cursor_position: None,
                 last_click_time: None,
                 viewport_size: (800.0, 400.0),
+                scale_factor: 1.0,
                 working_preview: None,
                 rendered_preview: None,
                 working_preview_bytes: None,
@@ -388,42 +390,31 @@ impl RawEditor {
         &self,
         resources: &crate::gpu::shared::ImageResources,
     ) -> Rectangle {
-        let viewport_width = self.viewport_size.0;
-        let viewport_height = self.viewport_size.1;
-
-        // Use actual image aspect ratio
-        let image_aspect = resources.width as f32 / resources.height as f32;
-        let viewport_aspect = viewport_width / viewport_height;
-
-        // Calculate fitted size (contain mode)
-        let (fitted_width, fitted_height) = if image_aspect > viewport_aspect {
-            let w = viewport_width;
-            let h = w / image_aspect;
-            (w, h)
+        let (vw, vh) = self.viewport_size;
+        let img_aspect = resources.width as f32 / resources.height as f32;
+        let vp_aspect = vw / vh;
+        
+        let (fw, fh) = if img_aspect > vp_aspect {
+            (vw, vw / img_aspect)
         } else {
-            let h = viewport_height;
-            let w = h * image_aspect;
-            (w, h)
+            (vh * img_aspect, vh)
         };
-
-        let center_x = viewport_width / 2.0;
-        let center_y = viewport_height / 2.0;
-
-        let zoomed_width = fitted_width * self.zoom;
-        let zoomed_height = fitted_height * self.zoom;
-
-        // Apply pan offset (scaled by zoom)
-        let pan_x = (self.pan_offset.x * fitted_width) / self.zoom;
-        let pan_y = (self.pan_offset.y * fitted_height) / self.zoom;
-
-        let image_x = center_x - (zoomed_width / 2.0) + pan_x;
-        let image_y = center_y - (zoomed_height / 2.0) + pan_y;
-
+        
+        let cx = vw / 2.0;
+        let cy = vh / 2.0;
+        
+        let zw = fw * self.zoom;
+        let zh = fh * self.zoom;
+        
+        // Pan is relative to the fitted image size
+        let px = self.pan_offset.x * fw;
+        let py = self.pan_offset.y * fh;
+        
         Rectangle {
-            x: image_x,
-            y: image_y,
-            width: zoomed_width,
-            height: zoomed_height,
+            x: cx - (zw / 2.0) + px,
+            y: cy - (zh / 2.0) + py,
+            width: zw,
+            height: zh,
         }
     }
 

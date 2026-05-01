@@ -64,17 +64,18 @@ struct ViewportPipeline {
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct Uniforms {
+    /// Orthographic projection matrix for centering and aspect-ratio fit
+    proj: [[f32; 4]; 4],
     zoom:      f32,
     pan_x:     f32,
     pan_y:     f32,
     /// image width / image height
     img_aspect: f32,
-    /// viewport width / viewport height (pass in via primitive bounds)
-    vp_aspect:  f32,
-    _pad: [f32; 3],
     /// background RGBA (linear)
     bg: [f32; 4],
 }
+
+use cgmath::Matrix4;
 
 impl shader::Primitive for ViewportPrimitive {
     fn prepare(
@@ -84,8 +85,10 @@ impl shader::Primitive for ViewportPrimitive {
         format: wgpu::TextureFormat,
         storage: &mut shader::Storage,
         bounds: &Rectangle,
-        _viewport: &shader::Viewport,
+        viewport: &shader::Viewport,
     ) {
+        let _scale_factor = viewport.scale_factor();
+        
         // First call: create the pipeline and companion resources.
         if !storage.has::<ViewportPipeline>() {
             let shader_src = wgpu::include_wgsl!("viewport.wgsl");
@@ -167,7 +170,7 @@ impl shader::Primitive for ViewportPrimitive {
             });
 
             // Full-screen quad: two triangles covering clip-space.
-            // (pos_x, pos_y, uv_x, uv_y) – Y is flipped in UV so image appears right-side-up.
+            // (pos_x, pos_y, uv_x, uv_y)
             let quad: &[f32] = &[
                 -1.0, -1.0,   0.0, 1.0,
                  1.0, -1.0,   1.0, 1.0,
@@ -183,7 +186,6 @@ impl shader::Primitive for ViewportPrimitive {
             });
 
             let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-                label: Some("viewport_sampler"),
                 mag_filter: wgpu::FilterMode::Linear,
                 min_filter: wgpu::FilterMode::Linear,
                 mipmap_filter: wgpu::FilterMode::Linear,
@@ -237,7 +239,7 @@ impl shader::Primitive for ViewportPrimitive {
             state.bind_group = Some(bind_group);
         }
 
-        // Upload pixels every frame (they may have changed after a render).
+        // Upload pixels every frame.
         if let Some(tex) = &state.texture {
             queue.write_texture(
                 tex.as_image_copy(),
@@ -251,16 +253,25 @@ impl shader::Primitive for ViewportPrimitive {
             );
         }
 
-        // Update uniforms.
-        let vp_aspect = bounds.width / bounds.height;
+        // --- PHASE 134: Aspect-Ratio Centering & Projection Matrix ---
         let img_aspect = self.width as f32 / self.height as f32;
+        let vp_aspect = bounds.width / bounds.height;
+        
+        let (fit_w, fit_h) = if img_aspect > vp_aspect {
+            (1.0, 1.0 / (img_aspect / vp_aspect))
+        } else {
+            (img_aspect / vp_aspect, 1.0)
+        };
+
+        // Orthographic matrix that maps [-1, 1] to the fitted aspect ratio
+        let matrix = Matrix4::from_nonuniform_scale(fit_w, fit_h, 1.0);
+        
         let uniforms = Uniforms {
+            proj: matrix.into(),
             zoom: self.zoom,
             pan_x: self.pan_x,
             pan_y: self.pan_y,
             img_aspect,
-            vp_aspect,
-            _pad: [0.0; 3],
             bg: [self.background.r, self.background.g, self.background.b, self.background.a],
         };
         queue.write_buffer(&state.uniform_buf, 0, bytemuck::bytes_of(&uniforms));
@@ -273,36 +284,40 @@ impl shader::Primitive for ViewportPrimitive {
         target: &wgpu::TextureView,
         clip_bounds: &Rectangle<u32>,
     ) {
-        let state = match storage.get::<ViewportPipeline>() {
-            Some(s) => s,
-            None => return,
-        };
-        let bind_group = match &state.bind_group {
-            Some(bg) => bg,
-            None => return,
-        };
+        if let Some(state) = storage.get::<ViewportPipeline>() {
+            if let Some(bind_group) = &state.bind_group {
+                let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("viewport_pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: target,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
 
-        let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("viewport_pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-        });
-
-        // Apply the exact scissor rect that iced hands us – this is the key clipping fix.
-        rpass.set_scissor_rect(clip_bounds.x, clip_bounds.y, clip_bounds.width, clip_bounds.height);
-        rpass.set_pipeline(&state.pipeline);
-        rpass.set_bind_group(0, bind_group, &[]);
-        rpass.set_vertex_buffer(0, state.vertex_buf.slice(..));
-        rpass.draw(0..6, 0..1);
+                // Set viewport and scissor to the physical bounds of the widget
+                rpass.set_viewport(
+                    clip_bounds.x as f32,
+                    clip_bounds.y as f32,
+                    clip_bounds.width as f32,
+                    clip_bounds.height as f32,
+                    0.0,
+                    1.0,
+                );
+                rpass.set_scissor_rect(clip_bounds.x, clip_bounds.y, clip_bounds.width, clip_bounds.height);
+                
+                rpass.set_pipeline(&state.pipeline);
+                rpass.set_bind_group(0, bind_group, &[]);
+                rpass.set_vertex_buffer(0, state.vertex_buf.slice(..));
+                rpass.draw(0..6, 0..1);
+            }
+        }
     }
 }
 
@@ -378,7 +393,7 @@ pub struct CropOverlay {
 }
 
 impl canvas::Program<Message> for CropOverlay {
-    type State = (f32, f32); // Phase 116: Track (width, height) for resize sensing
+    type State = (f32, f32, f32); // Phase 116: Track (width, height, scale_factor) for resize sensing
 
     fn draw(
         &self,
@@ -473,10 +488,12 @@ impl canvas::Program<Message> for CropOverlay {
         bounds: Rectangle,
         cursor: Cursor,
     ) -> (canvas::event::Status, Option<Message>) {
-        // Detect resize
-        if state.0 != bounds.width || state.1 != bounds.height {
-            *state = (bounds.width, bounds.height);
-            return (canvas::event::Status::Captured, Some(Message::ViewportResized(bounds.width, bounds.height)));
+        // Detect resize or DPI change
+        let scale_factor = 1.0; 
+        
+        if state.0 != bounds.width || state.1 != bounds.height || (state.2 - scale_factor).abs() > 0.001 {
+            *state = (bounds.width, bounds.height, scale_factor);
+            return (canvas::event::Status::Captured, Some(Message::ViewportResized(bounds.width, bounds.height, scale_factor)));
         }
 
         if !self.is_cropping {

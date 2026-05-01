@@ -80,19 +80,30 @@ pub fn handle_zoom(editor: &mut RawEditor, d: f32, mut p: Point) -> Task<Message
     
     if let Some(resources) = &editor.image_resources {
         let old_zoom = editor.zoom;
-        let iw = resources.preview_width as f32;
-        let ih = resources.preview_height as f32;
+        let iw = resources.width as f32;
+        let ih = resources.height as f32;
+        let img_aspect = iw / ih;
         let (vw, vh) = editor.viewport_size;
-        let xo = (vw - iw) / 2.0;
-        let yo = (vh - ih) / 2.0;
-        let icx = (p.x - xo).clamp(0.0, iw);
-        let icy = (p.y - yo).clamp(0.0, ih);
+        let vp_aspect = vw / vh;
+        
+        let (fw, fh) = if img_aspect > vp_aspect {
+            (vw, vw / img_aspect)
+        } else {
+            (vh * img_aspect, vh)
+        };
+        
+        let xo = (vw - fw) / 2.0;
+        let yo = (vh - fh) / 2.0;
+        
+        // Calculate point relative to fitted image
+        let icx = (p.x - xo).clamp(0.0, fw);
+        let icy = (p.y - yo).clamp(0.0, fh);
         
         let new_zoom = if d > 0.0 { old_zoom * (1.0 + d * 0.8) } else { old_zoom / (1.0 + (-d * 0.8)) }.clamp(0.1, 10.0);
         editor.zoom = new_zoom;
         
-        let nx = icx / iw;
-        let ny = icy / ih;
+        let nx = icx / fw;
+        let ny = icy / fh;
         let tx = ((nx - 0.5) / old_zoom - editor.pan_offset.x) + 0.5;
         let ty = ((ny - 0.5) / old_zoom - editor.pan_offset.y) + 0.5;
         editor.pan_offset.x = (nx - 0.5) / editor.zoom - tx + 0.5;
@@ -218,10 +229,28 @@ fn handle_crop_interaction(editor: &mut RawEditor, pos: Point) -> Task<Message> 
 }
 
 fn apply_crop_drag(editor: &mut RawEditor, pos: Point, last: Point, h: CropHandle) {
-    let delta = pos - last;
+    let resources = match &editor.image_resources {
+        Some(r) => r,
+        None => return,
+    };
+    
+    let img_aspect = resources.width as f32 / resources.height as f32;
     let (bw, bh) = editor.viewport_size;
-    let dx = delta.x / bw;
-    let dy = delta.y / bh;
+    let vp_aspect = bw / bh;
+    
+    let (fw, fh) = if img_aspect > vp_aspect {
+        (bw, bw / img_aspect)
+    } else {
+        (bh * img_aspect, bh)
+    };
+    
+    let zw = fw * editor.zoom;
+    let zh = fh * editor.zoom;
+    
+    // Scale delta from screen pixels to normalized image [0,1]
+    let dx = (pos.x - last.x) / zw;
+    let dy = (pos.y - last.y) / zh;
+    
     let c = editor.current_edit_params.crop;
     let (mut l, mut t, mut r, mut b) = (c[0], c[1], c[0]+c[2], c[1]+c[3]);
     
@@ -230,8 +259,13 @@ fn apply_crop_drag(editor: &mut RawEditor, pos: Point, last: Point, h: CropHandl
         CropHandle::TopRight => { t += dy; r += dx; }
         CropHandle::BottomLeft => { l += dx; b += dy; }
         CropHandle::BottomRight => { r += dx; b += dy; }
-        #[allow(clippy::possible_missing_else)]
-        CropHandle::Body => { l += dx; t += dy; r += dx; b += dy; if l < 0.0 { r -= l; l = 0.0; } if r > 1.0 { l -= r - 1.0; r = 1.0; } if t < 0.0 { b -= t; t = 0.0; } if b > 1.0 { t -= b - 1.0; b = 1.0; } }
+        CropHandle::Body => { 
+            l += dx; t += dy; r += dx; b += dy; 
+            if l < 0.0 { r -= l; l = 0.0; } 
+            if r > 1.0 { l -= r - 1.0; r = 1.0; } 
+            if t < 0.0 { b -= t; t = 0.0; } 
+            if b > 1.0 { t -= b - 1.0; b = 1.0; } 
+        }
     }
     
     if h != CropHandle::Body {
@@ -249,10 +283,12 @@ fn apply_crop_drag(editor: &mut RawEditor, pos: Point, last: Point, h: CropHandl
     let t = t.clamp(0.0, 1.0);
     let r = r.clamp(0.0, 1.0);
     let b = b.clamp(0.0, 1.0);
-    let w = (r - l).max(0.0);
-    let h = (b - t).max(0.0);
-    editor.current_edit_params.crop = [l, t, w, h];
-    if let (Some(ctx), Some(res)) = (&editor.gpu_context, &editor.image_resources) { res.update_uniforms(ctx, &editor.current_edit_params); }
+    
+    editor.current_edit_params.crop = [l, t, (r - l).max(0.0), (b - t).max(0.0)];
+    
+    if let Some(ctx) = &editor.gpu_context {
+        resources.update_uniforms(ctx, &editor.current_edit_params);
+    }
 }
 
 fn trigger_image_load(editor: &mut RawEditor, image_id: i64) -> Task<Message> {

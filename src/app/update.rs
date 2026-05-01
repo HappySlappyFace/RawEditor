@@ -132,9 +132,17 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::RenderFinished(h, bytes, dims, d, u, r, cpu) => {
             handlers::develop::handle_render_finished(editor, h, bytes, dims, d, u, r, cpu)
         }
-        Message::ViewportResized(w, h) => {
+        Message::ViewportResized(w, h, s) => {
+            let old_s = editor.scale_factor;
             editor.viewport_size = (w, h);
-            iced::Task::none()
+            editor.scale_factor = s;
+            
+            // If scale factor changed, we definitely need to re-render the preview at new resolution
+            if (s - old_s).abs() > 0.001 {
+                handlers::develop::trigger_async_render(editor)
+            } else {
+                Task::none()
+            }
         }
 
         // Loading

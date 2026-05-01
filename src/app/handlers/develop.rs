@@ -243,18 +243,23 @@ pub fn trigger_async_render(editor: &mut RawEditor) -> Task<Message> {
         let ctx = ctx.clone();
         let resources = resources.clone();
 
-        // Calculate target preview size (max 1280px)
+        // Calculate target preview size (exact physical pixels of the viewport)
         let original_aspect = resources.width as f32 / resources.height as f32;
-        const MAX_PREVIEW_SIZE: u32 = 1280;
+        let (vw, _) = editor.viewport_size;
+        let max_size = (vw * editor.scale_factor).round() as u32;
+        
+        // Ensure a minimum size for the preview (e.g., 800px)
+        let max_size = max_size.max(800);
+        
         let (target_w, target_h) = if original_aspect > 1.0 {
-            let w = MAX_PREVIEW_SIZE;
-            (w, (w as f32 / original_aspect) as u32)
+            let w = max_size;
+            let h = (w as f32 / original_aspect).round() as u32;
+            (w, h)
         } else {
-            let h = MAX_PREVIEW_SIZE;
-            ((h as f32 * original_aspect) as u32, h)
-        };
-
-        // Phase 105: CPU work is done — snapshot the elapsed time before the async boundary
+            let h = max_size;
+            let w = (h as f32 * original_aspect).round() as u32;
+            (w, h)
+        };// Phase 105: CPU work is done — snapshot the elapsed time before the async boundary
         let update_ms = t_update_start.elapsed().as_secs_f32() * 1000.0;
 
         return Task::perform(
