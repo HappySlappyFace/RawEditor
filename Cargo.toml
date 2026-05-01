@@ -39,8 +39,8 @@ chrono = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
-# RAW image decoding - raw sensor data access
-rawloader = "0.37"
+# RAW image decoding - rawler is the modern fork of rawloader from the dnglab project
+rawler = "0.7.2"
 
 # GPU rendering for real-time RAW processing (use iced's wgpu)
 bytemuck = { version = "1.14", features = ["derive"] }
@@ -54,9 +54,7 @@ image = "0.25"
 # System cache directory detection
 dirs-next = "2.0"
 
-# Phase 60: EXIF metadata parsing
-rexif = "0.7"
-# Phase 64: Better EXIF parsing (supports MakerNotes for Lens info)
+# Phase 64 / Phase 119: EXIF parsing (rawler doesn't expose Exif on RawImage, so we keep kamadak-exif)
 kamadak-exif = "0.5"
 lru = "0.12"
 
