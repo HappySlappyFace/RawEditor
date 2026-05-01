@@ -399,18 +399,41 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // ── Step 1: Debayer → camera-native linear RGB ───────────────────────────
     var color = debayer(pixel_coords, dimensions);
 
-    // ── Step 2 & 3: White Balance + Colour Matrix (camera → sRGB linear) ─────
-    // Combine into one pass so neighbour helpers reuse the same matrix.
+    // ── STAGE 1: Sensor Clipping Detection (BEFORE WB / Exposure) ────────────
+    // Measure destruction on the raw debayered values so WB gains and exposure
+    // cannot amplify a clipped channel to look brighter than its neighbours.
+    let pre_wb_max = max(color.r, max(color.g, color.b));
+    let clip_blend = smoothstep(0.94, 0.98, pre_wb_max);
+
+    // ── Step 2: White Balance ─────────────────────────────────────────────────
+    color = color * params.wb_multipliers.rgb;
+
+    // ── Step 3: Highlight Neutralisation (fixes magenta sky at -5 EV) ────────
+    // Blend clipped pixels toward grey proportional to clip_blend.
+    // We use max_c (the WB-scaled maximum) so the grey level tracks exposure.
+    let max_c = max(color.r, max(color.g, color.b));
+    color = mix(color, vec3<f32>(max_c), clip_blend);
+
+    // ── Step 4: Exposure ──────────────────────────────────────────────────────
+    let exposure_multiplier = pow(2.0, params.exposure);
+    color = color * exposure_multiplier;
+
+    // ── Step 5: Colour Matrix (Camera RGB → sRGB linear) ─────────────────────
+    // Build once; neighbour helpers (NR, sharpening) reuse the same matrix.
     let color_matrix = transpose(mat3x3<f32>(
         params.color_matrix_0,
         params.color_matrix_1,
         params.color_matrix_2
     ));
-    color = color_matrix * (color * params.wb_multipliers.rgb);
+    color = color_matrix * color;
 
-    // ── Step 4: Chroma Noise Reduction (Rec.709 luma — valid in sRGB space) ──
-    // Neighbours are fetched via cam_to_srgb_linear so they share the same
-    // colour space as the centre pixel.
+    // ── Step 6: Clamp Negatives ───────────────────────────────────────────────
+    // The camera→sRGB matrix contains negative cross-talk values. Any surviving
+    // negative channel would poison luma coefficients and invert colours.
+    // Must clamp BEFORE luma calculations or gamut compression.
+    color = max(color, vec3<f32>(0.0));
+
+    // ── Step 7: Chroma Noise Reduction (Rec.709 luma — valid in sRGB space) ──
     if (params.noise_reduction > 0.0) {
         let y = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
         let u = (color.b - y) * 0.565;
@@ -441,7 +464,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         color.b = y + 1.770 * den_u;
     }
 
-    // ── Step 5: Unsharp Mask Sharpening (in sRGB linear space) ───────────────
+    // ── Step 8: Unsharp Mask Sharpening (in sRGB linear space) ───────────────
     if (params.sharpening > 0.0) {
         let s_up    = cam_to_srgb_linear(pixel_coords + vec2<i32>( 0, -1), dimensions, color_matrix);
         let s_down  = cam_to_srgb_linear(pixel_coords + vec2<i32>( 0,  1), dimensions, color_matrix);
@@ -457,50 +480,26 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         color = color + (detail * params.sharpening * mask_val);
     }
 
-    // ── Step 6: Temperature & Tint (in sRGB space) ───────────────────────────
-    // Applied here where R/G/B channels map to the display primaries, so
-    // the blue-yellow and green-magenta axes behave consistently across cameras.
+    // ── STAGE 2: Gamut Compression (Path-to-White) ────────────────────────────
+    // Smoothly desaturate over-bright valid colours toward luminance-matched
+    // white. Luma is safe here because negatives were clamped in Step 6.
+    let luma_gc = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
+    let overbright = max(0.0, max(color.r, max(color.g, color.b)) - 1.0);
+    let path_to_white = smoothstep(0.0, 2.0, overbright);
+    color = mix(color, vec3<f32>(luma_gc), path_to_white);
+
+    // ── Step 9: Temperature & Tint (in sRGB space) ───────────────────────────
     color.r *= (1.0 + params.temperature * 0.3);
     color.b *= (1.0 - params.temperature * 0.3);
     color.g *= (1.0 + params.tint * 0.3);
 
-    // ── Step 7: Highlight Clipping Detection & Neutralisation ─────────────────
-    // Both detection and blending are in the same sRGB linear space, so the
-    // 0.85–1.0 threshold maps consistently across cameras.
-    let pre_clip_max = max(color.r, max(color.g, color.b));
-    let clip_blend   = smoothstep(0.85, 1.0, pre_clip_max);
-    color = mix(color, vec3<f32>(pre_clip_max), clip_blend);
-
-    // ── Step 8: Exposure ──────────────────────────────────────────────────────
-    let exposure_multiplier = pow(2.0, params.exposure);
-    color = color * exposure_multiplier;
-
-    // ── Step 9: Highlights & Shadows ─────────────────────────────────────────
-    //
-    // Highlights — per-channel smooth compression/expansion above the pivot.
-    //
-    // Operating per-channel (not on luma) is critical for partial highlight
-    // recovery: when only the red Bayer channel clips, the green and blue
-    // channels still carry colour information.  A luma-weighted scalar
-    // multiplier would destroy that information.
-    //
-    // pivot = 0.5 linear (≈ 73% display).  Everything below is untouched.
-    // highlights = -100 → hl_scale = 0 → all per-channel values above pivot
-    //   collapse to the pivot, recovering detail from partially-clipped pixels.
-    // highlights =  0   → hl_scale = 1 → identity (no change).
-    // highlights = +100 → hl_scale = 2 → expands the upper range.
+    // ── Step 10: Highlights & Shadows ────────────────────────────────────────
     if (params.highlights != 0.0) {
         let hl_scale = max(1.0 + params.highlights / 100.0, 0.0);
         let hl_over  = max(color - vec3<f32>(0.5), vec3<f32>(0.0));
         color = min(color, vec3<f32>(0.5)) + hl_over * hl_scale;
     }
 
-    // Shadows — luma-weighted additive lift/crush below the pivot.
-    //
-    // Additive (not multiplicative) so neutral tones stay neutral.
-    // sh_weight = 1 at pure black, smoothly falls to 0 at the pivot.
-    // shadows = +100 → lift blacks up to +0.4 linear (significant lift).
-    // shadows = -100 → push blacks down by -0.4 linear (crush).
     if (params.shadows != 0.0) {
         let sh_norm   = params.shadows / 100.0;
         let sh_luma   = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
@@ -508,38 +507,29 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         color = color + vec3<f32>(sh_weight * sh_norm * 0.4);
     }
 
-    // ── Step 10: Contrast ─────────────────────────────────────────────────────
-    // Pivot at 18% gray (the perceptual midtone in linear light), not 0.5
-    // (which is photometrically middle but perceptually bright at ~73% display).
+    // ── Step 11: Contrast ─────────────────────────────────────────────────────
     let contrast_factor = 1.0 + (params.contrast / 100.0);
     color = (color - 0.18) * contrast_factor + 0.18;
 
-    // ── Step 11: Levels (Whites & Blacks) ────────────────────────────────────
+    // ── Step 12: Levels (Whites & Blacks) ────────────────────────────────────
     color = (color - vec3<f32>(params.blacks)) / vec3<f32>(params.whites - params.blacks + 0.0001);
 
-    // ── Step 12: Saturation ───────────────────────────────────────────────────
+    // ── Step 13: Saturation ───────────────────────────────────────────────────
     var luma = dot(color.rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
     let sat_factor = 1.0 + (params.saturation / 100.0);
     color = mix(vec3<f32>(luma), color, sat_factor);
 
-    // ── Step 13: Vibrance ─────────────────────────────────────────────────────
+    // ── Step 14: Vibrance ─────────────────────────────────────────────────────
     let chroma = max(color.r, max(color.g, color.b)) - min(color.r, min(color.g, color.b));
     let vibrance_amount = params.vibrance * (1.0 - chroma);
     luma = dot(color.rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
     color = mix(vec3<f32>(luma), color, 1.0 + vibrance_amount);
 
-    // ── Step 14: ACES Filmic Tone Curve (Max-RGB, hue-preserving) ─────────────
-    // Drive the curve with the maximum channel so the R:G:B ratio is preserved,
-    // preventing bright saturated colours from shifting in hue.
+    // ── Step 15: ACES Filmic Tone Curve (Max-RGB, hue-preserving) ────────────
     color = max(color, vec3<f32>(0.0));
-
     let pre_tone_max = max(color.r, max(color.g, color.b));
     if (pre_tone_max > 0.0) {
-        let a = 2.51;
-        let b = 0.03;
-        let c = 2.43;
-        let d = 0.59;
-        let e = 0.14;
+        let a = 2.51; let b = 0.03; let c = 2.43; let d = 0.59; let e = 0.14;
         let post_tone_max = clamp(
             (pre_tone_max * (a * pre_tone_max + b)) /
             (pre_tone_max * (c * pre_tone_max + d) + e),
@@ -549,8 +539,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     // ── Step 15: sRGB Transfer Function (IEC 61966-2-1) ──────────────────────
-    // Piecewise: linear toe below 0.0031308, γ = 2.4 above.
-    // Replaces the incorrect pow(x, 1/2.2) approximation used previously.
     color = vec3<f32>(
         linear_to_srgb(color.r),
         linear_to_srgb(color.g),
