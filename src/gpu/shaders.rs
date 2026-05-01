@@ -480,13 +480,14 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         color = color + (detail * params.sharpening * mask_val);
     }
 
-    // ── STAGE 2: Gamut Compression (Path-to-White) ────────────────────────────
-    // Smoothly desaturate over-bright valid colours toward luminance-matched
-    // white. Luma is safe here because negatives were clamped in Step 6.
-    let luma_gc = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
-    let overbright = max(0.0, max(color.r, max(color.g, color.b)) - 1.0);
+    // ── STAGE 2: Gamut Compression (True Path-to-White) ──────────────────────
+    // Mix toward the peak channel, not luma. This lifts the weaker channels up
+    // to match the brightest one, desaturating to a brilliant pure white without
+    // crushing brightness energy. Mixing toward luma would pull everything down.
+    let max_c_gc = max(color.r, max(color.g, color.b));
+    let overbright = max(0.0, max_c_gc - 1.0);
     let path_to_white = smoothstep(0.0, 2.0, overbright);
-    color = mix(color, vec3<f32>(luma_gc), path_to_white);
+    color = mix(color, vec3<f32>(max_c_gc), path_to_white);
 
     // ── Step 9: Temperature & Tint (in sRGB space) ───────────────────────────
     color.r *= (1.0 + params.temperature * 0.3);
