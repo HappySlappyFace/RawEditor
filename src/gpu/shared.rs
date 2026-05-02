@@ -24,6 +24,7 @@ pub struct SharedContext {
     pub debayer_pipeline: wgpu::RenderPipeline,
     pub debayer_bind_group_layout: wgpu::BindGroupLayout,
     pub sampler: wgpu::Sampler,
+    pub sampler_linear: wgpu::Sampler,
 }
 
 impl SharedContext {
@@ -115,7 +116,7 @@ impl SharedContext {
                     binding: 0,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
                         view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
                     },
@@ -124,7 +125,7 @@ impl SharedContext {
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
@@ -206,15 +207,20 @@ impl SharedContext {
             multiview: None,
         });
 
-        // Create sampler (NonFiltering — both passes use textureLoad, not textureSample)
+        // Create samplers
+        // 1. Nearest sampler (NonFiltering — for Pass 1 RAW u16 integer texture)
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("RAW Sampler"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            label: Some("RAW Nearest Sampler"),
             mag_filter: wgpu::FilterMode::Nearest,
             min_filter: wgpu::FilterMode::Nearest,
-            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+
+        // 2. Linear sampler (Filtering — for Pass 2 smooth preview downscaling)
+        let sampler_linear = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("RAW Linear Sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
 
@@ -228,6 +234,7 @@ impl SharedContext {
             debayer_pipeline,
             debayer_bind_group_layout,
             sampler,
+            sampler_linear,
         })
     }
 }
@@ -436,7 +443,7 @@ impl ImageResources {
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&context.sampler),
+                        resource: wgpu::BindingResource::Sampler(&context.sampler_linear),
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,

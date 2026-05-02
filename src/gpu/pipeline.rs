@@ -90,8 +90,15 @@ pub struct GpuEditParams {
     _pad_phase_1: f32, // 220
 
     // Phase 66: Crop (vec4 alignment = 16 bytes)
-    crop: [f32; 4], // Offset 224. Ends at 240.
-                    // Total: 240 bytes
+    pub crop: [f32; 4], // Offset 224. Ends at 240.
+
+    // Phase 135: Non-destructive crop visibility
+    pub is_cropping: u32, // Offset 240. Ends at 244.
+
+    // Padding to reach 256 bytes (16-byte alignment for struct)
+    _pad_crop_1: u32, // 248
+    _pad_crop_2: u32, // 252
+    _pad_crop_3: u32, // 256
 }
 
 impl From<&EditParams> for GpuEditParams {
@@ -141,6 +148,10 @@ impl From<&EditParams> for GpuEditParams {
             rotation: params.rotation,
             _pad_phase_1: 0.0,
             crop: params.crop,
+            is_cropping: params.is_cropping,
+            _pad_crop_1: 0,
+            _pad_crop_2: 0,
+            _pad_crop_3: 0,
         }
     }
 }

@@ -110,7 +110,9 @@ pub fn handle_toggle_crop(editor: &mut RawEditor) -> Task<Message> {
     } else {
         editor.drag_mode = DragMode::None;
     }
-    Task::none()
+    // Phase 135: Sync to edit params for GPU visualization
+    editor.current_edit_params.is_cropping = if editor.is_cropping { 1 } else { 0 };
+    update_pipeline(editor)
 }
 
 pub fn handle_crop_handle_grabbed(

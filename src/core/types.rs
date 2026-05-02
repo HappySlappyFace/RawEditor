@@ -108,11 +108,16 @@ pub struct EditParams {
     /// - Phase 52: Straighten horizons
     pub rotation: f32,
 
-    // ========== Phase 66: Crop ==========
+    // Phase 66: Crop
     /// Crop rectangle [x, y, width, height]
     /// - Normalized coordinates (0.0 to 1.0)
     /// - Defines the visible sub-rectangle of the image
     pub crop: [f32; 4],
+
+    // Phase 135: Non-destructive crop visibility
+    /// Flag to indicate if the user is currently cropping
+    /// If 1, the shader will show the full image with the crop dimmed outside.
+    pub is_cropping: u32,
 }
 
 impl Default for EditParams {
@@ -139,6 +144,7 @@ impl Default for EditParams {
             sharpen_masking: 0.0,       // Phase 51: No masking by default
             rotation: 0.0,              // Phase 52: No rotation by default
             crop: [0.0, 0.0, 1.0, 1.0], // Phase 66: Full image by default
+            is_cropping: 0,             // Phase 135: Not cropping by default
         }
     }
 }

@@ -58,9 +58,13 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     tex_x += 0.5;
     tex_y += 0.5;
 
-    // Phase 66: Apply Crop
-    tex_x = params.crop.x + (tex_x * params.crop.z);
-    tex_y = params.crop.y + (tex_y * params.crop.w);
+    // Phase 135: Conditional Crop
+    // When is_cropping is active, we render the full image bounds [0, 1]
+    // allowing the user to see and adjust the crop handles non-destructively.
+    if (params.is_cropping == 0u) {
+        tex_x = params.crop.x + (tex_x * params.crop.z);
+        tex_y = params.crop.y + (tex_y * params.crop.w);
+    }
 
     output.tex_coords = vec2<f32>(tex_x, tex_y);
 
@@ -138,7 +142,14 @@ struct EditParams {
 
     // Phase 66: Crop (vec4 alignment = 16 bytes)
     crop: vec4<f32>,
-    // Total: 240 bytes
+
+    // Phase 135: Non-destructive crop visibility
+    is_cropping: u32,
+
+    // Padding to reach 256 bytes (16-byte alignment)
+    pad_crop_1: u32,
+    pad_crop_2: u32,
+    pad_crop_3: u32,
 }
 
 // Phase 128: Pass 2 now reads the debayered Rgba16Float intermediate texture.
@@ -154,6 +165,12 @@ var<uniform> params: EditParams;
 // Phase 128: Debayer functions removed — Pass 2 reads pre-debayered float texture.
 // Neighbour helper for NR / sharpening.  One texture read per neighbour
 // instead of the 9 that debayer() required.
+fn get_neighbor(coords: vec2<i32>) -> vec3<f32> {
+    let dimensions = textureDimensions(input_texture);
+    let clamped = clamp(coords, vec2<i32>(0, 0), vec2<i32>(i32(dimensions.x) - 1, i32(dimensions.y) - 1));
+    return textureLoad(input_texture, clamped, 0).rgb;
+}
+
 fn get_srgb_neighbor(coords: vec2<i32>, dimensions: vec2<u32>, cm: mat3x3<f32>) -> vec3<f32> {
     let clamped = vec2<i32>(
         clamp(coords.x, 0, i32(dimensions.x) - 1),
@@ -217,7 +234,20 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     );
 
     // ── Step 1: Read debayered camera-native linear RGB from intermediate ────
-    var color = textureLoad(input_texture, pixel_coords, 0).rgb;
+    // var color = textureLoad(input_texture, pixel_coords, 0).rgb;
+    // Phase 135: Use textureSample with Linear Filtering for smooth downscaling
+    var color = textureSample(input_texture, texture_sampler, tex_coords).rgb;
+
+    // Phase 135: Non-destructive dimming
+    // If we are in crop mode, dim the area outside the current crop rectangle.
+    // Note: We use input.tex_coords (pre-rotation) to check against the crop bounds.
+    if (params.is_cropping == 1u) {
+        let in_x = input.tex_coords.x >= params.crop.x && input.tex_coords.x <= (params.crop.x + params.crop.z);
+        let in_y = input.tex_coords.y >= params.crop.y && input.tex_coords.y <= (params.crop.y + params.crop.w);
+        if (!(in_x && in_y)) {
+            color = color * 0.3; // 70% dimming for discarded areas
+        }
+    }
 
     // ── STAGE 1: Sensor Clipping Detection (BEFORE WB / Exposure) ────────────
     // Measure destruction on the raw debayered values so WB gains and exposure
@@ -489,7 +519,16 @@ struct EditParams {
     sharpen_masking: f32,
     rotation: f32,
     pad_phase_1: f32,
+    // Phase 66: Crop (vec4 alignment = 16 bytes)
     crop: vec4<f32>,
+
+    // Phase 135: Non-destructive crop visibility
+    is_cropping: u32,
+
+    // Padding to reach 256 bytes (16-byte alignment)
+    pad_crop_1: u32,
+    pad_crop_2: u32,
+    pad_crop_3: u32,
 }
 
 @group(0) @binding(0)
