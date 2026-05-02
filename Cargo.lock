@@ -3909,7 +3909,7 @@ dependencies = [
 
 [[package]]
 name = "raw-editor"
-version = "0.6.0"
+version = "0.7.8"
 dependencies = [
  "bytemuck",
  "cgmath",

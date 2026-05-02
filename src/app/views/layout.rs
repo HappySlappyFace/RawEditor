@@ -69,7 +69,7 @@ fn view_splash(editor: &RawEditor) -> Element<'_, Message> {
             Space::with_height(15.0),
             text(ui::icons::HOURGLASS).size(32).font(ICON_FONT).center().style(|_theme| text::Style { color: Some(Color::from_rgb(0.5, 0.7, 1.0)) }),
             Space::with_height(Length::Fill),
-            text("Version 0.4").size(11).center().style(|_theme| text::Style { color: Some(Color::from_rgb(0.4, 0.4, 0.4)) }),
+            text("Version 0.7.8").size(11).center().style(|_theme| text::Style { color: Some(Color::from_rgb(0.4, 0.4, 0.4)) }),
             Space::with_height(10.0),
         ]
         .align_x(iced::Alignment::Center)
