@@ -222,35 +222,6 @@ impl InfoOverlayState {
     }
 }
 
-/// Phase 23: Async database loading
-/// Loads the database and images in the background to avoid blocking the UI
-/// Returns only the images Vec - Library will be created on main thread
-async fn load_database_async() -> Result<Vec<ImageData>, String> {
-    // Use spawn_blocking because rusqlite is synchronous
-    tokio::task::spawn_blocking(|| {
-        // Initialize the database
-        let library = database::library::Library::new()
-            .map_err(|e| format!("Failed to initialize database: {:?}", e))?;
-
-        // Verify thumbnails exist on disk (reset if deleted)
-        let _ = library.verify_thumbnails();
-
-        // Verify RAW files exist on disk (mark as deleted if missing)
-        let _ = library.verify_files();
-
-        // Load all images from the database
-        let images = library
-            .get_all_images()
-            .map_err(|e| format!("Failed to load images: {:?}", e))?;
-
-        tracing::info!("RAW Editor initialized with {} images", images.len());
-
-        Ok(images)
-    })
-    .await
-    .map_err(|e| format!("Database task failed: {:?}", e))?
-}
-
 /// Phase 80: Configurable Cache Size
 pub const PRELOAD_BEHIND: usize = 10;
 pub const PRELOAD_AHEAD: usize = 50;
@@ -538,6 +509,9 @@ impl RawEditor {
                     keyboard::Key::Character(c) if c == "3" => Some(Message::SetRating(3)),
                     keyboard::Key::Character(c) if c == "4" => Some(Message::SetRating(4)),
                     keyboard::Key::Character(c) if c == "5" => Some(Message::SetRating(5)),
+                    keyboard::Key::Character(c) if c == "r" || c == "R" => {
+                        Some(Message::ResetEdits)
+                    }
                     // Phase 83: Flag Shortcuts
                     keyboard::Key::Character(c) if c == "p" || c == "P" => {
                         Some(Message::SetFlag(1))
@@ -548,7 +522,6 @@ impl RawEditor {
                     keyboard::Key::Character(c) if c == "u" || c == "U" => {
                         Some(Message::SetFlag(0))
                     }
-                    keyboard::Key::Character(c) if c == "5" => Some(Message::SetRating(5)),
                     // Phase 60: HUD Toggle
                     keyboard::Key::Character(c) if c == "i" || c == "I" => {
                         Some(Message::ToggleInfoHud)

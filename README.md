@@ -1,121 +1,95 @@
 # RAW Editor
+![Project Logo](./assets/logo.png)
 
-A blazing-fast, native, cross-platform RAW photo editor built in Rust.
+**A blazing-fast, native, no-nonsense RAW photo editor for photographers who value their time.**
 
-## Vision
+Built from the ground up in **Rust**, RAW Editor is designed to be the lightweight, high-performance alternative to bloated legacy software. No web tech, no electron, no subscriptions—just raw system performance and clean code.
 
-Replace Lightroom Classic with a modern, performant alternative that achieves:
-- **Designed with performance as the highest priority**
-- **Zero web technologies** (native all the way)
-- **High-throughput batch processing**
-- **Cross-platform support** (Windows, Linux, macOS)
+---
 
-## Tech Stack
+## 📸 Why RAW Editor?
 
-- **Rust** - Systems programming language for maximum performance
-- **iced** - Native GUI framework with Elm architecture
-- **wgpu** - Cross-platform GPU API for compute and rendering
-- **rusqlite** - Embedded SQLite for catalog management
-- **rawloader** - RAW image decoding library
+Most editors feel heavy because they are. We prioritized **GPU-native rendering** and **asynchronous pipelines** to ensure that your editing workflow remains fluid even on modest hardware.
 
-## Architecture
+- **Zero Lag Editing**: 60fps slider response on mid-range APUs.
+- **Native Power**: Built with `iced` and `wgpu` for direct access to your GPU (Vulkan, Metal, DX12).
+- **Pro Color Science**: Phase 128 "ACES" filmic tone mapping and scene-referred processing.
+- **Pixel-Perfect**: Viewport-aligned rendering with full DPI scaling support (Phase 134/135).
 
-```
-src/
-├─ state/   # Database, edit stack, job queue
-├─ ui/      # All iced widgets and layouts
-├─ gpu/     # wgpu pipelines, shaders, caching
-├─ raw/     # RAW decoding abstraction
-├─ color/   # Color science, profile management
-└─ main.rs  # Application entrypoint
-```
+---
 
-## Current Status
+## 🛠 Features
 
-Currently the app is capable of importing RAW (.NEF as of now) images, extracting thumbnails or generating them, storing references to the sqlite3 database, and the Develop tab has a 10-slider creative engine that
-is gpu accelerated (Vulkan using WGPU) to process all the sliders.
-Currently I managed to get 60fps editing workflow on a Ryzen 3 5425U APU.
-And I am testing this software Nikon RAW currently as that's my primary shooting brand, specifically D3300
-but color science is still not correctly implemented.
-Currently the workflow pipeline is still scuffed but that will be resolved in later versions.
+### 🌈 The Develop Module (The Creative Engine)
+The heart of the app. A real-time, non-destructive pipeline that processes RAW sensor data directly on your GPU.
 
-## Features Implemented
+> **[PLACEHOLDER: Add a screenshot of the Develop Tab here - ./docs/screenshots/develop_view.png]**
 
-### Core Infrastructure
-- SQLite database for image catalog and edit storage
-- Non-destructive editing with full edit history persistence
-- RAW image decoding (Nikon NEF format tested on D3300)
-- Thumbnail extraction from embedded JPEG previews
-- Thumbnail generation for images without embedded previews
-- Cross-platform GPU acceleration via wgpu (Vulkan/Metal/DirectX 12)
+- **Exposure & Tone**: -5 to +5 stops exposure, highlights recovery, and shadow lifting.
+- **Color Mastery**: Advanced White Balance (Temp/Tint) and Vibrance/Saturation.
+- **Non-Destructive Crop (New!)**: Toggle crop mode to see your full image dimmed while you adjust your composition visually.
+- **High-Fidelity Previews**: Razor-sharp bilinear downscaling from full 24MP+ sensor data to your specific screen resolution.
 
-### Library Module
-- Grid-based thumbnail browser
-- Image import and cataloging
-- Quick image selection and navigation
+### 🚀 Performance HUD (Press F3)
+Ever wonder how hard your GPU is working? Our built-in profiler (Phase 104) gives you a frame-by-frame breakdown of render times, upload latency, and pipeline health.
 
-### Develop Module
-- Real-time GPU-accelerated RAW processing pipeline
-- Live histogram display
-- 60fps editing workflow on mid-range hardware (tested on Ryzen 3 5425U APU)
+> **[PLACEHOLDER: Add a screenshot of the F3 Framegraph HUD here - ./docs/screenshots/performance_hud.png]**
 
-### Tone Adjustments
-- Exposure compensation (-5 to +5 stops)
-- Contrast adjustment
-- Highlights recovery
-- Shadows lift/recovery
-- Whites (white point control)
-- Blacks (black point control)
+### 📦 Library & Cataloging
+Blazing fast image ingestion and metadata management.
+- **SQLite Powered**: Industrial-grade catalog management.
+- **Multi-Tier Caching**: Thumbnails, instant previews, and working buffers managed automatically.
+- **Smart Navigation**: Arrow key browsing, zoom-to-cursor, and pixel-perfect panning.
 
-### Color Adjustments
-- Relative White balance (Temperature and Tint)
-- Basic color matrix application
-- Saturation (global color intensity)
-- Vibrance (smart saturation with skin tone protection)
+---
 
-### Viewing & Navigation
-- Mouse wheel zoom (10% to 1000%)
-- Zoom-to-cursor (pixel-perfect stability)
-- Click-and-drag panning
-- Double-click to reset view
-- Before/After comparison toggle (Spacebar)
-- Arrow key image navigation
-- Reset edits (R key)
+## ⚡ Tech Stack
 
-### Performance Features
-- GPU shader-based transformations
-- Smart render caching
-- Viewport-aware coordinate tracking
-- Real-time preview updates
+- **Rust**: The backbone for safety and speed.
+- **wgpu**: Cutting-edge GPU abstraction for compute and fragment shaders.
+- **iced**: Native, elm-inspired GUI for a responsive interface.
+- **rawloader**: Low-level RAW decoding (Phase 135 optimized).
+- **rusqlite**: Lightning-fast local database.
 
-### Known Limitations
-- Color science implementation incomplete (accurate color rendering in progress)
-- Single RAW format tested (Nikon NEF)
-- Workflow pipeline still being refined
+---
 
-## Building
+## 🚀 Getting Started
 
+### Prerequisites
+- **Rust 1.75+**
+- A GPU with Vulkan, Metal, or DirectX 12 support.
+
+### Installation
 ```bash
-# Development build
-cargo build
+# Clone the repository
+git clone https://github.com/your-repo/raw-editor.git
+cd raw-editor
 
-# Run the application
-cargo run
-
-# Release build (optimized)
-cargo build --release
+# Run in release mode for the best experience
 cargo run --release
 ```
 
-## Requirements
+---
 
-- Rust 1.70+ (2021 edition)
-- GPU with Vulkan/Metal/DX12 support
+## ⌨️ Shortcuts for Power Users
 
-## License
+- `Space`: Toggle Before/After comparison.
+- `F3`: Toggle Performance HUD.
+- `R`: Reset all edits on current image.
+- `C`: (Planned) Quick Crop toggle.
+- `Double Click`: Reset zoom/pan.
 
-MIT
+---
 
-## Todo
-Hard coded 1280px previews for the develop panel, add a setting with more resolution options
-Implement iced's Multi-Window API instead of Single-Window API
+## 🗺 Roadmap
+- [x] Phase 128: Color Science Revamp (ACES/Display-Referred).
+- [x] Phase 134: Viewport & DPI Alignment.
+- [x] Phase 135: Non-Destructive Crop & Sharp Routing.
+- [ ] Multi-Window support via iced.
+- [ ] Export Studio Batch Processing.
+- [ ] Support for Sony ARW / Canon CR3.
+
+---
+
+## 📄 License
+MIT - Created by Ayman REBAI. Feel free to contribute or fork!

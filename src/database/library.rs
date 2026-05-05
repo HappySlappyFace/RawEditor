@@ -234,43 +234,37 @@ impl Library {
         Ok(images)
     }
 
-    /// Update an image's thumbnail path and mark it as cached
-    pub fn update_thumbnail(&self, image_id: i64, thumbnail_path: &str) -> SqlResult<()> {
-        self.conn.execute(
-            "UPDATE images SET thumbnail_path = ?1, cache_status = 'cached' WHERE id = ?2",
-            rusqlite::params![thumbnail_path, image_id],
-        )?;
-        Ok(())
-    }
+    /// Verify cached tier files actually exist on disk.
+    /// Resets the image to pending and clears cached paths when any tier is missing.
+    pub fn verify_cache_paths(&self) -> SqlResult<usize> {
+        type CachedPathsRow = (i64, Option<String>, Option<String>, Option<String>);
 
-    /// Set an image's preview path (full-size embedded JPEG)
-    pub fn set_image_preview_path(&self, image_id: i64, path: &str) -> SqlResult<()> {
-        self.conn.execute(
-            "UPDATE images SET preview_path = ?1 WHERE id = ?2",
-            rusqlite::params![path, image_id],
-        )?;
-        Ok(())
-    }
-
-    /// Verify cached thumbnails actually exist on disk
-    /// Reset to 'pending' if thumbnail file is missing
-    pub fn verify_thumbnails(&self) -> SqlResult<usize> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, thumbnail_path FROM images WHERE cache_status = 'cached' AND thumbnail_path IS NOT NULL"
+            "SELECT id, cache_path_thumb, cache_path_instant, cache_path_working
+             FROM images
+             WHERE cache_status = 'cached'"
         )?;
 
-        let cached_images: Vec<(i64, String)> = stmt
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        let cached_images: Vec<CachedPathsRow> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))?
             .filter_map(|r| r.ok())
             .collect();
 
         let mut reset_count = 0;
-        for (id, thumbnail_path) in cached_images {
-            // Check if file exists
-            if !std::path::Path::new(&thumbnail_path).exists() {
-                // Reset to pending since thumbnail is missing
+        for (id, thumb, instant, working) in cached_images {
+            let missing = [thumb.as_deref(), instant.as_deref(), working.as_deref()]
+                .into_iter()
+                .flatten()
+                .any(|path| !std::path::Path::new(path).exists());
+
+            if missing {
                 self.conn.execute(
-                    "UPDATE images SET cache_status = 'pending', thumbnail_path = NULL WHERE id = ?1",
+                    "UPDATE images
+                     SET cache_status = 'pending',
+                         cache_path_thumb = NULL,
+                         cache_path_instant = NULL,
+                         cache_path_working = NULL
+                     WHERE id = ?1",
                     rusqlite::params![id],
                 )?;
                 reset_count += 1;
@@ -278,7 +272,10 @@ impl Library {
         }
 
         if reset_count > 0 {
-            tracing::warn!("Reset {} missing thumbnails to pending", reset_count);
+            tracing::warn!(
+                "Reset {} image(s) with missing cache tiers back to pending",
+                reset_count
+            );
         }
 
         Ok(reset_count)
@@ -624,13 +621,15 @@ impl std::fmt::Debug for Library {
 
 /// Async helper to load the database
 pub async fn load_database(_path: String) -> Result<Vec<super::models::Image>, String> {
-    // In a real app, we might want to pass the path, but Library::new() determines it automatically.
-    // We'll just use Library::new() here.
     match Library::new() {
-        Ok(lib) => match lib.get_all_images() {
+        Ok(lib) => {
+            let _ = lib.verify_cache_paths();
+            let _ = lib.verify_files();
+            match lib.get_all_images() {
             Ok(images) => Ok(images),
             Err(e) => Err(format!("Failed to load images: {}", e)),
-        },
+            }
+        }
         Err(e) => Err(format!("Failed to initialize library: {}", e)),
     }
 }
