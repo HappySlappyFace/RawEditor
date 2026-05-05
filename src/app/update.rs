@@ -124,6 +124,7 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::ToggleInfoHud => handlers::window::handle_toggle_info_hud(editor),
         Message::SetThumbnailSize(s) => handlers::window::handle_set_thumbnail_size(editor, s),
         Message::SetCacheCapacity(c) => handlers::window::handle_set_cache_capacity(editor, c),
+        Message::SetRawPreloadBudget(v) => handlers::window::handle_set_raw_preload_budget(editor, v),
         Message::HistogramToggled(b) => handlers::window::handle_histogram_toggled(editor, b),
         Message::ToggleProfiler => {
             editor.show_profiler = !editor.show_profiler;
@@ -146,7 +147,8 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
         }
 
         // Loading
-        Message::RawDataLoaded(res) => handlers::loading::handle_raw_data_loaded(editor, res),
+        Message::RawDataLoaded(id, res) => handlers::loading::handle_raw_data_loaded(editor, id, res),
+        Message::RawPreloaded(id, res) => handlers::loading::handle_raw_preloaded(editor, id, res),
         Message::ImageResourcesReady(id, res) => {
             handlers::loading::handle_image_resources_ready(editor, id, res)
         }

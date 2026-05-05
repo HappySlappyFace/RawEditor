@@ -1,59 +1,103 @@
 use iced::Task;
 use std::sync::Arc;
 use crate::app::state::{RawEditor, EditorReadiness};
-use crate::app::message::Message;
+use crate::app::message::{AppTab, Message};
 use crate::raw;
 use crate::gpu;
 
-pub fn handle_raw_data_loaded(editor: &mut RawEditor, result: Result<raw::loader::RawDataResult, String>) -> Task<Message> {
+pub fn handle_raw_data_loaded(
+    editor: &mut RawEditor,
+    image_id: i64,
+    result: Result<raw::loader::RawDataResult, String>,
+) -> Task<Message> {
     match result {
         Ok(raw) => {
-            editor.current_metadata = Some(raw.clone());
-            let image_id = editor.selected_image_id.unwrap_or(0);
-            let params = editor.current_edit_params;
-            
-            let xyz_to_cam = raw.color_matrix;
-            let cam_to_srgb = crate::color::calculate_cam_to_srgb(xyz_to_cam, raw.wb_multipliers);
-            
-            let context = editor.gpu_context.clone();
-            
-            Task::perform(
-                async move {
-                    let ctx = if let Some(c) = context {
-                        c
-                    } else {
-                        match gpu::shared::SharedContext::new().await {
-                            Ok(c) => Arc::new(c),
-                            Err(e) => return Err(e),
-                        }
-                    };
-                    
-                    match gpu::shared::ImageResources::new(
-                        &ctx,
-                        image_id,
-                        raw.data,
-                        raw.width,
-                        raw.height,
-                        &params,
-                        raw.wb_multipliers,
-                        cam_to_srgb,
-                        raw.cfa_pattern,
-                        raw.black_levels,
-                        raw.white_level
-                    ) {
-                        Ok(resources) => Ok((ctx, std::sync::Arc::new(resources))),
-                        Err(e) => Err(e),
-                    }
-                },
-                move |res| Message::ImageResourcesReady(image_id, res)
-            )
+            let raw = Arc::new(raw);
+            editor.insert_raw_cache(image_id, raw.clone());
+            apply_raw_preload_cleanup(editor, image_id);
+
+            if editor.current_tab == AppTab::Develop && editor.selected_image_id == Some(image_id) {
+                prepare_image_resources_from_raw(editor, image_id, raw)
+            } else {
+                Task::none()
+            }
         }
         Err(e) => { 
-            editor.status = format!("Failed to load RAW: {}", e); 
-            editor.editor_readiness = EditorReadiness::Failed(0, e); 
+            if editor.selected_image_id == Some(image_id) {
+                editor.status = format!("Failed to load RAW: {}", e);
+                editor.editor_readiness = EditorReadiness::Failed(image_id, e);
+            }
             Task::none()
         }
     }
+}
+
+pub fn handle_raw_preloaded(
+    editor: &mut RawEditor,
+    image_id: i64,
+    result: Result<Arc<raw::loader::RawDataResult>, String>,
+) -> Task<Message> {
+    apply_raw_preload_cleanup(editor, image_id);
+
+    match result {
+        Ok(raw) => {
+            editor.insert_raw_cache(image_id, raw.clone());
+            if editor.current_tab == AppTab::Develop
+                && editor.selected_image_id == Some(image_id)
+                && matches!(editor.editor_readiness, EditorReadiness::Loading(id) if id == image_id)
+            {
+                return prepare_image_resources_from_raw(editor, image_id, raw);
+            }
+            Task::none()
+        }
+        Err(e) => {
+            tracing::warn!("RAW preload failed for image {}: {}", image_id, e);
+            Task::none()
+        }
+    }
+}
+
+pub fn prepare_image_resources_from_raw(
+    editor: &mut RawEditor,
+    image_id: i64,
+    raw: Arc<raw::loader::RawDataResult>,
+) -> Task<Message> {
+    editor.current_metadata = Some(metadata_snapshot(&raw));
+    let params = editor.current_edit_params;
+    let xyz_to_cam = raw.color_matrix;
+    let cam_to_srgb = crate::color::calculate_cam_to_srgb(xyz_to_cam, raw.wb_multipliers);
+    let context = editor.gpu_context.clone();
+
+    Task::perform(
+        async move {
+            let ctx = if let Some(c) = context {
+                c
+            } else {
+                match gpu::shared::SharedContext::new().await {
+                    Ok(c) => Arc::new(c),
+                    Err(e) => return Err(e),
+                }
+            };
+
+            match gpu::shared::ImageResources::new(
+                &ctx,
+                image_id,
+                &raw.data,
+                raw.width,
+                raw.height,
+                &params,
+                raw.wb_multipliers,
+                cam_to_srgb,
+                raw.cfa_pattern,
+                raw.black_levels,
+                raw.white_level,
+            ) {
+                Ok(resources) => Ok((ctx, std::sync::Arc::new(resources))),
+                Err(e) => Err(e),
+            }
+        },
+        move |res| Message::ImageResourcesReady(image_id, res),
+    )
 }
 
 pub fn handle_image_resources_ready(editor: &mut RawEditor, image_id: i64, result: Result<(Arc<gpu::shared::SharedContext>, Arc<gpu::shared::ImageResources>), String>) -> Task<Message> {
@@ -82,5 +126,32 @@ pub fn handle_image_resources_ready(editor: &mut RawEditor, image_id: i64, resul
             editor.editor_readiness = EditorReadiness::Failed(image_id, e); 
             Task::none()
         }
+    }
+}
+
+fn apply_raw_preload_cleanup(editor: &mut RawEditor, image_id: i64) {
+    editor.pending_raw_loads.remove(&image_id);
+    editor.queued_raw_loads.retain(|(id, _)| *id != image_id);
+}
+
+fn metadata_snapshot(raw: &raw::loader::RawDataResult) -> raw::loader::RawDataResult {
+    raw::loader::RawDataResult {
+        data: Vec::new(),
+        width: raw.width,
+        height: raw.height,
+        wb_multipliers: raw.wb_multipliers,
+        color_matrix: raw.color_matrix,
+        cfa_pattern: raw.cfa_pattern,
+        black_levels: raw.black_levels,
+        white_level: raw.white_level,
+        crops: raw.crops,
+        cfa_name: raw.cfa_name.clone(),
+        measured_black_levels: raw.measured_black_levels,
+        make: raw.make.clone(),
+        model: raw.model.clone(),
+        iso: raw.iso.clone(),
+        shutter_speed: raw.shutter_speed.clone(),
+        aperture: raw.aperture.clone(),
+        lens: raw.lens.clone(),
     }
 }

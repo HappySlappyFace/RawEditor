@@ -55,6 +55,22 @@ pub fn handle_set_cache_capacity(editor: &mut RawEditor, val: f32) -> Task<Messa
     Task::none()
 }
 
+pub fn handle_set_raw_preload_budget(editor: &mut RawEditor, val: f32) -> Task<Message> {
+    let budget_mb = val.max(0.0) as u32;
+    editor.raw_preload_budget_mb = budget_mb;
+
+    if budget_mb == 0 {
+        editor.raw_cache.clear();
+        editor.raw_cache_bytes = 0;
+        editor.pending_raw_loads.clear();
+        editor.queued_raw_loads.clear();
+    } else {
+        editor.evict_raw_cache_to_budget();
+    }
+
+    Task::none()
+}
+
 pub fn handle_histogram_toggled(editor: &mut RawEditor, enabled: bool) -> Task<Message> {
     editor.histogram_enabled = enabled;
     Task::none()

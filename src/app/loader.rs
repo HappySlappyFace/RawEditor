@@ -1,14 +1,28 @@
 use crate::app::message::Message;
 
-pub fn subscription(queued_loads: Vec<(i64, String)>) -> iced::Subscription<Message> {
-    if let Some((id, path)) = queued_loads.first() {
+pub fn subscription(
+    queued_loads: Vec<(i64, String)>,
+    queued_raw_loads: Vec<(i64, String)>,
+) -> iced::Subscription<Message> {
+    let preview_subscription = if let Some((id, path)) = queued_loads.first() {
         iced::Subscription::run_with_id(
-            *id,
-            iced::futures::stream::once(process_load_request(*id, path.clone()))
+            ("preview", *id),
+            iced::futures::stream::once(process_load_request(*id, path.clone())),
         )
     } else {
         iced::Subscription::none()
-    }
+    };
+
+    let raw_subscription = if let Some((id, path)) = queued_raw_loads.first() {
+        iced::Subscription::run_with_id(
+            ("raw", *id),
+            iced::futures::stream::once(process_raw_load_request(*id, path.clone())),
+        )
+    } else {
+        iced::Subscription::none()
+    };
+
+    iced::Subscription::batch(vec![preview_subscription, raw_subscription])
 }
 
 async fn process_load_request(id: i64, path: String) -> Message {
@@ -60,4 +74,11 @@ async fn process_load_request(id: i64, path: String) -> Message {
     };
     
     Message::PreviewCached(id, final_result)
+}
+
+async fn process_raw_load_request(id: i64, path: String) -> Message {
+    let result = crate::raw::loader::load_raw_data(path)
+        .await
+        .map(std::sync::Arc::new);
+    Message::RawPreloaded(id, result)
 }

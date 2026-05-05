@@ -275,7 +275,7 @@ impl ImageResources {
     pub fn new(
         context: &SharedContext,
         image_id: i64,
-        raw_data: Vec<u16>,
+        raw_data: &[u16],
         width: u32,
         height: u32,
         params: &EditParams,
@@ -329,7 +329,7 @@ impl ImageResources {
         let unpadded_bytes_per_row = width * bytes_per_pixel;
         let padded_bytes_per_row = (unpadded_bytes_per_row + 255) & !255;
 
-        let raw_bytes = bytemuck::cast_slice(&raw_data);
+        let raw_bytes = bytemuck::cast_slice(raw_data);
 
         if unpadded_bytes_per_row == padded_bytes_per_row {
             context.queue.write_texture(

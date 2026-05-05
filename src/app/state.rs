@@ -121,6 +121,12 @@ pub struct RawEditor {
     pub preview_cache_dir: PathBuf,
     /// Phase 73: RAM cache for 1280px previews (Look-Ahead)
     pub preview_cache: LruCache<i64, Handle>,
+    /// RAW preload RAM budget in MB (0 = disabled)
+    pub raw_preload_budget_mb: u32,
+    /// Decoded RAW cache for fast develop navigation
+    pub raw_cache: LruCache<i64, Arc<raw::loader::RawDataResult>>,
+    /// Approximate memory usage of raw_cache in bytes
+    pub raw_cache_bytes: usize,
     /// Currently active tab
     pub current_tab: AppTab,
     /// Current edit parameters for the selected image
@@ -186,11 +192,14 @@ pub struct RawEditor {
     pub is_cropping: bool,
     /// Phase 67: Drag mode for interaction
     pub drag_mode: DragMode,
-    /// Phase 78: Async Task Deduplication (track pending background loads)
+    /// Phase 78: Async Task Deduplication (track pending preview loads)
     pub pending_loads: HashSet<i64>,
-    /// Phase 81: Throttled Image Loader queue
-    /// Phase 81: Throttled Image Loader queue
+    /// Phase 81: Throttled preview loader queue
     pub queued_loads: Vec<(i64, String)>,
+    /// Pending RAW preload jobs
+    pub pending_raw_loads: HashSet<i64>,
+    /// Throttled RAW preload queue
+    pub queued_raw_loads: Vec<(i64, String)>,
 
     /// Phase 104: Performance Profiler
     pub profiler: crate::core::profiler::Profiler,
@@ -227,6 +236,11 @@ pub const PRELOAD_BEHIND: usize = 10;
 pub const PRELOAD_AHEAD: usize = 50;
 // Phase 81: Increased cache capacity
 pub const CACHE_CAPACITY: usize = 200;
+// RAW preload window for develop mode
+pub const RAW_PRELOAD_BEHIND: usize = 1;
+pub const RAW_PRELOAD_AHEAD: usize = 4;
+pub const RAW_PRELOAD_BUDGET_MB_DEFAULT: u32 = 1024;
+pub const RAW_CACHE_ENTRY_CAPACITY: usize = 4096;
 
 impl RawEditor {
     pub fn title(&self) -> String {
@@ -252,6 +266,9 @@ impl RawEditor {
                 selected_image_id: None,
                 preview_cache_dir,
                 preview_cache: LruCache::new(NonZeroUsize::new(CACHE_CAPACITY).unwrap()),
+                raw_preload_budget_mb: RAW_PRELOAD_BUDGET_MB_DEFAULT,
+                raw_cache: LruCache::new(NonZeroUsize::new(RAW_CACHE_ENTRY_CAPACITY).unwrap()),
+                raw_cache_bytes: 0,
                 current_tab: AppTab::Library, // Start in Library view
                 current_edit_params: crate::core::types::EditParams::default(),
 
@@ -310,6 +327,8 @@ impl RawEditor {
                 drag_mode: DragMode::None,
                 pending_loads: HashSet::new(),
                 queued_loads: Vec::new(),
+                pending_raw_loads: HashSet::new(),
+                queued_raw_loads: Vec::new(),
             },
             Task::perform(
                 database::library::load_database("".to_string()),
@@ -467,6 +486,48 @@ impl RawEditor {
         }
     }
 
+    fn raw_cache_entry_bytes(raw: &raw::loader::RawDataResult) -> usize {
+        raw.data.len()
+            .saturating_mul(std::mem::size_of::<u16>())
+            .saturating_add(1024)
+    }
+
+    pub fn raw_cache_budget_bytes(&self) -> usize {
+        (self.raw_preload_budget_mb as usize).saturating_mul(1024 * 1024)
+    }
+
+    pub fn evict_raw_cache_to_budget(&mut self) {
+        let budget = self.raw_cache_budget_bytes();
+        while self.raw_cache_bytes > budget {
+            if let Some((_id, raw)) = self.raw_cache.pop_lru() {
+                self.raw_cache_bytes = self
+                    .raw_cache_bytes
+                    .saturating_sub(Self::raw_cache_entry_bytes(&raw));
+            } else {
+                self.raw_cache_bytes = 0;
+                break;
+            }
+        }
+    }
+
+    pub fn insert_raw_cache(&mut self, image_id: i64, raw: Arc<raw::loader::RawDataResult>) {
+        if self.raw_preload_budget_mb == 0 {
+            return;
+        }
+
+        if let Some(old) = self.raw_cache.get(&image_id) {
+            self.raw_cache_bytes = self
+                .raw_cache_bytes
+                .saturating_sub(Self::raw_cache_entry_bytes(old));
+        }
+
+        self.raw_cache_bytes = self
+            .raw_cache_bytes
+            .saturating_add(Self::raw_cache_entry_bytes(&raw));
+        self.raw_cache.put(image_id, raw);
+        self.evict_raw_cache_to_budget();
+    }
+
     /// Phase 24: Keyboard shortcuts subscription
     /// Phase 81: Throttled Image Loader subscription
     pub fn subscription(&self) -> iced::Subscription<Message> {
@@ -550,7 +611,10 @@ impl RawEditor {
             }
         });
 
-        let loader_subscription = crate::app::loader::subscription(self.queued_loads.clone());
+        let loader_subscription = crate::app::loader::subscription(
+            self.queued_loads.clone(),
+            self.queued_raw_loads.clone(),
+        );
 
         iced::Subscription::batch(vec![keyboard_subscription, loader_subscription])
     }

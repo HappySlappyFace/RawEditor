@@ -215,6 +215,33 @@ pub fn view_preferences_modal<'a>(editor: &'a RawEditor) -> Element<'a, Message>
                 .style(|_| text::Style {
                     color: Some(Color::from_rgb(0.45, 0.45, 0.45))
                 }),
+            row![
+                text("RAW Preload Budget:").size(13).style(|_| text::Style {
+                    color: Some(Color::from_rgb(0.7, 0.7, 0.7))
+                }),
+                text(format!("{} MB", editor.raw_preload_budget_mb))
+                    .size(13)
+                    .font(Font {
+                        weight: Weight::Bold,
+                        ..Default::default()
+                    })
+                    .style(|_| text::Style {
+                        color: Some(Color::from_rgb(0.85, 0.85, 0.85))
+                    }),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+            slider(
+                0.0..=4096.0,
+                editor.raw_preload_budget_mb as f32,
+                Message::SetRawPreloadBudget
+            )
+            .step(64.0),
+            text("Develop RAW preloading budget. Set to 0 to disable RAW preloading.")
+                .size(11)
+                .style(|_| text::Style {
+                    color: Some(Color::from_rgb(0.45, 0.45, 0.45))
+                }),
         ]
         .spacing(8),
         button("Close")

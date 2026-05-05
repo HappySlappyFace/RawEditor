@@ -44,10 +44,7 @@ pub fn handle_tab_changed(editor: &mut RawEditor, tab: AppTab) -> Task<Message> 
                 _ => true,
             };
             if needs_load {
-                if let Some(img) = editor.images.iter().find(|i| i.id == image_id) {
-                    editor.editor_readiness = EditorReadiness::Loading(image_id);
-                    return Task::perform(raw::loader::load_raw_data(img.path.clone()), Message::RawDataLoaded);
-                }
+                return trigger_image_load(editor, image_id);
             }
         }
     }
@@ -293,17 +290,22 @@ fn apply_crop_drag(editor: &mut RawEditor, pos: Point, last: Point, h: CropHandl
 
 fn trigger_image_load(editor: &mut RawEditor, image_id: i64) -> Task<Message> {
     editor.working_preview = None;
-    if let Some(img) = editor.images.iter().find(|i| i.id == image_id) {
+    if let Some((working_cache_path, raw_path)) = editor
+        .images
+        .iter()
+        .find(|i| i.id == image_id)
+        .map(|img| (img.cache_path_working.clone(), img.path.clone()))
+    {
         // Phase 73: Check RAM cache first
         if let Some(handle) = editor.preview_cache.get(&image_id) {
             editor.working_preview = Some(handle.clone());
-        } else if let Some(path) = &img.cache_path_working {
+        } else if let Some(path) = &working_cache_path {
             editor.working_preview = Some(Handle::from_path(path.clone()));
         }
         
         editor.editor_readiness = EditorReadiness::Loading(image_id);
         let mut tasks = Vec::new();
-        if let Some(path) = &img.cache_path_working {
+        if let Some(path) = &working_cache_path {
             tasks.push(Task::perform(
                 load_image_handle(image_id, path.clone()),
                 |(id, h, p, d)| Message::WorkingPreviewReady(id, h, p, d),
@@ -312,11 +314,33 @@ fn trigger_image_load(editor: &mut RawEditor, image_id: i64) -> Task<Message> {
         
         // Only load full RAW data if we are in Develop mode
         if editor.current_tab == AppTab::Develop {
-            tasks.push(Task::perform(raw::loader::load_raw_data(img.path.clone()), Message::RawDataLoaded));
+            let cached_raw = editor.raw_cache.get(&image_id).cloned();
+            if let Some(cached_raw) = cached_raw {
+                tasks.push(crate::app::handlers::loading::prepare_image_resources_from_raw(
+                    editor,
+                    image_id,
+                    cached_raw.clone(),
+                ));
+            } else if !editor.pending_raw_loads.contains(&image_id) {
+                tasks.push(Task::perform(
+                    raw::loader::load_raw_data(raw_path),
+                    move |res| Message::RawDataLoaded(image_id, res),
+                ));
+            } else if let Some(pos) = editor
+                .queued_raw_loads
+                .iter()
+                .position(|(queued_id, _)| *queued_id == image_id)
+            {
+                let prioritized = editor.queued_raw_loads.remove(pos);
+                editor.queued_raw_loads.insert(0, prioritized);
+            }
         }
         
         // Schedule preloads for adjacent images
         tasks.push(schedule_preloads(editor));
+        if editor.current_tab == AppTab::Develop {
+            tasks.push(schedule_raw_preloads(editor));
+        }
         
         return Task::batch(tasks);
     }
@@ -328,6 +352,19 @@ fn schedule_preloads(editor: &mut RawEditor) -> Task<Message> {
     for (id, path) in missing {
         editor.pending_loads.insert(id);
         editor.queued_loads.push((id, path));
+    }
+    Task::none()
+}
+
+fn schedule_raw_preloads(editor: &mut RawEditor) -> Task<Message> {
+    if editor.raw_preload_budget_mb == 0 {
+        return Task::none();
+    }
+
+    let missing = identify_missing_raw_preloads(editor);
+    for (id, path) in missing {
+        editor.pending_raw_loads.insert(id);
+        editor.queued_raw_loads.push((id, path));
     }
     Task::none()
 }
@@ -359,6 +396,42 @@ fn identify_missing_preloads(editor: &RawEditor) -> Vec<(i64, String)> {
                     if let Some(path) = &img.cache_path_working {
                         missing.push((img.id, path.clone()));
                     }
+                }
+            }
+        }
+    }
+    missing
+}
+
+fn identify_missing_raw_preloads(editor: &RawEditor) -> Vec<(i64, String)> {
+    let mut missing = Vec::new();
+    if let Some(current_id) = editor.selected_image_id {
+        if let Some(current_idx) = editor.images.iter().position(|i| i.id == current_id) {
+            let total = editor.images.len() as isize;
+            let behind = crate::app::state::RAW_PRELOAD_BEHIND as isize;
+            let ahead = crate::app::state::RAW_PRELOAD_AHEAD as isize;
+
+            for offset in -behind..=ahead {
+                if offset == 0 {
+                    continue;
+                }
+
+                let mut target_idx = current_idx as isize + offset;
+                if target_idx < 0 {
+                    target_idx += total;
+                }
+                if target_idx >= total {
+                    target_idx -= total;
+                }
+
+                let target_idx = target_idx as usize;
+                if target_idx < editor.images.len() {
+                    let img = &editor.images[target_idx];
+                    if editor.raw_cache.contains(&img.id) || editor.pending_raw_loads.contains(&img.id)
+                    {
+                        continue;
+                    }
+                    missing.push((img.id, img.path.clone()));
                 }
             }
         }

@@ -193,7 +193,7 @@ pub fn handle_export_raw_loaded(
                     gpu::shared::ImageResources::new(
                         &context,
                         image_id,
-                        raw_data.data,
+                        &raw_data.data,
                         raw_data.width,
                         raw_data.height,
                         &params,

@@ -163,6 +163,7 @@ pub enum Message {
 
     // Phase 85: Preferences
     SetCacheCapacity(f32),
+    SetRawPreloadBudget(f32),
 
     /// User selected an image from the grid
     ImageSelected(i64),
@@ -211,7 +212,9 @@ pub enum Message {
 
     // ========== GPU Pipeline Messages ==========
     /// Background RAW data loading completed
-    RawDataLoaded(Result<raw::loader::RawDataResult, String>),
+    RawDataLoaded(i64, Result<raw::loader::RawDataResult, String>),
+    /// Background RAW preload for adjacent images completed
+    RawPreloaded(i64, Result<std::sync::Arc<raw::loader::RawDataResult>, String>),
     /// GPU pipeline initialization completed
     // Phase 95: GPU ImageResources loaded (wrapped in Arc for Clone)
     ImageResourcesReady(
