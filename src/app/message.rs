@@ -43,6 +43,8 @@ pub enum Message {
 
     /// User clicked the "Import Folder" button
     ImportFolder,
+    /// Placeholder for camera import workflow
+    ImportFromCamera,
     /// Background import completed with results
     ImportComplete(ImportResult),
     /// Background thumbnail generation completed
@@ -175,6 +177,8 @@ pub enum Message {
     // ========== Phase 59: Filtering ==========
     /// Set minimum rating filter (0 = all, 1-5 = show rating or higher)
     SetMinRating(u8),
+    /// Filter library by folder path prefix (None = all folders)
+    SetLibraryFolderFilter(Option<String>),
 
     // ========== Phase 24: Workflow Messages ==========
     /// Toggle Before/After view (Spacebar)

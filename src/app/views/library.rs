@@ -1,7 +1,10 @@
 use iced::widget::image::Handle;
-use iced::widget::{button, checkbox, column, container, row, scrollable, slider, stack, text, Image, Space};
+use iced::widget::{
+    button, checkbox, column, container, row, scrollable, stack, text, Image, Space,
+};
 use iced::{Alignment, Background, Border, Color, Element, Length, Theme};
 use iced_aw::Wrap;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::app::message::Message;
@@ -10,13 +13,20 @@ use crate::database::models::Image as ImageData;
 use crate::ui;
 use crate::ui::icons::ICON_FONT;
 
+const THUMB_PRESET_SMALL: f32 = 150.0;
+const THUMB_PRESET_MEDIUM: f32 = 190.0;
+const THUMB_PRESET_LARGE: f32 = 230.0;
+const THUMB_PRESET_XL: f32 = 280.0;
+
 fn metric_pill<'a>(label: &'a str, value: impl ToString, color: Color) -> Element<'a, Message> {
     container(
         row![
             text(label).size(11).style(|_| text::Style {
                 color: Some(Color::from_rgb(0.68, 0.68, 0.68))
             }),
-            text(value.to_string()).size(11).style(move |_| text::Style { color: Some(color) }),
+            text(value.to_string())
+                .size(11)
+                .style(move |_| text::Style { color: Some(color) }),
         ]
         .spacing(6)
         .align_y(Alignment::Center),
@@ -32,6 +42,41 @@ fn metric_pill<'a>(label: &'a str, value: impl ToString, color: Color) -> Elemen
         ..Default::default()
     })
     .into()
+}
+
+fn style_toolbar_button(_theme: &Theme, status: button::Status) -> button::Style {
+    match status {
+        button::Status::Hovered => button::Style {
+            background: Some(Background::Color(Color::from_rgb(0.30, 0.30, 0.30))),
+            text_color: Color::WHITE,
+            border: Border {
+                radius: 8.0.into(),
+                width: 1.0,
+                color: Color::from_rgb(0.45, 0.45, 0.45),
+            },
+            ..Default::default()
+        },
+        button::Status::Pressed => button::Style {
+            background: Some(Background::Color(Color::from_rgb(0.17, 0.17, 0.17))),
+            text_color: Color::WHITE,
+            border: Border {
+                radius: 8.0.into(),
+                width: 1.0,
+                color: Color::from_rgb(0.35, 0.35, 0.35),
+            },
+            ..Default::default()
+        },
+        _ => button::Style {
+            background: Some(Background::Color(Color::from_rgb(0.20, 0.20, 0.20))),
+            text_color: Color::from_rgb(0.88, 0.88, 0.88),
+            border: Border {
+                radius: 8.0.into(),
+                width: 1.0,
+                color: Color::from_rgb(0.30, 0.30, 0.30),
+            },
+            ..Default::default()
+        },
+    }
 }
 
 fn style_chip(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
@@ -74,42 +119,111 @@ fn style_chip(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style 
     }
 }
 
-fn style_toolbar_button(_theme: &Theme, status: button::Status) -> button::Style {
-    match status {
-        button::Status::Hovered => button::Style {
-            background: Some(Background::Color(Color::from_rgb(0.30, 0.30, 0.30))),
-            text_color: Color::WHITE,
-            border: Border {
-                radius: 8.0.into(),
-                width: 1.0,
-                color: Color::from_rgb(0.45, 0.45, 0.45),
-            },
-            ..Default::default()
-        },
-        button::Status::Pressed => button::Style {
-            background: Some(Background::Color(Color::from_rgb(0.17, 0.17, 0.17))),
-            text_color: Color::WHITE,
-            border: Border {
-                radius: 8.0.into(),
-                width: 1.0,
-                color: Color::from_rgb(0.35, 0.35, 0.35),
-            },
-            ..Default::default()
-        },
-        _ => button::Style {
-            background: Some(Background::Color(Color::from_rgb(0.20, 0.20, 0.20))),
-            text_color: Color::from_rgb(0.88, 0.88, 0.88),
-            border: Border {
-                radius: 8.0.into(),
-                width: 1.0,
-                color: Color::from_rgb(0.30, 0.30, 0.30),
-            },
-            ..Default::default()
-        },
+fn style_sidebar_button(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_theme, status| {
+        if active {
+            button::Style {
+                background: Some(Background::Color(Color::from_rgb(0.20, 0.36, 0.54))),
+                text_color: Color::WHITE,
+                border: Border {
+                    radius: 6.0.into(),
+                    width: 1.0,
+                    color: Color::from_rgb(0.38, 0.57, 0.76),
+                },
+                ..Default::default()
+            }
+        } else {
+            match status {
+                button::Status::Hovered => button::Style {
+                    background: Some(Background::Color(Color::from_rgb(0.20, 0.20, 0.20))),
+                    text_color: Color::from_rgb(0.92, 0.92, 0.92),
+                    border: Border {
+                        radius: 6.0.into(),
+                        width: 1.0,
+                        color: Color::from_rgb(0.28, 0.28, 0.28),
+                    },
+                    ..Default::default()
+                },
+                _ => button::Style {
+                    background: Some(Background::Color(Color::from_rgb(0.14, 0.14, 0.14))),
+                    text_color: Color::from_rgb(0.74, 0.74, 0.74),
+                    border: Border {
+                        radius: 6.0.into(),
+                        width: 1.0,
+                        color: Color::from_rgb(0.20, 0.20, 0.20),
+                    },
+                    ..Default::default()
+                },
+            }
+        }
     }
 }
 
-/// Build the Library tab view (grid of thumbnails)
+fn compact_path(path: &str) -> String {
+    if path.len() <= 36 {
+        return path.to_string();
+    }
+    format!("...{}", &path[path.len() - 33..])
+}
+
+fn collect_folder_stats(editor: &RawEditor) -> Vec<(String, usize)> {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for image in &editor.images {
+        if let Some(parent) = std::path::Path::new(&image.path).parent() {
+            let key = parent.to_string_lossy().to_string();
+            *counts.entry(key).or_insert(0) += 1;
+        }
+    }
+
+    let mut folders: Vec<(String, usize)> = counts.into_iter().collect();
+    folders.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    folders.truncate(16);
+    folders
+}
+
+fn is_thumb_preset_active(current: f32, preset: f32) -> bool {
+    (current - preset).abs() < 1.0
+}
+
+fn view_thumbnail_size_presets<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
+    row![
+        text("Card size")
+            .size(12)
+            .style(|_| text::Style { color: Some(Color::from_rgb(0.62, 0.62, 0.62)) }),
+        button(text("S").size(11))
+            .on_press(Message::SetThumbnailSize(THUMB_PRESET_SMALL))
+            .padding([4, 8])
+            .style(style_chip(is_thumb_preset_active(
+                editor.thumbnail_size,
+                THUMB_PRESET_SMALL
+            ))),
+        button(text("M").size(11))
+            .on_press(Message::SetThumbnailSize(THUMB_PRESET_MEDIUM))
+            .padding([4, 8])
+            .style(style_chip(is_thumb_preset_active(
+                editor.thumbnail_size,
+                THUMB_PRESET_MEDIUM
+            ))),
+        button(text("L").size(11))
+            .on_press(Message::SetThumbnailSize(THUMB_PRESET_LARGE))
+            .padding([4, 8])
+            .style(style_chip(is_thumb_preset_active(
+                editor.thumbnail_size,
+                THUMB_PRESET_LARGE
+            ))),
+        button(text("XL").size(11))
+            .on_press(Message::SetThumbnailSize(THUMB_PRESET_XL))
+            .padding([4, 8])
+            .style(style_chip(is_thumb_preset_active(
+                editor.thumbnail_size,
+                THUMB_PRESET_XL
+            ))),
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center)
+    .into()
+}
+
 fn view_image_card<'a>(img: &'a ImageData, is_selected: bool, size: f32) -> Element<'a, Message> {
     let thumb_width = size;
     let thumb_height = size * 0.75;
@@ -312,88 +426,6 @@ fn view_image_card<'a>(img: &'a ImageData, is_selected: bool, size: f32) -> Elem
         .into()
 }
 
-pub fn view_library(editor: &RawEditor) -> Element<'_, Message> {
-    let filtered_images: Vec<&ImageData> = editor
-        .images
-        .iter()
-        .filter(|img| editor.min_filter_rating == 0 || img.rating >= editor.min_filter_rating)
-        .collect();
-
-    let cached_count = filtered_images
-        .iter()
-        .filter(|img| img.cache_path_thumb.is_some())
-        .count();
-    let deleted_count = filtered_images
-        .iter()
-        .filter(|img| img.file_status == "deleted")
-        .count();
-    let total_count = editor.images.len();
-    let filtered_count = filtered_images.len();
-    let selected_count = editor.multi_selection.len();
-
-    let content: Element<'_, Message> = if filtered_images.is_empty() {
-        container(
-            column![
-                text("No images match this filter").size(24),
-                text("Try lowering the rating filter or import a new folder.")
-                    .size(14)
-                    .style(|_| text::Style {
-                        color: Some(Color::from_rgb(0.55, 0.55, 0.55))
-                    }),
-                button(
-                    row![
-                        text(ui::icons::FOLDER_OPEN).font(ICON_FONT),
-                        text("Import Folder")
-                    ]
-                    .spacing(8)
-                )
-                .on_press(Message::ImportFolder)
-                .style(style_toolbar_button)
-                .padding([10, 14]),
-            ]
-            .spacing(16)
-            .align_x(Alignment::Center),
-        )
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .center_x(Length::Fill)
-        .center_y(Length::Fill)
-        .into()
-    } else {
-        let thumbnail_grid = filtered_images.iter().fold(
-            Wrap::new().spacing(12.0).line_spacing(12.0),
-            |wrap, img| {
-                let is_selected =
-                    editor.selected_image_id == Some(img.id) || editor.multi_selection.contains(&img.id);
-                wrap.push(view_image_card(img, is_selected, editor.thumbnail_size))
-            },
-        );
-
-        container(
-            scrollable(container(thumbnail_grid).width(Length::Fill))
-                .height(Length::Fill)
-                .width(Length::Fill),
-        )
-        .padding([10, 12])
-        .height(Length::Fill)
-        .into()
-    };
-
-    column![
-        view_library_toolbar(editor, filtered_count, total_count, selected_count, deleted_count),
-        content,
-        view_status_bar(
-            editor,
-            filtered_count,
-            total_count,
-            selected_count,
-            cached_count,
-            deleted_count
-        )
-    ]
-    .into()
-}
-
 fn view_filter_bar<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
     row![
         button(text("All").size(12))
@@ -493,17 +525,125 @@ fn view_quick_actions<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
             .on_press_maybe(has_selection.then_some(Message::SetRating(5)))
             .padding([4, 8])
             .style(ui::styles::NeutralButton::style),
-        button(row![text(ui::icons::CHECK).font(ICON_FONT).size(11), text("Pick").size(11)].spacing(4))
-            .on_press_maybe(has_selection.then_some(Message::SetFlag(1)))
-            .padding([4, 8])
-            .style(ui::styles::NeutralButton::style),
-        button(row![text(ui::icons::TIMES).font(ICON_FONT).size(11), text("Reject").size(11)].spacing(4))
-            .on_press_maybe(has_selection.then_some(Message::SetFlag(-1)))
-            .padding([4, 8])
-            .style(ui::styles::NeutralButton::style),
+        button(
+            row![text(ui::icons::CHECK).font(ICON_FONT).size(11), text("Pick").size(11)].spacing(4)
+        )
+        .on_press_maybe(has_selection.then_some(Message::SetFlag(1)))
+        .padding([4, 8])
+        .style(ui::styles::NeutralButton::style),
+        button(
+            row![text(ui::icons::TIMES).font(ICON_FONT).size(11), text("Reject").size(11)]
+                .spacing(4)
+        )
+        .on_press_maybe(has_selection.then_some(Message::SetFlag(-1)))
+        .padding([4, 8])
+        .style(ui::styles::NeutralButton::style),
     ]
     .spacing(6)
     .align_y(Alignment::Center)
+    .into()
+}
+
+fn view_library_sidebar<'a>(
+    editor: &'a RawEditor,
+    folder_stats: &[(String, usize)],
+    total_count: usize,
+) -> Element<'a, Message> {
+    let selected_filter = editor.library_folder_filter.clone();
+    let all_active = selected_filter.is_none();
+
+    let mut folders_column = column![
+        button(
+            row![
+                text("All Photos").size(12),
+                Space::with_width(Length::Fill),
+                text(total_count.to_string()).size(11)
+            ]
+            .align_y(Alignment::Center)
+        )
+        .on_press(Message::SetLibraryFolderFilter(None))
+        .padding([7, 9])
+        .width(Length::Fill)
+        .style(style_sidebar_button(all_active)),
+    ]
+    .spacing(6);
+
+    for (folder, count) in folder_stats {
+        let is_active = selected_filter
+            .as_ref()
+            .map(|active| active == folder)
+            .unwrap_or(false);
+        folders_column = folders_column.push(
+            button(
+                row![
+                    text(compact_path(folder)).size(11),
+                    Space::with_width(Length::Fill),
+                    text(count.to_string()).size(10)
+                ]
+                .align_y(Alignment::Center),
+            )
+            .on_press(Message::SetLibraryFolderFilter(Some(folder.clone())))
+            .padding([6, 8])
+            .width(Length::Fill)
+            .style(style_sidebar_button(is_active)),
+        );
+    }
+
+    container(
+        column![
+            text("Library Sources").size(14),
+            text("Projects and locations")
+                .size(11)
+                .style(|_| text::Style {
+                    color: Some(Color::from_rgb(0.58, 0.58, 0.58))
+                }),
+            Space::with_height(Length::Fixed(8.0)),
+            button(
+                row![
+                    text(ui::icons::FOLDER_OPEN).font(ICON_FONT),
+                    text("Import Folder")
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center)
+            )
+            .on_press(Message::ImportFolder)
+            .padding([8, 10])
+            .width(Length::Fill)
+            .style(style_toolbar_button),
+            button(
+                row![
+                    text(ui::icons::FOLDER).font(ICON_FONT),
+                    text("Import from Camera")
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center)
+            )
+            .on_press(Message::ImportFromCamera)
+            .padding([8, 10])
+            .width(Length::Fill)
+            .style(style_toolbar_button),
+            Space::with_height(Length::Fixed(10.0)),
+            text("Folders").size(12).style(|_| text::Style {
+                color: Some(Color::from_rgb(0.68, 0.68, 0.68))
+            }),
+            scrollable(folders_column).height(Length::Fill),
+        ]
+        .spacing(6)
+        .width(Length::Fill)
+        .height(Length::Fill),
+    )
+    .padding(10)
+    .width(Length::Fixed(250.0))
+    .height(Length::Fill)
+    .style(|_| container::Style {
+        background: Some(Background::Color(Color::from_rgb(0.09, 0.09, 0.09))),
+        border: Border {
+            width: 1.0,
+            color: Color::from_rgb(0.16, 0.16, 0.16),
+            radius: 0.0.into(),
+        },
+        ..Default::default()
+    })
     .into()
 }
 
@@ -532,15 +672,6 @@ fn view_library_toolbar<'a>(
     .padding([8, 12])
     .style(style_toolbar_button);
 
-    let size_slider = row![
-        text(ui::icons::TH_LARGE).font(ICON_FONT).size(13),
-        slider(100.0..=400.0, editor.thumbnail_size, Message::SetThumbnailSize)
-            .width(Length::Fixed(140.0)),
-        text(ui::icons::TH).font(ICON_FONT).size(18),
-    ]
-    .spacing(8)
-    .align_y(Alignment::Center);
-
     container(
         column![
             row![
@@ -554,14 +685,16 @@ fn view_library_toolbar<'a>(
                 ]
                 .spacing(2),
                 Space::with_width(Length::Fill),
-                metric_pill("Shown", format!("{}/{}", filtered_count, total_count), Color::from_rgb(0.82, 0.82, 0.82)),
+                metric_pill(
+                    "Shown",
+                    format!("{}/{}", filtered_count, total_count),
+                    Color::from_rgb(0.82, 0.82, 0.82),
+                ),
                 metric_pill("Selected", selected_count, Color::from_rgb(0.58, 0.78, 1.0)),
                 metric_pill("Missing", deleted_count, Color::from_rgb(0.94, 0.45, 0.45)),
                 Space::with_width(Length::Fixed(8.0)),
                 import_btn,
                 export_btn,
-                Space::with_width(Length::Fixed(8.0)),
-                size_slider,
             ]
             .spacing(10)
             .align_y(Alignment::Center),
@@ -569,6 +702,8 @@ fn view_library_toolbar<'a>(
                 view_filter_bar(editor),
                 Space::with_width(Length::Fill),
                 view_quick_actions(editor),
+                Space::with_width(Length::Fixed(12.0)),
+                view_thumbnail_size_presets(editor),
                 Space::with_width(Length::Fixed(12.0)),
                 checkbox("Auto-Advance", editor.auto_advance)
                     .on_toggle(|_| Message::ToggleAutoAdvance)
@@ -613,12 +748,27 @@ fn view_status_bar<'a>(
     cached_count: usize,
     deleted_count: usize,
 ) -> Element<'a, Message> {
+    let folder_label = editor
+        .library_folder_filter
+        .as_ref()
+        .map(|folder| compact_path(folder))
+        .unwrap_or_else(|| "All folders".to_string());
+
     container(
         row![
-            metric_pill("Items", format!("{}/{}", filtered_count, total_count), Color::from_rgb(0.82, 0.82, 0.82)),
+            metric_pill(
+                "Items",
+                format!("{}/{}", filtered_count, total_count),
+                Color::from_rgb(0.82, 0.82, 0.82),
+            ),
             metric_pill("Selected", selected_count, Color::from_rgb(0.58, 0.78, 1.0)),
-            metric_pill("Cached", format!("{}/{}", cached_count, filtered_count), Color::from_rgb(0.54, 0.78, 0.58)),
+            metric_pill(
+                "Cached",
+                format!("{}/{}", cached_count, filtered_count),
+                Color::from_rgb(0.54, 0.78, 0.58),
+            ),
             metric_pill("Deleted", deleted_count, Color::from_rgb(0.94, 0.45, 0.45)),
+            metric_pill("Folder", folder_label, Color::from_rgb(0.82, 0.82, 0.82)),
             iced::widget::horizontal_space(),
             text(&editor.status).size(12).style(|_| text::Style {
                 color: Some(Color::from_rgb(0.62, 0.62, 0.62))
@@ -639,5 +789,121 @@ fn view_status_bar<'a>(
         },
         ..Default::default()
     })
+    .into()
+}
+
+pub fn view_library(editor: &RawEditor) -> Element<'_, Message> {
+    let folder_stats = collect_folder_stats(editor);
+    let filtered_images: Vec<&ImageData> = editor
+        .images
+        .iter()
+        .filter(|img| editor.min_filter_rating == 0 || img.rating >= editor.min_filter_rating)
+        .filter(|img| {
+            editor
+                .library_folder_filter
+                .as_ref()
+                .map(|folder| img.path.starts_with(folder))
+                .unwrap_or(true)
+        })
+        .collect();
+
+    let cached_count = filtered_images
+        .iter()
+        .filter(|img| img.cache_path_thumb.is_some())
+        .count();
+    let deleted_count = filtered_images
+        .iter()
+        .filter(|img| img.file_status == "deleted")
+        .count();
+    let total_count = editor.images.len();
+    let filtered_count = filtered_images.len();
+    let selected_count = editor.multi_selection.len();
+
+    let main_content: Element<'_, Message> = if filtered_images.is_empty() {
+        container(
+            column![
+                text("No images match this filter").size(24),
+                text("Try another folder/rating or import a new directory.")
+                    .size(14)
+                    .style(|_| text::Style {
+                        color: Some(Color::from_rgb(0.55, 0.55, 0.55))
+                    }),
+                button(
+                    row![
+                        text(ui::icons::FOLDER_OPEN).font(ICON_FONT),
+                        text("Import Folder")
+                    ]
+                    .spacing(8)
+                )
+                .on_press(Message::ImportFolder)
+                .style(style_toolbar_button)
+                .padding([10, 14]),
+            ]
+            .spacing(16)
+            .align_x(Alignment::Center),
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .center_x(Length::Fill)
+        .center_y(Length::Fill)
+        .into()
+    } else {
+        let thumbnail_grid = filtered_images.iter().fold(
+            Wrap::new().spacing(12.0).line_spacing(12.0),
+            |wrap, img| {
+                let is_selected =
+                    editor.selected_image_id == Some(img.id) || editor.multi_selection.contains(&img.id);
+                wrap.push(view_image_card(img, is_selected, editor.thumbnail_size))
+            },
+        );
+
+        let centered_grid = container(thumbnail_grid)
+            .width(Length::Shrink)
+            .align_x(iced::alignment::Horizontal::Center);
+
+        container(
+            scrollable(
+                container(centered_grid)
+                    .width(Length::Fill)
+                    .align_x(iced::alignment::Horizontal::Center)
+                    .padding([12, 12]),
+            )
+            .height(Length::Fill)
+            .width(Length::Fill),
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .clip(true)
+        .style(|_| container::Style {
+            background: Some(Background::Color(Color::from_rgb(0.08, 0.08, 0.08))),
+            ..Default::default()
+        })
+        .into()
+    };
+
+    let body = row![
+        view_library_sidebar(editor, &folder_stats, total_count),
+        container(main_content)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .clip(true)
+    ]
+    .width(Length::Fill)
+    .height(Length::Fill);
+
+    column![
+        view_library_toolbar(editor, filtered_count, total_count, selected_count, deleted_count),
+        container(body).width(Length::Fill).height(Length::Fill).clip(true),
+        view_status_bar(
+            editor,
+            filtered_count,
+            total_count,
+            selected_count,
+            cached_count,
+            deleted_count
+        )
+    ]
+    .width(Length::Fill)
+    .height(Length::Fill)
     .into()
 }

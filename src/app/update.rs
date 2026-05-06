@@ -8,6 +8,7 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
         // Library
         Message::DatabaseLoaded(res) => handlers::library::handle_database_loaded(editor, res),
         Message::ImportFolder => handlers::library::handle_import_folder(editor),
+        Message::ImportFromCamera => handlers::library::handle_import_from_camera(editor),
         Message::ImportComplete(res) => handlers::library::handle_import_complete(editor, res),
         Message::CacheProcessed(res) => handlers::library::handle_cache_processed(editor, res),
         Message::ThumbnailGenerated(_) => Task::none(),
@@ -85,6 +86,9 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::SetMinRating(r) => {
             editor.min_filter_rating = r;
             Task::none()
+        }
+        Message::SetLibraryFolderFilter(folder_filter) => {
+            handlers::library::handle_set_library_folder_filter(editor, folder_filter)
         }
         Message::DeleteImage => {
             tracing::warn!("Delete image requested (not implemented yet)");

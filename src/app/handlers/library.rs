@@ -53,6 +53,11 @@ pub fn handle_import_folder(editor: &mut RawEditor) -> Task<Message> {
     Task::none()
 }
 
+pub fn handle_import_from_camera(editor: &mut RawEditor) -> Task<Message> {
+    editor.status = "Camera import is not implemented yet.".to_string();
+    Task::none()
+}
+
 pub fn handle_import_complete(editor: &mut RawEditor, result: ImportResult) -> Task<Message> {
     if let Some(library) = &editor.library {
         editor.images = library.get_all_images().unwrap_or_default();
@@ -140,6 +145,14 @@ pub fn handle_set_flag(editor: &mut RawEditor, flag: i8) -> Task<Message> {
 pub fn handle_toggle_auto_advance(editor: &mut RawEditor) -> Task<Message> {
     editor.auto_advance = !editor.auto_advance;
     editor.save_preferences();
+    Task::none()
+}
+
+pub fn handle_set_library_folder_filter(
+    editor: &mut RawEditor,
+    folder_filter: Option<String>,
+) -> Task<Message> {
+    editor.library_folder_filter = folder_filter;
     Task::none()
 }
 

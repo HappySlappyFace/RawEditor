@@ -192,6 +192,8 @@ pub struct RawEditor {
     pub auto_advance: bool,
     /// Phase 59: Minimum rating filter (0 = show all, 1-5 = show rating or higher)
     pub min_filter_rating: u8,
+    /// Library folder filter (path prefix)
+    pub library_folder_filter: Option<String>,
     /// Phase 79: Modular Info Overlay state
     pub info_overlay: InfoOverlayState,
     /// Phase 65: Undo/Redo History Map<ImageID, (HistoryStack, CurrentIndex)>
@@ -329,6 +331,7 @@ impl RawEditor {
                 last_modifiers: iced::keyboard::Modifiers::default(),
                 auto_advance: settings.auto_advance,
                 min_filter_rating: 0,
+                library_folder_filter: None,
                 info_overlay: crate::app::state::InfoOverlayState::Metadata,
                 // Phase 84
                 active_modal: Modal::None,
