@@ -288,30 +288,47 @@ fn view_image_card<'a>(img: &'a ImageData, is_selected: bool, size: f32) -> Elem
     let thumb_height = size * 0.75;
     let is_deleted = img.file_status == "deleted";
     let thumb_missing = img.cache_path_thumb.is_none();
+    let has_loaded_thumb = !is_deleted && img.cache_path_thumb.is_some();
+    let tile_radius = if has_loaded_thumb { 0.0 } else { 8.0 };
+    let card_radius = if has_loaded_thumb { 0.0 } else { 10.0 };
 
-    let image_content: Element<'a, Message> = if let Some(ref thumb_path) = img.cache_path_thumb {
-        Image::new(Handle::from_path(PathBuf::from(thumb_path)))
-            .content_fit(iced::ContentFit::Cover)
-            .width(Length::Fixed(thumb_width))
-            .height(Length::Fixed(thumb_height))
-            .into()
+    let image_content: Element<'a, Message> = if has_loaded_thumb {
+        if let Some(thumb_path) = img.cache_path_thumb.as_ref() {
+            Image::new(Handle::from_path(PathBuf::from(thumb_path)))
+                .content_fit(iced::ContentFit::Cover)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into()
+        } else {
+            Space::with_width(Length::Fill).into()
+        }
     } else {
+        let placeholder_label = if is_deleted { "Missing" } else { "Queued" };
+        let placeholder_color = if is_deleted {
+            Color::from_rgb(0.86, 0.42, 0.42)
+        } else {
+            Color::from_rgb(0.85, 0.72, 0.39)
+        };
         container(
             column![
                 text(ui::icons::TH_LARGE).font(ICON_FONT).size(24),
-                text("No preview").size(11).style(|_| text::Style {
-                    color: Some(Color::from_rgb(0.65, 0.65, 0.65))
+                text(placeholder_label).size(11).style(move |_| text::Style {
+                    color: Some(placeholder_color)
                 })
             ]
             .spacing(6)
             .align_x(Alignment::Center),
         )
-        .width(Length::Fixed(thumb_width))
-        .height(Length::Fixed(thumb_height))
+        .width(Length::Fill)
+        .height(Length::Fill)
         .center_x(Length::Fill)
         .center_y(Length::Fill)
-        .style(|_| container::Style {
+        .style(move |_| container::Style {
             background: Some(Background::Color(Color::from_rgb(0.12, 0.12, 0.12))),
+            border: Border {
+                radius: tile_radius.into(),
+                ..Default::default()
+            },
             ..Default::default()
         })
         .into()
@@ -329,6 +346,25 @@ fn view_image_card<'a>(img: &'a ImageData, is_selected: bool, size: f32) -> Elem
         .padding([3, 7])
         .style(|_| container::Style {
             background: Some(Background::Color(Color::from_rgba(0.85, 0.18, 0.18, 0.95))),
+            border: Border {
+                radius: 10.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .into()
+    } else if thumb_missing {
+        container(
+            row![
+                text(ui::icons::HOURGLASS).font(ICON_FONT).size(11),
+                text("Queued").size(11)
+            ]
+            .spacing(4)
+            .align_y(Alignment::Center),
+        )
+        .padding([3, 7])
+        .style(|_| container::Style {
+            background: Some(Background::Color(Color::from_rgba(0.45, 0.34, 0.09, 0.92))),
             border: Border {
                 radius: 10.0.into(),
                 ..Default::default()
@@ -395,32 +431,17 @@ fn view_image_card<'a>(img: &'a ImageData, is_selected: bool, size: f32) -> Elem
         container(Space::with_width(0)).into()
     };
 
-    let filename_overlay = container(
-        row![
-            text(&img.filename).size(12).style(|_| text::Style {
-                color: Some(Color::from_rgb(0.95, 0.95, 0.95))
-            }),
-            Space::with_width(Length::Fill),
-            if thumb_missing && !is_deleted {
-                text("Queued")
-                    .size(10)
-                    .style(|_| text::Style {
-                        color: Some(Color::from_rgb(0.88, 0.71, 0.31))
-                    })
-            } else {
-                text("").size(10)
-            }
-        ]
-        .align_y(Alignment::Center),
-    )
-    .padding([2, 8]);
-
     let image_stack = stack![
         container(image_content)
             .width(Length::Fixed(thumb_width))
             .height(Length::Fixed(thumb_height))
-            .style(|_| container::Style {
+            .clip(true)
+            .style(move |_| container::Style {
                 background: Some(Background::Color(Color::from_rgb(0.10, 0.10, 0.10))),
+                border: Border {
+                    radius: tile_radius.into(),
+                    ..Default::default()
+                },
                 ..Default::default()
             }),
         container(top_left_badge)
@@ -435,11 +456,6 @@ fn view_image_card<'a>(img: &'a ImageData, is_selected: bool, size: f32) -> Elem
             .align_x(iced::alignment::Horizontal::Right)
             .align_y(iced::alignment::Vertical::Top)
             .padding(8),
-        container(filename_overlay)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .align_x(iced::alignment::Horizontal::Left)
-            .align_y(iced::alignment::Vertical::Bottom),
     ];
 
     let card = container(image_stack)
@@ -451,7 +467,7 @@ fn view_image_card<'a>(img: &'a ImageData, is_selected: bool, size: f32) -> Elem
                 container::Style {
                     background: Some(Background::Color(Color::from_rgb(0.18, 0.27, 0.36))),
                     border: Border {
-                        radius: 10.0.into(),
+                        radius: card_radius.into(),
                         width: 1.0,
                         color: Color::from_rgb(0.39, 0.61, 0.82),
                     },
@@ -461,7 +477,7 @@ fn view_image_card<'a>(img: &'a ImageData, is_selected: bool, size: f32) -> Elem
                 container::Style {
                     background: Some(Background::Color(Color::from_rgb(0.09, 0.09, 0.09))),
                     border: Border {
-                        radius: 10.0.into(),
+                        radius: card_radius.into(),
                         width: 1.0,
                         color: Color::from_rgb(0.17, 0.17, 0.17),
                     },
