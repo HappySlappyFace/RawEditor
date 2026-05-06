@@ -159,11 +159,70 @@ fn style_sidebar_button(active: bool) -> impl Fn(&Theme, button::Status) -> butt
     }
 }
 
-fn compact_path(path: &str) -> String {
-    if path.len() <= 36 {
-        return path.to_string();
+fn style_sidebar_action_button(_theme: &Theme, status: button::Status) -> button::Style {
+    match status {
+        button::Status::Hovered => button::Style {
+            background: Some(Background::Color(Color::from_rgb(0.24, 0.24, 0.24))),
+            text_color: Color::from_rgb(0.94, 0.94, 0.94),
+            border: Border {
+                radius: 6.0.into(),
+                width: 0.0,
+                color: Color::TRANSPARENT,
+            },
+            ..Default::default()
+        },
+        button::Status::Pressed => button::Style {
+            background: Some(Background::Color(Color::from_rgb(0.16, 0.16, 0.16))),
+            text_color: Color::from_rgb(0.90, 0.90, 0.90),
+            border: Border {
+                radius: 6.0.into(),
+                width: 0.0,
+                color: Color::TRANSPARENT,
+            },
+            ..Default::default()
+        },
+        _ => button::Style {
+            background: Some(Background::Color(Color::from_rgb(0.19, 0.19, 0.19))),
+            text_color: Color::from_rgb(0.84, 0.84, 0.84),
+            border: Border {
+                radius: 6.0.into(),
+                width: 0.0,
+                color: Color::TRANSPARENT,
+            },
+            ..Default::default()
+        },
     }
-    format!("...{}", &path[path.len() - 33..])
+}
+
+fn compact_path(path: &str) -> String {
+    let path = std::path::Path::new(path);
+    let parts: Vec<String> = path
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().to_string())
+        .collect();
+
+    if parts.len() >= 2 {
+        let last = &parts[parts.len() - 1];
+        let before_last = &parts[parts.len() - 2];
+        let compact = format!(".../{}/{}", before_last, last);
+        if compact.len() <= 34 {
+            return compact;
+        }
+    }
+
+    let as_str = path.to_string_lossy();
+    if as_str.len() <= 36 {
+        return as_str.to_string();
+    }
+    let tail: String = as_str
+        .chars()
+        .rev()
+        .take(33)
+        .collect::<Vec<char>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("...{}", tail)
 }
 
 fn collect_folder_stats(editor: &RawEditor) -> Vec<(String, usize)> {
@@ -339,26 +398,22 @@ fn view_image_card<'a>(img: &'a ImageData, is_selected: bool, size: f32) -> Elem
     let filename_overlay = container(
         row![
             text(&img.filename).size(12).style(|_| text::Style {
-                color: Some(Color::from_rgb(0.94, 0.94, 0.94))
+                color: Some(Color::from_rgb(0.95, 0.95, 0.95))
             }),
             Space::with_width(Length::Fill),
-            text(if thumb_missing { "Queued" } else { "Ready" })
-                .size(10)
-                .style(move |_| text::Style {
-                    color: Some(if thumb_missing {
-                        Color::from_rgb(0.88, 0.71, 0.31)
-                    } else {
-                        Color::from_rgb(0.52, 0.78, 0.60)
+            if thumb_missing && !is_deleted {
+                text("Queued")
+                    .size(10)
+                    .style(|_| text::Style {
+                        color: Some(Color::from_rgb(0.88, 0.71, 0.31))
                     })
-                })
+            } else {
+                text("").size(10)
+            }
         ]
         .align_y(Alignment::Center),
     )
-    .padding([4, 8])
-    .style(|_| container::Style {
-        background: Some(Background::Color(Color::from_rgba(0.02, 0.02, 0.02, 0.82))),
-        ..Default::default()
-    });
+    .padding([2, 8]);
 
     let image_stack = stack![
         container(image_content)
@@ -507,43 +562,6 @@ fn view_filter_bar<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
     .into()
 }
 
-fn view_quick_actions<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
-    let has_selection = editor.selected_image_id.is_some() || !editor.multi_selection.is_empty();
-    row![
-        text("Quick actions").size(12).style(|_| text::Style {
-            color: Some(Color::from_rgb(0.62, 0.62, 0.62))
-        }),
-        button(text("☆ 0").size(11))
-            .on_press_maybe(has_selection.then_some(Message::SetRating(0)))
-            .padding([4, 8])
-            .style(ui::styles::NeutralButton::style),
-        button(text("★ 3").size(11))
-            .on_press_maybe(has_selection.then_some(Message::SetRating(3)))
-            .padding([4, 8])
-            .style(ui::styles::NeutralButton::style),
-        button(text("★ 5").size(11))
-            .on_press_maybe(has_selection.then_some(Message::SetRating(5)))
-            .padding([4, 8])
-            .style(ui::styles::NeutralButton::style),
-        button(
-            row![text(ui::icons::CHECK).font(ICON_FONT).size(11), text("Pick").size(11)].spacing(4)
-        )
-        .on_press_maybe(has_selection.then_some(Message::SetFlag(1)))
-        .padding([4, 8])
-        .style(ui::styles::NeutralButton::style),
-        button(
-            row![text(ui::icons::TIMES).font(ICON_FONT).size(11), text("Reject").size(11)]
-                .spacing(4)
-        )
-        .on_press_maybe(has_selection.then_some(Message::SetFlag(-1)))
-        .padding([4, 8])
-        .style(ui::styles::NeutralButton::style),
-    ]
-    .spacing(6)
-    .align_y(Alignment::Center)
-    .into()
-}
-
 fn view_library_sidebar<'a>(
     editor: &'a RawEditor,
     folder_stats: &[(String, usize)],
@@ -609,7 +627,7 @@ fn view_library_sidebar<'a>(
             .on_press(Message::ImportFolder)
             .padding([8, 10])
             .width(Length::Fill)
-            .style(style_toolbar_button),
+            .style(style_sidebar_action_button),
             button(
                 row![
                     text(ui::icons::FOLDER).font(ICON_FONT),
@@ -621,7 +639,7 @@ fn view_library_sidebar<'a>(
             .on_press(Message::ImportFromCamera)
             .padding([8, 10])
             .width(Length::Fill)
-            .style(style_toolbar_button),
+            .style(style_sidebar_action_button),
             Space::with_height(Length::Fixed(10.0)),
             text("Folders").size(12).style(|_| text::Style {
                 color: Some(Color::from_rgb(0.68, 0.68, 0.68))
@@ -647,22 +665,7 @@ fn view_library_sidebar<'a>(
     .into()
 }
 
-fn view_library_toolbar<'a>(
-    editor: &'a RawEditor,
-    filtered_count: usize,
-    total_count: usize,
-    selected_count: usize,
-    deleted_count: usize,
-) -> Element<'a, Message> {
-    let import_btn = button(
-        row![text(ui::icons::FOLDER_OPEN).font(ICON_FONT), text("Import")]
-            .spacing(8)
-            .align_y(Alignment::Center),
-    )
-    .on_press(Message::ImportFolder)
-    .padding([8, 12])
-    .style(style_toolbar_button);
-
+fn view_library_toolbar<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
     let export_btn = button(
         row![text(ui::icons::SAVE).font(ICON_FONT), text("Export")]
             .spacing(8)
@@ -685,15 +688,6 @@ fn view_library_toolbar<'a>(
                 ]
                 .spacing(2),
                 Space::with_width(Length::Fill),
-                metric_pill(
-                    "Shown",
-                    format!("{}/{}", filtered_count, total_count),
-                    Color::from_rgb(0.82, 0.82, 0.82),
-                ),
-                metric_pill("Selected", selected_count, Color::from_rgb(0.58, 0.78, 1.0)),
-                metric_pill("Missing", deleted_count, Color::from_rgb(0.94, 0.45, 0.45)),
-                Space::with_width(Length::Fixed(8.0)),
-                import_btn,
                 export_btn,
             ]
             .spacing(10)
@@ -701,10 +695,6 @@ fn view_library_toolbar<'a>(
             row![
                 view_filter_bar(editor),
                 Space::with_width(Length::Fill),
-                view_quick_actions(editor),
-                Space::with_width(Length::Fixed(12.0)),
-                view_thumbnail_size_presets(editor),
-                Space::with_width(Length::Fixed(12.0)),
                 checkbox("Auto-Advance", editor.auto_advance)
                     .on_toggle(|_| Message::ToggleAutoAdvance)
                     .size(16)
@@ -770,6 +760,8 @@ fn view_status_bar<'a>(
             metric_pill("Deleted", deleted_count, Color::from_rgb(0.94, 0.45, 0.45)),
             metric_pill("Folder", folder_label, Color::from_rgb(0.82, 0.82, 0.82)),
             iced::widget::horizontal_space(),
+            view_thumbnail_size_presets(editor),
+            Space::with_width(Length::Fixed(8.0)),
             text(&editor.status).size(12).style(|_| text::Style {
                 color: Some(Color::from_rgb(0.62, 0.62, 0.62))
             }),
@@ -892,8 +884,13 @@ pub fn view_library(editor: &RawEditor) -> Element<'_, Message> {
     .height(Length::Fill);
 
     column![
-        view_library_toolbar(editor, filtered_count, total_count, selected_count, deleted_count),
-        container(body).width(Length::Fill).height(Length::Fill).clip(true),
+        container(view_library_toolbar(editor))
+            .width(Length::Fill)
+            .clip(true),
+        container(body)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .clip(true),
         view_status_bar(
             editor,
             filtered_count,
