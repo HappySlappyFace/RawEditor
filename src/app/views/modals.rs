@@ -179,6 +179,19 @@ pub fn view_preferences_modal<'a>(editor: &'a RawEditor) -> Element<'a, Message>
         ]
         .spacing(8),
         column![
+            {
+                let used_mb = editor.raw_cache_bytes as f32 / (1024.0 * 1024.0);
+                let budget_mb = editor.raw_preload_budget_mb as f32;
+                text(format!(
+                    "RAW Cache Usage: {:.0} / {:.0} MB",
+                    used_mb,
+                    budget_mb
+                ))
+                .size(12)
+                .style(|_| text::Style {
+                    color: Some(Color::from_rgb(0.55, 0.75, 0.55))
+                })
+            },
             text("Performance")
                 .size(12)
                 .font(Font {
@@ -242,8 +255,89 @@ pub fn view_preferences_modal<'a>(editor: &'a RawEditor) -> Element<'a, Message>
                 .style(|_| text::Style {
                     color: Some(Color::from_rgb(0.45, 0.45, 0.45))
                 }),
+            row![
+                text("Preview Preload (Behind/Ahead):")
+                    .size(13)
+                    .style(|_| text::Style {
+                        color: Some(Color::from_rgb(0.7, 0.7, 0.7))
+                    }),
+                text(format!(
+                    "{}/{}",
+                    editor.preview_preload_behind, editor.preview_preload_ahead
+                ))
+                .size(13)
+                .font(Font {
+                    weight: Weight::Bold,
+                    ..Default::default()
+                })
+                .style(|_| text::Style {
+                    color: Some(Color::from_rgb(0.85, 0.85, 0.85))
+                }),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+            slider(
+                0.0..=crate::app::state::PREVIEW_PRELOAD_BEHIND_MAX as f32,
+                editor.preview_preload_behind as f32,
+                Message::SetPreviewPreloadBehind
+            )
+            .step(1.0),
+            slider(
+                0.0..=crate::app::state::PREVIEW_PRELOAD_AHEAD_MAX as f32,
+                editor.preview_preload_ahead as f32,
+                Message::SetPreviewPreloadAhead
+            )
+            .step(1.0),
+            text("How many working previews stay queued around your current image.")
+                .size(11)
+                .style(|_| text::Style {
+                    color: Some(Color::from_rgb(0.45, 0.45, 0.45))
+                }),
+            row![
+                text("RAW Preload (Behind/Ahead):")
+                    .size(13)
+                    .style(|_| text::Style {
+                        color: Some(Color::from_rgb(0.7, 0.7, 0.7))
+                    }),
+                text(format!(
+                    "{}/{}",
+                    editor.raw_preload_behind, editor.raw_preload_ahead
+                ))
+                .size(13)
+                .font(Font {
+                    weight: Weight::Bold,
+                    ..Default::default()
+                })
+                .style(|_| text::Style {
+                    color: Some(Color::from_rgb(0.85, 0.85, 0.85))
+                }),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+            slider(
+                0.0..=crate::app::state::RAW_PRELOAD_BEHIND_MAX as f32,
+                editor.raw_preload_behind as f32,
+                Message::SetRawPreloadBehind
+            )
+            .step(1.0),
+            slider(
+                0.0..=crate::app::state::RAW_PRELOAD_AHEAD_MAX as f32,
+                editor.raw_preload_ahead as f32,
+                Message::SetRawPreloadAhead
+            )
+            .step(1.0),
+            text("How many full RAWs are pre-decoded for faster Develop navigation.")
+                .size(11)
+                .style(|_| text::Style {
+                    color: Some(Color::from_rgb(0.45, 0.45, 0.45))
+                }),
         ]
         .spacing(8),
+        button("Reset Preferences to Defaults")
+            .on_press(Message::ResetPreferences)
+            .padding(8)
+            .width(Length::Fill)
+            .style(ui::styles::NeutralButton::style),
         button("Close")
             .on_press(Message::CloseModal)
             .padding(8)

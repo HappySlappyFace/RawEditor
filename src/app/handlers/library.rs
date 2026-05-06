@@ -139,6 +139,7 @@ pub fn handle_set_flag(editor: &mut RawEditor, flag: i8) -> Task<Message> {
 
 pub fn handle_toggle_auto_advance(editor: &mut RawEditor) -> Task<Message> {
     editor.auto_advance = !editor.auto_advance;
+    editor.save_preferences();
     Task::none()
 }
 

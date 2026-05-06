@@ -164,6 +164,11 @@ pub enum Message {
     // Phase 85: Preferences
     SetCacheCapacity(f32),
     SetRawPreloadBudget(f32),
+    SetPreviewPreloadBehind(f32),
+    SetPreviewPreloadAhead(f32),
+    SetRawPreloadBehind(f32),
+    SetRawPreloadAhead(f32),
+    ResetPreferences,
 
     /// User selected an image from the grid
     ImageSelected(i64),

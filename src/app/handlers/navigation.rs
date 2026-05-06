@@ -374,8 +374,8 @@ fn identify_missing_preloads(editor: &RawEditor) -> Vec<(i64, String)> {
     if let Some(current_id) = editor.selected_image_id {
         if let Some(current_idx) = editor.images.iter().position(|i| i.id == current_id) {
             let total = editor.images.len() as isize;
-            let behind = crate::app::state::PRELOAD_BEHIND as isize;
-            let ahead = crate::app::state::PRELOAD_AHEAD as isize;
+            let behind = editor.preview_preload_behind as isize;
+            let ahead = editor.preview_preload_ahead as isize;
 
             for offset in -behind..=ahead {
                 if offset == 0 { continue; }
@@ -408,8 +408,8 @@ fn identify_missing_raw_preloads(editor: &RawEditor) -> Vec<(i64, String)> {
     if let Some(current_id) = editor.selected_image_id {
         if let Some(current_idx) = editor.images.iter().position(|i| i.id == current_id) {
             let total = editor.images.len() as isize;
-            let behind = crate::app::state::RAW_PRELOAD_BEHIND as isize;
-            let ahead = crate::app::state::RAW_PRELOAD_AHEAD as isize;
+            let behind = editor.raw_preload_behind as isize;
+            let ahead = editor.raw_preload_ahead as isize;
 
             for offset in -behind..=ahead {
                 if offset == 0 {

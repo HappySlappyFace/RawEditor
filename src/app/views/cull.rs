@@ -87,8 +87,8 @@ fn count_cached_neighbors(editor: &RawEditor, id: i64) -> (i32, i32) {
     let mut after = 0;
     if let Some(current_idx) = editor.images.iter().position(|i| i.id == id) {
         let total = editor.images.len() as isize;
-        let behind_limit = crate::app::state::PRELOAD_BEHIND;
-        let ahead_limit = crate::app::state::PRELOAD_AHEAD;
+        let behind_limit = editor.preview_preload_behind;
+        let ahead_limit = editor.preview_preload_ahead;
 
         for i in 1..=behind_limit {
             let mut idx = current_idx as isize - i as isize;

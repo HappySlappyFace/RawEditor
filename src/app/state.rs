@@ -127,6 +127,14 @@ pub struct RawEditor {
     pub raw_cache: LruCache<i64, Arc<raw::loader::RawDataResult>>,
     /// Approximate memory usage of raw_cache in bytes
     pub raw_cache_bytes: usize,
+    /// Number of previews to keep preloaded behind current image
+    pub preview_preload_behind: usize,
+    /// Number of previews to keep preloaded ahead of current image
+    pub preview_preload_ahead: usize,
+    /// Number of RAW files to preload behind current image
+    pub raw_preload_behind: usize,
+    /// Number of RAW files to preload ahead of current image
+    pub raw_preload_ahead: usize,
     /// Currently active tab
     pub current_tab: AppTab,
     /// Current edit parameters for the selected image
@@ -241,6 +249,10 @@ pub const RAW_PRELOAD_BEHIND: usize = 1;
 pub const RAW_PRELOAD_AHEAD: usize = 4;
 pub const RAW_PRELOAD_BUDGET_MB_DEFAULT: u32 = 1024;
 pub const RAW_CACHE_ENTRY_CAPACITY: usize = 4096;
+pub const PREVIEW_PRELOAD_BEHIND_MAX: usize = 30;
+pub const PREVIEW_PRELOAD_AHEAD_MAX: usize = 100;
+pub const RAW_PRELOAD_BEHIND_MAX: usize = 10;
+pub const RAW_PRELOAD_AHEAD_MAX: usize = 20;
 
 impl RawEditor {
     pub fn title(&self) -> String {
@@ -254,6 +266,18 @@ impl RawEditor {
 
         // Initialize preview cache directory (fast)
         let preview_cache_dir = raw::preview::get_preview_cache_dir();
+        let settings = crate::core::settings::AppSettings::load_or_default();
+        let cache_capacity = settings.cache_capacity.clamp(20, 500);
+        let raw_preload_budget_mb = settings.raw_preload_budget_mb.min(4096);
+        let thumbnail_size = settings.thumbnail_size.clamp(100.0, 400.0);
+        let preview_preload_behind = settings
+            .preview_preload_behind
+            .min(PREVIEW_PRELOAD_BEHIND_MAX);
+        let preview_preload_ahead = settings
+            .preview_preload_ahead
+            .min(PREVIEW_PRELOAD_AHEAD_MAX);
+        let raw_preload_behind = settings.raw_preload_behind.min(RAW_PRELOAD_BEHIND_MAX);
+        let raw_preload_ahead = settings.raw_preload_ahead.min(RAW_PRELOAD_AHEAD_MAX);
 
         // Determine the database path (e.g., in the application's data directory)
         let _db_path = database::library::Library::get_db_path();
@@ -265,10 +289,14 @@ impl RawEditor {
                 images: Vec::new(), // Empty until database loads
                 selected_image_id: None,
                 preview_cache_dir,
-                preview_cache: LruCache::new(NonZeroUsize::new(CACHE_CAPACITY).unwrap()),
-                raw_preload_budget_mb: RAW_PRELOAD_BUDGET_MB_DEFAULT,
+                preview_cache: LruCache::new(NonZeroUsize::new(cache_capacity).unwrap()),
+                raw_preload_budget_mb,
                 raw_cache: LruCache::new(NonZeroUsize::new(RAW_CACHE_ENTRY_CAPACITY).unwrap()),
                 raw_cache_bytes: 0,
+                preview_preload_behind,
+                preview_preload_ahead,
+                raw_preload_behind,
+                raw_preload_ahead,
                 current_tab: AppTab::Library, // Start in Library view
                 current_edit_params: crate::core::types::EditParams::default(),
 
@@ -279,7 +307,7 @@ impl RawEditor {
 
                 histogram_data: std::cell::RefCell::new([[0; 256]; 3]),
                 histogram_cache: iced::widget::canvas::Cache::default(),
-                histogram_enabled: true,
+                histogram_enabled: settings.histogram_enabled,
                 show_before: false,
                 zoom: 1.0,
                 pan_offset: cgmath::Vector2::new(0.0, 0.0),
@@ -299,15 +327,15 @@ impl RawEditor {
                 edit_clipboard: None,
                 multi_selection: HashSet::new(),
                 last_modifiers: iced::keyboard::Modifiers::default(),
-                auto_advance: false,
+                auto_advance: settings.auto_advance,
                 min_filter_rating: 0,
                 info_overlay: crate::app::state::InfoOverlayState::Metadata,
                 // Phase 84
                 active_modal: Modal::None,
                 // Phase 85
-                cache_capacity: 200,
+                cache_capacity,
                 // Phase 88
-                thumbnail_size: 220.0,
+                thumbnail_size,
                 // Phase 89
                 export_settings: ExportSettings::default(),
                 export_queue: Vec::new(),
@@ -526,6 +554,24 @@ impl RawEditor {
             .saturating_add(Self::raw_cache_entry_bytes(&raw));
         self.raw_cache.put(image_id, raw);
         self.evict_raw_cache_to_budget();
+    }
+
+    pub fn save_preferences(&self) {
+        let settings = crate::core::settings::AppSettings {
+            cache_capacity: self.cache_capacity,
+            raw_preload_budget_mb: self.raw_preload_budget_mb,
+            thumbnail_size: self.thumbnail_size,
+            auto_advance: self.auto_advance,
+            histogram_enabled: self.histogram_enabled,
+            preview_preload_behind: self.preview_preload_behind,
+            preview_preload_ahead: self.preview_preload_ahead,
+            raw_preload_behind: self.raw_preload_behind,
+            raw_preload_ahead: self.raw_preload_ahead,
+        };
+
+        if let Err(e) = settings.save() {
+            tracing::warn!("Failed to save app settings: {}", e);
+        }
     }
 
     /// Phase 24: Keyboard shortcuts subscription

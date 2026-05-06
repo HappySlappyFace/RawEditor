@@ -125,6 +125,19 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::SetThumbnailSize(s) => handlers::window::handle_set_thumbnail_size(editor, s),
         Message::SetCacheCapacity(c) => handlers::window::handle_set_cache_capacity(editor, c),
         Message::SetRawPreloadBudget(v) => handlers::window::handle_set_raw_preload_budget(editor, v),
+        Message::SetPreviewPreloadBehind(v) => {
+            handlers::window::handle_set_preview_preload_behind(editor, v)
+        }
+        Message::SetPreviewPreloadAhead(v) => {
+            handlers::window::handle_set_preview_preload_ahead(editor, v)
+        }
+        Message::SetRawPreloadBehind(v) => {
+            handlers::window::handle_set_raw_preload_behind(editor, v)
+        }
+        Message::SetRawPreloadAhead(v) => {
+            handlers::window::handle_set_raw_preload_ahead(editor, v)
+        }
+        Message::ResetPreferences => handlers::window::handle_reset_preferences(editor),
         Message::HistogramToggled(b) => handlers::window::handle_histogram_toggled(editor, b),
         Message::ToggleProfiler => {
             editor.show_profiler = !editor.show_profiler;
