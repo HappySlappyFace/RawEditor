@@ -1,6 +1,6 @@
 use iced::widget::image::Handle;
 use iced::widget::{
-    button, checkbox, column, container, row, scrollable, stack, text, Image, Space,
+    button, container, column, row, scrollable, stack, text, Image, Space,
 };
 use iced::{Alignment, Background, Border, Color, Element, Length, Theme};
 use iced_aw::Wrap;
@@ -289,8 +289,6 @@ fn view_image_card<'a>(img: &'a ImageData, is_selected: bool, size: f32) -> Elem
     let is_deleted = img.file_status == "deleted";
     let thumb_missing = img.cache_path_thumb.is_none();
     let has_loaded_thumb = !is_deleted && img.cache_path_thumb.is_some();
-    let tile_radius = if has_loaded_thumb { 0.0 } else { 8.0 };
-    let card_radius = if has_loaded_thumb { 0.0 } else { 10.0 };
 
     let image_content: Element<'a, Message> = if has_loaded_thumb {
         if let Some(thumb_path) = img.cache_path_thumb.as_ref() {
@@ -303,17 +301,18 @@ fn view_image_card<'a>(img: &'a ImageData, is_selected: bool, size: f32) -> Elem
             Space::with_width(Length::Fill).into()
         }
     } else {
-        let placeholder_label = if is_deleted { "Missing" } else { "Queued" };
-        let placeholder_color = if is_deleted {
-            Color::from_rgb(0.86, 0.42, 0.42)
+        let placeholder_label = if is_deleted {
+            "Missing..."
+        } else if thumb_missing {
+            "Queued..."
         } else {
-            Color::from_rgb(0.85, 0.72, 0.39)
+            "Generating..."
         };
         container(
             column![
                 text(ui::icons::TH_LARGE).font(ICON_FONT).size(24),
-                text(placeholder_label).size(11).style(move |_| text::Style {
-                    color: Some(placeholder_color)
+                text(placeholder_label).size(11).style(|_| text::Style {
+                    color: Some(Color::from_rgb(0.88, 0.88, 0.88))
                 })
             ]
             .spacing(6)
@@ -323,10 +322,10 @@ fn view_image_card<'a>(img: &'a ImageData, is_selected: bool, size: f32) -> Elem
         .height(Length::Fill)
         .center_x(Length::Fill)
         .center_y(Length::Fill)
-        .style(move |_| container::Style {
+        .style(|_| container::Style {
             background: Some(Background::Color(Color::from_rgb(0.12, 0.12, 0.12))),
             border: Border {
-                radius: tile_radius.into(),
+                radius: 0.0.into(),
                 ..Default::default()
             },
             ..Default::default()
@@ -334,45 +333,7 @@ fn view_image_card<'a>(img: &'a ImageData, is_selected: bool, size: f32) -> Elem
         .into()
     };
 
-    let top_left_badge: Element<'a, Message> = if is_deleted {
-        container(
-            row![
-                text(ui::icons::TIMES).font(ICON_FONT).size(11),
-                text("Missing").size(11)
-            ]
-            .spacing(4)
-            .align_y(Alignment::Center),
-        )
-        .padding([3, 7])
-        .style(|_| container::Style {
-            background: Some(Background::Color(Color::from_rgba(0.85, 0.18, 0.18, 0.95))),
-            border: Border {
-                radius: 10.0.into(),
-                ..Default::default()
-            },
-            ..Default::default()
-        })
-        .into()
-    } else if thumb_missing {
-        container(
-            row![
-                text(ui::icons::HOURGLASS).font(ICON_FONT).size(11),
-                text("Queued").size(11)
-            ]
-            .spacing(4)
-            .align_y(Alignment::Center),
-        )
-        .padding([3, 7])
-        .style(|_| container::Style {
-            background: Some(Background::Color(Color::from_rgba(0.45, 0.34, 0.09, 0.92))),
-            border: Border {
-                radius: 10.0.into(),
-                ..Default::default()
-            },
-            ..Default::default()
-        })
-        .into()
-    } else if img.flag == 1 {
+    let top_left_badge: Element<'a, Message> = if has_loaded_thumb && img.flag == 1 {
         container(
             row![
                 text(ui::icons::CHECK).font(ICON_FONT).size(11),
@@ -391,7 +352,7 @@ fn view_image_card<'a>(img: &'a ImageData, is_selected: bool, size: f32) -> Elem
             ..Default::default()
         })
         .into()
-    } else if img.flag == -1 {
+    } else if has_loaded_thumb && img.flag == -1 {
         container(
             row![
                 text(ui::icons::TIMES).font(ICON_FONT).size(11),
@@ -414,7 +375,7 @@ fn view_image_card<'a>(img: &'a ImageData, is_selected: bool, size: f32) -> Elem
         container(Space::with_width(0)).into()
     };
 
-    let top_right_badge: Element<'a, Message> = if img.rating > 0 {
+    let top_right_badge: Element<'a, Message> = if has_loaded_thumb && img.rating > 0 {
         let stars = vec![ui::icons::STAR; img.rating as usize].join(" ");
         container(text(stars).font(ICON_FONT).size(10))
             .padding([3, 7])
@@ -436,10 +397,10 @@ fn view_image_card<'a>(img: &'a ImageData, is_selected: bool, size: f32) -> Elem
             .width(Length::Fixed(thumb_width))
             .height(Length::Fixed(thumb_height))
             .clip(true)
-            .style(move |_| container::Style {
+            .style(|_| container::Style {
                 background: Some(Background::Color(Color::from_rgb(0.10, 0.10, 0.10))),
                 border: Border {
-                    radius: tile_radius.into(),
+                    radius: 0.0.into(),
                     ..Default::default()
                 },
                 ..Default::default()
@@ -462,12 +423,13 @@ fn view_image_card<'a>(img: &'a ImageData, is_selected: bool, size: f32) -> Elem
         .width(Length::Fixed(thumb_width + 14.0))
         .height(Length::Fixed(thumb_height + 14.0))
         .padding(7)
+        .clip(true)
         .style(move |_| {
             if is_selected {
                 container::Style {
                     background: Some(Background::Color(Color::from_rgb(0.18, 0.27, 0.36))),
                     border: Border {
-                        radius: card_radius.into(),
+                        radius: 0.0.into(),
                         width: 1.0,
                         color: Color::from_rgb(0.39, 0.61, 0.82),
                     },
@@ -477,7 +439,7 @@ fn view_image_card<'a>(img: &'a ImageData, is_selected: bool, size: f32) -> Elem
                 container::Style {
                     background: Some(Background::Color(Color::from_rgb(0.09, 0.09, 0.09))),
                     border: Border {
-                        radius: card_radius.into(),
+                        radius: 0.0.into(),
                         width: 1.0,
                         color: Color::from_rgb(0.17, 0.17, 0.17),
                     },
@@ -692,45 +654,14 @@ fn view_library_toolbar<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
     .style(style_toolbar_button);
 
     container(
-        column![
-            row![
-                column![
-                    text("Library").size(22),
-                    text("Browse, cull, and prepare your selection")
-                        .size(12)
-                        .style(|_| text::Style {
-                            color: Some(Color::from_rgb(0.58, 0.58, 0.58))
-                        }),
-                ]
-                .spacing(2),
-                Space::with_width(Length::Fill),
-                export_btn,
-            ]
-            .spacing(10)
-            .align_y(Alignment::Center),
-            row![
-                view_filter_bar(editor),
-                Space::with_width(Length::Fill),
-                checkbox("Auto-Advance", editor.auto_advance)
-                    .on_toggle(|_| Message::ToggleAutoAdvance)
-                    .size(16)
-                    .spacing(6)
-                    .text_size(12)
-                    .style(|_theme, _status| checkbox::Style {
-                        text_color: Some(Color::from_rgb(0.72, 0.72, 0.72)),
-                        background: Background::Color(Color::from_rgb(0.20, 0.20, 0.20)),
-                        icon_color: Color::from_rgb(0.88, 0.88, 0.88),
-                        border: Border {
-                            color: Color::from_rgb(0.36, 0.36, 0.36),
-                            width: 1.0,
-                            radius: 3.0.into(),
-                        },
-                    }),
-            ]
-            .spacing(10)
-            .align_y(Alignment::Center),
+        row![
+            text("Library").size(22),
+            view_filter_bar(editor),
+            Space::with_width(Length::Fill),
+            export_btn,
         ]
         .spacing(10)
+        .align_y(Alignment::Center)
         .width(Length::Fill),
     )
     .padding(12)
@@ -767,13 +698,25 @@ fn view_status_bar<'a>(
                 format!("{}/{}", filtered_count, total_count),
                 Color::from_rgb(0.82, 0.82, 0.82),
             ),
+            text("|").size(12).style(|_| text::Style {
+                color: Some(Color::from_rgb(0.28, 0.28, 0.28))
+            }),
             metric_pill("Selected", selected_count, Color::from_rgb(0.58, 0.78, 1.0)),
+            text("|").size(12).style(|_| text::Style {
+                color: Some(Color::from_rgb(0.28, 0.28, 0.28))
+            }),
             metric_pill(
                 "Cached",
                 format!("{}/{}", cached_count, filtered_count),
                 Color::from_rgb(0.54, 0.78, 0.58),
             ),
+            text("|").size(12).style(|_| text::Style {
+                color: Some(Color::from_rgb(0.28, 0.28, 0.28))
+            }),
             metric_pill("Deleted", deleted_count, Color::from_rgb(0.94, 0.45, 0.45)),
+            text("|").size(12).style(|_| text::Style {
+                color: Some(Color::from_rgb(0.28, 0.28, 0.28))
+            }),
             metric_pill("Folder", folder_label, Color::from_rgb(0.82, 0.82, 0.82)),
             iced::widget::horizontal_space(),
             view_thumbnail_size_presets(editor),
@@ -782,11 +725,13 @@ fn view_status_bar<'a>(
                 color: Some(Color::from_rgb(0.62, 0.62, 0.62))
             }),
         ]
-        .spacing(8)
+        .spacing(12)
         .align_y(Alignment::Center),
     )
+    .width(Length::Fill)
     .height(Length::Fixed(42.0))
     .padding([0, 10])
+    .clip(true)
     .align_y(iced::alignment::Vertical::Center)
     .style(|_| container::Style {
         background: Some(Background::Color(Color::from_rgb(0.07, 0.07, 0.07))),
@@ -827,7 +772,7 @@ pub fn view_library(editor: &RawEditor) -> Element<'_, Message> {
     let filtered_count = filtered_images.len();
     let selected_count = editor.multi_selection.len();
 
-    let main_content: Element<'_, Message> = if filtered_images.is_empty() {
+    let grid_content: Element<'_, Message> = if filtered_images.is_empty() {
         container(
             column![
                 text("No images match this filter").size(24),
@@ -870,34 +815,33 @@ pub fn view_library(editor: &RawEditor) -> Element<'_, Message> {
             .align_x(iced::alignment::Horizontal::Center);
 
         container(
-            scrollable(
-                container(centered_grid)
-                    .width(Length::Fill)
-                    .align_x(iced::alignment::Horizontal::Center)
-                    .padding([12, 12]),
-            )
-            .height(Length::Fill)
-            .width(Length::Fill),
+            container(centered_grid)
+                .width(Length::Fill)
+                .align_x(iced::alignment::Horizontal::Center)
+                .padding([12, 12]),
         )
         .width(Length::Fill)
-        .height(Length::Fill)
-        .clip(true)
-        .style(|_| container::Style {
-            background: Some(Background::Color(Color::from_rgb(0.08, 0.08, 0.08))),
-            ..Default::default()
-        })
         .into()
     };
 
     let body = row![
         view_library_sidebar(editor, &folder_stats, total_count),
-        container(main_content)
+        container(
+            scrollable(grid_content)
+                .height(Length::Fill)
+                .width(Length::Fill)
+        )
             .width(Length::Fill)
             .height(Length::Fill)
             .clip(true)
+            .style(|_| container::Style {
+                background: Some(Background::Color(Color::from_rgb(0.08, 0.08, 0.08))),
+                ..Default::default()
+            })
     ]
     .width(Length::Fill)
-    .height(Length::Fill);
+    .height(Length::Fill)
+    .clip(true);
 
     column![
         container(view_library_toolbar(editor))
