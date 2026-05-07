@@ -292,11 +292,16 @@ fn view_image_card<'a>(img: &'a ImageData, is_selected: bool, size: f32) -> Elem
 
     let image_content: Element<'a, Message> = if has_loaded_thumb {
         if let Some(thumb_path) = img.cache_path_thumb.as_ref() {
-            Image::new(Handle::from_path(PathBuf::from(thumb_path)))
-                .content_fit(iced::ContentFit::Cover)
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .into()
+            container(
+                Image::new(Handle::from_path(PathBuf::from(thumb_path)))
+                    .content_fit(iced::ContentFit::Cover)
+                    .width(Length::Fixed(thumb_width))
+                    .height(Length::Fixed(thumb_height)),
+            )
+            .width(Length::Fixed(thumb_width))
+            .height(Length::Fixed(thumb_height))
+            .clip(true)
+            .into()
         } else {
             Space::with_width(Length::Fill).into()
         }
@@ -772,33 +777,42 @@ pub fn view_library(editor: &RawEditor) -> Element<'_, Message> {
     let filtered_count = filtered_images.len();
     let selected_count = editor.multi_selection.len();
 
-    let grid_content: Element<'_, Message> = if filtered_images.is_empty() {
+    let main_panel: Element<'_, Message> = if filtered_images.is_empty() {
         container(
-            column![
-                text("No images match this filter").size(24),
-                text("Try another folder/rating or import a new directory.")
-                    .size(14)
-                    .style(|_| text::Style {
-                        color: Some(Color::from_rgb(0.55, 0.55, 0.55))
-                    }),
-                button(
-                    row![
-                        text(ui::icons::FOLDER_OPEN).font(ICON_FONT),
-                        text("Import Folder")
-                    ]
-                    .spacing(8)
-                )
-                .on_press(Message::ImportFolder)
-                .style(style_toolbar_button)
-                .padding([10, 14]),
-            ]
-            .spacing(16)
-            .align_x(Alignment::Center),
+            container(
+                column![
+                    text("No images match this filter").size(24),
+                    text("Try another folder/rating or import a new directory.")
+                        .size(14)
+                        .style(|_| text::Style {
+                            color: Some(Color::from_rgb(0.55, 0.55, 0.55))
+                        }),
+                    button(
+                        row![
+                            text(ui::icons::FOLDER_OPEN).font(ICON_FONT),
+                            text("Import Folder")
+                        ]
+                        .spacing(8)
+                    )
+                    .on_press(Message::ImportFolder)
+                    .style(style_toolbar_button)
+                    .padding([10, 14]),
+                ]
+                .spacing(16)
+                .align_x(Alignment::Center),
+            )
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .width(Length::Fill)
+            .height(Length::Fill),
         )
         .width(Length::Fill)
         .height(Length::Fill)
-        .center_x(Length::Fill)
-        .center_y(Length::Fill)
+        .clip(true)
+        .style(|_| container::Style {
+            background: Some(Background::Color(Color::from_rgb(0.08, 0.08, 0.08))),
+            ..Default::default()
+        })
         .into()
     } else {
         let thumbnail_grid = filtered_images.iter().fold(
@@ -815,52 +829,63 @@ pub fn view_library(editor: &RawEditor) -> Element<'_, Message> {
             .align_x(iced::alignment::Horizontal::Center);
 
         container(
-            container(centered_grid)
-                .width(Length::Fill)
-                .align_x(iced::alignment::Horizontal::Center)
-                .padding([12, 12]),
+            scrollable(
+                container(centered_grid)
+                    .width(Length::Fill)
+                    .align_x(iced::alignment::Horizontal::Center)
+                    .padding([12, 12]),
+            )
+            .height(Length::Fill)
+            .width(Length::Fill),
         )
         .width(Length::Fill)
+        .height(Length::Fill)
+        .clip(true)
+        .style(|_| container::Style {
+            background: Some(Background::Color(Color::from_rgb(0.08, 0.08, 0.08))),
+            ..Default::default()
+        })
         .into()
     };
 
     let body = row![
         view_library_sidebar(editor, &folder_stats, total_count),
-        container(
-            scrollable(grid_content)
-                .height(Length::Fill)
-                .width(Length::Fill)
-        )
+        container(main_panel)
             .width(Length::Fill)
             .height(Length::Fill)
             .clip(true)
-            .style(|_| container::Style {
-                background: Some(Background::Color(Color::from_rgb(0.08, 0.08, 0.08))),
-                ..Default::default()
-            })
     ]
     .width(Length::Fill)
     .height(Length::Fill)
     .clip(true);
 
-    column![
-        container(view_library_toolbar(editor))
-            .width(Length::Fill)
-            .clip(true),
-        container(body)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .clip(true),
-        view_status_bar(
-            editor,
-            filtered_count,
-            total_count,
-            selected_count,
-            cached_count,
-            deleted_count
-        )
-    ]
+    container(
+        column![
+            container(view_library_toolbar(editor))
+                .width(Length::Fill)
+                .clip(true),
+            container(body)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .clip(true),
+            view_status_bar(
+                editor,
+                filtered_count,
+                total_count,
+                selected_count,
+                cached_count,
+                deleted_count
+            )
+        ]
+        .width(Length::Fill)
+        .height(Length::Fill),
+    )
     .width(Length::Fill)
     .height(Length::Fill)
+    .clip(true)
+    .style(|_| container::Style {
+        background: Some(Background::Color(Color::from_rgb(0.08, 0.08, 0.08))),
+        ..Default::default()
+    })
     .into()
 }
