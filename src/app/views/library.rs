@@ -17,6 +17,8 @@ const THUMB_PRESET_SMALL: f32 = 150.0;
 const THUMB_PRESET_MEDIUM: f32 = 190.0;
 const THUMB_PRESET_LARGE: f32 = 230.0;
 const THUMB_PRESET_XL: f32 = 280.0;
+const LIBRARY_TOOLBAR_HEIGHT: f32 = 56.0;
+const LIBRARY_STATUS_HEIGHT: f32 = 42.0;
 
 fn metric_pill<'a>(label: &'a str, value: impl ToString, color: Color) -> Element<'a, Message> {
     container(
@@ -83,12 +85,12 @@ fn style_chip(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style 
     move |_theme, status| {
         if active {
             button::Style {
-                background: Some(Background::Color(Color::from_rgb(0.24, 0.44, 0.66))),
+                background: Some(Background::Color(Color::from_rgb(0.52, 0.30, 0.12))),
                 text_color: Color::WHITE,
                 border: Border {
                     radius: 14.0.into(),
                     width: 1.0,
-                    color: Color::from_rgb(0.45, 0.65, 0.85),
+                    color: Color::from_rgb(0.72, 0.45, 0.22),
                 },
                 ..Default::default()
             }
@@ -123,12 +125,12 @@ fn style_sidebar_button(active: bool) -> impl Fn(&Theme, button::Status) -> butt
     move |_theme, status| {
         if active {
             button::Style {
-                background: Some(Background::Color(Color::from_rgb(0.20, 0.36, 0.54))),
+                background: Some(Background::Color(Color::from_rgb(0.50, 0.27, 0.10))),
                 text_color: Color::WHITE,
                 border: Border {
                     radius: 6.0.into(),
                     width: 1.0,
-                    color: Color::from_rgb(0.38, 0.57, 0.76),
+                    color: Color::from_rgb(0.70, 0.41, 0.18),
                 },
                 ..Default::default()
             }
@@ -432,11 +434,11 @@ fn view_image_card<'a>(img: &'a ImageData, is_selected: bool, size: f32) -> Elem
         .style(move |_| {
             if is_selected {
                 container::Style {
-                    background: Some(Background::Color(Color::from_rgb(0.18, 0.27, 0.36))),
+                    background: Some(Background::Color(Color::from_rgb(0.29, 0.19, 0.12))),
                     border: Border {
                         radius: 0.0.into(),
                         width: 1.0,
-                        color: Color::from_rgb(0.39, 0.61, 0.82),
+                        color: Color::from_rgb(0.82, 0.51, 0.24),
                     },
                     ..Default::default()
                 }
@@ -706,7 +708,7 @@ fn view_status_bar<'a>(
             text("|").size(12).style(|_| text::Style {
                 color: Some(Color::from_rgb(0.28, 0.28, 0.28))
             }),
-            metric_pill("Selected", selected_count, Color::from_rgb(0.58, 0.78, 1.0)),
+            metric_pill("Selected", selected_count, Color::from_rgb(0.92, 0.63, 0.34)),
             text("|").size(12).style(|_| text::Style {
                 color: Some(Color::from_rgb(0.28, 0.28, 0.28))
             }),
@@ -734,7 +736,7 @@ fn view_status_bar<'a>(
         .align_y(Alignment::Center),
     )
     .width(Length::Fill)
-    .height(Length::Fixed(42.0))
+    .height(Length::Fixed(LIBRARY_STATUS_HEIGHT))
     .padding([0, 10])
     .clip(true)
     .align_y(iced::alignment::Vertical::Center)
@@ -859,23 +861,33 @@ pub fn view_library(editor: &RawEditor) -> Element<'_, Message> {
     .height(Length::Fill)
     .clip(true);
 
+    let toolbar = container(view_library_toolbar(editor))
+        .width(Length::Fill)
+        .height(Length::Fixed(LIBRARY_TOOLBAR_HEIGHT))
+        .clip(true)
+        .align_y(iced::alignment::Vertical::Top);
+
+    let status = container(view_status_bar(
+        editor,
+        filtered_count,
+        total_count,
+        selected_count,
+        cached_count,
+        deleted_count,
+    ))
+    .width(Length::Fill)
+    .height(Length::Fixed(LIBRARY_STATUS_HEIGHT))
+    .clip(true)
+    .align_y(iced::alignment::Vertical::Bottom);
+
     container(
         column![
-            container(view_library_toolbar(editor))
-                .width(Length::Fill)
-                .clip(true),
+            toolbar,
             container(body)
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .clip(true),
-            view_status_bar(
-                editor,
-                filtered_count,
-                total_count,
-                selected_count,
-                cached_count,
-                deleted_count
-            )
+            status,
         ]
         .width(Length::Fill)
         .height(Length::Fill),
