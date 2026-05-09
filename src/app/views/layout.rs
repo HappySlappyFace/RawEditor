@@ -6,7 +6,6 @@ use crate::ui;
 use crate::app::message::{Message, AppTab};
 use crate::app::state::{RawEditor, Modal};
 use crate::ui::icons::ICON_FONT;
-use crate::ui::palette;
 
 use super::library::view_library;
 use super::cull::view_cull;
@@ -54,7 +53,7 @@ fn view_splash(editor: &RawEditor) -> Element<'_, Message> {
     .height(Length::Fill)
     .style(|_theme| {
         container::Style {
-            background: Some(Background::Color(Color::from_rgb(0.08, 0.08, 0.10))),
+            background: Some(Background::Color(Color::from_rgb(0.08, 0.08, 0.08))),
             ..Default::default()
         }
     });
@@ -62,24 +61,64 @@ fn view_splash(editor: &RawEditor) -> Element<'_, Message> {
     let right_panel = container(
         column![
             Space::with_height(Length::Fill),
-            text("RAW Editor").size(56).center().style(|_theme| text::Style { color: Some(Color::from_rgb(0.9, 0.9, 0.9)) }),
-            Space::with_height(10.0),
-            text("Professional RAW Photo Editor").size(14).center().style(|_theme| text::Style { color: Some(Color::from_rgb(0.6, 0.6, 0.6)) }),
-            Space::with_height(40.0),
-            text(&editor.status).size(16).center().style(|_theme| text::Style { color: Some(Color::from_rgb(0.8, 0.8, 0.8)) }),
-            Space::with_height(15.0),
-            text(ui::icons::HOURGLASS).size(32).font(ICON_FONT).center().style(|_theme| text::Style { color: Some(palette::accent_text()) }),
+            container(
+                Image::new(Handle::from_bytes(LOGO_BYTES.to_vec()))
+                    .height(Length::Fixed(72.0))
+                    .content_fit(iced::ContentFit::Contain)
+            )
+            .width(Length::Fill)
+            .align_x(iced::alignment::Horizontal::Center),
+            Space::with_height(Length::Fixed(28.0)),
+            container(
+                column![
+                    text(&editor.status)
+                        .size(13)
+                        .width(Length::Fill)
+                        .align_x(iced::alignment::Horizontal::Center)
+                        .style(|_| text::Style {
+                            color: Some(Color::from_rgb(0.82, 0.82, 0.82))
+                        }),
+                ]
+                .spacing(6)
+            )
+            .padding([12, 14])
+            .style(|_| container::Style {
+                background: Some(Background::Color(Color::from_rgb(0.11, 0.11, 0.11))),
+                border: iced::Border {
+                    radius: 10.0.into(),
+                    width: 1.0,
+                    color: Color::from_rgb(0.18, 0.18, 0.18),
+                },
+                ..Default::default()
+            })
+            .width(Length::Fill)
+            .max_width(360),
+            Space::with_height(Length::Fixed(16.0)),
+            text("Work in progress build")
+                .size(11)
+                .width(Length::Fill)
+                .align_x(iced::alignment::Horizontal::Center)
+                .style(|_| text::Style {
+                    color: Some(Color::from_rgb(0.42, 0.42, 0.42))
+                }),
+            text(format!("Version {}", crate::app::APP_VERSION))
+                .size(11)
+                .width(Length::Fill)
+                .align_x(iced::alignment::Horizontal::Center)
+                .style(|_| text::Style {
+                    color: Some(Color::from_rgb(0.38, 0.38, 0.38))
+                }),
             Space::with_height(Length::Fill),
-            text("Version 0.7.8").size(11).center().style(|_theme| text::Style { color: Some(Color::from_rgb(0.4, 0.4, 0.4)) }),
-            Space::with_height(10.0),
         ]
-        .align_x(iced::Alignment::Center)
+        .align_x(Alignment::Center)
+        .width(Length::Fill)
     )
+    .padding([0, 30])
     .width(Length::FillPortion(3))
     .height(Length::Fill)
     .style(|_theme| {
         container::Style {
-            background: Some(Background::Color(Color::from_rgb(0.08, 0.08, 0.10))),
+            background: Some(Background::Color(Color::from_rgb(0.08, 0.08, 0.08))),
             ..Default::default()
         }
     });

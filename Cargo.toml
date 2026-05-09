@@ -1,6 +1,6 @@
 [package]
 name = "raw-editor"
-version = "0.7.8"
+version = "0.8.5"
 edition = "2021"
 authors = ["Ayman REBAI <ayman.rebai@gmail.com>"]
 description = "A blazing-fast, native RAW photo editor"
