@@ -12,6 +12,7 @@ use crate::app::state::RawEditor;
 use crate::database::models::Image as ImageData;
 use crate::ui;
 use crate::ui::icons::ICON_FONT;
+use crate::ui::palette;
 
 const THUMB_PRESET_SMALL: f32 = 150.0;
 const THUMB_PRESET_MEDIUM: f32 = 190.0;
@@ -19,6 +20,27 @@ const THUMB_PRESET_LARGE: f32 = 230.0;
 const THUMB_PRESET_XL: f32 = 280.0;
 const LIBRARY_TOOLBAR_HEIGHT: f32 = 56.0;
 const LIBRARY_STATUS_HEIGHT: f32 = 42.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ThumbnailState {
+    Ready,
+    Queued,
+    Missing,
+}
+
+fn thumbnail_state(img: &ImageData) -> ThumbnailState {
+    if img.file_status == "deleted" {
+        ThumbnailState::Missing
+    } else if img.cache_path_thumb.is_none() {
+        ThumbnailState::Queued
+    } else {
+        ThumbnailState::Ready
+    }
+}
+
+fn is_image_selected(editor: &RawEditor, image_id: i64) -> bool {
+    editor.selected_image_id == Some(image_id) || editor.multi_selection.contains(&image_id)
+}
 
 fn metric_pill<'a>(label: &'a str, value: impl ToString, color: Color) -> Element<'a, Message> {
     container(
@@ -85,12 +107,12 @@ fn style_chip(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style 
     move |_theme, status| {
         if active {
             button::Style {
-                background: Some(Background::Color(Color::from_rgb(0.52, 0.30, 0.12))),
+                background: Some(Background::Color(palette::accent_chip_fill())),
                 text_color: Color::WHITE,
                 border: Border {
                     radius: 14.0.into(),
                     width: 1.0,
-                    color: Color::from_rgb(0.72, 0.45, 0.22),
+                    color: palette::accent_chip_border(),
                 },
                 ..Default::default()
             }
@@ -125,12 +147,12 @@ fn style_sidebar_button(active: bool) -> impl Fn(&Theme, button::Status) -> butt
     move |_theme, status| {
         if active {
             button::Style {
-                background: Some(Background::Color(Color::from_rgb(0.50, 0.27, 0.10))),
+                background: Some(Background::Color(palette::accent_sidebar_fill())),
                 text_color: Color::WHITE,
                 border: Border {
                     radius: 6.0.into(),
                     width: 1.0,
-                    color: Color::from_rgb(0.70, 0.41, 0.18),
+                    color: palette::accent_sidebar_border(),
                 },
                 ..Default::default()
             }
@@ -288,9 +310,8 @@ fn view_thumbnail_size_presets<'a>(editor: &'a RawEditor) -> Element<'a, Message
 fn view_image_card<'a>(img: &'a ImageData, is_selected: bool, size: f32) -> Element<'a, Message> {
     let thumb_width = size;
     let thumb_height = size * 0.75;
-    let is_deleted = img.file_status == "deleted";
-    let thumb_missing = img.cache_path_thumb.is_none();
-    let has_loaded_thumb = !is_deleted && img.cache_path_thumb.is_some();
+    let thumb_state = thumbnail_state(img);
+    let has_loaded_thumb = thumb_state == ThumbnailState::Ready;
 
     let image_content: Element<'a, Message> = if has_loaded_thumb {
         if let Some(thumb_path) = img.cache_path_thumb.as_ref() {
@@ -308,12 +329,10 @@ fn view_image_card<'a>(img: &'a ImageData, is_selected: bool, size: f32) -> Elem
             Space::with_width(Length::Fill).into()
         }
     } else {
-        let placeholder_label = if is_deleted {
-            "Missing..."
-        } else if thumb_missing {
-            "Queued..."
-        } else {
-            "Generating..."
+        let placeholder_label = match thumb_state {
+            ThumbnailState::Missing => "Missing...",
+            ThumbnailState::Queued => "Queued...",
+            ThumbnailState::Ready => "Generating...",
         };
         container(
             column![
@@ -434,11 +453,11 @@ fn view_image_card<'a>(img: &'a ImageData, is_selected: bool, size: f32) -> Elem
         .style(move |_| {
             if is_selected {
                 container::Style {
-                    background: Some(Background::Color(Color::from_rgb(0.29, 0.19, 0.12))),
+                    background: Some(Background::Color(palette::accent_selection_fill())),
                     border: Border {
                         radius: 0.0.into(),
                         width: 1.0,
-                        color: Color::from_rgb(0.82, 0.51, 0.24),
+                        color: palette::accent_selection_border(),
                     },
                     ..Default::default()
                 }
@@ -708,7 +727,7 @@ fn view_status_bar<'a>(
             text("|").size(12).style(|_| text::Style {
                 color: Some(Color::from_rgb(0.28, 0.28, 0.28))
             }),
-            metric_pill("Selected", selected_count, Color::from_rgb(0.92, 0.63, 0.34)),
+            metric_pill("Selected", selected_count, palette::accent_text()),
             text("|").size(12).style(|_| text::Style {
                 color: Some(Color::from_rgb(0.28, 0.28, 0.28))
             }),
@@ -773,11 +792,14 @@ pub fn view_library(editor: &RawEditor) -> Element<'_, Message> {
         .count();
     let deleted_count = filtered_images
         .iter()
-        .filter(|img| img.file_status == "deleted")
+        .filter(|img| thumbnail_state(img) == ThumbnailState::Missing)
         .count();
     let total_count = editor.images.len();
     let filtered_count = filtered_images.len();
-    let selected_count = editor.multi_selection.len();
+    let selected_count = filtered_images
+        .iter()
+        .filter(|img| is_image_selected(editor, img.id))
+        .count();
 
     let main_panel: Element<'_, Message> = if filtered_images.is_empty() {
         container(
@@ -820,8 +842,7 @@ pub fn view_library(editor: &RawEditor) -> Element<'_, Message> {
         let thumbnail_grid = filtered_images.iter().fold(
             Wrap::new().spacing(12.0).line_spacing(12.0),
             |wrap, img| {
-                let is_selected =
-                    editor.selected_image_id == Some(img.id) || editor.multi_selection.contains(&img.id);
+                let is_selected = is_image_selected(editor, img.id);
                 wrap.push(view_image_card(img, is_selected, editor.thumbnail_size))
             },
         );

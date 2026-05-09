@@ -1,5 +1,6 @@
 use iced::widget::{slider, container};
 use iced::{Background, Border, Color, Theme};
+use super::palette;
 
 pub struct ProSlider;
 
@@ -160,32 +161,32 @@ impl AccentButton {
     pub fn style(_theme: &Theme, status: iced::widget::button::Status) -> iced::widget::button::Style {
         match status {
             iced::widget::button::Status::Active => iced::widget::button::Style {
-                background: Some(Background::Color(Color::from_rgb(0.2, 0.2, 0.2))),
-                text_color: Color::from_rgb(0.9, 0.9, 0.9),
-                border: Border {
-                    radius: 4.0.into(),
-                    width: 1.0,
-                    color: Color::from_rgba(1.0, 1.0, 1.0, 0.5),
-                },
-                ..Default::default()
-            },
-            iced::widget::button::Status::Hovered => iced::widget::button::Style {
-                background: Some(Background::Color(Color::from_rgb(0.3, 0.3, 0.3))),
+                background: Some(Background::Color(palette::accent_chip_fill())),
                 text_color: Color::WHITE,
                 border: Border {
                     radius: 4.0.into(),
                     width: 1.0,
-                    color: Color::WHITE,
+                    color: palette::accent_chip_border(),
+                },
+                ..Default::default()
+            },
+            iced::widget::button::Status::Hovered => iced::widget::button::Style {
+                background: Some(Background::Color(palette::accent_sidebar_fill())),
+                text_color: Color::WHITE,
+                border: Border {
+                    radius: 4.0.into(),
+                    width: 1.0,
+                    color: palette::accent_sidebar_border(),
                 },
                 ..Default::default()
             },
             iced::widget::button::Status::Pressed => iced::widget::button::Style {
-                background: Some(Background::Color(Color::from_rgb(0.15, 0.15, 0.15))),
-                text_color: Color::from_rgb(0.8, 0.8, 0.8),
+                background: Some(Background::Color(palette::accent_selection_fill())),
+                text_color: Color::WHITE,
                 border: Border {
                     radius: 4.0.into(),
                     width: 1.0,
-                    color: Color::from_rgba(1.0, 1.0, 1.0, 0.3),
+                    color: palette::accent_selection_border(),
                 },
                 ..Default::default()
             },
@@ -242,7 +243,7 @@ pub fn text_input_style(_theme: &Theme, _status: iced::widget::text_input::Statu
         icon: Color::from_rgb(0.5, 0.5, 0.5),
         placeholder: Color::from_rgb(0.4, 0.4, 0.4),
         value: Color::WHITE,
-        selection: Color::from_rgb(0.3, 0.5, 0.7),
+        selection: palette::accent_selection_border(),
     }
 }
 

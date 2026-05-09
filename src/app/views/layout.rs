@@ -6,6 +6,7 @@ use crate::ui;
 use crate::app::message::{Message, AppTab};
 use crate::app::state::{RawEditor, Modal};
 use crate::ui::icons::ICON_FONT;
+use crate::ui::palette;
 
 use super::library::view_library;
 use super::cull::view_cull;
@@ -67,7 +68,7 @@ fn view_splash(editor: &RawEditor) -> Element<'_, Message> {
             Space::with_height(40.0),
             text(&editor.status).size(16).center().style(|_theme| text::Style { color: Some(Color::from_rgb(0.8, 0.8, 0.8)) }),
             Space::with_height(15.0),
-            text(ui::icons::HOURGLASS).size(32).font(ICON_FONT).center().style(|_theme| text::Style { color: Some(Color::from_rgb(0.5, 0.7, 1.0)) }),
+            text(ui::icons::HOURGLASS).size(32).font(ICON_FONT).center().style(|_theme| text::Style { color: Some(palette::accent_text()) }),
             Space::with_height(Length::Fill),
             text("Version 0.7.8").size(11).center().style(|_theme| text::Style { color: Some(Color::from_rgb(0.4, 0.4, 0.4)) }),
             Space::with_height(10.0),
