@@ -1,8 +1,9 @@
 use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::io::Write;
 /// Full-size preview generation from RAW files
 /// Extracts the largest embedded JPEG without resizing
 use std::path::{Path, PathBuf};
+use super::jpeg::extract_largest_jpeg;
 
 /// Generate a full-size preview from a RAW file
 /// Returns the path to the cached preview JPEG
@@ -33,7 +34,7 @@ fn generate_full_preview_blocking(
     }
 
     // Try to extract the largest embedded JPEG
-    if let Some(jpeg_data) = extract_largest_jpeg(raw_path)? {
+    if let Some(jpeg_data) = extract_largest_jpeg(raw_path, None)? {
         // Save to cache
         let preview_path = preview_cache_dir.join(format!("{}.jpg", image_id));
 
@@ -51,84 +52,6 @@ fn generate_full_preview_blocking(
             raw_path.file_name()
         ))
     }
-}
-
-/// Extract the largest embedded JPEG from a RAW file
-/// Returns the JPEG data without any resizing
-fn extract_largest_jpeg(raw_path: &Path) -> Result<Option<Vec<u8>>, String> {
-    // Read the entire file
-    let mut file = File::open(raw_path).map_err(|e| format!("Failed to open RAW file: {}", e))?;
-
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer)
-        .map_err(|e| format!("Failed to read RAW file: {}", e))?;
-
-    // Try rawloader first (extracts largest JPEG)
-    if let Some(jpeg) = extract_with_rawloader(raw_path)? {
-        tracing::debug!(
-            "Extracted {:.1}MB JPEG using rawloader",
-            jpeg.len() as f64 / 1024.0 / 1024.0
-        );
-        return Ok(Some(jpeg));
-    }
-
-    // Fallback: scan for JPEG markers
-    if let Some(jpeg) = scan_for_largest_jpeg(&buffer) {
-        tracing::debug!(
-            "Found {:.1}MB JPEG via marker scan",
-            jpeg.len() as f64 / 1024.0 / 1024.0
-        );
-        return Ok(Some(jpeg));
-    }
-
-    Ok(None)
-}
-
-/// Use rawloader to extract the embedded JPEG
-fn extract_with_rawloader(_raw_path: &Path) -> Result<Option<Vec<u8>>, String> {
-    // rawloader's API doesn't expose thumbnails directly in 0.37
-    // We'll rely on the marker scan method instead
-    Ok(None)
-}
-
-/// Scan file for JPEG markers and extract the largest JPEG
-fn scan_for_largest_jpeg(buffer: &[u8]) -> Option<Vec<u8>> {
-    let jpeg_start = b"\xff\xd8\xff"; // JPEG Start Of Image (SOI)
-    let jpeg_end = b"\xff\xd9"; // JPEG End Of Image (EOI)
-
-    let mut largest_jpeg: Option<Vec<u8>> = None;
-    let mut largest_size = 0;
-
-    // Find all JPEG sequences
-    let mut pos = 0;
-    while pos < buffer.len() - 3 {
-        // Look for SOI marker
-        if buffer[pos..].starts_with(jpeg_start) {
-            // Find the corresponding EOI
-            if let Some(end_pos) = buffer[pos..]
-                .windows(2)
-                .position(|w| w == jpeg_end)
-                .map(|p| pos + p + 2)
-            {
-                let jpeg_data = buffer[pos..end_pos].to_vec();
-                let size = jpeg_data.len();
-
-                // Keep track of the largest JPEG found
-                if size > largest_size {
-                    largest_size = size;
-                    largest_jpeg = Some(jpeg_data);
-                }
-
-                pos = end_pos;
-            } else {
-                pos += 1;
-            }
-        } else {
-            pos += 1;
-        }
-    }
-
-    largest_jpeg
 }
 
 /// Get the cache directory for preview JPEGs

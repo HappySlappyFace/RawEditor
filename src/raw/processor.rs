@@ -4,6 +4,7 @@
 /// - Tier 1: 256px thumbnail (for grid display)
 /// - Tier 2: 384px instant preview (for quick viewing)
 /// - Tier 3: 1280px working preview (for editing)
+use super::jpeg::extract_largest_jpeg;
 use image::{imageops::FilterType, ImageFormat};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -39,7 +40,7 @@ pub fn process_image(
     _cache_dir: &Path, // Not used, we use tier-specific dirs
 ) -> Result<(String, String, String), String> {
     // Step 1: Extract the largest embedded JPEG from the RAW file
-    let jpeg_data = extract_largest_jpeg(raw_path)
+    let jpeg_data = extract_largest_jpeg(raw_path, Some(is_decodable_jpeg))?
         .ok_or_else(|| format!("Failed to extract JPEG from {:?}", raw_path.file_name()))?;
 
     tracing::debug!(
@@ -99,41 +100,8 @@ fn generate_tier(
     Ok(file_path.to_string_lossy().to_string())
 }
 
-/// Extract the largest embedded JPEG from a RAW file
-/// This searches the entire file for all JPEG markers and returns the biggest one
-fn extract_largest_jpeg(raw_path: &Path) -> Option<Vec<u8>> {
-    use std::io::Read;
-
-    // Read entire RAW file
-    let mut file = std::fs::File::open(raw_path).ok()?;
-    let mut data = Vec::new();
-    file.read_to_end(&mut data).ok()?;
-
-    // JPEG markers
-    let jpeg_start = [0xFF, 0xD8];
-    let jpeg_end = [0xFF, 0xD9];
-
-    let mut all_jpegs = Vec::new();
-
-    // Find all embedded JPEGs
-    for (i, window) in data.windows(2).enumerate() {
-        if window == jpeg_start {
-            // Found JPEG start, find its end
-            if let Some(end_offset) = data[i..].windows(2).position(|w| w == jpeg_end) {
-                let end = i + end_offset + 1;
-                let jpeg_data = data[i..=end].to_vec();
-
-                // Validate it's decodable
-                if image::load_from_memory_with_format(&jpeg_data, ImageFormat::Jpeg).is_ok() {
-                    all_jpegs.push((jpeg_data.len(), jpeg_data));
-                }
-            }
-        }
-    }
-
-    // Return the largest valid JPEG
-    all_jpegs.sort_by(|a, b| b.0.cmp(&a.0)); // Sort descending by size
-    all_jpegs.into_iter().next().map(|(_, data)| data)
+fn is_decodable_jpeg(bytes: &[u8]) -> bool {
+    image::load_from_memory_with_format(bytes, ImageFormat::Jpeg).is_ok()
 }
 
 #[cfg(test)]

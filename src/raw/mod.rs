@@ -1,3 +1,4 @@
+pub mod jpeg;
 pub mod loader;
 pub mod preview;
 pub mod processor; // Phase 28: Multi-tier cache processor
