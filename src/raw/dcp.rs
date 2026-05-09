@@ -2,7 +2,7 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 use tiff::decoder::{Decoder, ifd::Value};
 use tiff::tags::Tag;
-use std::collections::HashMap;
+
 
 /// Parsed representation of a DCP (DNG Camera Profile) file
 #[derive(Debug, Clone)]
@@ -302,22 +302,33 @@ pub fn find_profile_for_camera(_make: &str, model: &str) -> Option<PathBuf> {
     path.push("raw-editor");
     path.push("profiles");
     
-    // Normalize model name (remove spaces, lowercase)
-    // Try to find a match. For now, simple exact match or basic search
+    // Normalize model name
     let safe_model = model.replace(" ", "_").to_lowercase();
+    let model_no_spaces = model.replace(" ", "").to_lowercase();
     
+    let mut matches = Vec::new();
+
     if let Ok(entries) = std::fs::read_dir(&path) {
         for entry in entries.flatten() {
             let filename = entry.file_name().to_string_lossy().to_lowercase();
-            if filename.ends_with(".dcp") && filename.contains(&safe_model) {
-                return Some(entry.path());
-            }
-            // Also try without spaces
             let filename_no_spaces = filename.replace(" ", "");
-            if filename_no_spaces.ends_with(".dcp") && filename_no_spaces.contains(&model.replace(" ", "").to_lowercase()) {
-                return Some(entry.path());
+            
+            if filename.ends_with(".dcp") && 
+               (filename.contains(&safe_model) || filename_no_spaces.contains(&model_no_spaces)) {
+                matches.push(entry.path());
             }
         }
+    }
+
+    // Prefer "Adobe Standard" if multiple profiles match
+    if !matches.is_empty() {
+        if let Some(adobe_std) = matches.iter().find(|p| {
+            p.file_name().unwrap_or_default().to_string_lossy().to_lowercase().contains("adobe standard")
+        }) {
+            return Some(adobe_std.clone());
+        }
+        // Fallback to the first match if no Adobe Standard is found
+        return Some(matches[0].clone());
     }
 
     None

@@ -332,7 +332,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     color = color * exposure_multiplier;
 
     // ── Step 5: Camera RGB → sRGB (DCP Pipeline vs Fallback) ────────────────
-    color = color * params.wb_multipliers.rgb;
+    // NOTE: WB was already applied in Step 2 above. Do NOT re-apply here.
 
     let matrix_from_params = transpose(mat3x3<f32>(
         params.forward_matrix_0,

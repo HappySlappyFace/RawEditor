@@ -180,7 +180,7 @@ pub fn handle_export_raw_loaded(
             let cam_to_srgb = crate::color::calculate_cam_to_srgb(xyz_to_cam, raw_data.wb_multipliers);
             
             let interpolated_dcp = raw_data.dcp_profile.as_ref().map(|dcp| {
-                crate::raw::dcp::interpolate_at_temperature(dcp, params.temperature)
+                crate::raw::dcp::interpolate_at_temperature(dcp, params.temperature_to_kelvin())
             });
 
             Task::perform(

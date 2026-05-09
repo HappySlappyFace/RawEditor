@@ -303,7 +303,7 @@ fn update_pipeline(editor: &mut RawEditor) -> Task<Message> {
     if let (Some(ctx), Some(resources)) = (&editor.gpu_context, &editor.image_resources) {
         // Phase 140: Interpolate DCP if available
         let interpolated = editor.current_dcp_profile.as_ref().map(|dcp| {
-            crate::raw::dcp::interpolate_at_temperature(dcp, editor.current_edit_params.temperature)
+            crate::raw::dcp::interpolate_at_temperature(dcp, editor.current_edit_params.temperature_to_kelvin())
         });
         
         resources.update_uniforms(ctx, &editor.current_edit_params, interpolated.as_ref());

@@ -70,8 +70,11 @@ pub struct EditParams {
     pub saturation: f32,
 
     // ========== White Balance ==========
-    /// Temperature adjustment (2000.0 to 10000.0 Kelvin)
-    /// - 5000.0 = D50 / typical daylight
+    /// Temperature adjustment (-1.0 to +1.0)
+    /// - Negative = cooler (bluer)
+    /// - Positive = warmer (yellower)
+    /// - 0.0 = as-shot
+    /// For DCP interpolation, this is converted to Kelvin at the call site.
     pub temperature: f32,
 
     /// Tint adjustment (-1.0 to +1.0, displayed as -100 to +100)
@@ -134,7 +137,7 @@ impl Default for EditParams {
             black_phase_y: 0, // Phase 39: Black level phase correction
             vibrance: 0.0,
             saturation: 0.0,
-            temperature: 5000.0,        // Phase 140: Default Kelvin
+            temperature: 0.0,           // Phase 140: As-shot (maps to ~5000K for DCP)
             tint: 0.0,                  // Phase 18: Manual white balance (as-shot)
             luma_noise: 0.0,            // Phase 133: No luma noise reduction by default
             color_noise: 0.3,           // Phase 133: Default color noise reduction to eliminate speckles
@@ -161,9 +164,10 @@ impl EditParams {
     /// Parse from JSON string (from database)
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
         let mut params: Self = serde_json::from_str(json)?;
-        // Phase 140: Migrate old temperature (-1 to 1) to Kelvin
-        if params.temperature <= 1.0 && params.temperature >= -1.0 {
-            params.temperature = 5000.0;
+        // Phase 140: Migrate old Kelvin temperature back to -1..1 range
+        if params.temperature > 100.0 {
+            // Old Kelvin value stored — convert back to normalized range
+            params.temperature = ((params.temperature - 5000.0) / 5000.0).clamp(-1.0, 1.0);
         }
         Ok(params)
     }
@@ -176,6 +180,25 @@ impl EditParams {
     /// Reset all adjustments to default (no edits)
     pub fn reset(&mut self) {
         *self = Self::default();
+    }
+
+    /// Convert the normalized temperature slider value (-1.0..1.0) to Kelvin
+    /// for DCP dual-illuminant interpolation.
+    /// Maps: -1.0 → 2000K, 0.0 → 5000K, 1.0 → 10000K
+    /// Uses reciprocal interpolation (1/T) which is physically correct for
+    /// color temperature blending (Planckian locus is nearly linear in 1/T space).
+    pub fn temperature_to_kelvin(&self) -> f32 {
+        // Reciprocal interpolation: blend in 1/T space
+        let inv_low = 1.0 / 2000.0_f32;   // warm end (t = -1)
+        let inv_mid = 1.0 / 5000.0_f32;   // neutral  (t =  0)
+        let inv_high = 1.0 / 10000.0_f32; // cool end (t = +1)
+        let t = self.temperature;
+        let inv_t = if t <= 0.0 {
+            inv_mid + t * (inv_mid - inv_low) // lerp inv_low..inv_mid
+        } else {
+            inv_mid + t * (inv_high - inv_mid) // lerp inv_mid..inv_high
+        };
+        (1.0 / inv_t).clamp(2000.0, 10000.0)
     }
 }
 

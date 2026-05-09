@@ -476,7 +476,7 @@ impl ImageResources {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D3,
-            format: wgpu::TextureFormat::Rgba32Float,
+            format: wgpu::TextureFormat::Rgba16Float,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
@@ -487,32 +487,48 @@ impl ImageResources {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D1,
-            format: wgpu::TextureFormat::R32Float,
+            format: wgpu::TextureFormat::R16Float,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
         
         if let Some(dcp) = dcp_profile {
-            // Write LUT data. Pad RGB to RGBA
-            let mut rgba_lut = Vec::with_capacity(dcp.hue_sat_lut.len() * 4);
-            for v in &dcp.hue_sat_lut {
-                rgba_lut.push(v[0]);
-                rgba_lut.push(v[1]);
-                rgba_lut.push(v[2]);
-                rgba_lut.push(1.0);
+            let unpadded_bytes_per_row = lut_dims.0 * 8;
+            let padded_bytes_per_row = (unpadded_bytes_per_row + 255) & !255;
+            let mut padded_rgba_lut = Vec::with_capacity((padded_bytes_per_row * lut_dims.1 * lut_dims.2) as usize);
+
+            for z in 0..lut_dims.2 {
+                for y in 0..lut_dims.1 {
+                    for x in 0..lut_dims.0 {
+                        let i = (z * lut_dims.1 * lut_dims.0 + y * lut_dims.0 + x) as usize;
+                        if i < dcp.hue_sat_lut.len() {
+                            let v = &dcp.hue_sat_lut[i];
+                            let c = [half::f16::from_f32(v[0]), half::f16::from_f32(v[1]), half::f16::from_f32(v[2]), half::f16::from_f32(1.0)];
+                            padded_rgba_lut.extend_from_slice(bytemuck::cast_slice(&c));
+                        } else {
+                            let c = [half::f16::from_f32(0.0), half::f16::from_f32(1.0), half::f16::from_f32(1.0), half::f16::from_f32(1.0)];
+                            padded_rgba_lut.extend_from_slice(bytemuck::cast_slice(&c));
+                        }
+                    }
+                    let padding = padded_bytes_per_row - unpadded_bytes_per_row;
+                    if padding > 0 {
+                        padded_rgba_lut.extend(std::iter::repeat(0u8).take(padding as usize));
+                    }
+                }
             }
             context.queue.write_texture(
                 wgpu::ImageCopyTexture { texture: &hsv_lut_texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-                bytemuck::cast_slice(&rgba_lut),
-                wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(lut_dims.0 * 16), rows_per_image: Some(lut_dims.1) },
+                &padded_rgba_lut,
+                wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(padded_bytes_per_row), rows_per_image: Some(lut_dims.1) },
                 wgpu::Extent3d { width: lut_dims.0, height: lut_dims.1, depth_or_array_layers: lut_dims.2 },
             );
             
             // Write Tone Curve
+            let tc_f16: Vec<half::f16> = dcp.tone_curve.iter().map(|&v| half::f16::from_f32(v)).collect();
             context.queue.write_texture(
                 wgpu::ImageCopyTexture { texture: &tone_curve_texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-                bytemuck::cast_slice(&dcp.tone_curve),
-                wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(1024 * 4), rows_per_image: None },
+                bytemuck::cast_slice(&tc_f16),
+                wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(1024 * 2), rows_per_image: None },
                 wgpu::Extent3d { width: 1024, height: 1, depth_or_array_layers: 1 },
             );
         }
@@ -632,17 +648,33 @@ impl ImageResources {
             }
             // Re-upload the LUT texture
             let lut_dims = dcp.hue_sat_dims;
-            let mut rgba_lut = Vec::with_capacity(dcp.hue_sat_lut.len() * 4);
-            for v in &dcp.hue_sat_lut {
-                rgba_lut.push(v[0]);
-                rgba_lut.push(v[1]);
-                rgba_lut.push(v[2]);
-                rgba_lut.push(1.0);
+            let unpadded_bytes_per_row = lut_dims.0 * 8;
+            let padded_bytes_per_row = (unpadded_bytes_per_row + 255) & !255;
+            let mut padded_rgba_lut = Vec::with_capacity((padded_bytes_per_row * lut_dims.1 * lut_dims.2) as usize);
+
+            for z in 0..lut_dims.2 {
+                for y in 0..lut_dims.1 {
+                    for x in 0..lut_dims.0 {
+                        let i = (z * lut_dims.1 * lut_dims.0 + y * lut_dims.0 + x) as usize;
+                        if i < dcp.hue_sat_lut.len() {
+                            let v = &dcp.hue_sat_lut[i];
+                            let c = [half::f16::from_f32(v[0]), half::f16::from_f32(v[1]), half::f16::from_f32(v[2]), half::f16::from_f32(1.0)];
+                            padded_rgba_lut.extend_from_slice(bytemuck::cast_slice(&c));
+                        } else {
+                            let c = [half::f16::from_f32(0.0), half::f16::from_f32(1.0), half::f16::from_f32(1.0), half::f16::from_f32(1.0)];
+                            padded_rgba_lut.extend_from_slice(bytemuck::cast_slice(&c));
+                        }
+                    }
+                    let padding = padded_bytes_per_row - unpadded_bytes_per_row;
+                    if padding > 0 {
+                        padded_rgba_lut.extend(std::iter::repeat(0u8).take(padding as usize));
+                    }
+                }
             }
             context.queue.write_texture(
                 wgpu::ImageCopyTexture { texture: &self.hsv_lut_texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-                bytemuck::cast_slice(&rgba_lut),
-                wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(lut_dims.0 * 16), rows_per_image: Some(lut_dims.1) },
+                &padded_rgba_lut,
+                wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(padded_bytes_per_row), rows_per_image: Some(lut_dims.1) },
                 wgpu::Extent3d { width: lut_dims.0, height: lut_dims.1, depth_or_array_layers: lut_dims.2 },
             );
         }
@@ -685,6 +717,7 @@ impl ImageResources {
         gpu_params.cfa_pattern = self.cfa_pattern;
         gpu_params.black_levels = self.black_levels;
         gpu_params.white_level = self.white_level;
+        gpu_params.has_dcp = if self.has_dcp { 1 } else { 0 };
         gpu_params.zoom = zoom;
         gpu_params.pan_x = pan_x;
         gpu_params.pan_y = pan_y;
