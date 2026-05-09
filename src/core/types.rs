@@ -70,10 +70,8 @@ pub struct EditParams {
     pub saturation: f32,
 
     // ========== White Balance ==========
-    /// Temperature adjustment (-1.0 to +1.0, displayed as -100 to +100)
-    /// - Negative values = cooler (more blue)
-    /// - Positive values = warmer (more yellow/orange)
-    /// - 0.0 = as-shot white balance
+    /// Temperature adjustment (2000.0 to 10000.0 Kelvin)
+    /// - 5000.0 = D50 / typical daylight
     pub temperature: f32,
 
     /// Tint adjustment (-1.0 to +1.0, displayed as -100 to +100)
@@ -136,7 +134,7 @@ impl Default for EditParams {
             black_phase_y: 0, // Phase 39: Black level phase correction
             vibrance: 0.0,
             saturation: 0.0,
-            temperature: 0.0,           // Phase 18: Manual white balance (as-shot)
+            temperature: 5000.0,        // Phase 140: Default Kelvin
             tint: 0.0,                  // Phase 18: Manual white balance (as-shot)
             luma_noise: 0.0,            // Phase 133: No luma noise reduction by default
             color_noise: 0.3,           // Phase 133: Default color noise reduction to eliminate speckles
@@ -162,7 +160,12 @@ impl EditParams {
 
     /// Parse from JSON string (from database)
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
-        serde_json::from_str(json)
+        let mut params: Self = serde_json::from_str(json)?;
+        // Phase 140: Migrate old temperature (-1 to 1) to Kelvin
+        if params.temperature <= 1.0 && params.temperature >= -1.0 {
+            params.temperature = 5000.0;
+        }
+        Ok(params)
     }
 
     /// Check if this represents an unedited image (all values at default)

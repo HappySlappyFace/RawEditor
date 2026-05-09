@@ -138,6 +138,35 @@ impl SharedContext {
                     },
                     count: None,
                 },
+                // Phase 140: 3D LUT (HueSatMap)
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D3,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                // Phase 140: 1D Texture (ToneCurve)
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D1,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                // Phase 140: LUT Sampler (Clamp to edge)
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
             ],
         });
 
@@ -262,11 +291,17 @@ pub struct ImageResources {
     pub image_id: i64,
     // Metadata
     pub wb_multipliers: [f32; 4],
-    pub color_matrix: [f32; 9],
+    pub forward_matrix: std::sync::RwLock<[f32; 9]>,
     pub cfa_pattern: u32,
     pub black_levels: [u32; 4],
     pub white_level: u32,
     pub current_params: std::sync::Mutex<GpuEditParams>,
+    // Phase 140: DCP Textures
+    pub hsv_lut_texture: wgpu::Texture,
+    pub hsv_lut_view: wgpu::TextureView,
+    pub tone_curve_texture: wgpu::Texture,
+    pub tone_curve_view: wgpu::TextureView,
+    pub has_dcp: bool,
 }
 
 impl ImageResources {
@@ -280,10 +315,11 @@ impl ImageResources {
         height: u32,
         params: &EditParams,
         wb_multipliers: [f32; 4],
-        color_matrix: [f32; 9],
+        forward_matrix: [f32; 9],
         cfa_pattern: u32,
         black_levels: [u32; 4],
         white_level: u32,
+        dcp_profile: Option<&crate::raw::dcp::InterpolatedProfile>,
     ) -> Result<Self, String> {
         // Calculate preview dimensions
         const MAX_PREVIEW_WIDTH: u32 = 1280;
@@ -390,15 +426,15 @@ impl ImageResources {
         });
         let debayer_texture_view = debayer_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        // Create uniform buffer with initial params
         let mut gpu_params = GpuEditParams::from(params);
         gpu_params.wb_multipliers = wb_multipliers;
-        gpu_params.color_matrix_0 = [color_matrix[0], color_matrix[1], color_matrix[2]];
-        gpu_params.color_matrix_1 = [color_matrix[3], color_matrix[4], color_matrix[5]];
-        gpu_params.color_matrix_2 = [color_matrix[6], color_matrix[7], color_matrix[8]];
+        gpu_params.forward_matrix_0 = [forward_matrix[0], forward_matrix[1], forward_matrix[2]];
+        gpu_params.forward_matrix_1 = [forward_matrix[3], forward_matrix[4], forward_matrix[5]];
+        gpu_params.forward_matrix_2 = [forward_matrix[6], forward_matrix[7], forward_matrix[8]];
         gpu_params.cfa_pattern = cfa_pattern;
         gpu_params.black_levels = black_levels;
         gpu_params.white_level = white_level;
+        gpu_params.has_dcp = if dcp_profile.is_some() { 1 } else { 0 };
 
         let uniform_buffer = context
             .device
@@ -430,6 +466,60 @@ impl ImageResources {
                 ],
             });
 
+        // Phase 140: Create DCP Textures
+        let has_dcp = dcp_profile.is_some();
+        let lut_dims = dcp_profile.map(|p| p.hue_sat_dims).unwrap_or((1, 1, 1));
+        
+        let hsv_lut_texture = context.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("HSV LUT 3D Texture"),
+            size: wgpu::Extent3d { width: lut_dims.0, height: lut_dims.1, depth_or_array_layers: lut_dims.2 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D3,
+            format: wgpu::TextureFormat::Rgba32Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        
+        let tone_curve_texture = context.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Tone Curve 1D Texture"),
+            size: wgpu::Extent3d { width: 1024, height: 1, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D1,
+            format: wgpu::TextureFormat::R32Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        
+        if let Some(dcp) = dcp_profile {
+            // Write LUT data. Pad RGB to RGBA
+            let mut rgba_lut = Vec::with_capacity(dcp.hue_sat_lut.len() * 4);
+            for v in &dcp.hue_sat_lut {
+                rgba_lut.push(v[0]);
+                rgba_lut.push(v[1]);
+                rgba_lut.push(v[2]);
+                rgba_lut.push(1.0);
+            }
+            context.queue.write_texture(
+                wgpu::ImageCopyTexture { texture: &hsv_lut_texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                bytemuck::cast_slice(&rgba_lut),
+                wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(lut_dims.0 * 16), rows_per_image: Some(lut_dims.1) },
+                wgpu::Extent3d { width: lut_dims.0, height: lut_dims.1, depth_or_array_layers: lut_dims.2 },
+            );
+            
+            // Write Tone Curve
+            context.queue.write_texture(
+                wgpu::ImageCopyTexture { texture: &tone_curve_texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                bytemuck::cast_slice(&dcp.tone_curve),
+                wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(1024 * 4), rows_per_image: None },
+                wgpu::Extent3d { width: 1024, height: 1, depth_or_array_layers: 1 },
+            );
+        }
+
+        let hsv_lut_view = hsv_lut_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let tone_curve_view = tone_curve_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
         // Phase 128: Color bind group (Pass 2 reads Rgba16Float intermediate)
         let bind_group = context
             .device
@@ -448,6 +538,18 @@ impl ImageResources {
                     wgpu::BindGroupEntry {
                         binding: 2,
                         resource: uniform_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(&hsv_lut_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::TextureView(&tone_curve_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: wgpu::BindingResource::Sampler(&context.sampler_linear), // Clamp to edge is default
                     },
                 ],
             });
@@ -468,11 +570,16 @@ impl ImageResources {
             histogram_height,
             image_id,
             wb_multipliers,
-            color_matrix,
+            forward_matrix: std::sync::RwLock::new(forward_matrix),
             cfa_pattern,
             black_levels,
             white_level,
             current_params: std::sync::Mutex::new(gpu_params),
+            hsv_lut_texture,
+            hsv_lut_view,
+            tone_curve_texture,
+            tone_curve_view,
+            has_dcp,
         };
 
         // Phase 128: Run initial debayer pass
@@ -513,27 +620,43 @@ impl ImageResources {
     }
 
     /// Update uniforms with new edit parameters
-    pub fn update_uniforms(&self, context: &SharedContext, params: &EditParams) {
+    pub fn update_uniforms(
+        &self,
+        context: &SharedContext,
+        params: &EditParams,
+        dcp_profile: Option<&crate::raw::dcp::InterpolatedProfile>,
+    ) {
+        if let Some(dcp) = dcp_profile {
+            if let Ok(mut matrix) = self.forward_matrix.write() {
+                *matrix = dcp.forward_matrix;
+            }
+            // Re-upload the LUT texture
+            let lut_dims = dcp.hue_sat_dims;
+            let mut rgba_lut = Vec::with_capacity(dcp.hue_sat_lut.len() * 4);
+            for v in &dcp.hue_sat_lut {
+                rgba_lut.push(v[0]);
+                rgba_lut.push(v[1]);
+                rgba_lut.push(v[2]);
+                rgba_lut.push(1.0);
+            }
+            context.queue.write_texture(
+                wgpu::ImageCopyTexture { texture: &self.hsv_lut_texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                bytemuck::cast_slice(&rgba_lut),
+                wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(lut_dims.0 * 16), rows_per_image: Some(lut_dims.1) },
+                wgpu::Extent3d { width: lut_dims.0, height: lut_dims.1, depth_or_array_layers: lut_dims.2 },
+            );
+        }
+
         let mut gpu_params = GpuEditParams::from(params);
         gpu_params.wb_multipliers = self.wb_multipliers;
-        gpu_params.color_matrix_0 = [
-            self.color_matrix[0],
-            self.color_matrix[1],
-            self.color_matrix[2],
-        ];
-        gpu_params.color_matrix_1 = [
-            self.color_matrix[3],
-            self.color_matrix[4],
-            self.color_matrix[5],
-        ];
-        gpu_params.color_matrix_2 = [
-            self.color_matrix[6],
-            self.color_matrix[7],
-            self.color_matrix[8],
-        ];
+        let fm = *self.forward_matrix.read().unwrap_or_else(|e| e.into_inner());
+        gpu_params.forward_matrix_0 = [fm[0], fm[1], fm[2]];
+        gpu_params.forward_matrix_1 = [fm[3], fm[4], fm[5]];
+        gpu_params.forward_matrix_2 = [fm[6], fm[7], fm[8]];
         gpu_params.cfa_pattern = self.cfa_pattern;
         gpu_params.black_levels = self.black_levels;
         gpu_params.white_level = self.white_level;
+        gpu_params.has_dcp = if self.has_dcp { 1 } else { 0 };
 
         context
             .queue
@@ -555,21 +678,10 @@ impl ImageResources {
     ) {
         let mut gpu_params = GpuEditParams::from(params);
         gpu_params.wb_multipliers = self.wb_multipliers;
-        gpu_params.color_matrix_0 = [
-            self.color_matrix[0],
-            self.color_matrix[1],
-            self.color_matrix[2],
-        ];
-        gpu_params.color_matrix_1 = [
-            self.color_matrix[3],
-            self.color_matrix[4],
-            self.color_matrix[5],
-        ];
-        gpu_params.color_matrix_2 = [
-            self.color_matrix[6],
-            self.color_matrix[7],
-            self.color_matrix[8],
-        ];
+        let fm = *self.forward_matrix.read().unwrap_or_else(|e| e.into_inner());
+        gpu_params.forward_matrix_0 = [fm[0], fm[1], fm[2]];
+        gpu_params.forward_matrix_1 = [fm[3], fm[4], fm[5]];
+        gpu_params.forward_matrix_2 = [fm[6], fm[7], fm[8]];
         gpu_params.cfa_pattern = self.cfa_pattern;
         gpu_params.black_levels = self.black_levels;
         gpu_params.white_level = self.white_level;

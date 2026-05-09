@@ -178,6 +178,10 @@ pub fn handle_export_raw_loaded(
 
             let xyz_to_cam = raw_data.color_matrix;
             let cam_to_srgb = crate::color::calculate_cam_to_srgb(xyz_to_cam, raw_data.wb_multipliers);
+            
+            let interpolated_dcp = raw_data.dcp_profile.as_ref().map(|dcp| {
+                crate::raw::dcp::interpolate_at_temperature(dcp, params.temperature)
+            });
 
             Task::perform(
                 async move {
@@ -202,6 +206,7 @@ pub fn handle_export_raw_loaded(
                         raw_data.cfa_pattern,
                         raw_data.black_levels,
                         raw_data.white_level,
+                        interpolated_dcp.as_ref(),
                     )
                     .map(|res| (context, Arc::new(res)))
                 },

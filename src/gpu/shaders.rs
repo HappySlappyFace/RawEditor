@@ -88,11 +88,11 @@ struct EditParams {
     padding2: f32,
     // Phase 14: Color science metadata
     wb_multipliers: vec4<f32>,  // White balance [R, G, B, G2]
-    color_matrix_0: vec3<f32>,  // Color matrix row 0
+    forward_matrix_0: vec3<f32>,  // Forward matrix row 0
     padding3: f32,
-    color_matrix_1: vec3<f32>,  // Color matrix row 1
+    forward_matrix_1: vec3<f32>,  // Forward matrix row 1
     padding4: f32,
-    color_matrix_2: vec3<f32>,  // Color matrix row 2
+    forward_matrix_2: vec3<f32>,  // Forward matrix row 2
     padding5: f32,
     // Phase 25: Zoom & Pan
     zoom: f32,
@@ -147,7 +147,7 @@ struct EditParams {
     is_cropping: u32,
 
     // Padding to reach 256 bytes (16-byte alignment)
-    pad_crop_1: u32,
+    has_dcp: u32,
     pad_crop_2: u32,
     pad_crop_3: u32,
 }
@@ -161,6 +161,16 @@ var texture_sampler: sampler;  // Not used for integer textures, kept for compat
 
 @group(0) @binding(2)
 var<uniform> params: EditParams;
+
+// Phase 140: DCP Textures
+@group(0) @binding(3)
+var hsv_lut: texture_3d<f32>;
+
+@group(0) @binding(4)
+var tone_curve: texture_1d<f32>;
+
+@group(0) @binding(5)
+var lut_sampler: sampler;
 
 // Phase 128: Debayer functions removed — Pass 2 reads pre-debayered float texture.
 // Neighbour helper for NR / sharpening.  One texture read per neighbour
@@ -321,14 +331,105 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let exposure_multiplier = pow(2.0, params.exposure);
     color = color * exposure_multiplier;
 
-    // ── Step 5: Colour Matrix (Camera RGB → sRGB linear) ─────────────────────
-    // Build once; neighbour helpers (NR, sharpening) reuse the same matrix.
-    let color_matrix = transpose(mat3x3<f32>(
-        params.color_matrix_0,
-        params.color_matrix_1,
-        params.color_matrix_2
+    // ── Step 5: Camera RGB → sRGB (DCP Pipeline vs Fallback) ────────────────
+    color = color * params.wb_multipliers.rgb;
+
+    let matrix_from_params = transpose(mat3x3<f32>(
+        params.forward_matrix_0,
+        params.forward_matrix_1,
+        params.forward_matrix_2
     ));
-    color = color_matrix * color;
+
+    if (params.has_dcp == 1u) {
+        // 1. Camera RGB to XYZ D50
+        var xyz = matrix_from_params * color;
+        
+        // 2. XYZ D50 to ProPhoto RGB (Linear)
+        let xyz_to_prophoto = mat3x3<f32>(
+             1.3459433, -0.2556075, -0.0511118,
+            -0.5445989,  1.5081673,  0.0205351,
+             0.0000000,  0.0000000,  1.2118128
+        );
+        color = xyz_to_prophoto * xyz;
+
+        // 3. ProPhoto RGB to HSV for HueSatMap lookup
+        let v = max(color.r, max(color.g, color.b));
+        let c_min = min(color.r, min(color.g, color.b));
+        let delta = v - c_min;
+        
+        var h = 0.0;
+        var s = 0.0;
+        if (v > 0.0) {
+            s = delta / v;
+            if (delta > 0.0) {
+                if (v == color.r) {
+                    h = (color.g - color.b) / delta;
+                    if (h < 0.0) { h += 6.0; }
+                } else if (v == color.g) {
+                    h = (color.b - color.r) / delta + 2.0;
+                } else {
+                    h = (color.r - color.g) / delta + 4.0;
+                }
+                h /= 6.0;
+            }
+        }
+        
+        // Sample the 3D HueSatMap LUT (h, s, v)
+        let lut_val = textureSampleLevel(hsv_lut, lut_sampler, vec3<f32>(h, s, v), 0.0);
+        
+        // DNG Hue shift is in degrees
+        h = fract(h + lut_val.r / 360.0);
+        // SatScale and ValScale
+        s = clamp(s * lut_val.g, 0.0, 1.0);
+        let new_v = max(v * lut_val.b, 0.0);
+
+        // Convert HSV back to RGB
+        var r = 0.0;
+        var g = 0.0;
+        var b = 0.0;
+        if (s == 0.0) {
+            r = new_v;
+            g = new_v;
+            b = new_v;
+        } else {
+            let h_i = floor(h * 6.0);
+            let f = h * 6.0 - h_i;
+            let p = new_v * (1.0 - s);
+            let q = new_v * (1.0 - f * s);
+            let t = new_v * (1.0 - (1.0 - f) * s);
+            
+            let idx = i32(h_i) % 6;
+            if (idx == 0)      { r = new_v; g = t;     b = p; }
+            else if (idx == 1) { r = q;     g = new_v; b = p; }
+            else if (idx == 2) { r = p;     g = new_v; b = t; }
+            else if (idx == 3) { r = p;     g = q;     b = new_v; }
+            else if (idx == 4) { r = t;     g = p;     b = new_v; }
+            else               { r = new_v; g = p;     b = q; }
+        }
+        color = vec3<f32>(r, g, b);
+
+        // 4. Apply ProfileToneCurve (1D LUT)
+        // Values in color can be slightly out of bounds, clamp to [0.0, 1.0] for curve sampling
+        color.r = textureSampleLevel(tone_curve, lut_sampler, clamp(color.r, 0.0, 1.0), 0.0).r;
+        color.g = textureSampleLevel(tone_curve, lut_sampler, clamp(color.g, 0.0, 1.0), 0.0).r;
+        color.b = textureSampleLevel(tone_curve, lut_sampler, clamp(color.b, 0.0, 1.0), 0.0).r;
+
+        // 5. Convert ProPhoto RGB back to sRGB linear
+        let prophoto_to_xyz = mat3x3<f32>(
+            0.7977604,  0.1351858,  0.0313493,
+            0.2880711,  0.7118432,  0.0000857,
+            0.0000000,  0.0000000,  0.8251046
+        );
+        let xyz_to_srgb = mat3x3<f32>(
+             3.2404542, -1.5371385, -0.4985314,
+            -0.9692660,  1.8760108,  0.0415560,
+             0.0556434, -0.2040259,  1.0572252
+        );
+        color = xyz_to_srgb * prophoto_to_xyz * color;
+    } else {
+        // Fallback: the matrix is already Cam -> sRGB Linear
+        color = matrix_from_params * color;
+    }
 
     // ── Step 6: Clamp Negatives ───────────────────────────────────────────────
     // The camera→sRGB matrix contains negative cross-talk values. Any surviving
@@ -345,14 +446,14 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
         // 1. Sample center and neighbours in perceptual (sqrt) space
         let c_luma  = sqrt(max(0.0001, dot(color, luma_weights)));
-        let n_luma  = sqrt(max(0.0001, dot(get_srgb_neighbor(pixel_coords + vec2<i32>( 0, -1), dimensions, color_matrix), luma_weights)));
-        let s_luma  = sqrt(max(0.0001, dot(get_srgb_neighbor(pixel_coords + vec2<i32>( 0,  1), dimensions, color_matrix), luma_weights)));
-        let e_luma  = sqrt(max(0.0001, dot(get_srgb_neighbor(pixel_coords + vec2<i32>( 1,  0), dimensions, color_matrix), luma_weights)));
-        let w_luma  = sqrt(max(0.0001, dot(get_srgb_neighbor(pixel_coords + vec2<i32>(-1,  0), dimensions, color_matrix), luma_weights)));
-        let nw_luma = sqrt(max(0.0001, dot(get_srgb_neighbor(pixel_coords + vec2<i32>(-1, -1), dimensions, color_matrix), luma_weights)));
-        let ne_luma = sqrt(max(0.0001, dot(get_srgb_neighbor(pixel_coords + vec2<i32>( 1, -1), dimensions, color_matrix), luma_weights)));
-        let sw_luma = sqrt(max(0.0001, dot(get_srgb_neighbor(pixel_coords + vec2<i32>(-1,  1), dimensions, color_matrix), luma_weights)));
-        let se_luma = sqrt(max(0.0001, dot(get_srgb_neighbor(pixel_coords + vec2<i32>( 1,  1), dimensions, color_matrix), luma_weights)));
+        let n_luma  = sqrt(max(0.0001, dot(get_srgb_neighbor(pixel_coords + vec2<i32>( 0, -1), dimensions, matrix_from_params), luma_weights)));
+        let s_luma  = sqrt(max(0.0001, dot(get_srgb_neighbor(pixel_coords + vec2<i32>( 0,  1), dimensions, matrix_from_params), luma_weights)));
+        let e_luma  = sqrt(max(0.0001, dot(get_srgb_neighbor(pixel_coords + vec2<i32>( 1,  0), dimensions, matrix_from_params), luma_weights)));
+        let w_luma  = sqrt(max(0.0001, dot(get_srgb_neighbor(pixel_coords + vec2<i32>(-1,  0), dimensions, matrix_from_params), luma_weights)));
+        let nw_luma = sqrt(max(0.0001, dot(get_srgb_neighbor(pixel_coords + vec2<i32>(-1, -1), dimensions, matrix_from_params), luma_weights)));
+        let ne_luma = sqrt(max(0.0001, dot(get_srgb_neighbor(pixel_coords + vec2<i32>( 1, -1), dimensions, matrix_from_params), luma_weights)));
+        let sw_luma = sqrt(max(0.0001, dot(get_srgb_neighbor(pixel_coords + vec2<i32>(-1,  1), dimensions, matrix_from_params), luma_weights)));
+        let se_luma = sqrt(max(0.0001, dot(get_srgb_neighbor(pixel_coords + vec2<i32>( 1,  1), dimensions, matrix_from_params), luma_weights)));
 
         // 2. 3×3 Gaussian blur in perceptual space
         let blur_luma = (c_luma * 0.25)
@@ -491,11 +592,11 @@ struct EditParams {
     padding1: f32,
     padding2: f32,
     wb_multipliers: vec4<f32>,
-    color_matrix_0: vec3<f32>,
+    forward_matrix_0: vec3<f32>,
     padding3: f32,
-    color_matrix_1: vec3<f32>,
+    forward_matrix_1: vec3<f32>,
     padding4: f32,
-    color_matrix_2: vec3<f32>,
+    forward_matrix_2: vec3<f32>,
     padding5: f32,
     zoom: f32,
     pan_x: f32,
@@ -525,8 +626,8 @@ struct EditParams {
     // Phase 135: Non-destructive crop visibility
     is_cropping: u32,
 
-    // Padding to reach 256 bytes (16-byte alignment)
-    pad_crop_1: u32,
+    // Padding to reach 256 bytes
+    has_dcp: u32,
     pad_crop_2: u32,
     pad_crop_3: u32,
 }

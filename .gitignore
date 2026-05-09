@@ -17,3 +17,9 @@ Thumbs.db
 beforeRefactor/
 
 .aider*
+.claude*
+.continue*
+.cursor*
+.gemini*
+.ref*
+.tool*

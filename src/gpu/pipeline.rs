@@ -28,14 +28,14 @@ pub struct GpuEditParams {
     tint: f32,
     padding1: f32, // For 16-byte alignment
     padding2: f32,
-    // Phase 14: Color science (must match WGSL layout!)
+    // Phase 140: Color science (must match WGSL layout!)
     pub wb_multipliers: [f32; 4], // White balance [R, G, B, G2] - vec4 in WGSL
-    // Color matrix split into 3 rows with padding (WGSL vec3 = 12 bytes + 4 padding)
-    pub color_matrix_0: [f32; 3], // Row 0
+    // Forward matrix split into 3 rows with padding (WGSL vec3 = 12 bytes + 4 padding)
+    pub forward_matrix_0: [f32; 3], // Row 0
     _padding3: f32,
-    pub color_matrix_1: [f32; 3], // Row 1
+    pub forward_matrix_1: [f32; 3], // Row 1
     _padding4: f32,
-    pub color_matrix_2: [f32; 3], // Row 2
+    pub forward_matrix_2: [f32; 3], // Row 2
     _padding5: f32,
     // Phase 25: Zoom & Pan
     pub zoom: f32,  // Zoom level (1.0 = 100%)
@@ -95,8 +95,10 @@ pub struct GpuEditParams {
     // Phase 135: Non-destructive crop visibility
     pub is_cropping: u32, // Offset 240. Ends at 244.
 
+    // Phase 140: DCP pipeline toggle
+    pub has_dcp: u32,     // Offset 244. Ends at 248.
+
     // Padding to reach 256 bytes (16-byte alignment for struct)
-    _pad_crop_1: u32, // 248
     _pad_crop_2: u32, // 252
     _pad_crop_3: u32, // 256
 }
@@ -118,11 +120,11 @@ impl From<&EditParams> for GpuEditParams {
             padding2: 0.0,
             // Default values (will be overwritten by set_color_metadata)
             wb_multipliers: [1.0, 1.0, 1.0, 1.0],
-            color_matrix_0: [1.0, 0.0, 0.0],
+            forward_matrix_0: [1.0, 0.0, 0.0],
             _padding3: 0.0,
-            color_matrix_1: [0.0, 1.0, 0.0],
+            forward_matrix_1: [0.0, 1.0, 0.0],
             _padding4: 0.0,
-            color_matrix_2: [0.0, 0.0, 1.0],
+            forward_matrix_2: [0.0, 0.0, 1.0],
             _padding5: 0.0,
             // Phase 25: Default zoom and pan (no zoom, no pan)
             zoom: 1.0,
@@ -149,7 +151,7 @@ impl From<&EditParams> for GpuEditParams {
             _pad_phase_1: 0.0,
             crop: params.crop,
             is_cropping: params.is_cropping,
-            _pad_crop_1: 0,
+            has_dcp: 0,
             _pad_crop_2: 0,
             _pad_crop_3: 0,
         }
@@ -174,8 +176,9 @@ pub struct RenderPipeline {
     pub histogram_width: u32,  // Histogram resolution width (256px)
     pub histogram_height: u32, // Histogram resolution height (maintains aspect)
     // Phase 14: Color science metadata
-    wb_multipliers: [f32; 4], // White balance from camera
-    color_matrix: [f32; 9],   // Color correction matrix
+    pub wb_multipliers: [f32; 4], // White balance from camera
+    pub forward_matrix: [f32; 9],   // Color correction matrix
+    has_dcp: bool,            // DCP active toggle
     cfa_pattern: u32,         // Phase 34: CFA Pattern
     black_levels: [u32; 4],   // Phase 36: Per-channel Black Levels
     white_level: u32,         // Phase 35: White Level
@@ -205,7 +208,8 @@ impl RenderPipeline {
         height: u32,
         params: &EditParams,
         wb_multipliers: [f32; 4],
-        color_matrix: [f32; 9],
+        forward_matrix: [f32; 9],
+        has_dcp: bool,
         cfa_pattern: u32,
         black_levels: [u32; 4],
         white_level: u32,
@@ -365,10 +369,11 @@ impl RenderPipeline {
         let mut gpu_params: GpuEditParams = params.into();
         // Phase 14: Set color science metadata from camera
         gpu_params.wb_multipliers = wb_multipliers;
-        // Split flat color_matrix [9] into 3 rows with padding
-        gpu_params.color_matrix_0 = [color_matrix[0], color_matrix[1], color_matrix[2]];
-        gpu_params.color_matrix_1 = [color_matrix[3], color_matrix[4], color_matrix[5]];
-        gpu_params.color_matrix_2 = [color_matrix[6], color_matrix[7], color_matrix[8]];
+        // Split flat forward_matrix [9] into 3 rows with padding
+        gpu_params.forward_matrix_0 = [forward_matrix[0], forward_matrix[1], forward_matrix[2]];
+        gpu_params.forward_matrix_1 = [forward_matrix[3], forward_matrix[4], forward_matrix[5]];
+        gpu_params.forward_matrix_2 = [forward_matrix[6], forward_matrix[7], forward_matrix[8]];
+        gpu_params.has_dcp = if has_dcp { 1 } else { 0 };
         gpu_params.cfa_pattern = cfa_pattern;
         gpu_params.black_levels = black_levels;
         gpu_params.white_level = white_level;
@@ -502,7 +507,8 @@ impl RenderPipeline {
             histogram_width,  // Phase 22: Tiny render for histogram
             histogram_height, // Phase 22: Tiny render for histogram
             wb_multipliers,
-            color_matrix,
+            forward_matrix,
+            has_dcp: false,
             cfa_pattern,
             black_levels,
             white_level,
@@ -531,10 +537,10 @@ impl RenderPipeline {
         // Preserve color metadata (doesn't change with slider updates)
         gpu_params.wb_multipliers = self.wb_multipliers;
         // Convert flat matrix to split rows
-        let cm = &self.color_matrix;
-        gpu_params.color_matrix_0 = [cm[0], cm[1], cm[2]];
-        gpu_params.color_matrix_1 = [cm[3], cm[4], cm[5]];
-        gpu_params.color_matrix_2 = [cm[6], cm[7], cm[8]];
+        let cm = &self.forward_matrix;
+        gpu_params.forward_matrix_0 = [cm[0], cm[1], cm[2]];
+        gpu_params.forward_matrix_1 = [cm[3], cm[4], cm[5]];
+        gpu_params.forward_matrix_2 = [cm[6], cm[7], cm[8]];
         // Phase 25: Set zoom and pan
         gpu_params.zoom = zoom;
         gpu_params.pan_x = pan_x;

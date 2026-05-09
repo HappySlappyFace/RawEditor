@@ -35,6 +35,9 @@ pub struct RawDataResult {
     pub shutter_speed: String,
     pub aperture: String,
     pub lens: String,
+    
+    // Phase 140: DNG Camera Profile
+    pub dcp_profile: Option<std::sync::Arc<crate::raw::dcp::DcpProfile>>,
 }
 
 /// Load raw sensor data from a RAW file
@@ -265,6 +268,14 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
     // Phase 119: EXIF metadata via kamadak-exif (rawler's Exif is internal to its decoders)
     let (iso, shutter_speed, aperture, lens) = extract_metadata_kamadak(path.to_str().unwrap_or_default());
 
+    // Phase 140: Load DCP profile if available
+    let dcp_profile = crate::raw::dcp::find_profile_for_camera(&raw_image.make, &raw_image.model)
+        .and_then(|p| {
+            tracing::info!("Found DCP profile at {:?}", p);
+            crate::raw::dcp::parse_dcp(&p).ok()
+        })
+        .map(std::sync::Arc::new);
+
     Ok(RawDataResult {
         data,
         width,
@@ -284,6 +295,7 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
         shutter_speed,
         aperture,
         lens,
+        dcp_profile,
     })
 }
 

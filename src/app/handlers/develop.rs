@@ -301,7 +301,12 @@ pub fn trigger_async_render(editor: &mut RawEditor) -> Task<Message> {
 fn update_pipeline(editor: &mut RawEditor) -> Task<Message> {
     editor.save_current_edits();
     if let (Some(ctx), Some(resources)) = (&editor.gpu_context, &editor.image_resources) {
-        resources.update_uniforms(ctx, &editor.current_edit_params);
+        // Phase 140: Interpolate DCP if available
+        let interpolated = editor.current_dcp_profile.as_ref().map(|dcp| {
+            crate::raw::dcp::interpolate_at_temperature(dcp, editor.current_edit_params.temperature)
+        });
+        
+        resources.update_uniforms(ctx, &editor.current_edit_params, interpolated.as_ref());
         editor.canvas_cache.clear();
     }
     

@@ -139,6 +139,8 @@ pub struct RawEditor {
     pub current_tab: AppTab,
     /// Current edit parameters for the selected image
     pub current_edit_params: crate::core::types::EditParams,
+    // Phase 140: Currently loaded DCP profile
+    pub current_dcp_profile: Option<Arc<crate::raw::dcp::DcpProfile>>,
 
     // Phase 95: Unified GPU Pipeline Architecture
     /// Shared GPU context (created once, reused for all images)
@@ -301,6 +303,7 @@ impl RawEditor {
                 raw_preload_ahead,
                 current_tab: AppTab::Library, // Start in Library view
                 current_edit_params: crate::core::types::EditParams::default(),
+                current_dcp_profile: None, // Phase 140: No DCP profile initially
 
                 // Phase 95: Unified GPU Pipeline Architecture
                 gpu_context: None, // Will be initialized on first image load

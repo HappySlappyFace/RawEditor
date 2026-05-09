@@ -63,9 +63,11 @@ pub fn prepare_image_resources_from_raw(
     raw: Arc<raw::loader::RawDataResult>,
 ) -> Task<Message> {
     editor.current_metadata = Some(metadata_snapshot(&raw));
+    
+    // Phase 140: Store current DCP profile
+    editor.current_dcp_profile = raw.dcp_profile.clone();
+    
     let params = editor.current_edit_params;
-    let xyz_to_cam = raw.color_matrix;
-    let cam_to_srgb = crate::color::calculate_cam_to_srgb(xyz_to_cam, raw.wb_multipliers);
     let context = editor.gpu_context.clone();
 
     Task::perform(
@@ -79,6 +81,15 @@ pub fn prepare_image_resources_from_raw(
                 }
             };
 
+            let (forward_matrix, interpolated_dcp) = if let Some(dcp) = &raw.dcp_profile {
+                let interpolated = crate::raw::dcp::interpolate_at_temperature(dcp, params.temperature);
+                (interpolated.forward_matrix, Some(interpolated))
+            } else {
+                let xyz_to_cam = raw.color_matrix;
+                let cam_to_srgb = crate::color::calculate_cam_to_srgb(xyz_to_cam, raw.wb_multipliers);
+                (cam_to_srgb, None)
+            };
+
             match gpu::shared::ImageResources::new(
                 &ctx,
                 image_id,
@@ -87,10 +98,11 @@ pub fn prepare_image_resources_from_raw(
                 raw.height,
                 &params,
                 raw.wb_multipliers,
-                cam_to_srgb,
+                forward_matrix,
                 raw.cfa_pattern,
                 raw.black_levels,
                 raw.white_level,
+                interpolated_dcp.as_ref(),
             ) {
                 Ok(resources) => Ok((ctx, std::sync::Arc::new(resources))),
                 Err(e) => Err(e),
@@ -108,7 +120,10 @@ pub fn handle_image_resources_ready(editor: &mut RawEditor, image_id: i64, resul
             }
             
             if let Some(ctx) = &editor.gpu_context {
-                resources.update_uniforms(ctx, &editor.current_edit_params);
+                let interpolated = editor.current_dcp_profile.as_ref().map(|dcp| {
+                    crate::raw::dcp::interpolate_at_temperature(dcp, editor.current_edit_params.temperature)
+                });
+                resources.update_uniforms(ctx, &editor.current_edit_params, interpolated.as_ref());
             }
             
             editor.image_resources = Some(resources);
@@ -137,6 +152,7 @@ fn apply_raw_preload_cleanup(editor: &mut RawEditor, image_id: i64) {
 fn metadata_snapshot(raw: &raw::loader::RawDataResult) -> raw::loader::RawDataResult {
     raw::loader::RawDataResult {
         data: Vec::new(),
+        dcp_profile: raw.dcp_profile.clone(),
         width: raw.width,
         height: raw.height,
         wb_multipliers: raw.wb_multipliers,

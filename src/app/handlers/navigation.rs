@@ -142,8 +142,12 @@ pub fn handle_mouse_released(editor: &mut RawEditor) -> Task<Message> {
         if let DragMode::CropHandle(_) = editor.drag_mode {
             editor.save_current_edits();
             editor.commit_current_state();
-            if let (Some(ctx), Some(res)) = (&editor.gpu_context, &editor.image_resources) { res.update_uniforms(ctx, &editor.current_edit_params); }
-        }
+            if let (Some(ctx), Some(res)) = (&editor.gpu_context, &editor.image_resources) {
+                let interpolated = editor.current_dcp_profile.as_ref().map(|dcp| {
+                    crate::raw::dcp::interpolate_at_temperature(dcp, editor.current_edit_params.temperature)
+                });
+                res.update_uniforms(ctx, &editor.current_edit_params, interpolated.as_ref());
+            }        }
     }
     editor.is_dragging = false;
     editor.drag_mode = DragMode::None;
@@ -284,7 +288,10 @@ fn apply_crop_drag(editor: &mut RawEditor, pos: Point, last: Point, h: CropHandl
     editor.current_edit_params.crop = [l, t, (r - l).max(0.0), (b - t).max(0.0)];
     
     if let Some(ctx) = &editor.gpu_context {
-        resources.update_uniforms(ctx, &editor.current_edit_params);
+        let interpolated = editor.current_dcp_profile.as_ref().map(|dcp| {
+            crate::raw::dcp::interpolate_at_temperature(dcp, editor.current_edit_params.temperature)
+        });
+        resources.update_uniforms(ctx, &editor.current_edit_params, interpolated.as_ref());
     }
 }
 
