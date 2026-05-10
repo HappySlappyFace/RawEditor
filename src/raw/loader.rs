@@ -271,11 +271,25 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
 
     // Phase 140: Load DCP profile if available
     let dcp_profile = crate::raw::dcp::find_profile_for_camera(&raw_image.make, &raw_image.model)
-        .and_then(|p: PathBuf| {
-            tracing::info!("Found DCP profile at {:?}", p);
-            crate::raw::dcp::parse_dcp(&p).ok()
-        })
-        .map(std::sync::Arc::new);
+    .and_then(|p: PathBuf| {
+        tracing::info!("Found DCP profile at {:?}", p);
+        match crate::raw::dcp::parse_dcp(&p) {
+            Ok(profile) => {
+                tracing::info!(  // ← ADD THIS
+                    "DCP parse OK: fm1={} hsm_dims={:?} hsm1_entries={:?}",
+                    profile.forward_matrix_1.is_some(),
+                    profile.hue_sat_dims,
+                    profile.hue_sat_data_1.as_ref().map(|v| v.len())
+                );
+                Some(profile)
+            }
+            Err(e) => {
+                tracing::error!("DCP parse FAILED: {}", e);  // ← AND THIS
+                None
+            }
+        }
+    })
+    .map(std::sync::Arc::new);
 
     Ok(RawDataResult {
         data,

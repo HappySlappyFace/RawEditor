@@ -341,93 +341,79 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     ));
 
     if (params.has_dcp == 1u) {
-        // 1. Camera RGB to XYZ D50
+        // 1. Camera RGB → XYZ D50 via ForwardMatrix
         var xyz = matrix_from_params * color;
-        
-        // 2. XYZ D50 to ProPhoto RGB (Linear)
-        let xyz_to_prophoto = mat3x3<f32>(
-             1.3459433, -0.2556075, -0.0511118,
-            -0.5445989,  1.5081673,  0.0205351,
-             0.0000000,  0.0000000,  1.2118128
-        );
-        color = xyz_to_prophoto * xyz;
 
-        // 3. ProPhoto RGB to HSV for HueSatMap lookup
-        let v = max(color.r, max(color.g, color.b));
-        let c_min = min(color.r, min(color.g, color.b));
-        let delta = v - c_min;
-        
+        // 2. XYZ D50 → ProPhoto RGB (ProPhoto uses D50, no Bradford needed)
+        let xyz_to_prophoto = mat3x3<f32>(
+            1.3459433, -0.5445989,  0.0000000,
+        -0.2556075,  1.5081673,  0.0000000,
+        -0.0511118,  0.0205351,  1.2118128
+        );
+        var pp = xyz_to_prophoto * xyz;
+        pp = max(pp, vec3<f32>(0.0));
+
+        // 3. ProPhoto HSV for HueSatMap lookup
+        let v    = max(pp.r, max(pp.g, pp.b));
+        let cmin = min(pp.r, min(pp.g, pp.b));
+        let delta = v - cmin;
         var h = 0.0;
         var s = 0.0;
-        if (v > 0.0) {
-            s = delta / v;
-            if (delta > 0.0) {
-                if (v == color.r) {
-                    h = (color.g - color.b) / delta;
-                    if (h < 0.0) { h += 6.0; }
-                } else if (v == color.g) {
-                    h = (color.b - color.r) / delta + 2.0;
-                } else {
-                    h = (color.r - color.g) / delta + 4.0;
-                }
-                h /= 6.0;
+        if (v > 0.001) { s = delta / v; }
+        if (delta > 0.001) {
+            if (v == pp.r) {
+                h = (pp.g - pp.b) / delta;
+                if (h < 0.0) { h += 6.0; }
+            } else if (v == pp.g) {
+                h = (pp.b - pp.r) / delta + 2.0;
+            } else {
+                h = (pp.r - pp.g) / delta + 4.0;
             }
+            h /= 6.0;
         }
-        
-        // Sample the 3D HueSatMap LUT (h, s, v)
+
         let lut_val = textureSampleLevel(hsv_lut, lut_sampler, vec3<f32>(h, s, v), 0.0);
-        
-        // DNG Hue shift is in degrees
         h = fract(h + lut_val.r / 360.0);
-        // SatScale and ValScale
         s = clamp(s * lut_val.g, 0.0, 1.0);
         let new_v = max(v * lut_val.b, 0.0);
 
-        // Convert HSV back to RGB
-        var r = 0.0;
-        var g = 0.0;
-        var b = 0.0;
-        if (s == 0.0) {
-            r = new_v;
-            g = new_v;
-            b = new_v;
+        // HSV → ProPhoto RGB
+        var r_pp = 0.0; var g_pp = 0.0; var b_pp = 0.0;
+        if (s < 0.001) {
+            r_pp = new_v; g_pp = new_v; b_pp = new_v;
         } else {
-            let h_i = floor(h * 6.0);
-            let f = h * 6.0 - h_i;
-            let p = new_v * (1.0 - s);
-            let q = new_v * (1.0 - f * s);
-            let t = new_v * (1.0 - (1.0 - f) * s);
-            
-            let idx = i32(h_i) % 6;
-            if (idx == 0)      { r = new_v; g = t;     b = p; }
-            else if (idx == 1) { r = q;     g = new_v; b = p; }
-            else if (idx == 2) { r = p;     g = new_v; b = t; }
-            else if (idx == 3) { r = p;     g = q;     b = new_v; }
-            else if (idx == 4) { r = t;     g = p;     b = new_v; }
-            else               { r = new_v; g = p;     b = q; }
+            let h6  = h * 6.0;
+            let hi  = floor(h6);
+            let f   = h6 - hi;
+            let p   = new_v * (1.0 - s);
+            let q   = new_v * (1.0 - f * s);
+            let t   = new_v * (1.0 - (1.0 - f) * s);
+            let idx = i32(hi) % 6;
+            if      (idx == 0) { r_pp = new_v; g_pp = t;     b_pp = p;     }
+            else if (idx == 1) { r_pp = q;     g_pp = new_v; b_pp = p;     }
+            else if (idx == 2) { r_pp = p;     g_pp = new_v; b_pp = t;     }
+            else if (idx == 3) { r_pp = p;     g_pp = q;     b_pp = new_v; }
+            else if (idx == 4) { r_pp = t;     g_pp = p;     b_pp = new_v; }
+            else               { r_pp = new_v; g_pp = p;     b_pp = q;     }
         }
-        color = vec3<f32>(r, g, b);
+        pp = vec3<f32>(r_pp, g_pp, b_pp);
 
-        // 4. Apply ProfileToneCurve (1D LUT)
-        // Values in color can be slightly out of bounds, clamp to [0.0, 1.0] for curve sampling
-        color.r = textureSampleLevel(tone_curve, lut_sampler, clamp(color.r, 0.0, 1.0), 0.0).r;
-        color.g = textureSampleLevel(tone_curve, lut_sampler, clamp(color.g, 0.0, 1.0), 0.0).r;
-        color.b = textureSampleLevel(tone_curve, lut_sampler, clamp(color.b, 0.0, 1.0), 0.0).r;
+        // 4. ProfileToneCurve (linear 1:1 if no curve in this DCP)
+        pp.r = textureSampleLevel(tone_curve, lut_sampler, clamp(pp.r, 0.0, 1.0), 0.0).r;
+        pp.g = textureSampleLevel(tone_curve, lut_sampler, clamp(pp.g, 0.0, 1.0), 0.0).r;
+        pp.b = textureSampleLevel(tone_curve, lut_sampler, clamp(pp.b, 0.0, 1.0), 0.0).r;
 
-        // 5. Convert ProPhoto RGB back to sRGB linear
-        let prophoto_to_xyz = mat3x3<f32>(
-            0.7977604,  0.1351858,  0.0313493,
-            0.2880711,  0.7118432,  0.0000857,
-            0.0000000,  0.0000000,  0.8251046
+        // 5. ProPhoto → XYZ D50 → Bradford D50→D65 → linear sRGB
+        // Combined matrix: xyz_to_srgb_D65 @ bradford_D50→D65 @ prophoto_to_xyz_D50
+        // Column-major for WGSL (each vec3 is a column):
+        let prophoto_to_srgb = mat3x3<f32>(
+            2.0340758, -0.2288131, -0.0085698,
+            -0.7273341,  1.2317301, -0.1532866,
+            -0.3067418, -0.0029168,  1.1618564
         );
-        let xyz_to_srgb = mat3x3<f32>(
-             3.2404542, -1.5371385, -0.4985314,
-            -0.9692660,  1.8760108,  0.0415560,
-             0.0556434, -0.2040259,  1.0572252
-        );
-        color = xyz_to_srgb * prophoto_to_xyz * color;
+        color = prophoto_to_srgb * pp;
+
     } else {
-        // Fallback: the matrix is already Cam -> sRGB Linear
         color = matrix_from_params * color;
     }
 
