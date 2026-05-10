@@ -493,9 +493,10 @@ impl RawEditor {
             if let Some(image_id) = self.selected_image_id {
                 if let Err(e) = library.save_edit_params(image_id, &self.current_edit_params) {
                     tracing::error!("Failed to save edits for image {}: {:?}", image_id, e);
-                } else {
-                    tracing::info!("Saved edits for image {}", image_id);
                 }
+                //  else {
+                //     tracing::info!("Saved edits for image {}", image_id);
+                // }
             }
         }
     }

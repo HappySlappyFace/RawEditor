@@ -230,7 +230,7 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
         "                     [{:.3}, {:.3}, {:.3}]",
         xyz_to_cam_matrix[6], xyz_to_cam_matrix[7], xyz_to_cam_matrix[8]
     );
-    tracing::debug!("CFA Pattern Index: {}", cfa_pattern);
+    // tracing::debug!("CFA Pattern Index: {}", cfa_pattern);
 
     // Phase 121: Prioritize metadata white level — it is the camera's actual clipping
     // point for this specific sensor (e.g. 3880 for many Canon sensors).
@@ -253,17 +253,17 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
                 if max_v > 8191 { 16383 } else if max_v > 2047 { 4095 } else { 1023 }
             });
 
-        tracing::debug!(
-            "White Level: {} (from_meta={:?}, from_bps={:?}, bps={})",
-            resolved, whitelevel_from_meta, whitelevel_from_bps, bps
-        );
+        // tracing::debug!(
+        //     "White Level: {} (from_meta={:?}, from_bps={:?}, bps={})",
+        //     resolved, whitelevel_from_meta, whitelevel_from_bps, bps
+        // );
         resolved
     };
 
-    tracing::debug!(
-        "Black Levels: [{}, {}, {}, {}]",
-        black_levels[0], black_levels[1], black_levels[2], black_levels[3]
-    );
+    // tracing::debug!(
+    //     "Black Levels: [{}, {}, {}, {}]",
+    //     black_levels[0], black_levels[1], black_levels[2], black_levels[3]
+    // );
 
     // Phase 119: EXIF metadata via kamadak-exif (rawler's Exif is internal to its decoders)
     let (iso, shutter_speed, aperture, lens) = extract_metadata_kamadak(path.to_str().unwrap_or_default());
@@ -272,7 +272,12 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
     let dcp_profile = crate::raw::dcp::find_profile_for_camera(&raw_image.make, &raw_image.model)
         .and_then(|p| {
             tracing::info!("Found DCP profile at {:?}", p);
-            crate::raw::dcp::parse_dcp(&p).ok()
+            let parsed = crate::raw::dcp::parse_dcp(&p);
+            match &parsed {
+                Ok(profile) => crate::raw::dcp::debug_dcp_profile(profile),
+                Err(e) => tracing::error!("DCP parse FAILED: {}", e),
+            }
+            parsed.ok()
         })
         .map(std::sync::Arc::new);
 

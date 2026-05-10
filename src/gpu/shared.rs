@@ -302,6 +302,7 @@ pub struct ImageResources {
     pub tone_curve_texture: wgpu::Texture,
     pub tone_curve_view: wgpu::TextureView,
     pub has_dcp: bool,
+    pub last_uploaded_dcp_kelvin: std::sync::RwLock<Option<f32>>,
 }
 
 impl ImageResources {
@@ -596,6 +597,7 @@ impl ImageResources {
             tone_curve_texture,
             tone_curve_view,
             has_dcp,
+            last_uploaded_dcp_kelvin: std::sync::RwLock::new(Some(params.temperature_to_kelvin())),
         };
 
         // Phase 128: Run initial debayer pass
@@ -642,41 +644,59 @@ impl ImageResources {
         params: &EditParams,
         dcp_profile: Option<&crate::raw::dcp::InterpolatedProfile>,
     ) {
+        let current_kelvin = params.temperature_to_kelvin();
+        let mut needs_lut_upload = true;
+        
+        if let Ok(last_kelvin) = self.last_uploaded_dcp_kelvin.read() {
+            if let Some(k) = *last_kelvin {
+                if (k - current_kelvin).abs() < 1.0 {
+                    needs_lut_upload = false;
+                }
+            }
+        }
+
         if let Some(dcp) = dcp_profile {
             if let Ok(mut matrix) = self.forward_matrix.write() {
                 *matrix = dcp.forward_matrix;
             }
-            // Re-upload the LUT texture
-            let lut_dims = dcp.hue_sat_dims;
-            let unpadded_bytes_per_row = lut_dims.0 * 8;
-            let padded_bytes_per_row = (unpadded_bytes_per_row + 255) & !255;
-            let mut padded_rgba_lut = Vec::with_capacity((padded_bytes_per_row * lut_dims.1 * lut_dims.2) as usize);
+            
+            if needs_lut_upload {
+                // Re-upload the LUT texture
+                let lut_dims = dcp.hue_sat_dims;
+                let unpadded_bytes_per_row = lut_dims.0 * 8;
+                let padded_bytes_per_row = (unpadded_bytes_per_row + 255) & !255;
+                let mut padded_rgba_lut = Vec::with_capacity((padded_bytes_per_row * lut_dims.1 * lut_dims.2) as usize);
 
-            for z in 0..lut_dims.2 {
-                for y in 0..lut_dims.1 {
-                    for x in 0..lut_dims.0 {
-                        let i = (z * lut_dims.1 * lut_dims.0 + y * lut_dims.0 + x) as usize;
-                        if i < dcp.hue_sat_lut.len() {
-                            let v = &dcp.hue_sat_lut[i];
-                            let c = [half::f16::from_f32(v[0]), half::f16::from_f32(v[1]), half::f16::from_f32(v[2]), half::f16::from_f32(1.0)];
-                            padded_rgba_lut.extend_from_slice(bytemuck::cast_slice(&c));
-                        } else {
-                            let c = [half::f16::from_f32(0.0), half::f16::from_f32(1.0), half::f16::from_f32(1.0), half::f16::from_f32(1.0)];
-                            padded_rgba_lut.extend_from_slice(bytemuck::cast_slice(&c));
+                for z in 0..lut_dims.2 {
+                    for y in 0..lut_dims.1 {
+                        for x in 0..lut_dims.0 {
+                            let i = (z * lut_dims.1 * lut_dims.0 + y * lut_dims.0 + x) as usize;
+                            if i < dcp.hue_sat_lut.len() {
+                                let v = &dcp.hue_sat_lut[i];
+                                let c = [half::f16::from_f32(v[0]), half::f16::from_f32(v[1]), half::f16::from_f32(v[2]), half::f16::from_f32(1.0)];
+                                padded_rgba_lut.extend_from_slice(bytemuck::cast_slice(&c));
+                            } else {
+                                let c = [half::f16::from_f32(0.0), half::f16::from_f32(1.0), half::f16::from_f32(1.0), half::f16::from_f32(1.0)];
+                                padded_rgba_lut.extend_from_slice(bytemuck::cast_slice(&c));
+                            }
+                        }
+                        let padding = padded_bytes_per_row - unpadded_bytes_per_row;
+                        if padding > 0 {
+                            padded_rgba_lut.extend(std::iter::repeat(0u8).take(padding as usize));
                         }
                     }
-                    let padding = padded_bytes_per_row - unpadded_bytes_per_row;
-                    if padding > 0 {
-                        padded_rgba_lut.extend(std::iter::repeat(0u8).take(padding as usize));
-                    }
+                }
+                context.queue.write_texture(
+                    wgpu::ImageCopyTexture { texture: &self.hsv_lut_texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                    &padded_rgba_lut,
+                    wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(padded_bytes_per_row), rows_per_image: Some(lut_dims.1) },
+                    wgpu::Extent3d { width: lut_dims.0, height: lut_dims.1, depth_or_array_layers: lut_dims.2 },
+                );
+                
+                if let Ok(mut last) = self.last_uploaded_dcp_kelvin.write() {
+                    *last = Some(current_kelvin);
                 }
             }
-            context.queue.write_texture(
-                wgpu::ImageCopyTexture { texture: &self.hsv_lut_texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-                &padded_rgba_lut,
-                wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(padded_bytes_per_row), rows_per_image: Some(lut_dims.1) },
-                wgpu::Extent3d { width: lut_dims.0, height: lut_dims.1, depth_or_array_layers: lut_dims.2 },
-            );
         }
 
         let mut gpu_params = GpuEditParams::from(params);

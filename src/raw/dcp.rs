@@ -184,6 +184,32 @@ pub fn parse_dcp(path: &Path) -> Result<DcpProfile, String> {
     })
 }
 
+// Diagnostic: dump what was parsed from the DCP
+pub fn debug_dcp_profile(profile: &DcpProfile) {
+    tracing::info!("=== DCP Profile Debug ===");
+    tracing::info!("  Illuminant1: {} ({}K)", profile.illuminant1, illuminant_to_kelvin(profile.illuminant1));
+    tracing::info!("  Illuminant2: {} ({}K)", profile.illuminant2, illuminant_to_kelvin(profile.illuminant2));
+    tracing::info!("  ColorMatrix1: {:?}", profile.color_matrix_1);
+    tracing::info!("  ColorMatrix2: {:?}", profile.color_matrix_2);
+    tracing::info!("  ForwardMatrix1: {:?}", profile.forward_matrix_1);
+    tracing::info!("  ForwardMatrix2: {:?}", profile.forward_matrix_2);
+    tracing::info!("  HueSatDims: {:?}", profile.hue_sat_dims);
+    tracing::info!("  HueSatData1 len: {}", profile.hue_sat_data_1.as_ref().map(|v| v.len()).unwrap_or(0));
+    tracing::info!("  HueSatData2 len: {}", profile.hue_sat_data_2.as_ref().map(|v| v.len()).unwrap_or(0));
+    if let Some(lut) = &profile.hue_sat_data_1 {
+        if lut.len() > 3 {
+            tracing::info!("  HueSatData1 first 3 entries: {:?}", &lut[..3]);
+        }
+    }
+    tracing::info!("  ToneCurve points: {}", profile.tone_curve.as_ref().map(|v| v.len()).unwrap_or(0));
+    if let Some(tc) = &profile.tone_curve {
+        if tc.len() > 3 {
+            tracing::info!("  ToneCurve first 3: {:?}", &tc[..3]);
+        }
+    }
+    tracing::info!("=== End DCP Debug ===");
+}
+
 /// Temperature of an illuminant in Kelvin
 pub fn illuminant_to_kelvin(ill: u32) -> f32 {
     match ill {
