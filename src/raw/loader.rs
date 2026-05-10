@@ -4,6 +4,7 @@
 /// EXIF metadata is still read via kamadak-exif since rawler's Exif struct is internal to its decoders.
 use std::path::Path;
 use tokio::task;
+use std::path::PathBuf;
 
 /// Result type for RAW data loading
 #[derive(Debug, Clone)]
@@ -270,14 +271,9 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
 
     // Phase 140: Load DCP profile if available
     let dcp_profile = crate::raw::dcp::find_profile_for_camera(&raw_image.make, &raw_image.model)
-        .and_then(|p| {
+        .and_then(|p: PathBuf| {
             tracing::info!("Found DCP profile at {:?}", p);
-            let parsed = crate::raw::dcp::parse_dcp(&p);
-            match &parsed {
-                Ok(profile) => crate::raw::dcp::debug_dcp_profile(profile),
-                Err(e) => tracing::error!("DCP parse FAILED: {}", e),
-            }
-            parsed.ok()
+            crate::raw::dcp::parse_dcp(&p).ok()
         })
         .map(std::sync::Arc::new);
 
