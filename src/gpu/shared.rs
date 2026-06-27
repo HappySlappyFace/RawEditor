@@ -284,6 +284,8 @@ pub struct ImageResources {
     pub uniform_buffer: wgpu::Buffer,
     pub width: u32,
     pub height: u32,
+    pub original_width: u32,
+    pub original_height: u32,
     pub preview_width: u32,
     pub preview_height: u32,
     pub histogram_width: u32,
@@ -305,6 +307,48 @@ pub struct ImageResources {
     pub last_uploaded_dcp_kelvin: std::sync::RwLock<Option<f32>>,
 }
 
+/// Compute stride for Bayer subsampling.
+///
+/// **Stride MUST be odd** to preserve CFA alignment: with an odd stride N,
+/// output column `px` samples source column `px*N`, and since N is odd,
+/// `(px*N) % 2 == px % 2` — the even/odd parity alternates correctly.
+/// Even strides map every output pixel to an even source column → all same
+/// Bayer channel → wrong colors (e.g., all magenta from all-Red samples).
+///
+/// Returns the largest odd stride such that `full_width / stride >= target_width`,
+/// or 1 (no subsampling) if the image is already close to the target size.
+fn bayer_stride(full_width: u32, target_width: u32) -> u32 {
+    if full_width <= target_width * 2 {
+        return 1;
+    }
+    let raw = full_width / target_width; // floor
+    // Round down to nearest odd number (odd strides preserve Bayer parity)
+    let odd = if raw % 2 == 1 { raw } else { raw - 1 };
+    odd.max(1)
+}
+
+/// Stride-sample a Bayer image. Picks every `stride`th pixel in both axes.
+/// `stride` must be even to keep the CFA pattern aligned.
+/// Stride-sample a Bayer image. Iterates over exactly new_width × new_height
+/// output pixels — NOT via step_by on the full range. step_by overshoots when
+/// the dimension is not a multiple of stride (e.g. 6016 / 3 = 2005 but
+/// step_by(3) on 0..6016 emits 2006 values), causing every subsequent row to
+/// be offset by 1 pixel in the upload buffer → diagonal split in the image.
+fn downsample_bayer(data: &[u16], full_width: u32, full_height: u32, stride: u32) -> (Vec<u16>, u32, u32) {
+    let new_width = full_width / stride;
+    let new_height = full_height / stride;
+    let mut out = Vec::with_capacity((new_width * new_height) as usize);
+    let fw = full_width as usize;
+    let s = stride as usize;
+    for row in 0..new_height as usize {
+        let row_base = row * s * fw;
+        for col in 0..new_width as usize {
+            out.push(data[row_base + col * s]);
+        }
+    }
+    (out, new_width, new_height)
+}
+
 impl ImageResources {
     /// Create new image resources for a specific image
     #[allow(clippy::too_many_arguments)]
@@ -322,19 +366,35 @@ impl ImageResources {
         white_level: u32,
         dcp_profile: Option<&crate::raw::dcp::InterpolatedProfile>,
     ) -> Result<Self, String> {
-        // Calculate preview dimensions
         const MAX_PREVIEW_WIDTH: u32 = 1280;
+
+        // Stride-sample the Bayer data to a ~1280px working size.
+        // Stride must be even to preserve the 2×2 Bayer pattern alignment.
+        let original_width = width;
+        let original_height = height;
+        let stride = bayer_stride(width, MAX_PREVIEW_WIDTH);
+        let (owned_downsampled, width, height) = if stride > 1 {
+            let (data, w, h) = downsample_bayer(raw_data, width, height, stride);
+            tracing::info!(
+                "Bayer subsampled {}×{} → {}×{} (stride {})",
+                original_width, original_height, w, h, stride
+            );
+            (Some(data), w, h)
+        } else {
+            (None, width, height)
+        };
+        let raw_data: &[u16] = owned_downsampled.as_deref().unwrap_or(raw_data);
+
         let aspect_ratio = width as f32 / height as f32;
         let preview_width = width.min(MAX_PREVIEW_WIDTH);
         let preview_height = (preview_width as f32 / aspect_ratio) as u32;
 
-        // Calculate histogram dimensions
         const HISTOGRAM_WIDTH: u32 = 128;
         let histogram_width = HISTOGRAM_WIDTH;
         let histogram_height = (histogram_width as f32 / aspect_ratio) as u32;
 
         tracing::debug!(
-            "Image {}x{}, Preview {}x{}, Histogram {}x{}",
+            "Texture {}x{}, Preview {}x{}, Histogram {}x{}",
             width,
             height,
             preview_width,
@@ -581,6 +641,8 @@ impl ImageResources {
             uniform_buffer,
             width,
             height,
+            original_width,
+            original_height,
             preview_width,
             preview_height,
             histogram_width,
