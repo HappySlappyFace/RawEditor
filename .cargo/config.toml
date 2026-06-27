@@ -1,0 +1,29 @@
+# RawEditor build configuration
+# Edit this file to customise your build. It is not tracked by git by default.
+#
+# ── FAST JPEG DECODER ────────────────────────────────────────────────────────
+# The "fast-jpeg" feature enables zune-jpeg, a SIMD-accelerated JPEG decoder
+# that is 3-5× faster than the default pure-Rust decoder.
+#
+#   Supported targets:
+#     x86_64   — SSE4.2 / AVX2 (auto-detected at runtime, falls back to scalar)
+#     aarch64  — NEON (auto-detected at runtime, falls back to scalar)
+#     others   — scalar fallback; still compiles, just no SIMD speedup
+#
+# Use the aliases below instead of the full cargo invocation:
+#
+#   cargo build-fast       →  release build with fast-jpeg
+#   cargo run-fast         →  release run with fast-jpeg
+#   cargo build-compat     →  release build with default (most compatible) settings
+#
+[alias]
+build-fast   = "build --release --features fast-jpeg"
+run-fast     = "run --release --features fast-jpeg"
+build-compat = "build --release"
+
+# ── OPTIONAL: target-cpu=native ──────────────────────────────────────────────
+# Uncommenting this makes the compiler use every instruction your specific CPU
+# supports (AVX-512, etc.). The binary will NOT run on other machines.
+#
+# [build]
+# rustflags = ["-C", "target-cpu=native"]

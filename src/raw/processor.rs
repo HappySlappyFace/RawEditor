@@ -10,6 +10,33 @@ use image::{imageops::FilterType, ImageFormat};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+fn decode_jpeg(data: &[u8]) -> Result<image::DynamicImage, String> {
+    #[cfg(feature = "fast-jpeg")]
+    {
+        decode_jpeg_zune(data)
+    }
+    #[cfg(not(feature = "fast-jpeg"))]
+    {
+        image::load_from_memory_with_format(data, ImageFormat::Jpeg)
+            .map_err(|e| format!("JPEG decode: {e}"))
+    }
+}
+
+#[cfg(feature = "fast-jpeg")]
+fn decode_jpeg_zune(data: &[u8]) -> Result<image::DynamicImage, String> {
+    use zune_core::{colorspace::ColorSpace, options::DecoderOptions};
+    use zune_jpeg::JpegDecoder;
+
+    let opts = DecoderOptions::default().jpeg_set_out_colorspace(ColorSpace::RGB);
+    let mut decoder = JpegDecoder::new_with_options(data, opts);
+    let pixels = decoder.decode().map_err(|e| format!("zune-jpeg: {e:?}"))?;
+    let (width, height) = decoder.dimensions().ok_or("zune-jpeg: missing dimensions")?;
+
+    image::RgbImage::from_raw(width as u32, height as u32, pixels)
+        .map(image::DynamicImage::ImageRgb8)
+        .ok_or_else(|| "zune-jpeg: buffer size mismatch".to_string())
+}
+
 const TIER_THUMB: u32 = 256;
 const TIER_INSTANT: u32 = 384;
 const TIER_WORKING: u32 = 1280;
@@ -43,7 +70,7 @@ pub fn process_image(
         raw_path.file_name().unwrap_or_default()
     );
 
-    let source = image::load_from_memory_with_format(&jpeg_data, ImageFormat::Jpeg)
+    let source = decode_jpeg(&jpeg_data)
         .map_err(|e| format!("Failed to decode JPEG: {}", e))?;
 
     tracing::debug!("   Original size: {}x{}", source.width(), source.height());

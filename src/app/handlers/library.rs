@@ -28,7 +28,7 @@ pub fn handle_database_loaded(editor: &mut RawEditor, result: Result<Vec<crate::
                         let db_path = lib.path().clone();
                         return Task::batch(vec![
                             maximize_window,
-                            Task::perform(process_cache_async(db_path), Message::CacheProcessed),
+                            spawn_cache_workers(db_path),
                         ]);
                     }
                     return maximize_window;
@@ -63,7 +63,7 @@ pub fn handle_import_complete(editor: &mut RawEditor, result: ImportResult) -> T
         editor.images = library.get_all_images().unwrap_or_default();
         editor.status = format!("Import complete! Added {}, skipped {}.", result.imported_count, result.skipped_count);
         let db_path = library.path().clone();
-        return Task::perform(process_cache_async(db_path), Message::CacheProcessed);
+        return spawn_cache_workers(db_path);
     }
     Task::none()
 }
@@ -90,6 +90,7 @@ pub fn handle_cache_processed(editor: &mut RawEditor, result: Result<(i64, Strin
             let total = editor.images.len() as i64;
             editor.status = format!("Caching: {}/{} - {} remaining", total - pending_count, total, pending_count);
             let db_path = library.path().clone();
+            // One replacement worker per completion keeps concurrency steady
             return Task::perform(process_cache_async(db_path), Message::CacheProcessed);
         } else {
             editor.status = format!("{} All cache tiers generated!", ui::icons::CHECK);
@@ -156,6 +157,22 @@ pub fn handle_set_library_folder_filter(
     Task::none()
 }
 
+// ── Cache concurrency ────────────────────────────────────────────────────────
+
+/// Number of images to process in parallel. Each worker runs inside
+/// `spawn_blocking` so they won't starve the async runtime.
+/// Capped at 4 to keep memory usage predictable (each decode can hold ~100MB).
+const CACHE_WORKERS: usize = 4;
+
+/// Fire `CACHE_WORKERS` concurrent cache tasks at once.
+fn spawn_cache_workers(db_path: PathBuf) -> Task<Message> {
+    Task::batch(
+        (0..CACHE_WORKERS).map(|_| {
+            Task::perform(process_cache_async(db_path.clone()), Message::CacheProcessed)
+        })
+    )
+}
+
 // Helpers
 
 async fn import_folder_async(folder_path: PathBuf, db_path: PathBuf) -> ImportResult {
@@ -189,16 +206,36 @@ async fn import_folder_async(folder_path: PathBuf, db_path: PathBuf) -> ImportRe
 }
 
 async fn process_cache_async(db_path: PathBuf) -> Result<(i64, String, String, String), (i64, String)> {
-    let conn = Connection::open(&db_path).map_err(|e| (0, format!("DB Error: {}", e)))?;
-    let pending: Option<(i64, String)> = conn.query_row("SELECT id, path FROM images WHERE cache_status = 'pending' LIMIT 1", [], |row| Ok((row.get(0)?, row.get(1)?))).optional().map_err(|e| (0, format!("Query Error: {}", e)))?;
-    
-    if let Some((id, path)) = pending {
-        let _ = conn.execute("UPDATE images SET cache_status = 'processing' WHERE id = ?1", [id]);
-        drop(conn);
-        let result = tokio::task::spawn_blocking(move || {
-            let cache_dir = raw::preview::get_preview_cache_dir();
-            raw::processor::process_image(std::path::Path::new(&path), id, &cache_dir)
-        }).await.map_err(|e| (id, format!("Join Error: {}", e)))?;
-        match result { Ok(res) => Ok((id, res.0, res.1, res.2)), Err(e) => Err((id, e)) }
-    } else { Err((0, "No pending images".to_string())) }
+    // Atomically claim one pending image to avoid races with concurrent workers.
+    // UPDATE ... RETURNING picks and marks in a single statement with no gap.
+    let claimed = tokio::task::spawn_blocking({
+        let db_path = db_path.clone();
+        move || -> Result<Option<(i64, String)>, String> {
+            let conn = Connection::open(&db_path).map_err(|e| format!("DB: {e}"))?;
+            let mut stmt = conn.prepare(
+                "UPDATE images SET cache_status = 'processing'
+                 WHERE id = (SELECT id FROM images WHERE cache_status = 'pending' LIMIT 1)
+                 RETURNING id, path"
+            ).map_err(|e| format!("Prepare: {e}"))?;
+            let row = stmt.query_row([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+                .optional()
+                .map_err(|e| format!("Query: {e}"))?;
+            Ok(row)
+        }
+    }).await.map_err(|e| (0, format!("Join: {e}")))?
+      .map_err(|e| (0, e))?;
+
+    let Some((id, path)) = claimed else {
+        return Err((0, "No pending images".to_string()));
+    };
+
+    let result = tokio::task::spawn_blocking(move || {
+        let cache_dir = raw::preview::get_preview_cache_dir();
+        raw::processor::process_image(std::path::Path::new(&path), id, &cache_dir)
+    }).await.map_err(|e| (id, format!("Join Error: {}", e)))?;
+
+    match result {
+        Ok(res) => Ok((id, res.0, res.1, res.2)),
+        Err(e) => Err((id, e)),
+    }
 }
