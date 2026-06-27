@@ -245,14 +245,16 @@ pub fn trigger_async_render(editor: &mut RawEditor) -> Task<Message> {
         let ctx = ctx.clone();
         let resources = resources.clone();
 
-        // Calculate target preview size (exact physical pixels of the viewport)
+        // Calculate target render size.
+        // At zoom > 1 we render more pixels (up to the debayer texture limit) so
+        // that the ViewportProgram can show a sharp zoomed subregion.
         let original_aspect = resources.width as f32 / resources.height as f32;
         let (vw, _) = editor.viewport_size;
-        let max_size = (vw * editor.scale_factor).round() as u32;
-        
-        // Ensure a minimum size for the preview (e.g., 800px)
-        let max_size = max_size.max(800);
-        
+        let viewport_px = (vw * editor.scale_factor).round() as u32;
+        let zoomed_px = (viewport_px as f32 * editor.zoom).round() as u32;
+        // Cap at the debayer texture width — rendering beyond it just upscales
+        let max_size = zoomed_px.clamp(800, resources.width);
+
         let (target_w, target_h) = if original_aspect > 1.0 {
             let w = max_size;
             let h = (w as f32 / original_aspect).round() as u32;

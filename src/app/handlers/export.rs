@@ -120,58 +120,9 @@ pub fn handle_export_raw_loaded(
 ) -> Task<Message> {
     match result {
         Ok(raw_data) => {
-            if let (EditorReadiness::Ready(ready_id), Some(ctx), Some(resources)) = (
-                &editor.editor_readiness,
-                &editor.gpu_context,
-                &editor.image_resources,
-            ) {
-                if *ready_id == image_id {
-                    tracing::info!("Exporting currently loaded image directly");
-
-                    let crop = editor.current_edit_params.crop;
-                    let crop_w = crop[2].clamp(0.001, 1.0);
-                    let crop_h = crop[3].clamp(0.001, 1.0);
-                    let target_width = ((resources.width as f32 * crop_w) as u32).max(1);
-                    let target_height = ((resources.height as f32 * crop_h) as u32).max(1);
-
-                    let ctx = ctx.clone();
-                    let resources = resources.clone();
-                    let settings = editor.export_settings.clone();
-                    let filename =
-                        if let Some(img) = editor.images.iter().find(|i| i.id == image_id) {
-                            Path::new(&img.path)
-                                .file_stem()
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                                .to_string()
-                        } else {
-                            format!("image_{}", image_id)
-                        };
-
-                    return Task::perform(
-                        async move {
-                            let (bytes, _, _) = crate::gpu::render_functions::render_to_bytes(
-                                &ctx,
-                                &resources,
-                                target_width,
-                                target_height,
-                            )
-                            .await;
-                            save_export_async(
-                                filename,
-                                bytes,
-                                target_width,
-                                target_height,
-                                settings,
-                            )
-                            .await
-                        },
-                        move |res| Message::ExportSaveComplete(image_id, res),
-                    );
-                }
-            }
-
-            tracing::info!("Creating ImageResources for export (image {})", image_id);
+            // Always build fresh full-resolution resources for export.
+            // The develop pipeline uses a subsampled preview; export must use the
+            // original sensor dimensions so we don't re-use those resources here.
 
             let params = editor.current_edit_params;
             let ctx = editor.gpu_context.clone();
@@ -207,6 +158,7 @@ pub fn handle_export_raw_loaded(
                         raw_data.black_levels,
                         raw_data.white_level,
                         interpolated_dcp.as_ref(),
+                        None, // full resolution for export
                     )
                     .map(|res| (context, Arc::new(res)))
                 },
@@ -236,8 +188,9 @@ pub fn handle_export_pipeline_ready(
             let crop = editor.current_edit_params.crop;
             let crop_w = crop[2].clamp(0.001, 1.0);
             let crop_h = crop[3].clamp(0.001, 1.0);
-            let target_width = ((resources.width as f32 * crop_w) as u32).max(1);
-            let target_height = ((resources.height as f32 * crop_h) as u32).max(1);
+            // Use original (full-sensor) dimensions, not the subsampled texture dims
+            let target_width = ((resources.original_width as f32 * crop_w) as u32).max(1);
+            let target_height = ((resources.original_height as f32 * crop_h) as u32).max(1);
 
             let settings = editor.export_settings.clone();
             let filename = if let Some(img) = editor.images.iter().find(|i| i.id == image_id) {

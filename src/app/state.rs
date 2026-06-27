@@ -222,6 +222,8 @@ pub struct RawEditor {
     /// Phase 106: Render Throttling
     pub is_rendering: bool,
     pub pending_render: bool,
+    /// True while a full-resolution resource rebuild is in flight (zoom-in upgrade).
+    pub full_res_upgrading: bool,
 }
 
 /// Phase 79: Modular Info Overlay States
@@ -353,6 +355,7 @@ impl RawEditor {
                 profiler_cache: iced::widget::canvas::Cache::default(),
                 is_rendering: false,
                 pending_render: false,
+                full_res_upgrading: false,
 
                 // Background task
                 // background_task: None, // This field is not defined in the struct

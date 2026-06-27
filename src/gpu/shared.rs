@@ -365,14 +365,16 @@ impl ImageResources {
         black_levels: [u32; 4],
         white_level: u32,
         dcp_profile: Option<&crate::raw::dcp::InterpolatedProfile>,
+        max_preview_width: Option<u32>,
     ) -> Result<Self, String> {
-        const MAX_PREVIEW_WIDTH: u32 = 1280;
+        const DEFAULT_PREVIEW_WIDTH: u32 = 1280;
+        let max_w = max_preview_width.unwrap_or(u32::MAX);
 
-        // Stride-sample the Bayer data to a ~1280px working size.
-        // Stride must be even to preserve the 2×2 Bayer pattern alignment.
+        // Stride-sample the Bayer data to a ~max_w working size.
+        // Pass max_preview_width=None to skip subsampling (used for export / full-res zoom).
         let original_width = width;
         let original_height = height;
-        let stride = bayer_stride(width, MAX_PREVIEW_WIDTH);
+        let stride = if max_w < width { bayer_stride(width, max_w) } else { 1 };
         let (owned_downsampled, width, height) = if stride > 1 {
             let (data, w, h) = downsample_bayer(raw_data, width, height, stride);
             tracing::info!(
@@ -386,7 +388,7 @@ impl ImageResources {
         let raw_data: &[u16] = owned_downsampled.as_deref().unwrap_or(raw_data);
 
         let aspect_ratio = width as f32 / height as f32;
-        let preview_width = width.min(MAX_PREVIEW_WIDTH);
+        let preview_width = width.min(DEFAULT_PREVIEW_WIDTH);
         let preview_height = (preview_width as f32 / aspect_ratio) as u32;
 
         const HISTOGRAM_WIDTH: u32 = 128;

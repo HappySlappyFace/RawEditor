@@ -109,6 +109,19 @@ pub fn handle_zoom(editor: &mut RawEditor, d: f32, mut p: Point) -> Task<Message
         editor.zoom = if d > 0.0 { editor.zoom * (1.0 + d * 0.8) } else { editor.zoom / (1.0 + (-d * 0.8)) }.clamp(0.1, 10.0);
     }
     editor.canvas_cache.clear();
+
+    // Re-render at zoom-appropriate resolution, and upgrade to full-res debayer
+    // when the user zooms in past the subsampled texture's useful range.
+    use crate::app::state::EditorReadiness;
+    if editor.current_tab == AppTab::Develop
+        && matches!(editor.editor_readiness, EditorReadiness::Ready(_))
+    {
+        let mut tasks = vec![crate::app::handlers::develop::trigger_async_render(editor)];
+        if editor.zoom > 1.5 {
+            tasks.push(crate::app::handlers::loading::trigger_full_res_upgrade(editor));
+        }
+        return iced::Task::batch(tasks);
+    }
     Task::none()
 }
 
@@ -297,6 +310,7 @@ fn apply_crop_drag(editor: &mut RawEditor, pos: Point, last: Point, h: CropHandl
 
 fn trigger_image_load(editor: &mut RawEditor, image_id: i64) -> Task<Message> {
     editor.working_preview = None;
+    editor.full_res_upgrading = false;
     if let Some((working_cache_path, raw_path)) = editor
         .images
         .iter()
