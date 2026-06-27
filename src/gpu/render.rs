@@ -178,6 +178,15 @@ impl RenderPipeline {
 
         self.render_to_target(&mut encoder, &output_view, (target_width, target_height));
 
+        // Restore pre-export uniforms so subsequent preview renders are unaffected
+        if let Ok(current) = self.current_params.lock() {
+            self.queue.write_buffer(
+                &self.uniform_buffer,
+                0,
+                bytemuck::cast_slice(&[*current]),
+            );
+        }
+
         let bytes_per_row = target_width * 4;
         let padded_bytes_per_row = (bytes_per_row + 255) & !255;
         let buffer_size = (padded_bytes_per_row * target_height) as u64;
@@ -216,7 +225,7 @@ impl RenderPipeline {
         let buffer_slice = output_buffer.slice(..);
         let (tx, rx) = std::sync::mpsc::channel();
         buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
-            tx.send(result).unwrap();
+            let _ = tx.send(result);
         });
         self.device.poll(wgpu::Maintain::Wait);
 
@@ -335,8 +344,22 @@ impl RenderPipeline {
         self.queue.submit(Some(encoder.finish()));
 
         let buffer_slice = output_buffer.slice(..);
-        buffer_slice.map_async(wgpu::MapMode::Read, |_| {});
+        let (tx, rx) = std::sync::mpsc::channel();
+        buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = tx.send(result);
+        });
         self.device.poll(wgpu::Maintain::Wait);
+        match rx.recv() {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                tracing::error!("Histogram GPU buffer map failed: {:?}", e);
+                return Vec::new();
+            }
+            Err(e) => {
+                tracing::error!("Histogram GPU buffer map channel error: {:?}", e);
+                return Vec::new();
+            }
+        }
 
         let data = buffer_slice.get_mapped_range();
         let mut output =

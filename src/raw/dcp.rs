@@ -53,8 +53,8 @@ fn read_ifd(path: &Path) -> Result<HashMap<u16, RawTag>, String> {
     let u32_from = |b: [u8; 4]| if le { u32::from_le_bytes(b) } else { u32::from_be_bytes(b) };
 
     let magic = u16_from([hdr[2], hdr[3]]);
-    if magic != 42 && magic != 0x4352 {
-        return Err(format!("Not a TIFF/DCP file (magic=0x{magic:04X}, expected 0x002A or 0x4352)"));
+    if magic != 42 {
+        return Err(format!("Not a TIFF/DCP file (magic=0x{magic:04X}, expected 0x002A)"));
     }
 
     let ifd0 = u32_from([hdr[4], hdr[5], hdr[6], hdr[7]]);

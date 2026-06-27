@@ -350,8 +350,9 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         -0.2556075,  1.5081673,  0.0000000,
         -0.0511118,  0.0205351,  1.2118128
         );
+        // No pre-clamp here — negative ProPhoto values (wide-gamut colors) must reach
+        // the HueSatMap with correct hue/saturation. We clamp after reconstruction.
         var pp = xyz_to_prophoto * xyz;
-        pp = max(pp, vec3<f32>(0.0));
 
         // 3. ProPhoto HSV for HueSatMap lookup
         let v    = max(pp.r, max(pp.g, pp.b));
@@ -372,31 +373,28 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             h /= 6.0;
         }
 
-        let lut_val = textureSampleLevel(hsv_lut, lut_sampler, vec3<f32>(h, s, v), 0.0);
+        let lut_val = textureSampleLevel(hsv_lut, lut_sampler, vec3<f32>(h, s, clamp(v, 0.0, 1.0)), 0.0);
         h = fract(h + lut_val.r / 360.0);
         s = clamp(s * lut_val.g, 0.0, 1.0);
         let new_v = max(v * lut_val.b, 0.0);
 
-        // HSV → ProPhoto RGB
+        // HSV → ProPhoto RGB (s==0 degenerates correctly: p=q=t=new_v for all cases)
         var r_pp = 0.0; var g_pp = 0.0; var b_pp = 0.0;
-        if (s < 0.001) {
-            r_pp = new_v; g_pp = new_v; b_pp = new_v;
-        } else {
-            let h6  = h * 6.0;
-            let hi  = floor(h6);
-            let f   = h6 - hi;
-            let p   = new_v * (1.0 - s);
-            let q   = new_v * (1.0 - f * s);
-            let t   = new_v * (1.0 - (1.0 - f) * s);
-            let idx = i32(hi) % 6;
-            if      (idx == 0) { r_pp = new_v; g_pp = t;     b_pp = p;     }
-            else if (idx == 1) { r_pp = q;     g_pp = new_v; b_pp = p;     }
-            else if (idx == 2) { r_pp = p;     g_pp = new_v; b_pp = t;     }
-            else if (idx == 3) { r_pp = p;     g_pp = q;     b_pp = new_v; }
-            else if (idx == 4) { r_pp = t;     g_pp = p;     b_pp = new_v; }
-            else               { r_pp = new_v; g_pp = p;     b_pp = q;     }
-        }
-        pp = vec3<f32>(r_pp, g_pp, b_pp);
+        let h6  = h * 6.0;
+        let hi  = floor(h6);
+        let f   = h6 - hi;
+        let p   = new_v * (1.0 - s);
+        let q   = new_v * (1.0 - f * s);
+        let t   = new_v * (1.0 - (1.0 - f) * s);
+        let idx = i32(hi) % 6;
+        if      (idx == 0) { r_pp = new_v; g_pp = t;     b_pp = p;     }
+        else if (idx == 1) { r_pp = q;     g_pp = new_v; b_pp = p;     }
+        else if (idx == 2) { r_pp = p;     g_pp = new_v; b_pp = t;     }
+        else if (idx == 3) { r_pp = p;     g_pp = q;     b_pp = new_v; }
+        else if (idx == 4) { r_pp = t;     g_pp = p;     b_pp = new_v; }
+        else               { r_pp = new_v; g_pp = p;     b_pp = q;     }
+        // Clamp after reconstruction — out-of-gamut negatives are clipped here, not before LUT
+        pp = max(vec3<f32>(r_pp, g_pp, b_pp), vec3<f32>(0.0));
 
         // 4. ProfileToneCurve (linear 1:1 if no curve in this DCP)
         pp.r = textureSampleLevel(tone_curve, lut_sampler, clamp(pp.r, 0.0, 1.0), 0.0).r;

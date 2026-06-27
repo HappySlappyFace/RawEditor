@@ -234,6 +234,42 @@ impl RenderPipeline {
                 ],
             });
 
+        // Placeholder 3D HSV LUT (1×1×1, identity — real LUT uploaded when DCP profile loads)
+        let lut_placeholder = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("HSV LUT Placeholder"),
+            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D3,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let lut_view = lut_placeholder.create_view(&wgpu::TextureViewDescriptor::default());
+
+        // Placeholder 1D tone curve (1-pixel linear passthrough)
+        let curve_placeholder = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Tone Curve Placeholder"),
+            size: wgpu::Extent3d { width: 2, height: 1, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D1,
+            format: wgpu::TextureFormat::R16Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let curve_view = curve_placeholder.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let lut_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("DCP LUT Sampler Placeholder"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Bind Group"),
             layout: &bind_group_layout,
@@ -249,6 +285,18 @@ impl RenderPipeline {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&lut_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(&curve_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::Sampler(&lut_sampler),
                 },
             ],
         });
