@@ -128,11 +128,27 @@ pub fn handle_zoom(editor: &mut RawEditor, d: f32, mut p: Point) -> Task<Message
     if editor.current_tab == AppTab::Develop
         && matches!(editor.editor_readiness, EditorReadiness::Ready(_))
     {
-        let mut tasks = vec![crate::app::handlers::develop::trigger_async_render(editor)];
-        if editor.zoom > 1.5 {
-            tasks.push(crate::app::handlers::loading::trigger_full_res_upgrade(editor));
-        }
-        return iced::Task::batch(tasks);
+        // Apply the same is_rendering/pending_render throttle as update_pipeline.
+        // Without this, each scroll event spawns a new GPU task (dozens of concurrent
+        // readback buffers → CPU/RAM spike). With throttling: at most one in-flight
+        // render + one pending; the pending render fires after the current one finishes,
+        // picking up the latest zoom at that point.
+        let render_task = if editor.is_rendering {
+            editor.pending_render = true;
+            Task::none()
+        } else {
+            editor.is_rendering = true;
+            editor.pending_render = false;
+            crate::app::handlers::develop::trigger_async_render(editor)
+        };
+
+        let upgrade_task = if editor.zoom > 1.5 {
+            crate::app::handlers::loading::trigger_full_res_upgrade(editor)
+        } else {
+            Task::none()
+        };
+
+        return Task::batch(vec![render_task, upgrade_task]);
     }
     Task::none()
 }
