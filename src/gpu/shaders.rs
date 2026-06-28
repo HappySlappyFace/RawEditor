@@ -269,21 +269,10 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
-    // ── STAGE 1: Sensor Clipping Detection (BEFORE WB / Exposure) ────────────
-    // The debayer pass writes each Bayer site's raw normalised value into alpha.
-    // A 5-sample weighted average (centre ×4, 4 cardinal neighbours ×1, total /8)
-    // smooths the 2-pixel Bayer-period variation — adjacent R/G/B Bayer sites see
-    // similar clip values — without dilating the clip zone into nearby non-clipped
-    // pixels.  The 3×3 MAX was rejected because it turned fine wire mesh into
-    // solid squares by expanding the clip region 1 px in every direction.
-    let dmax_s1 = vec2<i32>(dimensions) - vec2<i32>(1);
-    let ca_c = textureLoad(input_texture, pixel_coords, 0).a;
-    let ca_n = textureLoad(input_texture, clamp(pixel_coords + vec2<i32>( 0,-1), vec2<i32>(0), dmax_s1), 0).a;
-    let ca_s = textureLoad(input_texture, clamp(pixel_coords + vec2<i32>( 0, 1), vec2<i32>(0), dmax_s1), 0).a;
-    let ca_e = textureLoad(input_texture, clamp(pixel_coords + vec2<i32>( 1, 0), vec2<i32>(0), dmax_s1), 0).a;
-    let ca_w = textureLoad(input_texture, clamp(pixel_coords + vec2<i32>(-1, 0), vec2<i32>(0), dmax_s1), 0).a;
-    let spatial_raw_avg = (ca_c * 4.0 + ca_n + ca_s + ca_e + ca_w) / 8.0;
-    let clip_blend = smoothstep(0.90, 1.0, spatial_raw_avg);
+    // (STAGE 1 clip detection removed — any per-Bayer-site approach creates a
+    // 2-pixel-period checkerboard on bright fabric/sky because adjacent R/G/B Bayer
+    // sites have structurally different raw values for any non-neutral scene.
+    // STAGE 2 gamut compression handles overbrights post-matrix without artifacts.)
 
     // ── Step 2: White Balance ─────────────────────────────────────────────────
     color = color * params.wb_multipliers.rgb;
@@ -373,11 +362,9 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         color = vec3<f32>(final_Y) + final_C;
     }
 
-    // ── Step 3: Highlight Neutralisation (fixes magenta sky at -5 EV) ────────
-    // Blend clipped pixels toward grey proportional to clip_blend.
-    // We use max_c (the WB-scaled maximum) so the grey level tracks exposure.
-    let max_c = max(color.r, max(color.g, color.b));
-    color = mix(color, vec3<f32>(max_c), clip_blend);
+    // (Step 3 highlight neutralisation removed — clip_blend created a 2-pixel
+    // Bayer-period checkerboard on bright near-white areas such as shirts and sky.
+    // STAGE 2 path-to-white handles the post-matrix overbrights without artifacts.)
 
     // ── Step 4: Exposure ──────────────────────────────────────────────────────
     let exposure_multiplier = pow(2.0, params.exposure);
@@ -622,20 +609,30 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     luma = dot(color.rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
     color = mix(vec3<f32>(luma), color, 1.0 + vibrance_amount);
 
-    // ── Step 15: Photographic Highlight Roll-off (Threshold Compression) ─────
-    // The bottom 80% of the tonal range is 100% linear — no compression, full punch.
-    // Only values above the threshold are smoothly compressed into the remaining
-    // 20% of display headroom using a local Reinhard sub-curve.
+    // ── Step 15: Filmic Tone Curve (S-curve with highlight protection) ──────────
+    // Approximates the camera picture-style curve visible in the embedded JPEG:
+    //
+    //  1. Midtone lift — f(x) = x·(1 + t − t·x), t = 0.08.
+    //     Lifts 18 % grey by ≈ 6 %, fades to 0 at black and white.
+    //     Gives the slight "pop" that camera Standard picture styles apply.
+    //
+    //  2. Highlight shoulder — Reinhard rolloff starting at 0.65 linear (≈ 85 % sRGB).
+    //     Old threshold was 0.80 (≈ 91 % sRGB), leaving only 20 % headroom and
+    //     blowing out cloud / sky detail.  0.65 gives 35 % headroom and matches
+    //     the typical camera highlight-protection curve.
     color = max(color, vec3<f32>(0.0));
+    let tone_lift: f32 = 0.08;
+    color = color * (vec3<f32>(1.0 + tone_lift) - tone_lift * color);
+
     let pre_tone_max = max(color.r, max(color.g, color.b));
     if (pre_tone_max > 0.0) {
-        let threshold: f32 = 0.8;
+        let threshold: f32 = 0.65;
+        let headroom:  f32 = 1.0 - threshold; // 0.35
         var post_tone_max: f32;
         if (pre_tone_max <= threshold) {
-            post_tone_max = pre_tone_max; // strictly linear below threshold
+            post_tone_max = pre_tone_max;
         } else {
-            let over_t    = pre_tone_max - threshold;
-            let headroom  = 1.0 - threshold; // == 0.2
+            let over_t = pre_tone_max - threshold;
             post_tone_max = threshold + (headroom * over_t) / (over_t + headroom);
         }
         color = color * (post_tone_max / pre_tone_max);
