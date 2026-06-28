@@ -528,32 +528,26 @@ fn view_main_content<'a>(
                 .height(Length::Fill)
                 .into();
 
-                if editor.is_cropping {
-                    // Phase 115: Top layer – transparent crop overlay canvas.
-                    let overlay: Element<'_, Message> = Canvas::new(CropOverlay {
-                        zoom: editor.zoom,
-                        offset: editor.pan_offset,
-                        image_width: img_w,
-                        image_height: img_h,
-                        is_cropping: true,
-                        crop: editor.current_edit_params.crop,
-                    })
+                // Always include the CropOverlay canvas so its update() fires
+                // ViewportResized whenever bounds change, keeping viewport_size accurate
+                // even when not cropping. Its draw() returns nothing when is_cropping=false.
+                let overlay: Element<'_, Message> = Canvas::new(CropOverlay {
+                    zoom: editor.zoom,
+                    offset: editor.pan_offset,
+                    image_width: img_w,
+                    image_height: img_h,
+                    is_cropping: editor.is_cropping,
+                    crop: editor.current_edit_params.crop,
+                })
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into();
+
+                container(stack![viewport, overlay].width(Length::Fill).height(Length::Fill))
                     .width(Length::Fill)
                     .height(Length::Fill)
-                    .into();
-
-                    container(stack![viewport, overlay].width(Length::Fill).height(Length::Fill))
-                        .width(Length::Fill)
-                        .height(Length::Fill)
-                        .clip(true)
-                        .into()
-                } else {
-                    container(viewport)
-                        .width(Length::Fill)
-                        .height(Length::Fill)
-                        .clip(true)
-                        .into()
-                }
+                    .clip(true)
+                    .into()
             }
             _ => container(
                     Image::new(_handle)

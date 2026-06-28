@@ -74,7 +74,7 @@ pub fn handle_select_previous_image(editor: &mut RawEditor) -> Task<Message> {
 pub fn handle_zoom(editor: &mut RawEditor, d: f32, mut p: Point) -> Task<Message> {
     if editor.is_cropping { return Task::none(); }
     if p.x < 0.0 { p = editor.last_cursor_position.unwrap_or(Point::ORIGIN); }
-    
+
     if let Some(resources) = &editor.image_resources {
         let old_zoom = editor.zoom;
         let iw = resources.width as f32;
@@ -82,29 +82,41 @@ pub fn handle_zoom(editor: &mut RawEditor, d: f32, mut p: Point) -> Task<Message
         let img_aspect = iw / ih;
         let (vw, vh) = editor.viewport_size;
         let vp_aspect = vw / vh;
-        
+
         let (fw, fh) = if img_aspect > vp_aspect {
             (vw, vw / img_aspect)
         } else {
             (vh * img_aspect, vh)
         };
-        
+
         let xo = (vw - fw) / 2.0;
         let yo = (vh - fh) / 2.0;
-        
-        // Calculate point relative to fitted image
+
+        // Cursor position in fitted-image space [0..1]
         let icx = (p.x - xo).clamp(0.0, fw);
         let icy = (p.y - yo).clamp(0.0, fh);
-        
-        let new_zoom = if d > 0.0 { old_zoom * (1.0 + d * 0.8) } else { old_zoom / (1.0 + (-d * 0.8)) }.clamp(0.1, 10.0);
-        editor.zoom = new_zoom;
-        
         let nx = icx / fw;
         let ny = icy / fh;
-        let tx = ((nx - 0.5) / old_zoom - editor.pan_offset.x) + 0.5;
-        let ty = ((ny - 0.5) / old_zoom - editor.pan_offset.y) + 0.5;
-        editor.pan_offset.x = (nx - 0.5) / editor.zoom - tx + 0.5;
-        editor.pan_offset.y = (ny - 0.5) / editor.zoom - ty + 0.5;
+
+        // pan_x/pan_y are in UV space (what the shader sees).
+        // ViewportProgram converts: pan_x = offset.x * (fw/vw), pan_y = offset.y * (fh/vh)
+        let scale_x = if vw > 0.0 { fw / vw } else { 1.0 };
+        let scale_y = if vh > 0.0 { fh / vh } else { 1.0 };
+        let pan_x = editor.pan_offset.x * scale_x;
+        let pan_y = editor.pan_offset.y * scale_y;
+
+        let new_zoom = if d > 0.0 { old_zoom * (1.0 + d * 0.8) } else { old_zoom / (1.0 + (-d * 0.8)) }.clamp(0.1, 10.0);
+        editor.zoom = new_zoom;
+
+        // Image UV under cursor must stay fixed: img_uv = (n - 0.5)/zoom - pan + 0.5
+        let img_uv_x = (nx - 0.5) / old_zoom - pan_x + 0.5;
+        let img_uv_y = (ny - 0.5) / old_zoom - pan_y + 0.5;
+
+        // Solve for new offset: new_pan = (n-0.5)/new_zoom - img_uv + 0.5
+        let new_pan_x = (nx - 0.5) / editor.zoom - img_uv_x + 0.5;
+        let new_pan_y = (ny - 0.5) / editor.zoom - img_uv_y + 0.5;
+        editor.pan_offset.x = if scale_x > 0.0 { new_pan_x / scale_x } else { 0.0 };
+        editor.pan_offset.y = if scale_y > 0.0 { new_pan_y / scale_y } else { 0.0 };
     } else {
         editor.zoom = if d > 0.0 { editor.zoom * (1.0 + d * 0.8) } else { editor.zoom / (1.0 + (-d * 0.8)) }.clamp(0.1, 10.0);
     }
@@ -216,11 +228,31 @@ pub fn handle_preview_cached(
 fn handle_pan_interaction(editor: &mut RawEditor, pos: Point) -> Task<Message> {
     if editor.is_dragging && editor.drag_mode == DragMode::Pan {
         if let Some(last) = editor.last_cursor_position {
-             let delta = pos - last;
-             // Phase 116: Normalized delta based on 1000px virtual width for consistent feel.
-             let sx = 1.0 / 1000.0;
-             editor.last_cursor_position = Some(pos);
-             return Task::done(Message::Pan(cgmath::Vector2::new(delta.x * sx, delta.y * sx)));
+            let delta = pos - last;
+            editor.last_cursor_position = Some(pos);
+
+            let (vw, vh) = editor.viewport_size;
+            let zoom = editor.zoom;
+
+            // Fitted image dimensions (same logic as ViewportProgram::draw and handle_zoom)
+            let (fitted_w, fitted_h) = if let Some(res) = &editor.image_resources {
+                let img_aspect = res.width as f32 / res.height as f32;
+                let vp_aspect = if vh > 0.0 { vw / vh } else { 1.0 };
+                if img_aspect > vp_aspect {
+                    (vw, vw / img_aspect)
+                } else {
+                    (vh * img_aspect, vh)
+                }
+            } else {
+                (vw.max(1.0), vh.max(1.0))
+            };
+
+            // For 1:1 cursor tracking:
+            // pan_x (UV) = offset.x * (fw/vw), shader subtracts pan_x.
+            // Δpan_x = Δx / (vw * zoom) → Δoffset.x = Δx / (fw * zoom)
+            let dx = if fitted_w > 0.0 { delta.x / (fitted_w * zoom) } else { 0.0 };
+            let dy = if fitted_h > 0.0 { delta.y / (fitted_h * zoom) } else { 0.0 };
+            return Task::done(Message::Pan(cgmath::Vector2::new(dx, dy)));
         }
     }
     editor.last_cursor_position = Some(pos);
