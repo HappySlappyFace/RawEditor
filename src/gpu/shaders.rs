@@ -548,6 +548,38 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         color = color * sharpen_scale;
     }
 
+    // ── Step 10: Highlights & Shadows (before gamut compression) ─────────────
+    // Highlights runs here — before STAGE 2 — so overexposed areas that are still
+    // above 1.0 in linear space can be pulled back below the gamut-compression
+    // threshold.  Running it after would only compress values already flattened
+    // into the narrow 0.8–1.0 band, wiping out cloud/fabric texture.
+    //
+    // Formula: multiplicative scale weighted by luma (ratio-preserving).
+    // Scaling the full pixel keeps colour ratios intact so partially-overexposed
+    // areas (e.g. warm-white clouds at R>G>B) stay warm rather than shifting to
+    // neutral grey.  Truly clipped pixels (all channels equal ≥ 1) have no colour
+    // info to preserve and will still go neutral — that's a fundamental sensor limit.
+    if (params.highlights != 0.0) {
+        let luma_hl = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
+        // Smooth weight: 0 at luma≤0.5 (midtones untouched), 1 at luma≥1.5+
+        let hl_weight = smoothstep(0.5, 1.5, luma_hl);
+        if (params.highlights < 0.0) {
+            // Recovery: compress the full pixel.  At -1 + luma≥1.5: factor≈0.4.
+            let hl_factor = max(1.0 + params.highlights * 0.6 * hl_weight, 0.2);
+            color = color * hl_factor;
+        } else {
+            // Lift: expand upper tones for a bright/airy look.
+            let hl_factor = 1.0 + params.highlights * 0.4 * hl_weight;
+            color = color * hl_factor;
+        }
+    }
+    if (params.shadows != 0.0) {
+        let sh_norm   = params.shadows * 0.15;
+        let sh_luma   = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
+        let sh_weight = clamp(1.0 - sh_luma / 0.5, 0.0, 1.0);
+        color = color + vec3<f32>(sh_weight * sh_norm);
+    }
+
     // ── STAGE 2: Gamut Compression (True Path-to-White) ──────────────────────
     // Mix toward the peak channel, not luma. This lifts the weaker channels up
     // to match the brightest one, desaturating to a brilliant pure white without
@@ -561,25 +593,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     color.r *= (1.0 + params.temperature * 0.3);
     color.b *= (1.0 - params.temperature * 0.3);
     color.g *= (1.0 + params.tint * 0.3);
-
-    // ── Step 10: Highlights & Shadows ────────────────────────────────────────
-    // params range is [-1, 1] for both.  The old shader divided by 100, making
-    // the maximum effect only ~1% — effectively a no-op.  Calibrated here so
-    // slider extremes produce visually meaningful but not destructive changes.
-    if (params.highlights != 0.0) {
-        // At -1: hl_scale=0.2 (crush highlights), at 0: 1.0, at +1: 1.8 (lift)
-        let hl_scale = max(1.0 + params.highlights * 0.8, 0.0);
-        let hl_over  = max(color - vec3<f32>(0.5), vec3<f32>(0.0));
-        color = min(color, vec3<f32>(0.5)) + hl_over * hl_scale;
-    }
-
-    if (params.shadows != 0.0) {
-        // At +1: max linear lift ~0.15 (≈43% sRGB at zero luma). At -1: crush.
-        let sh_norm   = params.shadows * 0.15;
-        let sh_luma   = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
-        let sh_weight = clamp(1.0 - sh_luma / 0.5, 0.0, 1.0);
-        color = color + vec3<f32>(sh_weight * sh_norm);
-    }
 
     // ── Step 11: Contrast ─────────────────────────────────────────────────────
     let contrast_factor = 1.0 + (params.contrast / 100.0);
