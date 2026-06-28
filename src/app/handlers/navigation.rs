@@ -247,11 +247,14 @@ fn handle_pan_interaction(editor: &mut RawEditor, pos: Point) -> Task<Message> {
                 (vw.max(1.0), vh.max(1.0))
             };
 
-            // For 1:1 cursor tracking:
-            // pan_x (UV) = offset.x * (fw/vw), shader subtracts pan_x.
-            // Δpan_x = Δx / (vw * zoom) → Δoffset.x = Δx / (fw * zoom)
-            let dx = if fitted_w > 0.0 { delta.x / (fitted_w * zoom) } else { 0.0 };
-            let dy = if fitted_h > 0.0 { delta.y / (fitted_h * zoom) } else { 0.0 };
+            // For 1:1 cursor tracking, account for the quad-to-viewport scale factor.
+            // The shader UV spans the quad's pixel width (fitted_w), not the full viewport (vw).
+            // Δpan_x = Δx / (fitted_w * zoom) where Δx is in quad-pixels, but Δx is in viewport
+            // pixels. So Δpan_x = Δx / (fit_w * vw * zoom) where fit_w = fitted_w / vw.
+            // pan_x (UV) = offset.x * fit_w → Δoffset.x = Δpan_x / fit_w = Δx / (fit_w² * vw * zoom)
+            //                                             = Δx * vw / (fitted_w² * zoom)
+            let dx = if fitted_w > 0.0 { delta.x * vw / (fitted_w * fitted_w * zoom) } else { 0.0 };
+            let dy = if fitted_h > 0.0 { delta.y * vh / (fitted_h * fitted_h * zoom) } else { 0.0 };
             return Task::done(Message::Pan(cgmath::Vector2::new(dx, dy)));
         }
     }
