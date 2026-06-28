@@ -250,18 +250,31 @@ pub enum Message {
     /// Phase 116: Interaction & Coordinate System Fixes
     ViewportResized(f32, f32, f32),
 
-    /// Phase 104/105: Async Render Finished (Preview + Histogram + Timing)
-    RenderFinished(
+    /// GPU render completed — fires immediately after readback, BEFORE histogram.
+    /// Releases the render throttle so the next slider/zoom event can start a render
+    /// while the histogram computes concurrently in a separate task.
+    RenderPreview(
         iced::widget::image::Handle,
-        std::sync::Arc<[u8]>, // Phase 115: bytes for Shader Viewport
-        (u32, u32),           // Phase 115: rendered pixel dimensions
-        crate::core::histogram::HistogramData,
+        std::sync::Arc<[u8]>, // bytes for Shader Viewport
+        (u32, u32),           // rendered pixel dimensions
         f32, // Upload ms
         f32, // Render ms
-        f32, // CPU update ms (Phase 105)
+        f32, // CPU update ms
     ),
+    /// Histogram computation finished (fires after RenderPreview, non-blocking).
+    HistogramReady(crate::core::histogram::HistogramData),
     /// Render task failed (GPU error / shader panic) — releases the throttle lock
     RenderFailed,
+    /// Phase 104/105: Async Render Finished (Preview + Histogram + Timing) — kept for compat
+    RenderFinished(
+        iced::widget::image::Handle,
+        std::sync::Arc<[u8]>,
+        (u32, u32),
+        crate::core::histogram::HistogramData,
+        f32,
+        f32,
+        f32,
+    ),
     /// Phase 104: Toggle Profiler Overlay
     ToggleProfiler,
 

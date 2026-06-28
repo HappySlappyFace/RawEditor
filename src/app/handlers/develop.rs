@@ -196,7 +196,69 @@ pub fn handle_paste_settings(editor: &mut RawEditor) -> Task<Message> {
     }
 }
 
-// Helper
+// Fires immediately after GPU render — stores the new preview and releases the
+// render throttle.  Histogram computation is spawned as a separate task so it
+// never blocks the next slider event from starting its own render.
+#[allow(clippy::too_many_arguments)]
+pub fn handle_render_preview(
+    editor: &mut RawEditor,
+    handle: iced::widget::image::Handle,
+    bytes: std::sync::Arc<[u8]>,
+    dims: (u32, u32),
+    upload_ms: f32,
+    render_ms: f32,
+    update_ms: f32,
+) -> Task<Message> {
+    editor.rendered_preview = Some(handle);
+    editor.rendered_preview_bytes = Some(bytes.clone());
+    editor.rendered_preview_dims = dims;
+    editor.canvas_cache.clear();
+
+    editor.profiler.push_frame(crate::core::profiler::ProfilerFrame {
+        update_ms,
+        upload_ms,
+        render_ms,
+        total_ms: update_ms + upload_ms + render_ms,
+    });
+    editor.profiler_cache.clear();
+
+    // Release the render lock — next slider/zoom event can start immediately.
+    editor.is_rendering = false;
+    let render_task = if editor.pending_render {
+        editor.is_rendering = true;
+        editor.pending_render = false;
+        trigger_async_render(editor)
+    } else {
+        Task::none()
+    };
+
+    // Histogram runs concurrently; result arrives shortly after via HistogramReady.
+    let hist_task = Task::perform(
+        async move {
+            tokio::task::spawn_blocking(move || crate::core::histogram::calculate(&bytes))
+                .await
+                .ok()
+        },
+        |res| match res {
+            Some(data) => Message::HistogramReady(data),
+            None => Message::ModalNoOp,
+        },
+    );
+
+    Task::batch(vec![render_task, hist_task])
+}
+
+pub fn handle_histogram_ready(
+    editor: &mut RawEditor,
+    data: crate::core::histogram::HistogramData,
+) -> Task<Message> {
+    *editor.histogram_data.borrow_mut() = data;
+    editor.histogram_cache.clear();
+    Task::none()
+}
+
+// Kept for backward-compat (used by RenderFinished variant which may come from
+// older code paths or exports).
 #[allow(clippy::too_many_arguments)]
 pub fn handle_render_finished(
     editor: &mut RawEditor,
@@ -213,46 +275,36 @@ pub fn handle_render_finished(
     editor.rendered_preview_dims = dims;
     *editor.histogram_data.borrow_mut() = data;
     editor.histogram_cache.clear();
+    editor.canvas_cache.clear();
 
-    // Profiler
-    editor
-        .profiler
-        .push_frame(crate::core::profiler::ProfilerFrame {
-            update_ms,
-            upload_ms,
-            render_ms,
-            total_ms: update_ms + upload_ms + render_ms,
-        });
-    // Phase 105: Invalidate profiler canvas so it redraws with fresh data
+    editor.profiler.push_frame(crate::core::profiler::ProfilerFrame {
+        update_ms,
+        upload_ms,
+        render_ms,
+        total_ms: update_ms + upload_ms + render_ms,
+    });
     editor.profiler_cache.clear();
 
-    // Phase 106: Throttling
     editor.is_rendering = false;
     if editor.pending_render {
         editor.is_rendering = true;
         editor.pending_render = false;
         return trigger_async_render(editor);
     }
-
     Task::none()
 }
 
 pub fn trigger_async_render(editor: &mut RawEditor) -> Task<Message> {
-    // Phase 105: Start the CPU timer — measures all synchronous work before we hand off to GPU
     let t_update_start = std::time::Instant::now();
 
     if let (Some(ctx), Some(resources)) = (&editor.gpu_context, &editor.image_resources) {
         let ctx = ctx.clone();
         let resources = resources.clone();
 
-        // Calculate target render size.
-        // At zoom > 1 we render more pixels (up to the debayer texture limit) so
-        // that the ViewportProgram can show a sharp zoomed subregion.
         let original_aspect = resources.width as f32 / resources.height as f32;
         let (vw, _) = editor.viewport_size;
         let viewport_px = (vw * editor.scale_factor).round() as u32;
         let zoomed_px = (viewport_px as f32 * editor.zoom).round() as u32;
-        // Cap at the debayer texture width — rendering beyond it just upscales
         let max_size = zoomed_px.clamp(800, resources.width);
 
         let (target_w, target_h) = if original_aspect > 1.0 {
@@ -263,34 +315,27 @@ pub fn trigger_async_render(editor: &mut RawEditor) -> Task<Message> {
             let h = max_size;
             let w = (h as f32 * original_aspect).round() as u32;
             (w, h)
-        };// Phase 105: CPU work is done — snapshot the elapsed time before the async boundary
+        };
         let update_ms = t_update_start.elapsed().as_secs_f32() * 1000.0;
 
         return Task::perform(
             async move {
-                // 1. Render to bytes (async, on GPU)
                 let (bytes, upload_ms, render_ms) = crate::gpu::render_functions::render_to_bytes(
                     &ctx, &resources, target_w, target_h,
                 )
                 .await;
 
-                // 2. Calculate histogram & Create Handle (CPU, blocking but in async task)
-                tokio::task::spawn_blocking(move || {
-                    let histogram = crate::core::histogram::calculate(&bytes);
-                    // Phase 115: Store byte arc BEFORE moving bytes into the Handle
-                    let byte_arc: std::sync::Arc<[u8]> = std::sync::Arc::from(bytes.as_slice());
-                    let handle = iced::widget::image::Handle::from_rgba(target_w, target_h, bytes);
-                    (handle, byte_arc, histogram, upload_ms, render_ms, update_ms, target_w, target_h)
-                })
-                .await
-                .ok()
+                // Only the two fast memory operations — no histogram here.
+                // Arc::from copies once; Handle::from_rgba moves (no copy).
+                let byte_arc: std::sync::Arc<[u8]> = std::sync::Arc::from(bytes.as_slice());
+                let handle = iced::widget::image::Handle::from_rgba(target_w, target_h, bytes);
+                Some((handle, byte_arc, target_w, target_h, upload_ms, render_ms, update_ms))
             },
-            |res| {
-                if let Some((handle, byte_arc, histogram, upload_ms, render_ms, update_ms, tw, th)) = res {
-                    Message::RenderFinished(handle, byte_arc, (tw, th), histogram, upload_ms, render_ms, update_ms)
-                } else {
-                    Message::RenderFailed
+            |res| match res {
+                Some((handle, byte_arc, tw, th, upload_ms, render_ms, update_ms)) => {
+                    Message::RenderPreview(handle, byte_arc, (tw, th), upload_ms, render_ms, update_ms)
                 }
+                None => Message::RenderFailed,
             },
         );
     }
