@@ -270,10 +270,20 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     // ── STAGE 1: Sensor Clipping Detection (BEFORE WB / Exposure) ────────────
-    // Measure destruction on the raw debayered values so WB gains and exposure
-    // cannot amplify a clipped channel to look brighter than its neighbours.
-    let pre_wb_max = max(color.r, max(color.g, color.b));
-    let clip_blend = smoothstep(0.94, 0.98, pre_wb_max);
+    // The debayer pass writes each Bayer site's raw normalised value into alpha.
+    // A 5-sample weighted average (centre ×4, 4 cardinal neighbours ×1, total /8)
+    // smooths the 2-pixel Bayer-period variation — adjacent R/G/B Bayer sites see
+    // similar clip values — without dilating the clip zone into nearby non-clipped
+    // pixels.  The 3×3 MAX was rejected because it turned fine wire mesh into
+    // solid squares by expanding the clip region 1 px in every direction.
+    let dmax_s1 = vec2<i32>(dimensions) - vec2<i32>(1);
+    let ca_c = textureLoad(input_texture, pixel_coords, 0).a;
+    let ca_n = textureLoad(input_texture, clamp(pixel_coords + vec2<i32>( 0,-1), vec2<i32>(0), dmax_s1), 0).a;
+    let ca_s = textureLoad(input_texture, clamp(pixel_coords + vec2<i32>( 0, 1), vec2<i32>(0), dmax_s1), 0).a;
+    let ca_e = textureLoad(input_texture, clamp(pixel_coords + vec2<i32>( 1, 0), vec2<i32>(0), dmax_s1), 0).a;
+    let ca_w = textureLoad(input_texture, clamp(pixel_coords + vec2<i32>(-1, 0), vec2<i32>(0), dmax_s1), 0).a;
+    let spatial_raw_avg = (ca_c * 4.0 + ca_n + ca_s + ca_e + ca_w) / 8.0;
+    let clip_blend = smoothstep(0.90, 1.0, spatial_raw_avg);
 
     // ── Step 2: White Balance ─────────────────────────────────────────────────
     color = color * params.wb_multipliers.rgb;
@@ -900,7 +910,10 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         i32(input.tex_coords.y * f32(dimensions.y))
     );
     let color = debayer(pixel_coords, dimensions);
-    return vec4<f32>(color, 1.0);
+    // Alpha stores the per-Bayer-site normalised raw value for smooth clip detection
+    // in the passthrough shader.  get_neighbor returns the same black/white corrected
+    // value that debayer() uses for `normalized`, so the two are consistent.
+    return vec4<f32>(color, get_neighbor(pixel_coords, dimensions));
 }
 "#;
 
