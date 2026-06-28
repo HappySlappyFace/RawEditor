@@ -190,6 +190,16 @@ fn get_srgb_neighbor(coords: vec2<i32>, dimensions: vec2<u32>, cm: mat3x3<f32>) 
     return max(cm * (cam * params.wb_multipliers.rgb), vec3<f32>(0.0));
 }
 
+// Fast per-pixel luma from the debayered camera texture.
+// Applies WB but skips the full color matrix — green-dominant weighting
+// approximates luminance in Bayer-sensor space and is ~5× cheaper per tap
+// than get_srgb_neighbor (no mat3×3 multiply).
+fn get_cam_luma(coords: vec2<i32>, dimensions: vec2<u32>) -> f32 {
+    let clamped = clamp(coords, vec2<i32>(0), vec2<i32>(dimensions) - vec2<i32>(1));
+    let cam = textureLoad(input_texture, clamped, 0).rgb * params.wb_multipliers.rgb;
+    return cam.r * 0.25 + cam.g * 0.50 + cam.b * 0.25;
+}
+
 // IEC 61966-2-1 sRGB transfer function.
 // Uses γ = 2.4 with a linear toe segment, NOT the 1/2.2 approximation.
 // The difference is ~5% in the shadows and midtones.
@@ -270,52 +280,64 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
     // ── Phase 133: Split Luma & Chroma Noise Reduction ───────────────────────
     if (params.luma_noise > 0.0 || params.color_noise > 0.0) {
-        // Simple equal-weight luma for camera RGB space
-        let cam_luma_weights = vec3<f32>(0.3333, 0.3333, 0.3333);
-        
-        // Separate Center Pixel into Brightness (Y) and Color (C)
+        // Green-dominant weights: green pixels are ~2× denser in a Bayer pattern
+        // and carry the most spatial detail. Equal weights (0.333) under-weight green,
+        // causing the bilateral to treat green/red (or green/blue) brightness
+        // differences as edges rather than noise.
+        let cam_luma_weights = vec3<f32>(0.25, 0.60, 0.15);
+
         let c_Y = dot(color, cam_luma_weights);
         let c_C = color - vec3<f32>(c_Y);
-        
+
         var sum_Y = c_Y;
         var weight_Y = 1.0;
-        
         var sum_C = c_C;
         var weight_C = 1.0;
-        
-        // The strictness of the edge-preservation for Luma
-        let edge_stop = 10.0 / (params.luma_noise + 0.001);
-        
-        // Iterate over a 3x3 grid (skip center 0,0)
+
+        // Bilateral sigma: range sensitivity derived from noise strength.
+        // sigma_r ≈ 0.05 at luma_noise=1 — blends neighbours within ~5% brightness.
+        let sigma_r_sq = (0.05 * params.luma_noise) * (0.05 * params.luma_noise);
+
+        // 3×3 bilateral luma NR + first pass of chroma accumulation
         for (var x: i32 = -1; x <= 1; x++) {
             for (var y: i32 = -1; y <= 1; y++) {
                 if (x == 0 && y == 0) { continue; }
-                
-                // Fetch neighbor and apply WB
-                let offset = vec2<i32>(x, y);
-                let clamped_coords = clamp(pixel_coords + offset, vec2<i32>(0), vec2<i32>(dimensions) - vec2<i32>(1));
+                let clamped_coords = clamp(pixel_coords + vec2<i32>(x, y), vec2<i32>(0), vec2<i32>(dimensions) - vec2<i32>(1));
                 let n_color = textureLoad(input_texture, clamped_coords, 0).rgb * params.wb_multipliers.rgb;
-                
-                // Separate Neighbor into Y and C
                 let n_Y = dot(n_color, cam_luma_weights);
                 let n_C = n_color - vec3<f32>(n_Y);
-                
-                // LUMA DENOISE: Edge-Avoiding Bilateral Filter
-                // Only blend brightness if the neighbor is similar in brightness to the center
-                let diff_Y = abs(c_Y - n_Y);
-                let w_Y = exp(-diff_Y * edge_stop) * params.luma_noise;
-                sum_Y = sum_Y + (n_Y * w_Y);
-                weight_Y = weight_Y + w_Y;
-                
-                // COLOR DENOISE: Standard Box/Gaussian Blur
-                // We aggressively blur color because human eyes don't see color edges well
-                let w_C = params.color_noise; 
-                sum_C = sum_C + (n_C * w_C);
-                weight_C = weight_C + w_C;
+
+                if (params.luma_noise > 0.0) {
+                    let diff_sq = (c_Y - n_Y) * (c_Y - n_Y);
+                    let w_Y = exp(-diff_sq / (sigma_r_sq + 0.0001));
+                    sum_Y += n_Y * w_Y;
+                    weight_Y += w_Y;
+                }
+
+                if (params.color_noise > 0.0) {
+                    sum_C += n_C * params.color_noise;
+                    weight_C += params.color_noise;
+                }
             }
         }
-        
-        // Recombine Denoised Brightness and Denoised Color
+
+        // Extend chroma blur to 5×5: human vision has low chroma acuity so a larger
+        // kernel removes colour mottling without visible hue smearing.
+        // (The 3×3 ring is already accumulated above; here we add the outer ring only.)
+        if (params.color_noise > 0.0) {
+            for (var x: i32 = -2; x <= 2; x++) {
+                for (var y: i32 = -2; y <= 2; y++) {
+                    if (abs(x) <= 1 && abs(y) <= 1) { continue; }
+                    let clamped_coords = clamp(pixel_coords + vec2<i32>(x, y), vec2<i32>(0), vec2<i32>(dimensions) - vec2<i32>(1));
+                    let n_color = textureLoad(input_texture, clamped_coords, 0).rgb * params.wb_multipliers.rgb;
+                    let n_Y = dot(n_color, cam_luma_weights);
+                    let n_C = n_color - vec3<f32>(n_Y);
+                    sum_C += n_C * params.color_noise;
+                    weight_C += params.color_noise;
+                }
+            }
+        }
+
         let final_Y = sum_Y / weight_Y;
         let final_C = sum_C / weight_C;
         color = vec3<f32>(final_Y) + final_C;
@@ -421,39 +443,89 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // Must clamp BEFORE luma calculations or gamut compression.
     color = max(color, vec3<f32>(0.0));
 
-    // ── Phase 132: Perceptual Unsharp Mask ─────────────────────────────────
-    // sqrt() compresses linear light into a human-vision curve so the blur
-    // and detail extraction are mathematically uniform across shadows and
-    // highlights.  Squaring converts back to linear for ratio-preserving scale.
+    // ── Phase 132: 5×5 Perceptual USM with Edge-Aware Masking ──────────────
+    // All reads use get_cam_luma (WB + dot, no color matrix), which is ~5×
+    // cheaper per tap than get_srgb_neighbor.  Using camera luma for both the
+    // center and neighbours keeps the high-pass signal in a consistent space —
+    // the old 3×3 code mixed post-exposure sRGB (center) with pre-exposure
+    // camera (neighbours), biasing the signal at non-zero exposure.
+    //
+    // params.sharpen_masking: 0 = sharpen everything, 1 = edges only.
+    // The Laplacian is free since n/s/e/w are already fetched for the blur.
     if (params.sharpening > 0.0) {
-        let luma_weights = vec3<f32>(0.2126, 0.7152, 0.0722);
+        // Center luma in camera space (pre-exposure, consistent with neighbours)
+        let center_cam = textureLoad(input_texture, pixel_coords, 0).rgb * params.wb_multipliers.rgb;
+        let c_luma_linear = max(0.0001, center_cam.r * 0.25 + center_cam.g * 0.50 + center_cam.b * 0.25);
+        let c_luma = sqrt(c_luma_linear);
 
-        // 1. Sample center and neighbours in perceptual (sqrt) space
-        let c_luma  = sqrt(max(0.0001, dot(color, luma_weights)));
-        let n_luma  = sqrt(max(0.0001, dot(get_srgb_neighbor(pixel_coords + vec2<i32>( 0, -1), dimensions, matrix_from_params), luma_weights)));
-        let s_luma  = sqrt(max(0.0001, dot(get_srgb_neighbor(pixel_coords + vec2<i32>( 0,  1), dimensions, matrix_from_params), luma_weights)));
-        let e_luma  = sqrt(max(0.0001, dot(get_srgb_neighbor(pixel_coords + vec2<i32>( 1,  0), dimensions, matrix_from_params), luma_weights)));
-        let w_luma  = sqrt(max(0.0001, dot(get_srgb_neighbor(pixel_coords + vec2<i32>(-1,  0), dimensions, matrix_from_params), luma_weights)));
-        let nw_luma = sqrt(max(0.0001, dot(get_srgb_neighbor(pixel_coords + vec2<i32>(-1, -1), dimensions, matrix_from_params), luma_weights)));
-        let ne_luma = sqrt(max(0.0001, dot(get_srgb_neighbor(pixel_coords + vec2<i32>( 1, -1), dimensions, matrix_from_params), luma_weights)));
-        let sw_luma = sqrt(max(0.0001, dot(get_srgb_neighbor(pixel_coords + vec2<i32>(-1,  1), dimensions, matrix_from_params), luma_weights)));
-        let se_luma = sqrt(max(0.0001, dot(get_srgb_neighbor(pixel_coords + vec2<i32>( 1,  1), dimensions, matrix_from_params), luma_weights)));
+        // Radius-1 cardinal samples (reused for Laplacian — zero extra cost)
+        let n1 = sqrt(max(0.0001, get_cam_luma(pixel_coords + vec2<i32>( 0, -1), dimensions)));
+        let s1 = sqrt(max(0.0001, get_cam_luma(pixel_coords + vec2<i32>( 0,  1), dimensions)));
+        let e1 = sqrt(max(0.0001, get_cam_luma(pixel_coords + vec2<i32>( 1,  0), dimensions)));
+        let w1 = sqrt(max(0.0001, get_cam_luma(pixel_coords + vec2<i32>(-1,  0), dimensions)));
 
-        // 2. 3×3 Gaussian blur in perceptual space
-        let blur_luma = (c_luma * 0.25)
-                      + ((n_luma + s_luma + e_luma + w_luma) * 0.125)
-                      + ((nw_luma + ne_luma + sw_luma + se_luma) * 0.0625);
+        // Radius-1 diagonal samples
+        let ne1 = sqrt(max(0.0001, get_cam_luma(pixel_coords + vec2<i32>( 1, -1), dimensions)));
+        let nw1 = sqrt(max(0.0001, get_cam_luma(pixel_coords + vec2<i32>(-1, -1), dimensions)));
+        let se1 = sqrt(max(0.0001, get_cam_luma(pixel_coords + vec2<i32>( 1,  1), dimensions)));
+        let sw1 = sqrt(max(0.0001, get_cam_luma(pixel_coords + vec2<i32>(-1,  1), dimensions)));
 
-        // 3. Extract perceptual detail
+        // Radius-2 axis samples
+        let n2 = sqrt(max(0.0001, get_cam_luma(pixel_coords + vec2<i32>( 0, -2), dimensions)));
+        let s2 = sqrt(max(0.0001, get_cam_luma(pixel_coords + vec2<i32>( 0,  2), dimensions)));
+        let e2 = sqrt(max(0.0001, get_cam_luma(pixel_coords + vec2<i32>( 2,  0), dimensions)));
+        let w2 = sqrt(max(0.0001, get_cam_luma(pixel_coords + vec2<i32>(-2,  0), dimensions)));
+
+        // Radius-2 mixed samples (axis×2, diag×1)
+        let n2e1 = sqrt(max(0.0001, get_cam_luma(pixel_coords + vec2<i32>( 1, -2), dimensions)));
+        let n2w1 = sqrt(max(0.0001, get_cam_luma(pixel_coords + vec2<i32>(-1, -2), dimensions)));
+        let s2e1 = sqrt(max(0.0001, get_cam_luma(pixel_coords + vec2<i32>( 1,  2), dimensions)));
+        let s2w1 = sqrt(max(0.0001, get_cam_luma(pixel_coords + vec2<i32>(-1,  2), dimensions)));
+        let e2n1 = sqrt(max(0.0001, get_cam_luma(pixel_coords + vec2<i32>( 2, -1), dimensions)));
+        let e2s1 = sqrt(max(0.0001, get_cam_luma(pixel_coords + vec2<i32>( 2,  1), dimensions)));
+        let w2n1 = sqrt(max(0.0001, get_cam_luma(pixel_coords + vec2<i32>(-2, -1), dimensions)));
+        let w2s1 = sqrt(max(0.0001, get_cam_luma(pixel_coords + vec2<i32>(-2,  1), dimensions)));
+
+        // Radius-2 corner samples
+        let ne2 = sqrt(max(0.0001, get_cam_luma(pixel_coords + vec2<i32>( 2, -2), dimensions)));
+        let nw2 = sqrt(max(0.0001, get_cam_luma(pixel_coords + vec2<i32>(-2, -2), dimensions)));
+        let se2 = sqrt(max(0.0001, get_cam_luma(pixel_coords + vec2<i32>( 2,  2), dimensions)));
+        let sw2 = sqrt(max(0.0001, get_cam_luma(pixel_coords + vec2<i32>(-2,  2), dimensions)));
+
+        // 5×5 Gaussian blur (σ≈1.0) in perceptual camera-luma space
+        //  kernel weights: 41 26 7 / 273 centre→edge on each axis
+        //  ┌ 1  4  7  4  1 ┐
+        //  │ 4 16 26 16  4 │
+        //  │ 7 26 41 26  7 │ / 273
+        //  │ 4 16 26 16  4 │
+        //  └ 1  4  7  4  1 ┘
+        let blur_luma = (
+              c_luma * 41.0
+            + (n1 + s1 + e1 + w1) * 26.0
+            + (ne1 + nw1 + se1 + sw1) * 16.0
+            + (n2 + s2 + e2 + w2) * 7.0
+            + (n2e1 + n2w1 + s2e1 + s2w1 + e2n1 + e2s1 + w2n1 + w2s1) * 4.0
+            + (ne2 + nw2 + se2 + sw2) * 1.0
+        ) / 273.0;
+
         let high_pass = c_luma - blur_luma;
 
-        // 4. Add detail back and convert to linear (square)
-        let sharpened_perc = max(0.0, c_luma + (high_pass * params.sharpening * 2.0));
-        let new_linear_luma = sharpened_perc * sharpened_perc;
-        let old_linear_luma = c_luma * c_luma;  // == original linear luma (clamped)
+        // Laplacian edge strength (free — cardinal neighbours already fetched).
+        // High value = hard edge; low value = smooth/noisy flat area.
+        let laplacian = abs(4.0 * c_luma - n1 - s1 - e1 - w1);
 
-        // 5. Ratio-preserving scale
-        let sharpen_scale = new_linear_luma / old_linear_luma;
+        // sharpen_masking=0 → mask=1 everywhere (no protection).
+        // sharpen_masking=1 → smoothly ramps up: flat areas (laplacian<0.04)
+        // get little or no sharpening, protecting noise from amplification.
+        let mask = mix(1.0, smoothstep(0.0, 0.08, laplacian), params.sharpen_masking);
+
+        let sharpened_perc = max(0.0, c_luma + high_pass * params.sharpening * 2.0 * mask);
+        let new_linear_luma = sharpened_perc * sharpened_perc;
+
+        // Ratio-preserving scale applied to the fully-processed sRGB colour.
+        // The exposure factor cancels in new/old ratio, so camera-space luma
+        // in the denominator is correct even though `color` has exposure baked in.
+        let sharpen_scale = new_linear_luma / c_luma_linear;
         color = color * sharpen_scale;
     }
 
