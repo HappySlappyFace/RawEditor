@@ -278,6 +278,27 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // ── Step 2: White Balance ─────────────────────────────────────────────────
     color = color * params.wb_multipliers.rgb;
 
+    // Pre-fetch the 8 nearest camera-space neighbours (WB-scaled).
+    // Both Phase 133 (NR) and Phase 132 (sharpening) need this ring — fetching
+    // it once here saves 8 textureLoad calls when both controls are active.
+    // The branch is uniform across the warp (params are constants), so no divergence.
+    var nb_n  = vec3<f32>(0.0); var nb_s  = vec3<f32>(0.0);
+    var nb_e  = vec3<f32>(0.0); var nb_w  = vec3<f32>(0.0);
+    var nb_ne = vec3<f32>(0.0); var nb_nw = vec3<f32>(0.0);
+    var nb_se = vec3<f32>(0.0); var nb_sw = vec3<f32>(0.0);
+    if (params.luma_noise > 0.0 || params.color_noise > 0.0 || params.sharpening > 0.0) {
+        let wb3  = params.wb_multipliers.rgb;
+        let dmax = vec2<i32>(dimensions) - vec2<i32>(1);
+        nb_n  = textureLoad(input_texture, clamp(pixel_coords + vec2<i32>( 0, -1), vec2<i32>(0), dmax), 0).rgb * wb3;
+        nb_s  = textureLoad(input_texture, clamp(pixel_coords + vec2<i32>( 0,  1), vec2<i32>(0), dmax), 0).rgb * wb3;
+        nb_e  = textureLoad(input_texture, clamp(pixel_coords + vec2<i32>( 1,  0), vec2<i32>(0), dmax), 0).rgb * wb3;
+        nb_w  = textureLoad(input_texture, clamp(pixel_coords + vec2<i32>(-1,  0), vec2<i32>(0), dmax), 0).rgb * wb3;
+        nb_ne = textureLoad(input_texture, clamp(pixel_coords + vec2<i32>( 1, -1), vec2<i32>(0), dmax), 0).rgb * wb3;
+        nb_nw = textureLoad(input_texture, clamp(pixel_coords + vec2<i32>(-1, -1), vec2<i32>(0), dmax), 0).rgb * wb3;
+        nb_se = textureLoad(input_texture, clamp(pixel_coords + vec2<i32>( 1,  1), vec2<i32>(0), dmax), 0).rgb * wb3;
+        nb_sw = textureLoad(input_texture, clamp(pixel_coords + vec2<i32>(-1,  1), vec2<i32>(0), dmax), 0).rgb * wb3;
+    }
+
     // ── Phase 133: Split Luma & Chroma Noise Reduction ───────────────────────
     if (params.luma_noise > 0.0 || params.color_noise > 0.0) {
         // Green-dominant weights: green pixels are ~2× denser in a Bayer pattern
@@ -298,26 +319,25 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         // sigma_r ≈ 0.05 at luma_noise=1 — blends neighbours within ~5% brightness.
         let sigma_r_sq = (0.05 * params.luma_noise) * (0.05 * params.luma_noise);
 
-        // 3×3 bilateral luma NR + first pass of chroma accumulation
-        for (var x: i32 = -1; x <= 1; x++) {
-            for (var y: i32 = -1; y <= 1; y++) {
-                if (x == 0 && y == 0) { continue; }
-                let clamped_coords = clamp(pixel_coords + vec2<i32>(x, y), vec2<i32>(0), vec2<i32>(dimensions) - vec2<i32>(1));
-                let n_color = textureLoad(input_texture, clamped_coords, 0).rgb * params.wb_multipliers.rgb;
-                let n_Y = dot(n_color, cam_luma_weights);
-                let n_C = n_color - vec3<f32>(n_Y);
+        // 3×3 bilateral luma NR + first pass of chroma accumulation.
+        // Uses the pre-fetched nb_* ring above — no extra texture reads here.
+        // Must be `var` (function address space) so dynamic indexing via `i` is valid.
+        var ring3 = array<vec3<f32>, 8>(nb_n, nb_s, nb_e, nb_w, nb_ne, nb_nw, nb_se, nb_sw);
+        for (var i: u32 = 0u; i < 8u; i++) {
+            let n_color = ring3[i];
+            let n_Y = dot(n_color, cam_luma_weights);
+            let n_C = n_color - vec3<f32>(n_Y);
 
-                if (params.luma_noise > 0.0) {
-                    let diff_sq = (c_Y - n_Y) * (c_Y - n_Y);
-                    let w_Y = exp(-diff_sq / (sigma_r_sq + 0.0001));
-                    sum_Y += n_Y * w_Y;
-                    weight_Y += w_Y;
-                }
+            if (params.luma_noise > 0.0) {
+                let diff_sq = (c_Y - n_Y) * (c_Y - n_Y);
+                let w_Y = exp(-diff_sq / (sigma_r_sq + 0.0001));
+                sum_Y += n_Y * w_Y;
+                weight_Y += w_Y;
+            }
 
-                if (params.color_noise > 0.0) {
-                    sum_C += n_C * params.color_noise;
-                    weight_C += params.color_noise;
-                }
+            if (params.color_noise > 0.0) {
+                sum_C += n_C * params.color_noise;
+                weight_C += params.color_noise;
             }
         }
 
@@ -458,17 +478,16 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         let c_luma_linear = max(0.0001, center_cam.r * 0.25 + center_cam.g * 0.50 + center_cam.b * 0.25);
         let c_luma = sqrt(c_luma_linear);
 
-        // Radius-1 cardinal samples (reused for Laplacian — zero extra cost)
-        let n1 = sqrt(max(0.0001, get_cam_luma(pixel_coords + vec2<i32>( 0, -1), dimensions)));
-        let s1 = sqrt(max(0.0001, get_cam_luma(pixel_coords + vec2<i32>( 0,  1), dimensions)));
-        let e1 = sqrt(max(0.0001, get_cam_luma(pixel_coords + vec2<i32>( 1,  0), dimensions)));
-        let w1 = sqrt(max(0.0001, get_cam_luma(pixel_coords + vec2<i32>(-1,  0), dimensions)));
-
-        // Radius-1 diagonal samples
-        let ne1 = sqrt(max(0.0001, get_cam_luma(pixel_coords + vec2<i32>( 1, -1), dimensions)));
-        let nw1 = sqrt(max(0.0001, get_cam_luma(pixel_coords + vec2<i32>(-1, -1), dimensions)));
-        let se1 = sqrt(max(0.0001, get_cam_luma(pixel_coords + vec2<i32>( 1,  1), dimensions)));
-        let sw1 = sqrt(max(0.0001, get_cam_luma(pixel_coords + vec2<i32>(-1,  1), dimensions)));
+        // Radius-1 samples: derived from the pre-fetched nb_* ring (no extra reads)
+        let clw = vec3<f32>(0.25, 0.50, 0.25);
+        let n1  = sqrt(max(0.0001, dot(nb_n,  clw)));
+        let s1  = sqrt(max(0.0001, dot(nb_s,  clw)));
+        let e1  = sqrt(max(0.0001, dot(nb_e,  clw)));
+        let w1  = sqrt(max(0.0001, dot(nb_w,  clw)));
+        let ne1 = sqrt(max(0.0001, dot(nb_ne, clw)));
+        let nw1 = sqrt(max(0.0001, dot(nb_nw, clw)));
+        let se1 = sqrt(max(0.0001, dot(nb_se, clw)));
+        let sw1 = sqrt(max(0.0001, dot(nb_sw, clw)));
 
         // Radius-2 axis samples
         let n2 = sqrt(max(0.0001, get_cam_luma(pixel_coords + vec2<i32>( 0, -2), dimensions)));
@@ -544,17 +563,22 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     color.g *= (1.0 + params.tint * 0.3);
 
     // ── Step 10: Highlights & Shadows ────────────────────────────────────────
+    // params range is [-1, 1] for both.  The old shader divided by 100, making
+    // the maximum effect only ~1% — effectively a no-op.  Calibrated here so
+    // slider extremes produce visually meaningful but not destructive changes.
     if (params.highlights != 0.0) {
-        let hl_scale = max(1.0 + params.highlights / 100.0, 0.0);
+        // At -1: hl_scale=0.2 (crush highlights), at 0: 1.0, at +1: 1.8 (lift)
+        let hl_scale = max(1.0 + params.highlights * 0.8, 0.0);
         let hl_over  = max(color - vec3<f32>(0.5), vec3<f32>(0.0));
         color = min(color, vec3<f32>(0.5)) + hl_over * hl_scale;
     }
 
     if (params.shadows != 0.0) {
-        let sh_norm   = params.shadows / 100.0;
+        // At +1: max linear lift ~0.15 (≈43% sRGB at zero luma). At -1: crush.
+        let sh_norm   = params.shadows * 0.15;
         let sh_luma   = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
         let sh_weight = clamp(1.0 - sh_luma / 0.5, 0.0, 1.0);
-        color = color + vec3<f32>(sh_weight * sh_norm * 0.4);
+        color = color + vec3<f32>(sh_weight * sh_norm);
     }
 
     // ── Step 11: Contrast ─────────────────────────────────────────────────────
@@ -818,14 +842,25 @@ fn debayer(coords: vec2<i32>, dimensions: vec2<u32>) -> vec3<f32> {
         else { b = (ne + sw + nw + se) * 0.25; }
         rgb = vec3<f32>(r, g, b);
     } else if (is_even_row && !is_even_col) {
+        // Gr pixel: R from axis neighbors, B from cross-axis neighbors.
+        // All 4 diagonals (nw/ne/sw/se) are Gb sites → raw values are Green.
+        // Color-correlation correction: assume the local R/G (and B/G) ratio
+        // changes slowly, so correct interpolated R/B by the local green gradient.
+        // This removes the 0.5-pixel green bias that causes color fringing.
         let g = normalized;
-        let r = (w + e) * 0.5;
-        let b = (n + s) * 0.5;
+        let g_diag = (nw + ne + sw + se) * 0.25;
+        let g_corr = (g - g_diag) * 0.5;
+        let r = (w + e) * 0.5 + g_corr;
+        let b = (n + s) * 0.5 + g_corr;
         rgb = vec3<f32>(r, g, b);
     } else if (!is_even_row && is_even_col) {
+        // Gb pixel: R from cross-axis, B from axis neighbors.
+        // All 4 diagonals are Gr sites → raw values are Green. Same correction.
         let g = normalized;
-        let r = (n + s) * 0.5;
-        let b = (w + e) * 0.5;
+        let g_diag = (nw + ne + sw + se) * 0.25;
+        let g_corr = (g - g_diag) * 0.5;
+        let r = (n + s) * 0.5 + g_corr;
+        let b = (w + e) * 0.5 + g_corr;
         rgb = vec3<f32>(r, g, b);
     } else {
         let b = normalized;

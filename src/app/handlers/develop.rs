@@ -289,7 +289,7 @@ pub fn trigger_async_render(editor: &mut RawEditor) -> Task<Message> {
                 if let Some((handle, byte_arc, histogram, upload_ms, render_ms, update_ms, tw, th)) = res {
                     Message::RenderFinished(handle, byte_arc, (tw, th), histogram, upload_ms, render_ms, update_ms)
                 } else {
-                    Message::ModalNoOp
+                    Message::RenderFailed
                 }
             },
         );

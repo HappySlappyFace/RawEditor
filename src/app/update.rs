@@ -150,6 +150,18 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::RenderFinished(h, bytes, dims, d, u, r, cpu) => {
             handlers::develop::handle_render_finished(editor, h, bytes, dims, d, u, r, cpu)
         }
+        Message::RenderFailed => {
+            // GPU render task failed (shader error, device lost, etc.).
+            // Release the throttle lock so future slider/zoom events can trigger renders.
+            editor.is_rendering = false;
+            if editor.pending_render {
+                editor.pending_render = false;
+                editor.is_rendering = true;
+                handlers::develop::trigger_async_render(editor)
+            } else {
+                Task::none()
+            }
+        }
         Message::ViewportResized(w, h, s) => {
             let old_s = editor.scale_factor;
             editor.viewport_size = (w, h);

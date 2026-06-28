@@ -260,6 +260,8 @@ pub enum Message {
         f32, // Render ms
         f32, // CPU update ms (Phase 105)
     ),
+    /// Render task failed (GPU error / shader panic) — releases the throttle lock
+    RenderFailed,
     /// Phase 104: Toggle Profiler Overlay
     ToggleProfiler,
 
