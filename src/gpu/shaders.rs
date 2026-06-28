@@ -578,12 +578,20 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     // ── STAGE 2: Gamut Compression (True Path-to-White) ──────────────────────
-    // Mix toward the peak channel, not luma. This lifts the weaker channels up
-    // to match the brightest one, desaturating to a brilliant pure white without
-    // crushing brightness energy. Mixing toward luma would pull everything down.
+    // Mix toward the peak channel value (neutral at that brightness).  This fixes
+    // the magenta/colour cast that appears in partially-clipped sensor highlights:
+    // when the blue raw channel clips before red and green, the wrong channel ratios
+    // pass through the forward matrix and appear pink/magenta in sRGB.  Correcting
+    // here (post-matrix) means the blend operates on spatially-smooth sRGB values
+    // rather than per-Bayer-site camera values, so there is no checkerboard.
+    //
+    // The old smoothstep range was (0, 2.0) — nearly invisible at overbright ≤ 0.6
+    // (the typical range for partial sensor clipping).  The new range (0, 0.5) gives
+    // 100 % blend by overbright = 0.5 (sRGB max = 1.5), which is aggressive enough
+    // to neutralise the magenta cast at moderate overbrights.
     let max_c_gc = max(color.r, max(color.g, color.b));
     let overbright = max(0.0, max_c_gc - 1.0);
-    let path_to_white = smoothstep(0.0, 2.0, overbright);
+    let path_to_white = smoothstep(0.0, 0.5, overbright);
     color = mix(color, vec3<f32>(max_c_gc), path_to_white);
 
     // ── Step 9: Temperature & Tint (in sRGB space) ───────────────────────────
