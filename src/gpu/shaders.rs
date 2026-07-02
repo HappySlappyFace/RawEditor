@@ -362,9 +362,27 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         color = vec3<f32>(final_Y) + final_C;
     }
 
-    // (Step 3 highlight neutralisation removed — clip_blend created a 2-pixel
-    // Bayer-period checkerboard on bright near-white areas such as shirts and sky.
-    // STAGE 2 path-to-white handles the post-matrix overbrights without artifacts.)
+    // ── Step 3: Highlight neutralisation (camera space, per-channel) ──────────
+    // When a raw sensor channel clips (hits digital saturation at raw = 1.0), its
+    // WB-amplified value reaches wb_multipliers.channel × 1.0 = wb_multipliers.channel.
+    // Adjacent Bayer-opposite pixels (e.g. a G site next to a clipped B sky pixel) have
+    // the clipped channel interpolated from their neighbours by the debayer pass, so
+    // color.b at the G site also approaches wb_multipliers.b.  Comparing each channel's
+    // debayered value against its own WB multiplier therefore produces a spatially-smooth
+    // blend weight — free of the 2-pixel Bayer-period checkerboard that appeared when
+    // the old code used the per-Bayer-site raw alpha instead.
+    //
+    // This runs before the exposure step so the correction is visible when exposure is
+    // pulled down (which brings clipped areas into the visible range as magenta).
+    let wb3 = params.wb_multipliers.rgb;
+    let hl_clip_r = smoothstep(wb3.r * 0.90, wb3.r, color.r);
+    let hl_clip_g = smoothstep(wb3.g * 0.90, wb3.g, color.g);
+    let hl_clip_b = smoothstep(wb3.b * 0.90, wb3.b, color.b);
+    let hl_clip_blend = max(hl_clip_r, max(hl_clip_g, hl_clip_b));
+    if (hl_clip_blend > 0.0) {
+        let hl_max = max(color.r, max(color.g, color.b));
+        color = mix(color, vec3<f32>(hl_max), hl_clip_blend);
+    }
 
     // ── Step 4: Exposure ──────────────────────────────────────────────────────
     let exposure_multiplier = pow(2.0, params.exposure);
@@ -585,13 +603,13 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // here (post-matrix) means the blend operates on spatially-smooth sRGB values
     // rather than per-Bayer-site camera values, so there is no checkerboard.
     //
-    // The old smoothstep range was (0, 2.0) — nearly invisible at overbright ≤ 0.6
-    // (the typical range for partial sensor clipping).  The new range (0, 0.5) gives
-    // 100 % blend by overbright = 0.5 (sRGB max = 1.5), which is aggressive enough
-    // to neutralise the magenta cast at moderate overbrights.
+    // Step 3 (camera space, pre-exposure) now handles sensor-clipping colour casts.
+    // STAGE 2 remains as a gentle safety net for any post-matrix overbrights that
+    // survive (e.g. extreme exposure boosts) — range (0, 2.0) is intentionally light
+    // so legitimate saturated colours that are slightly over 1.0 are not desaturated.
     let max_c_gc = max(color.r, max(color.g, color.b));
     let overbright = max(0.0, max_c_gc - 1.0);
-    let path_to_white = smoothstep(0.0, 0.5, overbright);
+    let path_to_white = smoothstep(0.0, 2.0, overbright);
     color = mix(color, vec3<f32>(max_c_gc), path_to_white);
 
     // ── Step 9: Temperature & Tint (in sRGB space) ───────────────────────────
