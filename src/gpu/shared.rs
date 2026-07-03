@@ -304,6 +304,7 @@ pub struct ImageResources {
     pub tone_curve_texture: wgpu::Texture,
     pub tone_curve_view: wgpu::TextureView,
     pub has_dcp: bool,
+    pub dcp_has_curve: bool,
     pub last_uploaded_dcp_kelvin: std::sync::RwLock<Option<f32>>,
 }
 
@@ -553,6 +554,7 @@ impl ImageResources {
         gpu_params.black_levels = black_levels;
         gpu_params.white_level = white_level;
         gpu_params.has_dcp = if dcp_profile.is_some() { 1 } else { 0 };
+        gpu_params.dcp_has_curve = if dcp_profile.is_some_and(|p| p.has_tone_curve) { 1 } else { 0 };
 
         let uniform_buffer = context
             .device
@@ -586,6 +588,7 @@ impl ImageResources {
 
         // Phase 140: Create DCP Textures
         let has_dcp = dcp_profile.is_some();
+        let dcp_has_curve = dcp_profile.is_some_and(|p| p.has_tone_curve);
         // X axis = hue divisions + 1 duplicated wrap row (see build_hsm_lut_upload)
         let lut_extent = dcp_profile
             .map(|p| wgpu::Extent3d {
@@ -701,6 +704,7 @@ impl ImageResources {
             tone_curve_texture,
             tone_curve_view,
             has_dcp,
+            dcp_has_curve,
             last_uploaded_dcp_kelvin: std::sync::RwLock::new(Some(params.temperature_to_kelvin())),
         };
 
@@ -790,6 +794,7 @@ impl ImageResources {
         gpu_params.black_levels = self.black_levels;
         gpu_params.white_level = self.white_level;
         gpu_params.has_dcp = if self.has_dcp { 1 } else { 0 };
+        gpu_params.dcp_has_curve = if self.dcp_has_curve { 1 } else { 0 };
 
         context
             .queue
@@ -819,6 +824,7 @@ impl ImageResources {
         gpu_params.black_levels = self.black_levels;
         gpu_params.white_level = self.white_level;
         gpu_params.has_dcp = if self.has_dcp { 1 } else { 0 };
+        gpu_params.dcp_has_curve = if self.dcp_has_curve { 1 } else { 0 };
         gpu_params.zoom = zoom;
         gpu_params.pan_x = pan_x;
         gpu_params.pan_y = pan_y;

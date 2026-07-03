@@ -52,9 +52,11 @@ fn read_ifd(path: &Path) -> Result<HashMap<u16, RawTag>, String> {
     let u16_from = |b: [u8; 2]| if le { u16::from_le_bytes(b) } else { u16::from_be_bytes(b) };
     let u32_from = |b: [u8; 4]| if le { u32::from_le_bytes(b) } else { u32::from_be_bytes(b) };
 
+    // Adobe DCP files are TIFF-structured but use magic 0x4352 ("CR", Camera Raw
+    // profile) instead of TIFF's 42. Accept both.
     let magic = u16_from([hdr[2], hdr[3]]);
-    if magic != 42 {
-        return Err(format!("Not a TIFF/DCP file (magic=0x{magic:04X}, expected 0x002A)"));
+    if magic != 42 && magic != 0x4352 {
+        return Err(format!("Not a TIFF/DCP file (magic=0x{magic:04X}, expected 0x002A or 0x4352)"));
     }
 
     let ifd0 = u32_from([hdr[4], hdr[5], hdr[6], hdr[7]]);
@@ -174,6 +176,10 @@ pub struct InterpolatedProfile {
     pub hue_sat_lut: Vec<[f32; 3]>,
     pub tone_curve: Vec<f32>,
     pub hue_sat_dims: (u32, u32, u32),
+    /// True when the DCP embeds a ProfileToneCurve. "Adobe Standard" profiles
+    /// don't — they expect the host's default rendering curve, so the shader
+    /// keeps its filmic fallback curve when this is false.
+    pub has_tone_curve: bool,
 }
 
 pub fn parse_dcp(path: &Path) -> Result<DcpProfile, String> {
@@ -300,6 +306,7 @@ pub fn interpolate_at_temperature(profile: &DcpProfile, kelvin: f32) -> Interpol
         vec![]
     };
 
+    let has_tone_curve = profile.tone_curve.is_some();
     let baked_curve = profile.tone_curve.as_deref()
         .map(bake_tone_curve)
         .unwrap_or_else(|| (0..1024).map(|i| i as f32 / 1023.0).collect());
@@ -309,6 +316,7 @@ pub fn interpolate_at_temperature(profile: &DcpProfile, kelvin: f32) -> Interpol
         hue_sat_lut,
         tone_curve: baked_curve,
         hue_sat_dims: profile.hue_sat_dims,
+        has_tone_curve,
     }
 }
 
@@ -357,4 +365,51 @@ pub fn find_profile_for_camera(make: &str, model: &str) -> Option<PathBuf> {
         .find(|p| p.file_name().unwrap_or_default().to_string_lossy().to_lowercase().contains("adobe standard"))
         .or_else(|| matches.first())
         .cloned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Parse every DCP installed in the user profiles dir (skips when none).
+    /// Guards against regressions like rejecting the 0x4352 "CR" magic that
+    /// all genuine Adobe profiles use.
+    #[test]
+    fn parse_installed_profiles() {
+        let base = dirs::data_dir()
+            .or_else(dirs::home_dir)
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("raw-editor")
+            .join("profiles");
+
+        let Ok(entries) = std::fs::read_dir(&base) else {
+            eprintln!("no profiles dir at {base:?}, skipping");
+            return;
+        };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("dcp")) {
+                let profile = parse_dcp(&path)
+                    .unwrap_or_else(|e| panic!("failed to parse {path:?}: {e}"));
+                // An Adobe camera profile must carry at least one color matrix
+                assert_ne!(
+                    profile.color_matrix_1,
+                    [1., 0., 0., 0., 1., 0., 0., 0., 1.],
+                    "{path:?}: ColorMatrix1 missing (identity fallback)"
+                );
+                // If a HueSatMap is declared, the data length must match the dims
+                let (h, s, v) = profile.hue_sat_dims;
+                if let Some(lut) = &profile.hue_sat_data_1 {
+                    assert_eq!(lut.len(), (h * s * v) as usize, "{path:?}: HSM size mismatch");
+                }
+                eprintln!(
+                    "parsed {path:?}: fm1={} hsm_dims={:?} curve_pts={:?}",
+                    profile.forward_matrix_1.is_some(),
+                    profile.hue_sat_dims,
+                    profile.tone_curve.as_ref().map(|c| c.len())
+                );
+            }
+        }
+    }
 }

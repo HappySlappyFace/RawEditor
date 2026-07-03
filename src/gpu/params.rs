@@ -49,7 +49,7 @@ pub struct GpuEditParams {
     pub crop: [f32; 4],
     pub is_cropping: u32,
     pub has_dcp: u32,
-    _pad_crop_2: u32,
+    pub dcp_has_curve: u32,
     _pad_crop_3: u32,
 }
 
@@ -100,7 +100,7 @@ impl From<&EditParams> for GpuEditParams {
             crop: params.crop,
             is_cropping: params.is_cropping,
             has_dcp: 0,
-            _pad_crop_2: 0,
+            dcp_has_curve: 0,
             _pad_crop_3: 0,
         }
     }

@@ -17,7 +17,7 @@
 ///  11.  Levels           – whites / blacks
 ///  12.  Saturation
 ///  13.  Vibrance
-///  14.  ACES filmic tone curve
+///  14.  Filmic tone curve (fallback path only — DCP ProfileToneCurve otherwise)
 ///  15.  sRGB TRC         – IEC 61966-2-1 piecewise (γ=2.4 + linear toe)
 ///  16.  Clamp
 pub const PASSTHROUGH_SHADER: &str = r#"
@@ -148,7 +148,7 @@ struct EditParams {
 
     // Padding to reach 256 bytes (16-byte alignment)
     has_dcp: u32,
-    pad_crop_2: u32,
+    dcp_has_curve: u32,
     pad_crop_3: u32,
 }
 
@@ -665,22 +665,31 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     //     Old threshold was 0.80 (≈ 91 % sRGB), leaving only 20 % headroom and
     //     blowing out cloud / sky detail.  0.65 gives 35 % headroom and matches
     //     the typical camera highlight-protection curve.
+    // When the active DCP embeds a ProfileToneCurve (applied in the DCP block
+    // above), it already provides the rendering S-curve — running the filmic
+    // lift + shoulder on top double-tone-maps: lifted mids on lifted mids and a
+    // second shoulder crushing highlights the profile curve already rolled off.
+    // "Adobe Standard" DCPs carry NO embedded curve (they expect the host's
+    // default curve), so the filmic curve stays on for them and for the
+    // no-DCP fallback path.
     color = max(color, vec3<f32>(0.0));
-    let tone_lift: f32 = 0.08;
-    color = color * (vec3<f32>(1.0 + tone_lift) - tone_lift * color);
+    if (params.has_dcp == 0u || params.dcp_has_curve == 0u) {
+        let tone_lift: f32 = 0.08;
+        color = color * (vec3<f32>(1.0 + tone_lift) - tone_lift * color);
 
-    let pre_tone_max = max(color.r, max(color.g, color.b));
-    if (pre_tone_max > 0.0) {
-        let threshold: f32 = 0.65;
-        let headroom:  f32 = 1.0 - threshold; // 0.35
-        var post_tone_max: f32;
-        if (pre_tone_max <= threshold) {
-            post_tone_max = pre_tone_max;
-        } else {
-            let over_t = pre_tone_max - threshold;
-            post_tone_max = threshold + (headroom * over_t) / (over_t + headroom);
+        let pre_tone_max = max(color.r, max(color.g, color.b));
+        if (pre_tone_max > 0.0) {
+            let threshold: f32 = 0.65;
+            let headroom:  f32 = 1.0 - threshold; // 0.35
+            var post_tone_max: f32;
+            if (pre_tone_max <= threshold) {
+                post_tone_max = pre_tone_max;
+            } else {
+                let over_t = pre_tone_max - threshold;
+                post_tone_max = threshold + (headroom * over_t) / (over_t + headroom);
+            }
+            color = color * (post_tone_max / pre_tone_max);
         }
-        color = color * (post_tone_max / pre_tone_max);
     }
 
     // ── Step 15: sRGB Transfer Function (IEC 61966-2-1) ──────────────────────
@@ -773,7 +782,7 @@ struct EditParams {
 
     // Padding to reach 256 bytes
     has_dcp: u32,
-    pad_crop_2: u32,
+    dcp_has_curve: u32,
     pad_crop_3: u32,
 }
 
