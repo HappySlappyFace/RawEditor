@@ -200,6 +200,15 @@ fn get_cam_luma(coords: vec2<i32>, dimensions: vec2<u32>) -> f32 {
     return cam.r * 0.25 + cam.g * 0.50 + cam.b * 0.25;
 }
 
+// Sample the DCP ProfileToneCurve at texel centers.
+// The curve texture stores N samples of f(i/(N-1)); naive normalized-coordinate
+// sampling is skewed by half a texel at both ends.
+fn sample_tone_curve(x: f32) -> f32 {
+    let n = f32(textureDimensions(tone_curve));
+    let c = (clamp(x, 0.0, 1.0) * (n - 1.0) + 0.5) / n;
+    return textureSampleLevel(tone_curve, lut_sampler, c, 0.0).r;
+}
+
 // IEC 61966-2-1 sRGB transfer function.
 // Uses γ = 2.4 with a linear toe segment, NOT the 1/2.2 approximation.
 // The difference is ~5% in the shadows and midtones.
@@ -430,7 +439,17 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             h /= 6.0;
         }
 
-        let lut_val = textureSampleLevel(hsv_lut, lut_sampler, vec3<f32>(h, s, clamp(v, 0.0, 1.0)), 0.0);
+        // Texel-center mapping for the HueSatMap LUT.
+        // X axis holds hueDivs+1 texels (last duplicates hue 0 so the clamp
+        // sampler interpolates across the 0°/360° red seam); sat and val axes
+        // span their grid inclusively, so grid point i sits at texel center i.
+        let lut_dims = vec3<f32>(textureDimensions(hsv_lut));
+        let lut_uvw = vec3<f32>(
+            (h * max(lut_dims.x - 1.0, 1.0) + 0.5) / lut_dims.x,
+            (s * max(lut_dims.y - 1.0, 1.0) + 0.5) / lut_dims.y,
+            (clamp(v, 0.0, 1.0) * max(lut_dims.z - 1.0, 1.0) + 0.5) / lut_dims.z
+        );
+        let lut_val = textureSampleLevel(hsv_lut, lut_sampler, lut_uvw, 0.0);
         h = fract(h + lut_val.r / 360.0);
         s = clamp(s * lut_val.g, 0.0, 1.0);
         let new_v = max(v * lut_val.b, 0.0);
@@ -454,9 +473,9 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         pp = max(vec3<f32>(r_pp, g_pp, b_pp), vec3<f32>(0.0));
 
         // 4. ProfileToneCurve (linear 1:1 if no curve in this DCP)
-        pp.r = textureSampleLevel(tone_curve, lut_sampler, clamp(pp.r, 0.0, 1.0), 0.0).r;
-        pp.g = textureSampleLevel(tone_curve, lut_sampler, clamp(pp.g, 0.0, 1.0), 0.0).r;
-        pp.b = textureSampleLevel(tone_curve, lut_sampler, clamp(pp.b, 0.0, 1.0), 0.0).r;
+        pp.r = sample_tone_curve(pp.r);
+        pp.g = sample_tone_curve(pp.g);
+        pp.b = sample_tone_curve(pp.b);
 
         // 5. ProPhoto → XYZ D50 → Bradford D50→D65 → linear sRGB
         // Combined matrix: xyz_to_srgb_D65 @ bradford_D50→D65 @ prophoto_to_xyz_D50
@@ -953,4 +972,30 @@ pub fn get_debayer_shader() -> &'static str {
 /// Legacy alias — returns the color shader for backward compatibility
 pub fn get_shader() -> &'static str {
     PASSTHROUGH_SHADER
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn validate_wgsl(source: &str, name: &str) {
+        let module = naga::front::wgsl::parse_str(source)
+            .unwrap_or_else(|e| panic!("{name} failed to parse: {}", e.emit_to_string(source)));
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .unwrap_or_else(|e| panic!("{name} failed validation: {e:?}"));
+    }
+
+    #[test]
+    fn color_shader_is_valid_wgsl() {
+        validate_wgsl(PASSTHROUGH_SHADER, "PASSTHROUGH_SHADER");
+    }
+
+    #[test]
+    fn debayer_shader_is_valid_wgsl() {
+        validate_wgsl(DEBAYER_SHADER, "DEBAYER_SHADER");
+    }
 }

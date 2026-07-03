@@ -22,6 +22,8 @@ pub struct RawDataResult {
     pub black_levels: [u32; 4],
     /// White Level (saturation point)
     pub white_level: u32,
+    /// True when `color_matrix` is D65-referenced (no D50→D65 Bradford adaptation needed)
+    pub color_matrix_is_d65: bool,
     /// Crop Margins [Top, Right, Bottom, Left]
     pub crops: [usize; 4],
     /// CFA Pattern Name (e.g. "RGGB")
@@ -144,12 +146,35 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
         width, height, data.len()
     );
 
-    let black_levels = [
-        measured_black_levels[0] as u32,
-        measured_black_levels[1] as u32,
-        measured_black_levels[2] as u32,
-        measured_black_levels[3] as u32,
-    ];
+    // Camera metadata black level is the sensor's calibrated optical-black offset.
+    // The P0.1 scene percentile is only a fallback: measuring "black" from image
+    // content overestimates the black point in any scene without true black
+    // (crushed shadows) and varies frame-to-frame (inconsistent tone between shots).
+    // rawler's as_bayer_array() is documented RGBE order [R, G, B, G2];
+    // our pipeline wants [R, G1, G2, B].
+    let meta_black = raw_image.blacklevel.as_bayer_array();
+    let black_levels = if meta_black.iter().any(|&v| v > 0.0) {
+        tracing::info!(
+            "Black levels from camera metadata: R={:.1} G={:.1} B={:.1} G2={:.1} (measured P0.1 was R={:.1} G1={:.1} G2={:.1} B={:.1})",
+            meta_black[0], meta_black[1], meta_black[2], meta_black[3],
+            measured_black_levels[0], measured_black_levels[1],
+            measured_black_levels[2], measured_black_levels[3]
+        );
+        [
+            meta_black[0] as u32, // R
+            meta_black[1] as u32, // G1
+            meta_black[3] as u32, // G2
+            meta_black[2] as u32, // B
+        ]
+    } else {
+        tracing::warn!("No metadata black level; falling back to measured P0.1 percentile");
+        [
+            measured_black_levels[0] as u32,
+            measured_black_levels[1] as u32,
+            measured_black_levels[2] as u32,
+            measured_black_levels[3] as u32,
+        ]
+    };
 
     // White balance coefficients — guard ALL four channels against NaN/inf/zero
     // rawler sets NaN in wb_coeffs when no WB tag is found in the file.
@@ -176,28 +201,31 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
     // The HashMap is keyed by Illuminant (D65, D50, etc.) and values are FlatColorMatrix (Vec<f32>)
     // with 9 or 12 elements (3 or 4 rows × 3 cols). Semantics: XYZ → camera (same as xyz_to_cam).
     // calculate_cam_to_srgb in color.rs will invert this correctly.
-    let xyz_to_cam_matrix: [f32; 9] = {
+    let (xyz_to_cam_matrix, color_matrix_is_d65): ([f32; 9], bool) = {
         use rawler::imgop::xyz::Illuminant;
 
-        // Prefer D65 (matches our Bradford adaptation target), fall back to any illuminant
-        let native_mat = raw_image.color_matrix.get(&Illuminant::D65)
-            .or_else(|| raw_image.color_matrix.values().next());
+        // Prefer D65 (our display target — no chromatic adaptation needed),
+        // fall back to any illuminant (Bradford-adapted in color.rs).
+        let d65_mat = raw_image.color_matrix.get(&Illuminant::D65);
+        let is_d65 = d65_mat.is_some();
+        let native_mat = d65_mat.or_else(|| raw_image.color_matrix.values().next());
 
         if let Some(m) = native_mat {
             if m.len() >= 9 && (m[0] != 0.0 || m[4] != 0.0) {
-                tracing::debug!("Found color_matrix (D65/native) from rawler — {} elements", m.len());
-                [m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8]]
+                tracing::debug!("Found color_matrix ({}) from rawler — {} elements",
+                    if is_d65 { "D65" } else { "non-D65" }, m.len());
+                ([m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8]], is_d65)
             } else {
                 tracing::warn!("color_matrix present but zero/short ({} elems), falling back to xyz_to_cam", m.len());
                 let xyz_cam = &raw_image.xyz_to_cam;
                 if xyz_cam[0][0] != 0.0 || xyz_cam[1][1] != 0.0 {
                     tracing::debug!("Using xyz_to_cam fallback");
-                    [xyz_cam[0][0], xyz_cam[0][1], xyz_cam[0][2],
-                     xyz_cam[1][0], xyz_cam[1][1], xyz_cam[1][2],
-                     xyz_cam[2][0], xyz_cam[2][1], xyz_cam[2][2]]
+                    ([xyz_cam[0][0], xyz_cam[0][1], xyz_cam[0][2],
+                      xyz_cam[1][0], xyz_cam[1][1], xyz_cam[1][2],
+                      xyz_cam[2][0], xyz_cam[2][1], xyz_cam[2][2]], false)
                 } else {
                     tracing::warn!("No valid color matrix found, using identity");
-                    [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+                    ([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], true)
                 }
             }
         } else {
@@ -205,12 +233,12 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
             let xyz_cam = &raw_image.xyz_to_cam;
             if xyz_cam[0][0] != 0.0 || xyz_cam[1][1] != 0.0 {
                 tracing::debug!("color_matrix empty, using xyz_to_cam legacy field");
-                [xyz_cam[0][0], xyz_cam[0][1], xyz_cam[0][2],
-                 xyz_cam[1][0], xyz_cam[1][1], xyz_cam[1][2],
-                 xyz_cam[2][0], xyz_cam[2][1], xyz_cam[2][2]]
+                ([xyz_cam[0][0], xyz_cam[0][1], xyz_cam[0][2],
+                  xyz_cam[1][0], xyz_cam[1][1], xyz_cam[1][2],
+                  xyz_cam[2][0], xyz_cam[2][1], xyz_cam[2][2]], false)
             } else {
                 tracing::warn!("No color matrix available at all, using identity");
-                [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+                ([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], true)
             }
         }
     };
@@ -297,6 +325,7 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
         height,
         wb_multipliers: wb_normalized,
         color_matrix: xyz_to_cam_matrix,
+        color_matrix_is_d65,
         cfa_pattern,
         black_levels,
         white_level,

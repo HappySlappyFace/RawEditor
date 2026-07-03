@@ -20,10 +20,13 @@ use cgmath::{Matrix3, SquareMatrix};
 /// # Arguments
 /// * `raw_matrix`     - The camera's XYZ-to-Camera matrix from RAW metadata (row-major [f32;9])
 /// * `wb_multipliers` - The as-shot WB gains `[R, G, B, G2]` normalised so G = 1.0
+/// * `matrix_is_d65`  - True when `raw_matrix` is D65-referenced. Applying the
+///   Bradford D50→D65 adaptation to a matrix that already produces D65-referenced
+///   XYZ double-adapts and shifts every colour blue/cool, so it must be skipped.
 ///
 /// # Returns
 /// * Camera-to-sRGB matrix as a flat `[f32; 9]` array (row-major)
-pub fn calculate_cam_to_srgb(raw_matrix: [f32; 9], wb_multipliers: [f32; 4]) -> [f32; 9] {
+pub fn calculate_cam_to_srgb(raw_matrix: [f32; 9], wb_multipliers: [f32; 4], matrix_is_d65: bool) -> [f32; 9] {
     crate::debug_log!(
         crate::debug::DEBUG_APP,
         "🎨 Phase 48: Calculating Cam-to-sRGB with Bradford Adaptation..."
@@ -89,8 +92,15 @@ pub fn calculate_cam_to_srgb(raw_matrix: [f32; 9], wb_multipliers: [f32; 4]) -> 
         -0.4985314,  0.0415560,  1.0572252, // Column 2
     );
 
-    // Step 5: Chain transformations: Cam -> XYZ_D50 -> XYZ_D65 -> sRGB
-    let mut final_matrix = XYZ_TO_SRGB * BRADFORD_D50_TO_D65 * cam_to_xyz_d50 * un_wb;
+    // Step 5: Chain transformations: Cam -> XYZ -> (adapt if needed) -> sRGB
+    // Bradford only when the matrix is D50-referenced; D65 matrices are already
+    // in the display white point.
+    let adaptation = if matrix_is_d65 {
+        Matrix3::from_value(1.0) // identity — already D65
+    } else {
+        BRADFORD_D50_TO_D65
+    };
+    let mut final_matrix = XYZ_TO_SRGB * adaptation * cam_to_xyz_d50 * un_wb;
 
     // Step 6: CRITICAL - Normalize rows to prevent pink tint!
     // Each row sum should equal 1.0 so that neutral (1,1,1) -> (1,1,1)
@@ -181,7 +191,7 @@ mod tests {
         // Example xyz_to_cam matrix (simplified)
         let xyz_to_cam = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
 
-        let result = calculate_cam_to_srgb(xyz_to_cam, [1.0, 1.0, 1.0, 1.0]);
+        let result = calculate_cam_to_srgb(xyz_to_cam, [1.0, 1.0, 1.0, 1.0], true);
 
         // Result should not be all zeros
         assert!(result.iter().any(|&x| x != 0.0));

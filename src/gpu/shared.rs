@@ -349,6 +349,61 @@ fn downsample_bayer(data: &[u16], full_width: u32, full_height: u32, stride: u32
     (out, new_width, new_height)
 }
 
+/// Build the padded RGBA16F upload buffer for the DCP HueSatMap 3D LUT.
+///
+/// DNG spec entry order is value-outermost, then hue, then saturation-innermost:
+/// `i = (v * hueDivs + h) * satDivs + s`. (The previous code iterated hue as the
+/// fastest axis, transposing hue/sat and scrambling every non-square LUT.)
+///
+/// The texture's X axis carries hue with ONE EXTRA duplicated row (`hueDivs + 1`
+/// texels): hue is cyclic over 360°, and the clamp-addressing sampler would
+/// otherwise fail to interpolate across the red seam at h≈0/h≈1. The shader maps
+/// hue as `(h * hueDivs + 0.5) / (hueDivs + 1)`.
+///
+/// Returns `(padded_data, texture_extent, padded_bytes_per_row)`.
+fn build_hsm_lut_upload(dcp: &crate::raw::dcp::InterpolatedProfile) -> (Vec<u8>, wgpu::Extent3d, u32) {
+    let (hue_divs, sat_divs, val_divs) = dcp.hue_sat_dims;
+    let tex_w = hue_divs + 1; // wrap row
+    let unpadded_bytes_per_row = tex_w * 8;
+    let padded_bytes_per_row = (unpadded_bytes_per_row + 255) & !255;
+    let mut data = Vec::with_capacity((padded_bytes_per_row * sat_divs * val_divs) as usize);
+
+    let neutral = [
+        half::f16::from_f32(0.0),
+        half::f16::from_f32(1.0),
+        half::f16::from_f32(1.0),
+        half::f16::from_f32(1.0),
+    ];
+
+    for v in 0..val_divs {
+        for s in 0..sat_divs {
+            for x in 0..tex_w {
+                let h = x % hue_divs; // last texel duplicates hue 0
+                let i = ((v * hue_divs + h) * sat_divs + s) as usize;
+                if let Some(e) = dcp.hue_sat_lut.get(i) {
+                    let c = [
+                        half::f16::from_f32(e[0]),
+                        half::f16::from_f32(e[1]),
+                        half::f16::from_f32(e[2]),
+                        half::f16::from_f32(1.0),
+                    ];
+                    data.extend_from_slice(bytemuck::cast_slice(&c));
+                } else {
+                    data.extend_from_slice(bytemuck::cast_slice(&neutral));
+                }
+            }
+            data.extend(std::iter::repeat_n(0u8, (padded_bytes_per_row - unpadded_bytes_per_row) as usize));
+        }
+    }
+
+    let extent = wgpu::Extent3d {
+        width: tex_w,
+        height: sat_divs,
+        depth_or_array_layers: val_divs,
+    };
+    (data, extent, padded_bytes_per_row)
+}
+
 impl ImageResources {
     /// Create new image resources for a specific image
     #[allow(clippy::too_many_arguments)]
@@ -531,11 +586,18 @@ impl ImageResources {
 
         // Phase 140: Create DCP Textures
         let has_dcp = dcp_profile.is_some();
-        let lut_dims = dcp_profile.map(|p| p.hue_sat_dims).unwrap_or((1, 1, 1));
-        
+        // X axis = hue divisions + 1 duplicated wrap row (see build_hsm_lut_upload)
+        let lut_extent = dcp_profile
+            .map(|p| wgpu::Extent3d {
+                width: p.hue_sat_dims.0 + 1,
+                height: p.hue_sat_dims.1,
+                depth_or_array_layers: p.hue_sat_dims.2,
+            })
+            .unwrap_or(wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 });
+
         let hsv_lut_texture = context.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("HSV LUT 3D Texture"),
-            size: wgpu::Extent3d { width: lut_dims.0, height: lut_dims.1, depth_or_array_layers: lut_dims.2 },
+            size: lut_extent,
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D3,
@@ -556,36 +618,14 @@ impl ImageResources {
         });
         
         if let Some(dcp) = dcp_profile {
-            let unpadded_bytes_per_row = lut_dims.0 * 8;
-            let padded_bytes_per_row = (unpadded_bytes_per_row + 255) & !255;
-            let mut padded_rgba_lut = Vec::with_capacity((padded_bytes_per_row * lut_dims.1 * lut_dims.2) as usize);
-
-            for z in 0..lut_dims.2 {
-                for y in 0..lut_dims.1 {
-                    for x in 0..lut_dims.0 {
-                        let i = (z * lut_dims.1 * lut_dims.0 + y * lut_dims.0 + x) as usize;
-                        if i < dcp.hue_sat_lut.len() {
-                            let v = &dcp.hue_sat_lut[i];
-                            let c = [half::f16::from_f32(v[0]), half::f16::from_f32(v[1]), half::f16::from_f32(v[2]), half::f16::from_f32(1.0)];
-                            padded_rgba_lut.extend_from_slice(bytemuck::cast_slice(&c));
-                        } else {
-                            let c = [half::f16::from_f32(0.0), half::f16::from_f32(1.0), half::f16::from_f32(1.0), half::f16::from_f32(1.0)];
-                            padded_rgba_lut.extend_from_slice(bytemuck::cast_slice(&c));
-                        }
-                    }
-                    let padding = padded_bytes_per_row - unpadded_bytes_per_row;
-                    if padding > 0 {
-                        padded_rgba_lut.extend(std::iter::repeat(0u8).take(padding as usize));
-                    }
-                }
-            }
+            let (lut_data, extent, padded_bytes_per_row) = build_hsm_lut_upload(dcp);
             context.queue.write_texture(
                 wgpu::ImageCopyTexture { texture: &hsv_lut_texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-                &padded_rgba_lut,
-                wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(padded_bytes_per_row), rows_per_image: Some(lut_dims.1) },
-                wgpu::Extent3d { width: lut_dims.0, height: lut_dims.1, depth_or_array_layers: lut_dims.2 },
+                &lut_data,
+                wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(padded_bytes_per_row), rows_per_image: Some(extent.height) },
+                extent,
             );
-            
+
             // Write Tone Curve
             let tc_f16: Vec<half::f16> = dcp.tone_curve.iter().map(|&v| half::f16::from_f32(v)).collect();
             context.queue.write_texture(
@@ -725,38 +765,15 @@ impl ImageResources {
             }
             
             if needs_lut_upload {
-                // Re-upload the LUT texture
-                let lut_dims = dcp.hue_sat_dims;
-                let unpadded_bytes_per_row = lut_dims.0 * 8;
-                let padded_bytes_per_row = (unpadded_bytes_per_row + 255) & !255;
-                let mut padded_rgba_lut = Vec::with_capacity((padded_bytes_per_row * lut_dims.1 * lut_dims.2) as usize);
-
-                for z in 0..lut_dims.2 {
-                    for y in 0..lut_dims.1 {
-                        for x in 0..lut_dims.0 {
-                            let i = (z * lut_dims.1 * lut_dims.0 + y * lut_dims.0 + x) as usize;
-                            if i < dcp.hue_sat_lut.len() {
-                                let v = &dcp.hue_sat_lut[i];
-                                let c = [half::f16::from_f32(v[0]), half::f16::from_f32(v[1]), half::f16::from_f32(v[2]), half::f16::from_f32(1.0)];
-                                padded_rgba_lut.extend_from_slice(bytemuck::cast_slice(&c));
-                            } else {
-                                let c = [half::f16::from_f32(0.0), half::f16::from_f32(1.0), half::f16::from_f32(1.0), half::f16::from_f32(1.0)];
-                                padded_rgba_lut.extend_from_slice(bytemuck::cast_slice(&c));
-                            }
-                        }
-                        let padding = padded_bytes_per_row - unpadded_bytes_per_row;
-                        if padding > 0 {
-                            padded_rgba_lut.extend(std::iter::repeat(0u8).take(padding as usize));
-                        }
-                    }
-                }
+                // Re-upload the LUT texture (temperature slider re-interpolated it)
+                let (lut_data, extent, padded_bytes_per_row) = build_hsm_lut_upload(dcp);
                 context.queue.write_texture(
                     wgpu::ImageCopyTexture { texture: &self.hsv_lut_texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-                    &padded_rgba_lut,
-                    wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(padded_bytes_per_row), rows_per_image: Some(lut_dims.1) },
-                    wgpu::Extent3d { width: lut_dims.0, height: lut_dims.1, depth_or_array_layers: lut_dims.2 },
+                    &lut_data,
+                    wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(padded_bytes_per_row), rows_per_image: Some(extent.height) },
+                    extent,
                 );
-                
+
                 if let Ok(mut last) = self.last_uploaded_dcp_kelvin.write() {
                     *last = Some(current_kelvin);
                 }

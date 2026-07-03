@@ -3925,6 +3925,7 @@ dependencies = [
  "jpeg-encoder",
  "kamadak-exif",
  "lru",
+ "naga",
  "png 0.17.16",
  "rawler",
  "rfd",

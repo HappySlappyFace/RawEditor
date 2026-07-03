@@ -71,6 +71,10 @@ tiff = "0.9"
 half = { version = "2.7.1", features = ["bytemuck"] }
 
 
+[dev-dependencies]
+# Shader compile-time validation in unit tests (same version wgpu 0.19 uses)
+naga = { version = "0.19", features = ["wgsl-in"] }
+
 [features]
 # Default: maximum compatibility — no platform-specific dependencies.
 # Enable "fast-jpeg" for 3-5× faster JPEG decoding via zune-jpeg (SIMD on x86_64/aarch64,

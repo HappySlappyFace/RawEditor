@@ -86,7 +86,7 @@ pub fn prepare_image_resources_from_raw(
                 (interpolated.forward_matrix, Some(interpolated))
             } else {
                 let xyz_to_cam = raw.color_matrix;
-                let cam_to_srgb = crate::color::calculate_cam_to_srgb(xyz_to_cam, raw.wb_multipliers);
+                let cam_to_srgb = crate::color::calculate_cam_to_srgb(xyz_to_cam, raw.wb_multipliers, raw.color_matrix_is_d65);
                 (cam_to_srgb, None)
             };
 
@@ -192,7 +192,7 @@ pub fn trigger_full_res_upgrade(editor: &mut RawEditor) -> Task<Message> {
                 (interpolated.forward_matrix, Some(interpolated))
             } else {
                 let xyz_to_cam = raw.color_matrix;
-                let cam_to_srgb = crate::color::calculate_cam_to_srgb(xyz_to_cam, raw.wb_multipliers);
+                let cam_to_srgb = crate::color::calculate_cam_to_srgb(xyz_to_cam, raw.wb_multipliers, raw.color_matrix_is_d65);
                 (cam_to_srgb, None)
             };
 
@@ -232,6 +232,7 @@ fn metadata_snapshot(raw: &raw::loader::RawDataResult) -> raw::loader::RawDataRe
         height: raw.height,
         wb_multipliers: raw.wb_multipliers,
         color_matrix: raw.color_matrix,
+        color_matrix_is_d65: raw.color_matrix_is_d65,
         cfa_pattern: raw.cfa_pattern,
         black_levels: raw.black_levels,
         white_level: raw.white_level,
