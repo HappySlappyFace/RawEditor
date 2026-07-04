@@ -127,12 +127,22 @@ pub fn handle_export_raw_loaded(
             let params = editor.current_edit_params;
             let ctx = editor.gpu_context.clone();
 
-            let xyz_to_cam = raw_data.color_matrix;
-            let cam_to_srgb = crate::color::calculate_cam_to_srgb(xyz_to_cam, raw_data.wb_multipliers, raw_data.color_matrix_is_d65);
-            
-            let interpolated_dcp = raw_data.dcp_profile.as_ref().map(|dcp| {
-                crate::raw::dcp::interpolate_at_temperature(dcp, params.temperature_to_kelvin())
-            });
+            // Must mirror the develop path (loading.rs): with a DCP the shader takes the
+            // has_dcp branch and expects the DCP ForwardMatrix (camera → XYZ D50) — passing
+            // the fallback camera → sRGB matrix there wrecks every colour (pink skin tones).
+            let (forward_matrix, interpolated_dcp) = if let Some(dcp) = &raw_data.dcp_profile {
+                let interpolated =
+                    crate::raw::dcp::interpolate_at_temperature(dcp, params.temperature_to_kelvin());
+                (interpolated.forward_matrix, Some(interpolated))
+            } else {
+                let xyz_to_cam = raw_data.color_matrix;
+                let cam_to_srgb = crate::color::calculate_cam_to_srgb(
+                    xyz_to_cam,
+                    raw_data.wb_multipliers,
+                    raw_data.color_matrix_is_d65,
+                );
+                (cam_to_srgb, None)
+            };
 
             Task::perform(
                 async move {
@@ -153,7 +163,7 @@ pub fn handle_export_raw_loaded(
                         raw_data.height,
                         &params,
                         raw_data.wb_multipliers,
-                        cam_to_srgb,
+                        forward_matrix,
                         raw_data.cfa_pattern,
                         raw_data.black_levels,
                         raw_data.white_level,
