@@ -274,11 +274,9 @@ pub fn illuminant_to_kelvin(ill: u32) -> f32 {
     }
 }
 
-pub fn interpolate_at_temperature(
-    profile: &DcpProfile,
-    kelvin: f32,
-    curve_strength: f32,
-) -> InterpolatedProfile {
+/// Dual-illuminant blend weight for `kelvin` (0 = illuminant1, 1 = illuminant2),
+/// interpolated in inverse-temperature (mired) space per the DNG spec.
+fn illuminant_weight(profile: &DcpProfile, kelvin: f32) -> f32 {
     let t1 = illuminant_to_kelvin(profile.illuminant1);
     let t2 = illuminant_to_kelvin(profile.illuminant2);
 
@@ -286,11 +284,30 @@ pub fn interpolate_at_temperature(
     let inv_t1 = 1.0 / t1;
     let inv_t2 = 1.0 / t2;
 
-    let weight = if (inv_t2 - inv_t1).abs() < 1e-6 {
+    if (inv_t2 - inv_t1).abs() < 1e-6 {
         0.0
     } else {
         ((inv_t - inv_t1) / (inv_t2 - inv_t1)).clamp(0.0, 1.0)
-    };
+    }
+}
+
+/// Interpolated XYZ→camera ColorMatrix at the given temperature.
+/// Used by the CCT solver (`color::wb_to_kelvin_tint` and friends).
+pub fn interpolate_color_matrix(profile: &DcpProfile, kelvin: f32) -> [f32; 9] {
+    let weight = illuminant_weight(profile, kelvin);
+    let mut cm = [0.0f32; 9];
+    for i in 0..9 {
+        cm[i] = profile.color_matrix_1[i] * (1.0 - weight) + profile.color_matrix_2[i] * weight;
+    }
+    cm
+}
+
+pub fn interpolate_at_temperature(
+    profile: &DcpProfile,
+    kelvin: f32,
+    curve_strength: f32,
+) -> InterpolatedProfile {
+    let weight = illuminant_weight(profile, kelvin);
 
     let fm1 = profile.forward_matrix_1.unwrap_or(profile.color_matrix_1);
     let fm2 = profile.forward_matrix_2.unwrap_or(profile.color_matrix_2);

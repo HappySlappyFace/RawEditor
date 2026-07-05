@@ -217,6 +217,22 @@ impl EditParams {
         };
         (1.0 / inv_t).clamp(2000.0, 10000.0)
     }
+
+    /// Absolute WB temperature in Kelvin, anchored at the image's as-shot CCT.
+    /// Slider 0 = as-shot; ±1 = ∓120 mired (mired offsets are perceptually
+    /// uniform, unlike Kelvin offsets). Positive slider → higher Kelvin →
+    /// warmer render, matching the Lightroom convention.
+    pub fn kelvin_from_anchor(&self, anchor_kelvin: f32) -> f32 {
+        let anchor_mired = 1.0e6 / anchor_kelvin.clamp(1500.0, 50000.0);
+        let mired = (anchor_mired - self.temperature * 120.0).max(20.0);
+        (1.0e6 / mired).clamp(1500.0, 50000.0)
+    }
+
+    /// Absolute Adobe-scale tint, anchored at the image's as-shot tint.
+    /// Slider ±1 = ±50 tint units; positive = magenta (ACR convention).
+    pub fn tint_from_anchor(&self, anchor_tint: f32) -> f32 {
+        anchor_tint + self.tint * 50.0
+    }
 }
 
 #[cfg(test)]

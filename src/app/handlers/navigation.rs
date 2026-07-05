@@ -184,10 +184,9 @@ pub fn handle_mouse_released(editor: &mut RawEditor) -> Task<Message> {
             editor.save_current_edits();
             editor.commit_current_state();
             if let (Some(ctx), Some(res)) = (&editor.gpu_context, &editor.image_resources) {
-                let interpolated = editor.current_dcp_profile.as_ref().map(|dcp| {
-                    crate::raw::dcp::interpolate_at_temperature(dcp, editor.current_edit_params.temperature_to_kelvin(), editor.current_edit_params.profile_curve)
-                });
-                res.update_uniforms(ctx, &editor.current_edit_params, interpolated.as_ref());
+                let (interpolated, wb_override) =
+                    crate::app::handlers::develop::resolve_wb_and_dcp(editor);
+                res.update_uniforms(ctx, &editor.current_edit_params, interpolated.as_ref(), wb_override);
             }        }
     }
     editor.is_dragging = false;
@@ -352,10 +351,9 @@ fn apply_crop_drag(editor: &mut RawEditor, pos: Point, last: Point, h: CropHandl
     editor.current_edit_params.crop = [l, t, (r - l).max(0.0), (b - t).max(0.0)];
     
     if let Some(ctx) = &editor.gpu_context {
-        let interpolated = editor.current_dcp_profile.as_ref().map(|dcp| {
-            crate::raw::dcp::interpolate_at_temperature(dcp, editor.current_edit_params.temperature_to_kelvin(), editor.current_edit_params.profile_curve)
-        });
-        resources.update_uniforms(ctx, &editor.current_edit_params, interpolated.as_ref());
+        let (interpolated, wb_override) =
+            crate::app::handlers::develop::resolve_wb_and_dcp(editor);
+        resources.update_uniforms(ctx, &editor.current_edit_params, interpolated.as_ref(), wb_override);
     }
 }
 

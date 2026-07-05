@@ -130,9 +130,19 @@ pub fn handle_export_raw_loaded(
             // Must mirror the develop path (loading.rs): with a DCP the shader takes the
             // has_dcp branch and expects the DCP ForwardMatrix (camera → XYZ D50) — passing
             // the fallback camera → sRGB matrix there wrecks every colour (pink skin tones).
+            // Anchored WB: honour saved Temp/Tint edits exactly like develop.
+            let as_shot = crate::color::as_shot_kelvin_tint(&raw_data);
+            let (kelvin, _tint, wb_override) = crate::color::solve_wb(
+                &params,
+                as_shot,
+                raw_data.dcp_profile.as_deref(),
+                raw_data.color_matrix,
+            );
+            let wb_final = wb_override.unwrap_or(raw_data.wb_multipliers);
+
             let (forward_matrix, interpolated_dcp) = if let Some(dcp) = &raw_data.dcp_profile {
                 let interpolated =
-                    crate::raw::dcp::interpolate_at_temperature(dcp, params.temperature_to_kelvin(), params.profile_curve);
+                    crate::raw::dcp::interpolate_at_temperature(dcp, kelvin, params.profile_curve);
                 (interpolated.forward_matrix, Some(interpolated))
             } else {
                 let xyz_to_cam = raw_data.color_matrix;
@@ -162,7 +172,7 @@ pub fn handle_export_raw_loaded(
                         raw_data.width,
                         raw_data.height,
                         &params,
-                        raw_data.wb_multipliers,
+                        wb_final,
                         forward_matrix,
                         raw_data.cfa_pattern,
                         raw_data.black_levels,

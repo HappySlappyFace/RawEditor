@@ -141,6 +141,10 @@ pub struct RawEditor {
     pub current_edit_params: crate::core::types::EditParams,
     // Phase 140: Currently loaded DCP profile
     pub current_dcp_profile: Option<Arc<crate::raw::dcp::DcpProfile>>,
+    /// As-shot white balance of the current image as (Kelvin, Adobe tint),
+    /// solved from the camera's WB multipliers via the color matrix (Robertson
+    /// CCT). Anchor for the Temp/Tint sliders; None until a raw is loaded.
+    pub as_shot_wb: Option<(f32, f32)>,
 
     // Phase 95: Unified GPU Pipeline Architecture
     /// Shared GPU context (created once, reused for all images)
@@ -306,6 +310,7 @@ impl RawEditor {
                 current_tab: AppTab::Library, // Start in Library view
                 current_edit_params: crate::core::types::EditParams::default(),
                 current_dcp_profile: None, // Phase 140: No DCP profile initially
+                as_shot_wb: None,
 
                 // Phase 95: Unified GPU Pipeline Architecture
                 gpu_context: None, // Will be initialized on first image load

@@ -63,10 +63,16 @@ pub fn prepare_image_resources_from_raw(
     raw: Arc<raw::loader::RawDataResult>,
 ) -> Task<Message> {
     editor.current_metadata = Some(metadata_snapshot(&raw));
-    
+
     // Phase 140: Store current DCP profile
     editor.current_dcp_profile = raw.dcp_profile.clone();
-    
+
+    // As-shot WB anchor: solve the camera multipliers to (Kelvin, tint) so the
+    // Temp/Tint sliders can display and pivot around the real camera values.
+    let (as_kelvin, as_tint) = crate::color::as_shot_kelvin_tint(&raw);
+    editor.as_shot_wb = Some((as_kelvin, as_tint));
+    tracing::info!("As-shot WB: {:.0}K, tint {:+.1}", as_kelvin, as_tint);
+
     let params = editor.current_edit_params;
     let context = editor.gpu_context.clone();
 
@@ -81,11 +87,20 @@ pub fn prepare_image_resources_from_raw(
                 }
             };
 
+            // Anchored WB: solve as-shot (K, tint), then honour any saved
+            // Temp/Tint edits by recomputing the multipliers.
+            let as_shot = crate::color::as_shot_kelvin_tint(&raw);
+            let (kelvin, _tint, wb_override) =
+                crate::color::solve_wb(&params, as_shot, raw.dcp_profile.as_deref(), raw.color_matrix);
+            let wb_final = wb_override.unwrap_or(raw.wb_multipliers);
+
             let (forward_matrix, interpolated_dcp) = if let Some(dcp) = &raw.dcp_profile {
-                let interpolated = crate::raw::dcp::interpolate_at_temperature(dcp, params.temperature_to_kelvin(), params.profile_curve);
+                let interpolated = crate::raw::dcp::interpolate_at_temperature(dcp, kelvin, params.profile_curve);
                 (interpolated.forward_matrix, Some(interpolated))
             } else {
                 let xyz_to_cam = raw.color_matrix;
+                // NOTE: bake diag(1/as-shot-wb) here — the shader multiplies by
+                // wb_final, so the net correction is wb_final / as-shot.
                 let cam_to_srgb = crate::color::calculate_cam_to_srgb(xyz_to_cam, raw.wb_multipliers, raw.color_matrix_is_d65);
                 (cam_to_srgb, None)
             };
@@ -97,7 +112,7 @@ pub fn prepare_image_resources_from_raw(
                 raw.width,
                 raw.height,
                 &params,
-                raw.wb_multipliers,
+                wb_final,
                 forward_matrix,
                 raw.cfa_pattern,
                 raw.black_levels,
@@ -128,10 +143,9 @@ pub fn handle_image_resources_ready(editor: &mut RawEditor, image_id: i64, resul
             }
 
             if let Some(ctx) = &editor.gpu_context {
-                let interpolated = editor.current_dcp_profile.as_ref().map(|dcp| {
-                    crate::raw::dcp::interpolate_at_temperature(dcp, editor.current_edit_params.temperature_to_kelvin(), editor.current_edit_params.profile_curve)
-                });
-                resources.update_uniforms(ctx, &editor.current_edit_params, interpolated.as_ref());
+                let (interpolated, wb_override) =
+                    crate::app::handlers::develop::resolve_wb_and_dcp(editor);
+                resources.update_uniforms(ctx, &editor.current_edit_params, interpolated.as_ref(), wb_override);
             }
 
             editor.image_resources = Some(resources);
@@ -187,8 +201,14 @@ pub fn trigger_full_res_upgrade(editor: &mut RawEditor) -> Task<Message> {
                 }
             };
 
+            // Anchored WB (same logic as the preview path above).
+            let as_shot = crate::color::as_shot_kelvin_tint(&raw);
+            let (kelvin, _tint, wb_override) =
+                crate::color::solve_wb(&params, as_shot, raw.dcp_profile.as_deref(), raw.color_matrix);
+            let wb_final = wb_override.unwrap_or(raw.wb_multipliers);
+
             let (forward_matrix, interpolated_dcp) = if let Some(dcp) = &raw.dcp_profile {
-                let interpolated = crate::raw::dcp::interpolate_at_temperature(dcp, params.temperature_to_kelvin(), params.profile_curve);
+                let interpolated = crate::raw::dcp::interpolate_at_temperature(dcp, kelvin, params.profile_curve);
                 (interpolated.forward_matrix, Some(interpolated))
             } else {
                 let xyz_to_cam = raw.color_matrix;
@@ -203,7 +223,7 @@ pub fn trigger_full_res_upgrade(editor: &mut RawEditor) -> Task<Message> {
                 raw.width,
                 raw.height,
                 &params,
-                raw.wb_multipliers,
+                wb_final,
                 forward_matrix,
                 raw.cfa_pattern,
                 raw.black_levels,

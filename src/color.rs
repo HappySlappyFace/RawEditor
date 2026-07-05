@@ -158,6 +158,290 @@ pub fn calculate_cam_to_srgb(raw_matrix: [f32; 9], wb_multipliers: [f32; 4], mat
     result
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Correlated Color Temperature (CCT) ↔ chromaticity — Robertson's method.
+// Port of Adobe's dng_temperature.cpp so our Kelvin/tint numbers line up with
+// what Lightroom/ACR display for the same raw file.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Robertson (1968) isotherm table: (mired, CIE-1960 u, v, isotherm slope).
+/// Identical to dng_sdk's kTempTable.
+#[rustfmt::skip]
+const ROBERTSON_TABLE: [(f32, f32, f32, f32); 31] = [
+    (   0.0, 0.18006, 0.26352,  -0.24341),
+    (  10.0, 0.18066, 0.26589,  -0.25479),
+    (  20.0, 0.18133, 0.26846,  -0.26876),
+    (  30.0, 0.18208, 0.27119,  -0.28539),
+    (  40.0, 0.18293, 0.27407,  -0.30470),
+    (  50.0, 0.18388, 0.27709,  -0.32675),
+    (  60.0, 0.18494, 0.28021,  -0.35156),
+    (  70.0, 0.18611, 0.28342,  -0.37915),
+    (  80.0, 0.18740, 0.28668,  -0.40955),
+    (  90.0, 0.18880, 0.28997,  -0.44278),
+    ( 100.0, 0.19032, 0.29326,  -0.47888),
+    ( 125.0, 0.19462, 0.30141,  -0.58204),
+    ( 150.0, 0.19962, 0.30921,  -0.70471),
+    ( 175.0, 0.20525, 0.31647,  -0.84901),
+    ( 200.0, 0.21142, 0.32312,  -1.0182 ),
+    ( 225.0, 0.21807, 0.32909,  -1.2168 ),
+    ( 250.0, 0.22511, 0.33439,  -1.4512 ),
+    ( 275.0, 0.23247, 0.33904,  -1.7298 ),
+    ( 300.0, 0.24010, 0.34308,  -2.0637 ),
+    ( 325.0, 0.24792, 0.34655,  -2.4681 ),
+    ( 350.0, 0.25591, 0.34951,  -2.9641 ),
+    ( 375.0, 0.26400, 0.35200,  -3.5814 ),
+    ( 400.0, 0.27218, 0.35407,  -4.3633 ),
+    ( 425.0, 0.28039, 0.35577,  -5.3762 ),
+    ( 450.0, 0.28863, 0.35714,  -6.7262 ),
+    ( 475.0, 0.29685, 0.35823,  -8.5955 ),
+    ( 500.0, 0.30505, 0.35907, -11.324  ),
+    ( 525.0, 0.31320, 0.35968, -15.628  ),
+    ( 550.0, 0.32129, 0.36011, -23.325  ),
+    ( 575.0, 0.32931, 0.36038, -40.770  ),
+    ( 600.0, 0.33724, 0.36051, -116.45  ),
+];
+
+/// Adobe's tint scale: tint units per unit uv distance along the isotherm.
+/// Negative so that positive tint = magenta shift, matching the ACR slider.
+const TINT_SCALE: f32 = -3000.0;
+
+/// CIE 1931 xy → CIE 1960 uv.
+fn xy_to_uv(x: f32, y: f32) -> (f32, f32) {
+    let d = -2.0 * x + 12.0 * y + 3.0;
+    (4.0 * x / d, 6.0 * y / d)
+}
+
+/// CIE 1960 uv → CIE 1931 xy.
+fn uv_to_xy(u: f32, v: f32) -> (f32, f32) {
+    let d = 2.0 + u - 4.0 * v;
+    (1.5 * u / d, v / d)
+}
+
+/// Chromaticity → (correlated color temperature in Kelvin, Adobe-scale tint).
+/// Port of dng_temperature::Set_xy_coord.
+pub fn xy_to_kelvin_tint(x: f32, y: f32) -> (f32, f32) {
+    let (u, v) = xy_to_uv(x, y);
+
+    let mut last_dt = 0.0f32;
+    let mut last_dv = 0.0f32;
+    let mut last_du = 0.0f32;
+    let mut kelvin = 6500.0f32;
+    let mut tint = 0.0f32;
+
+    for index in 1..31 {
+        // Normalized direction of this row's isotherm.
+        let mut du = 1.0f32;
+        let mut dv = ROBERTSON_TABLE[index].3;
+        let len = (1.0 + dv * dv).sqrt();
+        du /= len;
+        dv /= len;
+
+        // Signed perpendicular distance of the sample from this isotherm.
+        let uu = u - ROBERTSON_TABLE[index].1;
+        let vv = v - ROBERTSON_TABLE[index].2;
+        let mut dt = -uu * dv + vv * du;
+
+        if dt <= 0.0 || index == 30 {
+            dt = -dt.min(0.0);
+
+            // Interpolation factor between this row and the previous one.
+            let f = if index == 1 { 0.0 } else { dt / (last_dt + dt) };
+
+            // Interpolate the mired value, convert to Kelvin.
+            let mired = ROBERTSON_TABLE[index].0 * (1.0 - f) + ROBERTSON_TABLE[index - 1].0 * f;
+            kelvin = if mired > 0.0 { 1.0e6 / mired } else { 100_000.0 };
+
+            // Project the offset from the locus onto the isotherm for tint.
+            let uu2 = u - (ROBERTSON_TABLE[index].1 * (1.0 - f) + ROBERTSON_TABLE[index - 1].1 * f);
+            let vv2 = v - (ROBERTSON_TABLE[index].2 * (1.0 - f) + ROBERTSON_TABLE[index - 1].2 * f);
+            let mut du2 = du * (1.0 - f) + last_du * f;
+            let mut dv2 = dv * (1.0 - f) + last_dv * f;
+            let len2 = (du2 * du2 + dv2 * dv2).sqrt();
+            du2 /= len2;
+            dv2 /= len2;
+
+            tint = (uu2 * du2 + vv2 * dv2) * TINT_SCALE;
+            break;
+        }
+
+        last_dt = dt;
+        last_du = du;
+        last_dv = dv;
+    }
+
+    (kelvin.clamp(1400.0, 100_000.0), tint)
+}
+
+/// (Kelvin, Adobe-scale tint) → chromaticity.
+/// Port of dng_temperature::Get_xy_coord.
+pub fn kelvin_tint_to_xy(kelvin: f32, tint: f32) -> (f32, f32) {
+    let r = 1.0e6 / kelvin.clamp(1400.0, 100_000.0);
+
+    for index in 0..30 {
+        if r < ROBERTSON_TABLE[index + 1].0 || index == 29 {
+            let f = (ROBERTSON_TABLE[index + 1].0 - r)
+                / (ROBERTSON_TABLE[index + 1].0 - ROBERTSON_TABLE[index].0);
+            let f = f.clamp(0.0, 1.0);
+
+            let mut u = ROBERTSON_TABLE[index].1 * f + ROBERTSON_TABLE[index + 1].1 * (1.0 - f);
+            let mut v = ROBERTSON_TABLE[index].2 * f + ROBERTSON_TABLE[index + 1].2 * (1.0 - f);
+
+            // Interpolated isotherm direction for the tint offset.
+            let mut du1 = 1.0f32;
+            let mut dv1 = ROBERTSON_TABLE[index].3;
+            let l1 = (1.0 + dv1 * dv1).sqrt();
+            du1 /= l1;
+            dv1 /= l1;
+            let mut du2 = 1.0f32;
+            let mut dv2 = ROBERTSON_TABLE[index + 1].3;
+            let l2 = (1.0 + dv2 * dv2).sqrt();
+            du2 /= l2;
+            dv2 /= l2;
+
+            let mut du = du1 * f + du2 * (1.0 - f);
+            let mut dv = dv1 * f + dv2 * (1.0 - f);
+            let len = (du * du + dv * dv).sqrt();
+            du /= len;
+            dv /= len;
+
+            let offset = tint / TINT_SCALE;
+            u += du * offset;
+            v += dv * offset;
+
+            return uv_to_xy(u, v);
+        }
+    }
+    // Unreachable, but keep a sane fallback (D50-ish).
+    (0.3457, 0.3585)
+}
+
+/// Which XYZ→camera matrix source to use for neutral↔chromaticity conversion.
+pub enum CameraMatrices<'a> {
+    /// Dual-illuminant DCP: interpolate ColorMatrix1/2 by 1/T (iterative).
+    Dcp(&'a crate::raw::dcp::DcpProfile),
+    /// Single matrix from the raw file metadata (XYZ→camera, row-major).
+    Single([f32; 9]),
+}
+
+impl CameraMatrices<'_> {
+    /// XYZ→camera matrix appropriate for the given temperature.
+    fn matrix_at(&self, kelvin: f32) -> [f32; 9] {
+        match self {
+            CameraMatrices::Dcp(p) => crate::raw::dcp::interpolate_color_matrix(p, kelvin),
+            CameraMatrices::Single(m) => *m,
+        }
+    }
+}
+
+fn invert_flat(m: [f32; 9]) -> Option<Matrix3<f32>> {
+    // Row-major flat → cgmath column-major
+    Matrix3::new(
+        m[0], m[3], m[6],
+        m[1], m[4], m[7],
+        m[2], m[5], m[8],
+    )
+    .invert()
+}
+
+/// Camera-neutral (as-shot) → (Kelvin, tint).
+///
+/// `wb_multipliers` are the G-normalized as-shot gains; the camera neutral is
+/// their reciprocal. Port of dng_color_spec::NeutralToXY — iterates because
+/// the matrix choice depends on the temperature being solved for.
+pub fn wb_to_kelvin_tint(wb_multipliers: [f32; 4], matrices: &CameraMatrices) -> (f32, f32) {
+    let neutral = cgmath::Vector3::new(
+        1.0 / wb_multipliers[0].max(1e-6),
+        1.0 / wb_multipliers[1].max(1e-6),
+        1.0 / wb_multipliers[2].max(1e-6),
+    );
+
+    // Start from D50 and iterate to convergence (single-matrix converges in 1).
+    let (mut x, mut y) = (0.3457f32, 0.3585f32);
+    for _ in 0..30 {
+        let (kelvin, _) = xy_to_kelvin_tint(x, y);
+        let Some(cam_to_xyz) = invert_flat(matrices.matrix_at(kelvin)) else {
+            return (5000.0, 0.0);
+        };
+        let xyz = cam_to_xyz * neutral;
+        let sum = xyz.x + xyz.y + xyz.z;
+        if sum.abs() < 1e-9 {
+            return (5000.0, 0.0);
+        }
+        let (nx, ny) = (xyz.x / sum, xyz.y / sum);
+        let dx = nx - x;
+        let dy = ny - y;
+        x = nx;
+        y = ny;
+        if dx.abs() < 1e-7 && dy.abs() < 1e-7 {
+            break;
+        }
+    }
+
+    xy_to_kelvin_tint(x, y)
+}
+
+/// (Kelvin, tint) → G-normalized WB multipliers for the camera.
+pub fn kelvin_tint_to_wb(kelvin: f32, tint: f32, matrices: &CameraMatrices) -> [f32; 4] {
+    let (x, y) = kelvin_tint_to_xy(kelvin, tint);
+    // xy → XYZ with Y = 1
+    let xyz = cgmath::Vector3::new(x / y.max(1e-6), 1.0, (1.0 - x - y) / y.max(1e-6));
+
+    let m = matrices.matrix_at(kelvin);
+    // XYZ→camera (row-major flat), applied directly
+    let neutral = cgmath::Vector3::new(
+        m[0] * xyz.x + m[1] * xyz.y + m[2] * xyz.z,
+        m[3] * xyz.x + m[4] * xyz.y + m[5] * xyz.z,
+        m[6] * xyz.x + m[7] * xyz.y + m[8] * xyz.z,
+    );
+
+    let g = neutral.y.max(1e-6);
+    [
+        (g / neutral.x.max(1e-6)).clamp(0.05, 20.0),
+        1.0,
+        (g / neutral.z.max(1e-6)).clamp(0.05, 20.0),
+        1.0,
+    ]
+}
+
+/// Resolve the target WB for the current slider positions.
+///
+/// Returns `(kelvin, tint, wb_override)`:
+/// - `kelvin`/`tint` — absolute values (anchored at as-shot) for display and
+///   for DCP dual-illuminant interpolation.
+/// - `wb_override` — recomputed camera multipliers, or None when both sliders
+///   sit at 0 (use the exact as-shot multipliers; avoids CCT round-trip drift).
+pub fn solve_wb(
+    params: &crate::core::types::EditParams,
+    as_shot: (f32, f32),
+    dcp: Option<&crate::raw::dcp::DcpProfile>,
+    fallback_matrix: [f32; 9],
+) -> (f32, f32, Option<[f32; 4]>) {
+    let kelvin = params.kelvin_from_anchor(as_shot.0);
+    let tint = params.tint_from_anchor(as_shot.1);
+
+    if params.temperature == 0.0 && params.tint == 0.0 {
+        return (kelvin, tint, None);
+    }
+
+    let matrices = match dcp {
+        Some(p) => CameraMatrices::Dcp(p),
+        None => CameraMatrices::Single(fallback_matrix),
+    };
+    let wb = kelvin_tint_to_wb(kelvin, tint, &matrices);
+    (kelvin, tint, Some(wb))
+}
+
+/// As-shot (Kelvin, tint) for a loaded raw: solve the camera's WB multipliers
+/// through the best available XYZ→camera matrix (DCP dual-illuminant when
+/// present, otherwise the raw file's single matrix).
+pub fn as_shot_kelvin_tint(raw: &crate::raw::loader::RawDataResult) -> (f32, f32) {
+    let matrices = match &raw.dcp_profile {
+        Some(p) => CameraMatrices::Dcp(p.as_ref()),
+        None => CameraMatrices::Single(raw.color_matrix),
+    };
+    wb_to_kelvin_tint(raw.wb_multipliers, &matrices)
+}
+
 /// Check if a color matrix is the identity matrix (no conversion)
 pub fn is_identity_matrix(matrix: &[f32; 9]) -> bool {
     const EPSILON: f32 = 0.001;
@@ -184,6 +468,98 @@ mod tests {
 
         let non_identity = [1.5, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
         assert!(!is_identity_matrix(&non_identity));
+    }
+
+    // ── CCT (Robertson) machinery ─────────────────────────────────────────
+
+    /// D65 chromaticity must solve to ~6500 K with near-zero tint.
+    #[test]
+    fn test_d65_cct() {
+        let (kelvin, tint) = xy_to_kelvin_tint(0.31271, 0.32902);
+        assert!(
+            (6350.0..6650.0).contains(&kelvin),
+            "D65 CCT out of range: {kelvin}"
+        );
+        assert!(tint.abs() < 15.0, "D65 tint too large: {tint}");
+    }
+
+    /// Standard Illuminant A (2856 K blackbody) sits ON the locus: tint ≈ 0.
+    #[test]
+    fn test_illuminant_a_cct() {
+        let (kelvin, tint) = xy_to_kelvin_tint(0.44757, 0.40745);
+        assert!(
+            (2800.0..2950.0).contains(&kelvin),
+            "Illuminant A CCT out of range: {kelvin}"
+        );
+        assert!(tint.abs() < 3.0, "Illuminant A tint too large: {tint}");
+    }
+
+    /// kelvin/tint → xy → kelvin/tint must round-trip across the usable range.
+    #[test]
+    fn test_kelvin_tint_roundtrip() {
+        for &k in &[2500.0f32, 2850.0, 4000.0, 5000.0, 6500.0, 8000.0, 12000.0] {
+            for &t in &[-30.0f32, 0.0, 30.0] {
+                let (x, y) = kelvin_tint_to_xy(k, t);
+                let (k2, t2) = xy_to_kelvin_tint(x, y);
+                assert!(
+                    (k2 - k).abs() / k < 0.02,
+                    "kelvin roundtrip {k}K/{t} → {k2}K"
+                );
+                assert!((t2 - t).abs() < 2.0, "tint roundtrip {k}K/{t} → {t2}");
+            }
+        }
+    }
+
+    /// WB multipliers → (K, tint) → WB multipliers must round-trip through a
+    /// realistic camera matrix (Nikon-ish XYZ→cam values).
+    #[test]
+    fn test_wb_roundtrip_through_matrix() {
+        // Approximate D3300 ColorMatrix (XYZ→cam, row-major, D65-ish)
+        let m = [
+            0.7013, -0.1408, -0.0922,
+            -0.4224, 1.1994, 0.2523,
+            -0.0938, 0.2018, 0.5789,
+        ];
+        let matrices = CameraMatrices::Single(m);
+        let wb = [2.1f32, 1.0, 1.4, 1.0]; // plausible daylight multipliers
+        let (kelvin, tint) = wb_to_kelvin_tint(wb, &matrices);
+        assert!(
+            (3000.0..9000.0).contains(&kelvin),
+            "implausible CCT for daylight WB: {kelvin}"
+        );
+        let wb2 = kelvin_tint_to_wb(kelvin, tint, &matrices);
+        assert!(
+            (wb2[0] - wb[0]).abs() / wb[0] < 0.02,
+            "R multiplier roundtrip: {} → {}",
+            wb[0],
+            wb2[0]
+        );
+        assert!(
+            (wb2[2] - wb[2]).abs() / wb[2] < 0.02,
+            "B multiplier roundtrip: {} → {}",
+            wb[2],
+            wb2[2]
+        );
+    }
+
+    /// Warmer slider (higher Kelvin) must raise the red multiplier relative to
+    /// blue — i.e. the image gets warmer, matching the Lightroom convention.
+    #[test]
+    fn test_temperature_direction() {
+        let m = [
+            0.7013, -0.1408, -0.0922,
+            -0.4224, 1.1994, 0.2523,
+            -0.0938, 0.2018, 0.5789,
+        ];
+        let matrices = CameraMatrices::Single(m);
+        let wb_warm = kelvin_tint_to_wb(7000.0, 0.0, &matrices);
+        let wb_cool = kelvin_tint_to_wb(4000.0, 0.0, &matrices);
+        assert!(
+            wb_warm[0] / wb_warm[2] > wb_cool[0] / wb_cool[2],
+            "higher Kelvin must boost R relative to B: warm {:?} vs cool {:?}",
+            wb_warm,
+            wb_cool
+        );
     }
 
     #[test]

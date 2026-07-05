@@ -292,7 +292,12 @@ pub struct ImageResources {
     pub histogram_height: u32,
     pub image_id: i64,
     // Metadata
+    /// As-shot WB multipliers (from the raw file — never changes).
     pub wb_multipliers: [f32; 4],
+    /// Currently active WB multipliers (as-shot, or recomputed from the
+    /// user's Temp/Tint sliders). Read by every uniform upload so a zoom or
+    /// resize render doesn't silently revert the slider WB.
+    pub wb_current: std::sync::RwLock<[f32; 4]>,
     pub forward_matrix: std::sync::RwLock<[f32; 9]>,
     pub cfa_pattern: u32,
     pub black_levels: [u32; 4],
@@ -696,6 +701,7 @@ impl ImageResources {
             histogram_height,
             image_id,
             wb_multipliers,
+            wb_current: std::sync::RwLock::new(wb_multipliers),
             forward_matrix: std::sync::RwLock::new(forward_matrix),
             cfa_pattern,
             black_levels,
@@ -707,10 +713,9 @@ impl ImageResources {
             tone_curve_view,
             has_dcp,
             dcp_has_curve,
-            last_uploaded_dcp_kelvin: std::sync::RwLock::new(Some((
-                params.temperature_to_kelvin(),
-                params.profile_curve,
-            ))),
+            // None → the first update_uniforms after load re-uploads the LUTs
+            // once with the anchored-kelvin interpolation (cheap, ~90 KB).
+            last_uploaded_dcp_kelvin: std::sync::RwLock::new(None),
         };
 
         // Phase 128: Run initial debayer pass
@@ -750,20 +755,27 @@ impl ImageResources {
         context.queue.submit(Some(encoder.finish()));
     }
 
-    /// Update uniforms with new edit parameters
+    /// Update uniforms with new edit parameters.
+    ///
+    /// `wb_override`: WB multipliers recomputed from the user's Temp/Tint
+    /// sliders (None = keep the current WB — as-shot until a slider moves).
     pub fn update_uniforms(
         &self,
         context: &SharedContext,
         params: &EditParams,
         dcp_profile: Option<&crate::raw::dcp::InterpolatedProfile>,
+        wb_override: Option<[f32; 4]>,
     ) {
-        let current_kelvin = params.temperature_to_kelvin();
+        // Cache key uses the raw slider value: the caller re-interpolates the
+        // DCP at its anchored kelvin whenever `temperature` moves, so the
+        // slider value is a faithful proxy for "the LUT content changed".
+        let current_temp = params.temperature;
         let current_strength = params.profile_curve;
         let mut needs_lut_upload = true;
 
         if let Ok(last_key) = self.last_uploaded_dcp_kelvin.read() {
-            if let Some((k, s)) = *last_key {
-                if (k - current_kelvin).abs() < 1.0 && (s - current_strength).abs() < 0.001 {
+            if let Some((t, s)) = *last_key {
+                if (t - current_temp).abs() < 0.0005 && (s - current_strength).abs() < 0.001 {
                     needs_lut_upload = false;
                 }
             }
@@ -794,13 +806,21 @@ impl ImageResources {
                 );
 
                 if let Ok(mut last) = self.last_uploaded_dcp_kelvin.write() {
-                    *last = Some((current_kelvin, current_strength));
+                    *last = Some((current_temp, current_strength));
                 }
             }
         }
 
+        // Update the active WB (slider-derived override, or keep current).
+        if let Some(wb) = wb_override {
+            if let Ok(mut current_wb) = self.wb_current.write() {
+                *current_wb = wb;
+            }
+        }
+        let wb = *self.wb_current.read().unwrap_or_else(|e| e.into_inner());
+
         let mut gpu_params = GpuEditParams::from(params);
-        gpu_params.wb_multipliers = self.wb_multipliers;
+        gpu_params.wb_multipliers = wb;
         let fm = *self.forward_matrix.read().unwrap_or_else(|e| e.into_inner());
         gpu_params.forward_matrix_0 = [fm[0], fm[1], fm[2]];
         gpu_params.forward_matrix_1 = [fm[3], fm[4], fm[5]];
@@ -830,7 +850,9 @@ impl ImageResources {
         pan_y: f32,
     ) {
         let mut gpu_params = GpuEditParams::from(params);
-        gpu_params.wb_multipliers = self.wb_multipliers;
+        // Use the ACTIVE WB (slider-derived), not the as-shot multipliers —
+        // otherwise a zoom/resize render silently reverts the WB sliders.
+        gpu_params.wb_multipliers = *self.wb_current.read().unwrap_or_else(|e| e.into_inner());
         let fm = *self.forward_matrix.read().unwrap_or_else(|e| e.into_inner());
         gpu_params.forward_matrix_0 = [fm[0], fm[1], fm[2]];
         gpu_params.forward_matrix_1 = [fm[3], fm[4], fm[5]];

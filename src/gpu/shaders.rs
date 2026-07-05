@@ -714,10 +714,10 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let path_to_white = smoothstep(0.0, 2.0, overbright);
     color = mix(color, vec3<f32>(max_c_gc), path_to_white);
 
-    // ── Step 9: Temperature & Tint (in sRGB space) ───────────────────────────
-    color.r *= (1.0 + params.temperature * 0.3);
-    color.b *= (1.0 - params.temperature * 0.3);
-    color.g *= (1.0 + params.tint * 0.3);
+    // (Step 9 removed — Temperature & Tint are now REAL white balance: the CPU
+    // solves the slider Kelvin/tint to camera WB multipliers via the colour
+    // matrix (Robertson CCT, see src/color.rs) and updates the wb_multipliers
+    // uniform. Post-matrix sRGB channel scaling twisted hues at extremes.)
 
     // ── Step 11: Contrast ─────────────────────────────────────────────────────
     let contrast_factor = 1.0 + (params.contrast / 100.0);

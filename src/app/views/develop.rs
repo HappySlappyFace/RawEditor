@@ -154,20 +154,39 @@ fn view_sidebar(editor: &RawEditor) -> iced::widget::Column<'_, Message> {
             Message::ProfileCurveChanged,
         ))
         .push(text("Color").size(14))
-        .push(slider_row(
-            "Temp",
-            editor.current_edit_params.temperature,
-            -1.0..=1.0,
-            0.01,
-            Message::TemperatureChanged,
-        ))
-        .push(slider_row(
-            "Tint",
-            editor.current_edit_params.tint,
-            -1.0..=1.0,
-            0.01,
-            Message::TintChanged,
-        ))
+        .push({
+            // Real WB readout: sliders pivot around the camera's as-shot values.
+            let (as_k, as_t) = editor.as_shot_wb.unwrap_or((5000.0, 0.0));
+            text(format!("As Shot  {:.0}K · tint {:+.0}", as_k, as_t))
+                .size(11)
+                .style(|_theme| text::Style {
+                    color: Some(Color::from_rgb(0.45, 0.45, 0.45)),
+                })
+        })
+        .push({
+            let (as_k, _) = editor.as_shot_wb.unwrap_or((5000.0, 0.0));
+            let kelvin = editor.current_edit_params.kelvin_from_anchor(as_k);
+            slider_row_display(
+                "Temp",
+                editor.current_edit_params.temperature,
+                -1.0..=1.0,
+                0.01,
+                format!("{:.0}K", kelvin),
+                Message::TemperatureChanged,
+            )
+        })
+        .push({
+            let (_, as_t) = editor.as_shot_wb.unwrap_or((5000.0, 0.0));
+            let tint = editor.current_edit_params.tint_from_anchor(as_t);
+            slider_row_display(
+                "Tint",
+                editor.current_edit_params.tint,
+                -1.0..=1.0,
+                0.01,
+                format!("{:+.0}", tint),
+                Message::TintChanged,
+            )
+        })
         .push(slider_row(
             "Vibrance",
             editor.current_edit_params.vibrance,
@@ -720,6 +739,23 @@ fn slider_row<'a, F>(
 where
     F: Fn(f32) -> Message + 'a,
 {
+    slider_row_display(label, value, range, step, format!("{:.2}", value), on_change)
+}
+
+/// Like `slider_row` but with an explicit value display string — used by the
+/// WB sliders to show real Kelvin / Adobe-tint units while the underlying
+/// slider stays a normalized offset around the as-shot anchor.
+fn slider_row_display<'a, F>(
+    label: &'a str,
+    value: f32,
+    range: std::ops::RangeInclusive<f32>,
+    step: f32,
+    display: String,
+    on_change: F,
+) -> Element<'a, Message>
+where
+    F: Fn(f32) -> Message + 'a,
+{
     row![
         text(label)
             .width(Length::Fixed(90.0))
@@ -732,8 +768,8 @@ where
             .width(Length::Fill)
             .style(crate::ui::styles::ProSlider::style)
             .on_release(Message::CommitEdit),
-        text(format!("{:.2}", value))
-            .width(Length::Fixed(40.0))
+        text(display)
+            .width(Length::Fixed(48.0))
             .size(13)
             .align_x(iced::alignment::Horizontal::Right)
             .style(|_theme| text::Style {

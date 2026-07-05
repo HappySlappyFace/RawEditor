@@ -350,15 +350,39 @@ pub fn trigger_async_render(editor: &mut RawEditor) -> Task<Message> {
     Task::none()
 }
 
+/// Resolve the DCP interpolation and WB override for the editor's current
+/// slider state. Shared by every path that refreshes uniforms (slider edits,
+/// image-ready, preview upgrades).
+pub fn resolve_wb_and_dcp(
+    editor: &RawEditor,
+) -> (Option<crate::raw::dcp::InterpolatedProfile>, Option<[f32; 4]>) {
+    let as_shot = editor.as_shot_wb.unwrap_or((5000.0, 0.0));
+    let fallback_matrix = editor
+        .current_metadata
+        .as_ref()
+        .map(|m| m.color_matrix)
+        .unwrap_or([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+
+    let (kelvin, _tint, wb_override) = crate::color::solve_wb(
+        &editor.current_edit_params,
+        as_shot,
+        editor.current_dcp_profile.as_deref(),
+        fallback_matrix,
+    );
+
+    let interpolated = editor.current_dcp_profile.as_ref().map(|dcp| {
+        crate::raw::dcp::interpolate_at_temperature(dcp, kelvin, editor.current_edit_params.profile_curve)
+    });
+
+    (interpolated, wb_override)
+}
+
 fn update_pipeline(editor: &mut RawEditor) -> Task<Message> {
     editor.save_current_edits();
     if let (Some(ctx), Some(resources)) = (&editor.gpu_context, &editor.image_resources) {
-        // Phase 140: Interpolate DCP if available
-        let interpolated = editor.current_dcp_profile.as_ref().map(|dcp| {
-            crate::raw::dcp::interpolate_at_temperature(dcp, editor.current_edit_params.temperature_to_kelvin(), editor.current_edit_params.profile_curve)
-        });
-        
-        resources.update_uniforms(ctx, &editor.current_edit_params, interpolated.as_ref());
+        // Phase 140: Interpolate DCP + resolve slider WB
+        let (interpolated, wb_override) = resolve_wb_and_dcp(editor);
+        resources.update_uniforms(ctx, &editor.current_edit_params, interpolated.as_ref(), wb_override);
         editor.canvas_cache.clear();
     }
     
