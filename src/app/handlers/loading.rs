@@ -87,20 +87,18 @@ pub fn prepare_image_resources_from_raw(
                 }
             };
 
-            // Anchored WB: solve as-shot (K, tint), then honour any saved
-            // Temp/Tint edits by recomputing the multipliers.
+            // Anchored kelvin for the DCP interpolation. ImageResources::new
+            // receives the AS-SHOT multipliers (the "None → as-shot" baseline
+            // for update_uniforms); handle_image_resources_ready immediately
+            // applies any saved Temp/Tint edits via the WB override.
             let as_shot = crate::color::as_shot_kelvin_tint(&raw);
-            let (kelvin, _tint, wb_override) =
-                crate::color::solve_wb(&params, as_shot, raw.dcp_profile.as_deref(), raw.color_matrix);
-            let wb_final = wb_override.unwrap_or(raw.wb_multipliers);
+            let kelvin = params.kelvin_from_anchor(as_shot.0);
 
             let (forward_matrix, interpolated_dcp) = if let Some(dcp) = &raw.dcp_profile {
                 let interpolated = crate::raw::dcp::interpolate_at_temperature(dcp, kelvin, params.profile_curve);
                 (interpolated.forward_matrix, Some(interpolated))
             } else {
                 let xyz_to_cam = raw.color_matrix;
-                // NOTE: bake diag(1/as-shot-wb) here — the shader multiplies by
-                // wb_final, so the net correction is wb_final / as-shot.
                 let cam_to_srgb = crate::color::calculate_cam_to_srgb(xyz_to_cam, raw.wb_multipliers, raw.color_matrix_is_d65);
                 (cam_to_srgb, None)
             };
@@ -112,7 +110,7 @@ pub fn prepare_image_resources_from_raw(
                 raw.width,
                 raw.height,
                 &params,
-                wb_final,
+                raw.wb_multipliers,
                 forward_matrix,
                 raw.cfa_pattern,
                 raw.black_levels,
@@ -201,11 +199,10 @@ pub fn trigger_full_res_upgrade(editor: &mut RawEditor) -> Task<Message> {
                 }
             };
 
-            // Anchored WB (same logic as the preview path above).
+            // Anchored kelvin; as-shot multipliers to ::new (same reasoning as
+            // the preview path above).
             let as_shot = crate::color::as_shot_kelvin_tint(&raw);
-            let (kelvin, _tint, wb_override) =
-                crate::color::solve_wb(&params, as_shot, raw.dcp_profile.as_deref(), raw.color_matrix);
-            let wb_final = wb_override.unwrap_or(raw.wb_multipliers);
+            let kelvin = params.kelvin_from_anchor(as_shot.0);
 
             let (forward_matrix, interpolated_dcp) = if let Some(dcp) = &raw.dcp_profile {
                 let interpolated = crate::raw::dcp::interpolate_at_temperature(dcp, kelvin, params.profile_curve);
@@ -223,7 +220,7 @@ pub fn trigger_full_res_upgrade(editor: &mut RawEditor) -> Task<Message> {
                 raw.width,
                 raw.height,
                 &params,
-                wb_final,
+                raw.wb_multipliers,
                 forward_matrix,
                 raw.cfa_pattern,
                 raw.black_levels,

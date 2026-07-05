@@ -758,7 +758,9 @@ impl ImageResources {
     /// Update uniforms with new edit parameters.
     ///
     /// `wb_override`: WB multipliers recomputed from the user's Temp/Tint
-    /// sliders (None = keep the current WB — as-shot until a slider moves).
+    /// sliders. None = sliders at zero → restore the exact as-shot
+    /// multipliers ("keep current" semantics would make Reset a no-op for
+    /// WB-only edits: the stale slider WB survives until a slider moves).
     pub fn update_uniforms(
         &self,
         context: &SharedContext,
@@ -811,13 +813,12 @@ impl ImageResources {
             }
         }
 
-        // Update the active WB (slider-derived override, or keep current).
-        if let Some(wb) = wb_override {
-            if let Ok(mut current_wb) = self.wb_current.write() {
-                *current_wb = wb;
-            }
+        // Update the active WB: slider-derived override, or as-shot when the
+        // sliders are at zero.
+        let wb = wb_override.unwrap_or(self.wb_multipliers);
+        if let Ok(mut current_wb) = self.wb_current.write() {
+            *current_wb = wb;
         }
-        let wb = *self.wb_current.read().unwrap_or_else(|e| e.into_inner());
 
         let mut gpu_params = GpuEditParams::from(params);
         gpu_params.wb_multipliers = wb;
