@@ -16,7 +16,7 @@ const TAG_PROFILE_HUE_SAT_MAP_DIMS:   u16 = 50981; // WAS WRONG: was 50937
 const TAG_PROFILE_HUE_SAT_MAP_DATA_1: u16 = 50982; // WAS WRONG: was 50938
 const TAG_PROFILE_HUE_SAT_MAP_DATA_2: u16 = 50983; // WAS WRONG: was 50939
 const TAG_PROFILE_TONE_CURVE:         u16 = 50940;
-const TAG_BASELINE_EXPOSURE_OFFSET:   u16 = 54828;
+const TAG_BASELINE_EXPOSURE_OFFSET:   u16 = 51109;
 const TAG_PROFILE_NAME:               u16 = 50936;
 
 // TIFF type sizes in bytes
@@ -168,6 +168,10 @@ pub struct DcpProfile {
     pub hue_sat_data_1: Option<Vec<[f32; 3]>>,
     pub hue_sat_data_2: Option<Vec<[f32; 3]>>,
     pub tone_curve: Option<Vec<(f32, f32)>>,
+    /// BaselineExposureOffset (tag 51109), in EV. Camera-matching profiles use
+    /// it to cancel Adobe's per-camera baseline so the render matches the
+    /// in-camera JPEG brightness (this D3300 profile: -0.35 EV).
+    pub baseline_exposure_offset: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -224,6 +228,10 @@ pub fn parse_dcp(path: &Path) -> Result<DcpProfile, String> {
     let hue_sat_data_1 = map.get(&TAG_PROFILE_HUE_SAT_MAP_DATA_1).map(parse_hsm);
     let hue_sat_data_2 = map.get(&TAG_PROFILE_HUE_SAT_MAP_DATA_2).map(parse_hsm);
 
+    let baseline_exposure_offset = map.get(&TAG_BASELINE_EXPOSURE_OFFSET)
+        .and_then(|t| tag_floats(t, le).into_iter().next())
+        .unwrap_or(0.0);
+
     let tone_curve = map.get(&TAG_PROFILE_TONE_CURVE).map(|t| {
         tag_floats(t, le).chunks(2)
             .filter(|c| c.len() == 2)
@@ -247,6 +255,7 @@ pub fn parse_dcp(path: &Path) -> Result<DcpProfile, String> {
         hue_sat_dims,
         hue_sat_data_1, hue_sat_data_2,
         tone_curve,
+        baseline_exposure_offset,
     })
 }
 
@@ -286,9 +295,14 @@ pub fn interpolate_at_temperature(
     let fm1 = profile.forward_matrix_1.unwrap_or(profile.color_matrix_1);
     let fm2 = profile.forward_matrix_2.unwrap_or(profile.color_matrix_2);
 
+    // Fold BaselineExposureOffset into the forward matrix: scaling camera→XYZ
+    // uniformly is an exposure shift applied before the HueSatMap and tone
+    // curve — where Adobe applies it. This is what makes the default render
+    // match the in-camera JPEG brightness (-0.35 EV for this profile family).
+    let baseline_gain = 2.0f32.powf(profile.baseline_exposure_offset);
     let mut forward_matrix = [0.0f32; 9];
     for i in 0..9 {
-        forward_matrix[i] = fm1[i] * (1.0 - weight) + fm2[i] * weight;
+        forward_matrix[i] = (fm1[i] * (1.0 - weight) + fm2[i] * weight) * baseline_gain;
     }
 
     let num_elements = (profile.hue_sat_dims.0 * profile.hue_sat_dims.1 * profile.hue_sat_dims.2) as usize;

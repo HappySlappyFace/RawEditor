@@ -125,13 +125,16 @@ pub struct EditParams {
     /// - 1.0 = full ProfileToneCurve (profile's intended contrast)
     /// - 0.0 = no curve (flat linear rendering + sRGB gamma)
     /// Blended in display space at LUT bake time; the shader is unaffected.
+    /// Default 0.33: full Adobe camera-matching curves render notably more
+    /// contrasty/saturated than the in-camera JPEG; ~1/3 strength was verified
+    /// against the D3300's own rendering.
     /// serde default keeps old saved edits (without this field) loadable.
     #[serde(default = "default_profile_curve")]
     pub profile_curve: f32,
 }
 
 fn default_profile_curve() -> f32 {
-    1.0
+    0.33
 }
 
 impl Default for EditParams {
@@ -159,7 +162,7 @@ impl Default for EditParams {
             rotation: 0.0,              // Phase 52: No rotation by default
             crop: [0.0, 0.0, 1.0, 1.0], // Phase 66: Full image by default
             is_cropping: 0,             // Phase 135: Not cropping by default
-            profile_curve: 1.0,         // Full DCP tone curve by default
+            profile_curve: 0.33,        // 1/3 DCP tone curve (matches in-camera JPEG contrast)
         }
     }
 }

@@ -480,6 +480,21 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         // the HueSatMap with correct hue/saturation. We clamp after reconstruction.
         var pp = xyz_to_prophoto * xyz;
 
+        // Highlight shoulder: WB amplification pushes bright pixels above 1.0
+        // linear (a bright blue puck: raw 0.75 × wb_b 1.45 ≈ 1.09).  Everything
+        // downstream — the HueSatMap value axis and the tone-curve LUT — clamps
+        // input at 1.0, so all values > 1 collapse to one flat output: blown
+        // highlights with zero gradation.  Compress [0.7, ∞) smoothly into
+        // [0.7, 1.0) per channel instead (C1-continuous Reinhard knee).  This
+        // also lets bright pixels sample the profile's top value slices, where
+        // camera-matching profiles deliberately desaturate/darken (this DCP
+        // scales saturated cyan sat ×0.78 and red value ×0.65–0.85 up there).
+        let sh_knee: f32 = 0.7;
+        let sh_head: f32 = 1.0 - sh_knee;
+        if (pp.r > sh_knee) { let o = pp.r - sh_knee; pp.r = sh_knee + sh_head * o / (o + sh_head); }
+        if (pp.g > sh_knee) { let o = pp.g - sh_knee; pp.g = sh_knee + sh_head * o / (o + sh_head); }
+        if (pp.b > sh_knee) { let o = pp.b - sh_knee; pp.b = sh_knee + sh_head * o / (o + sh_head); }
+
         // 3. ProPhoto HSV for HueSatMap lookup
         let v    = max(pp.r, max(pp.g, pp.b));
         let cmin = min(pp.r, min(pp.g, pp.b));
