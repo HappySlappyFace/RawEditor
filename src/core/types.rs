@@ -119,6 +119,19 @@ pub struct EditParams {
     /// Flag to indicate if the user is currently cropping
     /// If 1, the shader will show the full image with the crop dimmed outside.
     pub is_cropping: u32,
+
+    // ========== Color Profile ==========
+    /// DCP profile tone-curve strength (0.0 to 1.0)
+    /// - 1.0 = full ProfileToneCurve (profile's intended contrast)
+    /// - 0.0 = no curve (flat linear rendering + sRGB gamma)
+    /// Blended in display space at LUT bake time; the shader is unaffected.
+    /// serde default keeps old saved edits (without this field) loadable.
+    #[serde(default = "default_profile_curve")]
+    pub profile_curve: f32,
+}
+
+fn default_profile_curve() -> f32 {
+    1.0
 }
 
 impl Default for EditParams {
@@ -146,6 +159,7 @@ impl Default for EditParams {
             rotation: 0.0,              // Phase 52: No rotation by default
             crop: [0.0, 0.0, 1.0, 1.0], // Phase 66: Full image by default
             is_cropping: 0,             // Phase 135: Not cropping by default
+            profile_curve: 1.0,         // Full DCP tone curve by default
         }
     }
 }

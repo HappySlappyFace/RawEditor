@@ -49,6 +49,9 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
             handlers::develop::handle_black_phase_changed(editor, y, v)
         }
         Message::VibranceChanged(v) => handlers::develop::handle_vibrance_changed(editor, v),
+        Message::ProfileCurveChanged(v) => {
+            handlers::develop::handle_profile_curve_changed(editor, v)
+        }
         Message::SaturationChanged(v) => handlers::develop::handle_saturation_changed(editor, v),
         Message::TemperatureChanged(v) => handlers::develop::handle_temperature_changed(editor, v),
         Message::TintChanged(v) => handlers::develop::handle_tint_changed(editor, v),

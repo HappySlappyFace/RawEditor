@@ -82,7 +82,7 @@ pub fn prepare_image_resources_from_raw(
             };
 
             let (forward_matrix, interpolated_dcp) = if let Some(dcp) = &raw.dcp_profile {
-                let interpolated = crate::raw::dcp::interpolate_at_temperature(dcp, params.temperature_to_kelvin());
+                let interpolated = crate::raw::dcp::interpolate_at_temperature(dcp, params.temperature_to_kelvin(), params.profile_curve);
                 (interpolated.forward_matrix, Some(interpolated))
             } else {
                 let xyz_to_cam = raw.color_matrix;
@@ -129,7 +129,7 @@ pub fn handle_image_resources_ready(editor: &mut RawEditor, image_id: i64, resul
 
             if let Some(ctx) = &editor.gpu_context {
                 let interpolated = editor.current_dcp_profile.as_ref().map(|dcp| {
-                    crate::raw::dcp::interpolate_at_temperature(dcp, editor.current_edit_params.temperature_to_kelvin())
+                    crate::raw::dcp::interpolate_at_temperature(dcp, editor.current_edit_params.temperature_to_kelvin(), editor.current_edit_params.profile_curve)
                 });
                 resources.update_uniforms(ctx, &editor.current_edit_params, interpolated.as_ref());
             }
@@ -188,7 +188,7 @@ pub fn trigger_full_res_upgrade(editor: &mut RawEditor) -> Task<Message> {
             };
 
             let (forward_matrix, interpolated_dcp) = if let Some(dcp) = &raw.dcp_profile {
-                let interpolated = crate::raw::dcp::interpolate_at_temperature(dcp, params.temperature_to_kelvin());
+                let interpolated = crate::raw::dcp::interpolate_at_temperature(dcp, params.temperature_to_kelvin(), params.profile_curve);
                 (interpolated.forward_matrix, Some(interpolated))
             } else {
                 let xyz_to_cam = raw.color_matrix;

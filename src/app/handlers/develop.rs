@@ -56,6 +56,11 @@ pub fn handle_vibrance_changed(editor: &mut RawEditor, v: f32) -> Task<Message> 
     update_pipeline(editor)
 }
 
+pub fn handle_profile_curve_changed(editor: &mut RawEditor, v: f32) -> Task<Message> {
+    editor.current_edit_params.profile_curve = v;
+    update_pipeline(editor)
+}
+
 pub fn handle_saturation_changed(editor: &mut RawEditor, v: f32) -> Task<Message> {
     editor.current_edit_params.saturation = v;
     update_pipeline(editor)
@@ -350,7 +355,7 @@ fn update_pipeline(editor: &mut RawEditor) -> Task<Message> {
     if let (Some(ctx), Some(resources)) = (&editor.gpu_context, &editor.image_resources) {
         // Phase 140: Interpolate DCP if available
         let interpolated = editor.current_dcp_profile.as_ref().map(|dcp| {
-            crate::raw::dcp::interpolate_at_temperature(dcp, editor.current_edit_params.temperature_to_kelvin())
+            crate::raw::dcp::interpolate_at_temperature(dcp, editor.current_edit_params.temperature_to_kelvin(), editor.current_edit_params.profile_curve)
         });
         
         resources.update_uniforms(ctx, &editor.current_edit_params, interpolated.as_ref());

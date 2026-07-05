@@ -132,7 +132,7 @@ pub fn handle_export_raw_loaded(
             // the fallback camera → sRGB matrix there wrecks every colour (pink skin tones).
             let (forward_matrix, interpolated_dcp) = if let Some(dcp) = &raw_data.dcp_profile {
                 let interpolated =
-                    crate::raw::dcp::interpolate_at_temperature(dcp, params.temperature_to_kelvin());
+                    crate::raw::dcp::interpolate_at_temperature(dcp, params.temperature_to_kelvin(), params.profile_curve);
                 (interpolated.forward_matrix, Some(interpolated))
             } else {
                 let xyz_to_cam = raw_data.color_matrix;

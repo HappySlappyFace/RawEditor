@@ -305,7 +305,9 @@ pub struct ImageResources {
     pub tone_curve_view: wgpu::TextureView,
     pub has_dcp: bool,
     pub dcp_has_curve: bool,
-    pub last_uploaded_dcp_kelvin: std::sync::RwLock<Option<f32>>,
+    /// Cache key of the last DCP LUT upload: (kelvin, profile_curve strength).
+    /// Skips redundant HSM-3D-LUT / tone-curve texture uploads per render.
+    pub last_uploaded_dcp_kelvin: std::sync::RwLock<Option<(f32, f32)>>,
 }
 
 /// Compute stride for Bayer subsampling.
@@ -705,7 +707,10 @@ impl ImageResources {
             tone_curve_view,
             has_dcp,
             dcp_has_curve,
-            last_uploaded_dcp_kelvin: std::sync::RwLock::new(Some(params.temperature_to_kelvin())),
+            last_uploaded_dcp_kelvin: std::sync::RwLock::new(Some((
+                params.temperature_to_kelvin(),
+                params.profile_curve,
+            ))),
         };
 
         // Phase 128: Run initial debayer pass
@@ -753,11 +758,12 @@ impl ImageResources {
         dcp_profile: Option<&crate::raw::dcp::InterpolatedProfile>,
     ) {
         let current_kelvin = params.temperature_to_kelvin();
+        let current_strength = params.profile_curve;
         let mut needs_lut_upload = true;
-        
-        if let Ok(last_kelvin) = self.last_uploaded_dcp_kelvin.read() {
-            if let Some(k) = *last_kelvin {
-                if (k - current_kelvin).abs() < 1.0 {
+
+        if let Ok(last_key) = self.last_uploaded_dcp_kelvin.read() {
+            if let Some((k, s)) = *last_key {
+                if (k - current_kelvin).abs() < 1.0 && (s - current_strength).abs() < 0.001 {
                     needs_lut_upload = false;
                 }
             }
@@ -767,7 +773,7 @@ impl ImageResources {
             if let Ok(mut matrix) = self.forward_matrix.write() {
                 *matrix = dcp.forward_matrix;
             }
-            
+
             if needs_lut_upload {
                 // Re-upload the LUT texture (temperature slider re-interpolated it)
                 let (lut_data, extent, padded_bytes_per_row) = build_hsm_lut_upload(dcp);
@@ -778,8 +784,17 @@ impl ImageResources {
                     extent,
                 );
 
+                // Re-upload the tone curve (Profile Curve slider re-baked it)
+                let tc_f16: Vec<half::f16> = dcp.tone_curve.iter().map(|&v| half::f16::from_f32(v)).collect();
+                context.queue.write_texture(
+                    wgpu::ImageCopyTexture { texture: &self.tone_curve_texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                    bytemuck::cast_slice(&tc_f16),
+                    wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(1024 * 2), rows_per_image: None },
+                    wgpu::Extent3d { width: 1024, height: 1, depth_or_array_layers: 1 },
+                );
+
                 if let Ok(mut last) = self.last_uploaded_dcp_kelvin.write() {
-                    *last = Some(current_kelvin);
+                    *last = Some((current_kelvin, current_strength));
                 }
             }
         }

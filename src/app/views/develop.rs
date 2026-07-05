@@ -146,6 +146,13 @@ fn view_sidebar(editor: &RawEditor) -> iced::widget::Column<'_, Message> {
             0.005,
             Message::BlacksChanged,
         ))
+        .push(slider_row(
+            "Profile Curve",
+            editor.current_edit_params.profile_curve,
+            0.0..=1.0,
+            0.01,
+            Message::ProfileCurveChanged,
+        ))
         .push(text("Color").size(14))
         .push(slider_row(
             "Temp",

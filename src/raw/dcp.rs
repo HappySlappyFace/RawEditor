@@ -265,7 +265,11 @@ pub fn illuminant_to_kelvin(ill: u32) -> f32 {
     }
 }
 
-pub fn interpolate_at_temperature(profile: &DcpProfile, kelvin: f32) -> InterpolatedProfile {
+pub fn interpolate_at_temperature(
+    profile: &DcpProfile,
+    kelvin: f32,
+    curve_strength: f32,
+) -> InterpolatedProfile {
     let t1 = illuminant_to_kelvin(profile.illuminant1);
     let t2 = illuminant_to_kelvin(profile.illuminant2);
 
@@ -308,7 +312,7 @@ pub fn interpolate_at_temperature(profile: &DcpProfile, kelvin: f32) -> Interpol
 
     let has_tone_curve = profile.tone_curve.is_some();
     let baked_curve = profile.tone_curve.as_deref()
-        .map(bake_tone_curve)
+        .map(|pts| bake_tone_curve(pts, curve_strength))
         .unwrap_or_else(|| (0..1024).map(|i| i as f32 / 1023.0).collect());
 
     InterpolatedProfile {
@@ -329,10 +333,25 @@ fn srgb_to_linear(v: f32) -> f32 {
     }
 }
 
-pub fn bake_tone_curve(points: &[(f32, f32)]) -> Vec<f32> {
+/// Forward sRGB transfer function (IEC 61966-2-1).
+fn linear_to_srgb(v: f32) -> f32 {
+    if v <= 0.0031308 {
+        v * 12.92
+    } else {
+        1.055 * v.powf(1.0 / 2.4) - 0.055
+    }
+}
+
+/// Bake the DCP ProfileToneCurve into a 1024-entry linear-output LUT.
+///
+/// `strength` blends the profile curve against a flat rendering, computed in
+/// display space where the curve is defined: 1.0 = full profile curve,
+/// 0.0 = plain sRGB gamma (no added contrast).
+pub fn bake_tone_curve(points: &[(f32, f32)], strength: f32) -> Vec<f32> {
     if points.is_empty() {
         return (0..1024).map(|i| i as f32 / 1023.0).collect();
     }
+    let strength = strength.clamp(0.0, 1.0);
     // Adobe ProfileToneCurve points map LINEAR input → GAMMA-ENCODED (display)
     // output — the curve embeds the ~2.2 display gamma plus the profile's
     // contrast s-curve (e.g. the ACR default maps 0.18 → ≈0.48 ≈ 0.18^(1/2.2)).
@@ -356,7 +375,9 @@ pub fn bake_tone_curve(points: &[(f32, f32)]) -> Vec<f32> {
                 })
                 .unwrap_or(x)
         };
-        srgb_to_linear(y)
+        // Blend toward "no curve" (= plain sRGB gamma) in display space.
+        let y_blended = strength * y + (1.0 - strength) * linear_to_srgb(x);
+        srgb_to_linear(y_blended)
     }).collect()
 }
 

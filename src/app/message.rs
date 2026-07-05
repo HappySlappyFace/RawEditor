@@ -82,6 +82,8 @@ pub enum Message {
     // ========== Color Messages ==========
     /// User changed vibrance slider
     VibranceChanged(f32),
+    /// User changed DCP profile tone-curve strength (0.0..=1.0)
+    ProfileCurveChanged(f32),
     /// User changed saturation slider
     SaturationChanged(f32),
     /// User changed temperature slider (Phase 18)
