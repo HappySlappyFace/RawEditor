@@ -209,6 +209,57 @@ fn sample_tone_curve(x: f32) -> f32 {
     return textureSampleLevel(tone_curve, lut_sampler, c, 0.0).r;
 }
 
+// Adobe DNG SDK "RGBTone": hue-preserving tone curve application.
+// Applying a steep s-curve independently per channel widens the spread between
+// channels and badly oversaturates colours (neon reds/cyans/pinks).  Adobe
+// instead curves the max and min channels and places the middle channel by
+// linear interpolation, preserving the hue ratio (g-b)/(r-b) etc.
+fn dcp_rgb_tone(c: vec3<f32>) -> vec3<f32> {
+    let r = c.r; let g = c.g; let b = c.b;
+    var rr: f32; var gg: f32; var bb: f32;
+    if (r >= g) {
+        if (g > b) {
+            // r >= g > b
+            rr = sample_tone_curve(r);
+            bb = sample_tone_curve(b);
+            gg = bb + (rr - bb) * (g - b) / (r - b);
+        } else if (b > r) {
+            // b > r >= g
+            bb = sample_tone_curve(b);
+            gg = sample_tone_curve(g);
+            rr = gg + (bb - gg) * (r - g) / (b - g);
+        } else if (b > g) {
+            // r >= b > g
+            rr = sample_tone_curve(r);
+            gg = sample_tone_curve(g);
+            bb = gg + (rr - gg) * (b - g) / (r - g);
+        } else {
+            // r >= g == b (neutral-ish)
+            rr = sample_tone_curve(r);
+            gg = sample_tone_curve(g);
+            bb = gg;
+        }
+    } else {
+        if (r >= b) {
+            // g > r >= b
+            gg = sample_tone_curve(g);
+            bb = sample_tone_curve(b);
+            rr = bb + (gg - bb) * (r - b) / (g - b);
+        } else if (b > g) {
+            // b > g > r
+            bb = sample_tone_curve(b);
+            rr = sample_tone_curve(r);
+            gg = rr + (bb - rr) * (g - r) / (b - r);
+        } else {
+            // g >= b > r
+            gg = sample_tone_curve(g);
+            rr = sample_tone_curve(r);
+            bb = rr + (gg - rr) * (b - r) / (g - r);
+        }
+    }
+    return vec3<f32>(rr, gg, bb);
+}
+
 // IEC 61966-2-1 sRGB transfer function.
 // Uses γ = 2.4 with a linear toe segment, NOT the 1/2.2 approximation.
 // The difference is ~5% in the shadows and midtones.
@@ -383,11 +434,20 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     //
     // This runs before the exposure step so the correction is visible when exposure is
     // pulled down (which brings clipped areas into the visible range as magenta).
+    // Neutralise only when the hue is truly unrecoverable: with ONE clipped
+    // channel the other two still carry the real hue (a bright red shirt clips
+    // red alone and must stay red), but with TWO clipped channels the hue is
+    // gone and the pixel should roll to neutral (overexposed sky: G and B both
+    // saturate, leaving the false magenta this step removes).  The blend weight
+    // is therefore the SECOND-highest per-channel clip weight — the median.
     let wb3 = params.wb_multipliers.rgb;
     let hl_clip_r = smoothstep(wb3.r * 0.90, wb3.r, color.r);
     let hl_clip_g = smoothstep(wb3.g * 0.90, wb3.g, color.g);
     let hl_clip_b = smoothstep(wb3.b * 0.90, wb3.b, color.b);
-    let hl_clip_blend = max(hl_clip_r, max(hl_clip_g, hl_clip_b));
+    let hl_clip_blend = max(
+        min(hl_clip_r, hl_clip_g),
+        max(min(hl_clip_g, hl_clip_b), min(hl_clip_r, hl_clip_b))
+    );
     if (hl_clip_blend > 0.0) {
         let hl_max = max(color.r, max(color.g, color.b));
         color = mix(color, vec3<f32>(hl_max), hl_clip_blend);
@@ -473,9 +533,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         pp = max(vec3<f32>(r_pp, g_pp, b_pp), vec3<f32>(0.0));
 
         // 4. ProfileToneCurve (linear 1:1 if no curve in this DCP)
-        pp.r = sample_tone_curve(pp.r);
-        pp.g = sample_tone_curve(pp.g);
-        pp.b = sample_tone_curve(pp.b);
+        // Applied hue-preservingly (Adobe RGBTone) — see dcp_rgb_tone above.
+        pp = dcp_rgb_tone(pp);
 
         // 5. ProPhoto → XYZ D50 → Bradford D50→D65 → linear sRGB
         // Combined matrix: xyz_to_srgb_D65 @ bradford_D50→D65 @ prophoto_to_xyz_D50
@@ -491,10 +550,19 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         color = matrix_from_params * color;
     }
 
-    // ── Step 6: Clamp Negatives ───────────────────────────────────────────────
-    // The camera→sRGB matrix contains negative cross-talk values. Any surviving
-    // negative channel would poison luma coefficients and invert colours.
-    // Must clamp BEFORE luma calculations or gamut compression.
+    // ── Step 6: Gamut-map negative channels (luma-preserving) ────────────────
+    // Colours outside sRGB (deep cyans, magentas) come out of the matrix with a
+    // negative channel.  Hard-clamping that channel to 0 shifts the colour to the
+    // gamut boundary at MAXIMUM saturation — the "neon cone" artifact.  Instead
+    // desaturate toward luma just enough to lift the most-negative channel to 0:
+    // hue and luminance survive, only excess chroma is given up.
+    let neg_luma = dot(max(color, vec3<f32>(0.0)), vec3<f32>(0.2126, 0.7152, 0.0722));
+    let neg_min = min(color.r, min(color.g, color.b));
+    if (neg_min < 0.0 && neg_luma > 0.0) {
+        let t_neg = neg_luma / (neg_luma - neg_min);
+        color = vec3<f32>(neg_luma) + (color - vec3<f32>(neg_luma)) * t_neg;
+    }
+    // Safety net for degenerate cases (all channels negative).
     color = max(color, vec3<f32>(0.0));
 
     // ── Phase 132: 5×5 Perceptual USM with Edge-Aware Masking ──────────────
@@ -690,6 +758,34 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             }
             color = color * (post_tone_max / pre_tone_max);
         }
+    }
+
+    // ── Step 15b: Fit out-of-gamut overbrights (luma-preserving) ────────────
+    // Saturated colours can exceed 1.0 in one channel after the DCP pipeline
+    // (e.g. a bright red: sRGB (1.3, 0.2, 0.15)).  The final clamp would crush
+    // that to the gamut boundary at max saturation — neon red.  Compress chroma
+    // toward luma just enough to bring the peak channel to 1.0 instead.
+    // Runs after the filmic shoulder so the fallback path's rolloff still sees
+    // >1.0 input; for near-white pixels (luma ≥ 1) scale uniformly.
+    // Two candidate mappings, blended by the pixel's own saturation:
+    //  • scale-by-max  — keeps hue AND saturation, gives up brightness.
+    //    Right for saturated colours (a bright red must stay red, darker).
+    //  • luma-preserving desat — keeps brightness, gives up chroma.
+    //    Right for near-neutral overbrights (blown sky should go white).
+    let fit_max = max(color.r, max(color.g, color.b));
+    if (fit_max > 1.0) {
+        let fit_min  = min(color.r, min(color.g, color.b));
+        let fit_luma = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
+        let fit_sat  = clamp((fit_max - fit_min) / fit_max, 0.0, 1.0);
+        let scaled = color / fit_max;
+        var desat: vec3<f32>;
+        if (fit_luma < 1.0) {
+            let t_fit = (1.0 - fit_luma) / (fit_max - fit_luma);
+            desat = vec3<f32>(fit_luma) + (color - vec3<f32>(fit_luma)) * t_fit;
+        } else {
+            desat = scaled;
+        }
+        color = mix(desat, scaled, fit_sat);
     }
 
     // ── Step 15: sRGB Transfer Function (IEC 61966-2-1) ──────────────────────

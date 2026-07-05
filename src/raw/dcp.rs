@@ -320,21 +320,43 @@ pub fn interpolate_at_temperature(profile: &DcpProfile, kelvin: f32) -> Interpol
     }
 }
 
+/// Inverse sRGB transfer function (IEC 61966-2-1).
+fn srgb_to_linear(v: f32) -> f32 {
+    if v <= 0.04045 {
+        v / 12.92
+    } else {
+        ((v + 0.055) / 1.055).powf(2.4)
+    }
+}
+
 pub fn bake_tone_curve(points: &[(f32, f32)]) -> Vec<f32> {
     if points.is_empty() {
         return (0..1024).map(|i| i as f32 / 1023.0).collect();
     }
+    // Adobe ProfileToneCurve points map LINEAR input → GAMMA-ENCODED (display)
+    // output — the curve embeds the ~2.2 display gamma plus the profile's
+    // contrast s-curve (e.g. the ACR default maps 0.18 → ≈0.48 ≈ 0.18^(1/2.2)).
+    // Our shader keeps working in linear space after the curve and applies the
+    // sRGB transfer function at the very end, so bake the LUT with the curve's
+    // output linearised.  At default settings the final encode then reproduces
+    // the profile's intended rendering exactly; applying the raw curve values
+    // instead double-gammas the image (~+1.3 EV apparent overexposure).
     (0..1024usize).map(|i| {
         let x = i as f32 / 1023.0;
-        if x <= points[0].0 { return points[0].1; }
-        if x >= points.last().unwrap().0 { return points.last().unwrap().1; }
-        for w in points.windows(2) {
-            if x >= w[0].0 && x <= w[1].0 {
-                let t = (x - w[0].0) / (w[1].0 - w[0].0);
-                return w[0].1 * (1.0 - t) + w[1].1 * t;
-            }
-        }
-        x
+        let y = if x <= points[0].0 {
+            points[0].1
+        } else if x >= points.last().unwrap().0 {
+            points.last().unwrap().1
+        } else {
+            points.windows(2)
+                .find(|w| x >= w[0].0 && x <= w[1].0)
+                .map(|w| {
+                    let t = (x - w[0].0) / (w[1].0 - w[0].0);
+                    w[0].1 * (1.0 - t) + w[1].1 * t
+                })
+                .unwrap_or(x)
+        };
+        srgb_to_linear(y)
     }).collect()
 }
 
@@ -409,6 +431,43 @@ mod tests {
                     profile.hue_sat_dims,
                     profile.tone_curve.as_ref().map(|c| c.len())
                 );
+            }
+        }
+    }
+}
+#[cfg(test)]
+mod curve_debug {
+    use super::*;
+
+    #[test]
+    fn dump_installed_curve() {
+        let base = dirs::data_dir().unwrap().join("raw-editor").join("profiles");
+        let Ok(entries) = std::fs::read_dir(&base) else { return };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.extension().map(|x| x == "dcp").unwrap_or(false) {
+                let prof = parse_dcp(&p).expect("parse");
+                println!("profile: {:?}", p.file_name().unwrap());
+                if let Some(pts) = &prof.tone_curve {
+                    println!("curve points: {}", pts.len());
+                    for probe in [0.02f32, 0.05, 0.10, 0.18, 0.30, 0.50, 0.70, 0.90, 1.00] {
+                        // linear interp over points
+                        let y = if probe <= pts[0].0 { pts[0].1 }
+                        else if probe >= pts.last().unwrap().0 { pts.last().unwrap().1 }
+                        else {
+                            pts.windows(2).find(|w| probe >= w[0].0 && probe <= w[1].0)
+                                .map(|w| { let t = (probe - w[0].0)/(w[1].0-w[0].0); w[0].1*(1.0-t)+w[1].1*t })
+                                .unwrap()
+                        };
+                        println!("  curve({probe:.2}) = {y:.4}");
+                    }
+                } else {
+                    println!("NO embedded tone curve");
+                }
+                println!("hsm dims: {:?}, hsm1: {:?}, hsm2: {:?}",
+                    prof.hue_sat_dims,
+                    prof.hue_sat_data_1.as_ref().map(|v| v.len()),
+                    prof.hue_sat_data_2.as_ref().map(|v| v.len()));
             }
         }
     }
