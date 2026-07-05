@@ -434,23 +434,39 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     //
     // This runs before the exposure step so the correction is visible when exposure is
     // pulled down (which brings clipped areas into the visible range as magenta).
-    // Neutralise only when the hue is truly unrecoverable: with ONE clipped
-    // channel the other two still carry the real hue (a bright red shirt clips
-    // red alone and must stay red), but with TWO clipped channels the hue is
-    // gone and the pixel should roll to neutral (overexposed sky: G and B both
-    // saturate, leaving the false magenta this step removes).  The blend weight
-    // is therefore the SECOND-highest per-channel clip weight — the median.
+    // ── Step 3: Highlight RECONSTRUCTION (camera space, per-channel) ─────────
+    // A channel that hits sensor saturation reads its clip ceiling instead of
+    // its true (higher) value; passed downstream unchanged that false ratio
+    // shows as a colour cast (magenta sky = green clipped below red/blue's
+    // true balance).  Instead of desaturating, ESTIMATE the clipped channel
+    // from the unclipped ones: highlights are overwhelmingly near-neutral
+    // after WB, so the clip-weighted average of the surviving channels is a
+    // sound floor for the true value.  max() guarantees we only ever RAISE a
+    // clipped channel — a bright red shirt (only red clipped, green/blue low)
+    // keeps its measured red and stays red, while an overexposed sky (green
+    // and blue clipped) is lifted to the unclipped channel's level, recovering
+    // both hue and up to a stop of brightness that the ProPhoto shoulder then
+    // rolls into visible gradation.
+    //
+    // Per-channel clip weights compare each DEBAYERED value against that
+    // channel's own WB-amplified ceiling — spatially smooth, no Bayer-period
+    // checkerboard (unlike raw per-site detection).
     let wb3 = params.wb_multipliers.rgb;
-    let hl_clip_r = smoothstep(wb3.r * 0.90, wb3.r, color.r);
-    let hl_clip_g = smoothstep(wb3.g * 0.90, wb3.g, color.g);
-    let hl_clip_b = smoothstep(wb3.b * 0.90, wb3.b, color.b);
-    let hl_clip_blend = max(
-        min(hl_clip_r, hl_clip_g),
-        max(min(hl_clip_g, hl_clip_b), min(hl_clip_r, hl_clip_b))
+    let hl_clip_w = vec3<f32>(
+        smoothstep(wb3.r * 0.90, wb3.r, color.r),
+        smoothstep(wb3.g * 0.90, wb3.g, color.g),
+        smoothstep(wb3.b * 0.90, wb3.b, color.b)
     );
-    if (hl_clip_blend > 0.0) {
+    let hl_unclip = vec3<f32>(1.0) - hl_clip_w;
+    let hl_den = hl_unclip.r + hl_unclip.g + hl_unclip.b;
+    if (hl_den > 0.05) {
+        let hl_est = dot(color * hl_unclip, vec3<f32>(1.0)) / hl_den;
+        color = mix(color, max(color, vec3<f32>(hl_est)), hl_clip_w);
+    } else {
+        // All three channels clipped: hue unrecoverable — go neutral at the
+        // brightest ceiling so the shoulder renders clean white.
         let hl_max = max(color.r, max(color.g, color.b));
-        color = mix(color, vec3<f32>(hl_max), hl_clip_blend);
+        color = vec3<f32>(hl_max);
     }
 
     // ── Step 4: Exposure ──────────────────────────────────────────────────────

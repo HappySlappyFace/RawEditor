@@ -335,23 +335,52 @@ fn bayer_stride(full_width: u32, target_width: u32) -> u32 {
     odd.max(1)
 }
 
-/// Stride-sample a Bayer image. Picks every `stride`th pixel in both axes.
-/// `stride` must be even to keep the CFA pattern aligned.
-/// Stride-sample a Bayer image. Iterates over exactly new_width × new_height
-/// output pixels — NOT via step_by on the full range. step_by overshoots when
-/// the dimension is not a multiple of stride (e.g. 6016 / 3 = 2005 but
-/// step_by(3) on 0..6016 emits 2006 values), causing every subsequent row to
-/// be offset by 1 pixel in the upload buffer → diagonal split in the image.
+/// Downsample a Bayer mosaic by `stride` using a per-CFA-plane box filter.
+///
+/// Each output site averages ALL same-color Bayer sites inside its stride×stride
+/// source block (even offsets keep the color plane; odd stride keeps the output
+/// mosaic's CFA parity — see `bayer_stride`). Point-sampling one pixel per block
+/// (the old behaviour) aliases fine detail and passes sensor noise through at
+/// full strength, which is why previews looked noisier/crunchier than Lightroom.
+///
+/// Iterates over exactly new_width × new_height output pixels — NOT via step_by
+/// on the full range. step_by overshoots when the dimension is not a multiple of
+/// stride (e.g. 6016 / 3 = 2005 but step_by(3) on 0..6016 emits 2006 values),
+/// causing every subsequent row to be offset by 1 pixel in the upload buffer →
+/// diagonal split in the image.
 fn downsample_bayer(data: &[u16], full_width: u32, full_height: u32, stride: u32) -> (Vec<u16>, u32, u32) {
     let new_width = full_width / stride;
     let new_height = full_height / stride;
     let mut out = Vec::with_capacity((new_width * new_height) as usize);
     let fw = full_width as usize;
     let s = stride as usize;
+
+    if s == 1 {
+        out.extend_from_slice(&data[..fw * new_height as usize]);
+        return (out, new_width, new_height);
+    }
+
+    // Same-color sites inside the block sit at even offsets: 0, 2, 4, … < s.
+    // (Block never leaves the image: anchor ≤ (new_dim-1)·s and new_dim·s ≤ full_dim.)
+    let taps_per_axis = s.div_ceil(2);
+    let tap_count = (taps_per_axis * taps_per_axis) as u32;
+
     for row in 0..new_height as usize {
-        let row_base = row * s * fw;
+        let sy = row * s;
         for col in 0..new_width as usize {
-            out.push(data[row_base + col * s]);
+            let sx = col * s;
+            let mut acc: u32 = 0;
+            let mut dy = 0;
+            while dy < s {
+                let line = (sy + dy) * fw + sx;
+                let mut dx = 0;
+                while dx < s {
+                    acc += data[line + dx] as u32;
+                    dx += 2;
+                }
+                dy += 2;
+            }
+            out.push((acc / tap_count) as u16);
         }
     }
     (out, new_width, new_height)
@@ -874,5 +903,60 @@ impl ImageResources {
         if let Ok(mut current) = self.current_params.lock() {
             *current = gpu_params;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Box-filtered downsampling must keep each CFA plane pure: build a mosaic
+    /// where every plane holds a distinct constant — any cross-plane mixing or
+    /// parity slip would corrupt the constants.
+    #[test]
+    fn test_downsample_bayer_preserves_cfa_planes() {
+        let (w, h) = (30u32, 24u32);
+        let plane = |x: usize, y: usize| -> u16 {
+            match (y % 2, x % 2) {
+                (0, 0) => 1000, // R
+                (0, 1) => 2000, // G1
+                (1, 0) => 3000, // G2
+                _ => 4000,      // B
+            }
+        };
+        let data: Vec<u16> = (0..(w * h) as usize)
+            .map(|i| plane(i % w as usize, i / w as usize))
+            .collect();
+
+        for stride in [1u32, 3, 5] {
+            let (out, nw, nh) = downsample_bayer(&data, w, h, stride);
+            assert_eq!(out.len(), (nw * nh) as usize);
+            for y in 0..nh as usize {
+                for x in 0..nw as usize {
+                    assert_eq!(
+                        out[y * nw as usize + x],
+                        plane(x, y),
+                        "plane corrupted at ({x},{y}) stride {stride}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The filter must actually average within a plane (noise reduction), not
+    /// point-sample: two different R values inside one block → their mean.
+    #[test]
+    fn test_downsample_bayer_averages_within_plane() {
+        let (w, h) = (6u32, 6u32);
+        let mut data = vec![100u16; (w * h) as usize];
+        // R sites in the first 3×3 block: (0,0) and (2,0), (0,2), (2,2)
+        data[0] = 500; // (0,0)
+        data[2] = 300; // (2,0)
+        data[2 * 6] = 100; // (0,2)
+        data[2 * 6 + 2] = 100; // (2,2)
+        let (out, nw, _) = downsample_bayer(&data, w, h, 3);
+        // Output (0,0) = mean(500, 300, 100, 100) = 250
+        assert_eq!(out[0], 250);
+        assert_eq!(nw, 2);
     }
 }
