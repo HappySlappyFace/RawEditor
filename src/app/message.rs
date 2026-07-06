@@ -84,6 +84,11 @@ pub enum Message {
     VibranceChanged(f32),
     /// User changed DCP profile tone-curve strength (0.0..=1.0)
     ProfileCurveChanged(f32),
+    /// Toggle the WB eyedropper tool
+    ToggleWbPicker,
+    /// User clicked the preview with the WB picker active.
+    /// Payload: display-space UV (0..1) within the rendered image bounds.
+    WbPicked(f32, f32),
     /// User changed saturation slider
     SaturationChanged(f32),
     /// User changed temperature slider (Phase 18)

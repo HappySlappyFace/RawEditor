@@ -52,6 +52,8 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::ProfileCurveChanged(v) => {
             handlers::develop::handle_profile_curve_changed(editor, v)
         }
+        Message::ToggleWbPicker => handlers::develop::handle_toggle_wb_picker(editor),
+        Message::WbPicked(u, v) => handlers::develop::handle_wb_picked(editor, u, v),
         Message::SaturationChanged(v) => handlers::develop::handle_saturation_changed(editor, v),
         Message::TemperatureChanged(v) => handlers::develop::handle_temperature_changed(editor, v),
         Message::TintChanged(v) => handlers::develop::handle_tint_changed(editor, v),

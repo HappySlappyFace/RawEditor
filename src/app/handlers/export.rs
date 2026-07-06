@@ -179,6 +179,7 @@ pub fn handle_export_raw_loaded(
                         raw_data.white_level,
                         interpolated_dcp.as_ref(),
                         None, // full resolution for export
+                        raw_data.orientation,
                     )
                     .map(|res| (context, Arc::new(res)))
                 },
@@ -208,9 +209,11 @@ pub fn handle_export_pipeline_ready(
             let crop = editor.current_edit_params.crop;
             let crop_w = crop[2].clamp(0.001, 1.0);
             let crop_h = crop[3].clamp(0.001, 1.0);
-            // Use original (full-sensor) dimensions, not the subsampled texture dims
-            let target_width = ((resources.original_width as f32 * crop_w) as u32).max(1);
-            let target_height = ((resources.original_height as f32 * crop_h) as u32).max(1);
+            // Use original (full-sensor) dimensions in DISPLAY orientation —
+            // portrait shots must export portrait (crop is display-space too).
+            let (full_w, full_h) = resources.oriented_original_dims();
+            let target_width = ((full_w as f32 * crop_w) as u32).max(1);
+            let target_height = ((full_h as f32 * crop_h) as u32).max(1);
 
             let settings = editor.export_settings.clone();
             let filename = if let Some(img) = editor.images.iter().find(|i| i.id == image_id) {

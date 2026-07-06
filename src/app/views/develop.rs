@@ -157,11 +157,25 @@ fn view_sidebar(editor: &RawEditor) -> iced::widget::Column<'_, Message> {
         .push({
             // Real WB readout: sliders pivot around the camera's as-shot values.
             let (as_k, as_t) = editor.as_shot_wb.unwrap_or((5000.0, 0.0));
-            text(format!("As Shot  {:.0}K · tint {:+.0}", as_k, as_t))
-                .size(11)
-                .style(|_theme| text::Style {
-                    color: Some(Color::from_rgb(0.45, 0.45, 0.45)),
+            row![
+                text(format!("As Shot  {:.0}K · tint {:+.0}", as_k, as_t))
+                    .size(11)
+                    .width(Length::Fill)
+                    .style(|_theme| text::Style {
+                        color: Some(Color::from_rgb(0.45, 0.45, 0.45)),
+                    }),
+                button(
+                    text(if editor.is_wb_picking { "Picking…" } else { "WB Picker" }).size(11),
+                )
+                .style(if editor.is_wb_picking {
+                    ui::styles::AccentButton::style
+                } else {
+                    ui::styles::NeutralButton::style
                 })
+                .on_press(Message::ToggleWbPicker),
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center)
         })
         .push({
             let (as_k, _) = editor.as_shot_wb.unwrap_or((5000.0, 0.0));
@@ -563,6 +577,7 @@ fn view_main_content<'a>(
                     image_width: img_w,
                     image_height: img_h,
                     is_cropping: editor.is_cropping,
+                    is_wb_picking: editor.is_wb_picking,
                     crop: editor.current_edit_params.crop,
                 })
                 .width(Length::Fill)

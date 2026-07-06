@@ -206,6 +206,9 @@ pub struct RawEditor {
     pub history_map: HashMap<i64, (Vec<crate::core::types::EditParams>, usize)>,
     /// Phase 67: Interactive crop mode
     pub is_cropping: bool,
+    /// WB eyedropper tool active: next click on the preview samples a neutral.
+    /// Mutually exclusive with `is_cropping`.
+    pub is_wb_picking: bool,
     /// Phase 67: Drag mode for interaction
     pub drag_mode: DragMode,
     /// Phase 78: Async Task Deduplication (track pending preview loads)
@@ -366,6 +369,7 @@ impl RawEditor {
                 // background_task: None, // This field is not defined in the struct
                 history_map: HashMap::new(),
                 is_cropping: false,
+                is_wb_picking: false,
                 drag_mode: DragMode::None,
                 pending_loads: HashSet::new(),
                 queued_loads: Vec::new(),
@@ -665,6 +669,10 @@ impl RawEditor {
                     }
                     // Phase 67: Crop shortcut
                     keyboard::Key::Character(c) if c == "c" => Some(Message::ToggleCrop),
+                    // WB eyedropper shortcut
+                    keyboard::Key::Character(c) if c == "w" || c == "W" => {
+                        Some(Message::ToggleWbPicker)
+                    }
                     _ => None,
                 }
             } else {

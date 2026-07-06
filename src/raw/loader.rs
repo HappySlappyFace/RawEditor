@@ -41,6 +41,10 @@ pub struct RawDataResult {
     
     // Phase 140: DNG Camera Profile
     pub dcp_profile: Option<std::sync::Arc<crate::raw::dcp::DcpProfile>>,
+
+    /// Normalised EXIF orientation: 1 (normal), 3 (180°), 6 (90° CW), 8 (270° CW).
+    /// Read via kamadak-exif — rawler 0.7.2 hardcodes Orientation::Normal.
+    pub orientation: u32,
 }
 
 /// Load raw sensor data from a RAW file
@@ -295,7 +299,9 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
     // );
 
     // Phase 119: EXIF metadata via kamadak-exif (rawler's Exif is internal to its decoders)
-    let (iso, shutter_speed, aperture, lens) = extract_metadata_kamadak(path.to_str().unwrap_or_default());
+    let (iso, shutter_speed, aperture, lens, exif_orientation) =
+        extract_metadata_kamadak(path.to_str().unwrap_or_default());
+    let orientation = normalize_orientation(exif_orientation);
 
     // Phase 140: Load DCP profile if available
     let dcp_profile = crate::raw::dcp::find_profile_for_camera(&raw_image.make, &raw_image.model)
@@ -340,15 +346,17 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
         aperture,
         lens,
         dcp_profile,
+        orientation,
     })
 }
 
 /// Phase 119: EXIF extraction via kamadak-exif only (rexif removed)
-fn extract_metadata_kamadak(path: &str) -> (String, String, String, String) {
+fn extract_metadata_kamadak(path: &str) -> (String, String, String, String, u32) {
     let mut iso = "---".to_string();
     let mut shutter = "---".to_string();
     let mut aperture = "---".to_string();
     let mut lens = "---".to_string();
+    let mut orientation: u32 = 1;
 
     if let Ok(file) = std::fs::File::open(path) {
         let mut bufreader = std::io::BufReader::new(&file);
@@ -367,10 +375,27 @@ fn extract_metadata_kamadak(path: &str) -> (String, String, String, String) {
             if let Some(field) = exif_data.get_field(exif::Tag::LensModel, exif::In::PRIMARY) {
                 lens = field.display_value().to_string().trim_matches('"').to_string();
             }
+            if let Some(field) = exif_data.get_field(exif::Tag::Orientation, exif::In::PRIMARY) {
+                if let Some(v) = field.value.get_uint(0) {
+                    orientation = v;
+                }
+            }
         }
     }
 
-    (iso, shutter, aperture, lens)
+    (iso, shutter, aperture, lens, orientation)
+}
+
+/// Normalise an EXIF orientation (1–8) to the subset the pipeline renders:
+/// 1 (normal), 3 (180°), 6 (90° CW), 8 (270° CW). Mirrored variants map to
+/// their rotation-only counterparts (mirroring is vanishingly rare in-camera).
+pub fn normalize_orientation(exif_orientation: u32) -> u32 {
+    match exif_orientation {
+        3 | 4 => 3,
+        5 | 6 => 6,
+        7 | 8 => 8,
+        _ => 1,
+    }
 }
 
 /// Compute P0.1 percentile black level for each CFA phase from cropped mosaic

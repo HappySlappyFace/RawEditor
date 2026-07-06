@@ -389,7 +389,33 @@ pub struct CropOverlay {
     pub image_width: u32,
     pub image_height: u32,
     pub is_cropping: bool,
+    /// WB eyedropper active: a left-click emits Message::WbPicked with the
+    /// display-space UV of the click (letterbox/zoom/pan corrected).
+    pub is_wb_picking: bool,
     pub crop: [f32; 4],
+}
+
+impl CropOverlay {
+    /// Screen-space rectangle the (zoomed, panned, letterboxed) image occupies
+    /// within the viewport. Single source of truth for the transform that
+    /// draw/update/mouse_interaction all rely on.
+    fn image_bounds(&self, viewport_width: f32, viewport_height: f32) -> Rectangle {
+        let image_aspect = self.image_width as f32 / self.image_height.max(1) as f32;
+        let viewport_aspect = viewport_width / viewport_height;
+        let (fitted_width, fitted_height) = if image_aspect > viewport_aspect {
+            (viewport_width, viewport_width / image_aspect)
+        } else {
+            (viewport_height * image_aspect, viewport_height)
+        };
+        let zoomed_width = fitted_width * self.zoom;
+        let zoomed_height = fitted_height * self.zoom;
+        Rectangle {
+            x: viewport_width / 2.0 - zoomed_width / 2.0 + self.offset.x * fitted_width,
+            y: viewport_height / 2.0 - zoomed_height / 2.0 + self.offset.y * fitted_height,
+            width: zoomed_width,
+            height: zoomed_height,
+        }
+    }
 }
 
 impl canvas::Program<Message> for CropOverlay {
@@ -496,7 +522,7 @@ impl canvas::Program<Message> for CropOverlay {
             return (canvas::event::Status::Captured, Some(Message::ViewportResized(bounds.width, bounds.height, scale_factor)));
         }
 
-        if !self.is_cropping {
+        if !self.is_cropping && !self.is_wb_picking {
             return (canvas::event::Status::Ignored, None);
         }
 
@@ -505,26 +531,21 @@ impl canvas::Program<Message> for CropOverlay {
             None => return (canvas::event::Status::Ignored, None),
         };
 
-        if let canvas::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left)) = event {
-            let viewport_width = bounds.width;
-            let viewport_height = bounds.height;
-            let image_aspect = self.image_width as f32 / self.image_height.max(1) as f32;
-            let viewport_aspect = viewport_width / viewport_height;
-            let (fitted_width, fitted_height) = if image_aspect > viewport_aspect {
-                (viewport_width, viewport_width / image_aspect)
-            } else {
-                (viewport_height * image_aspect, viewport_height)
-            };
-            let center_x = viewport_width / 2.0;
-            let center_y = viewport_height / 2.0;
-            let zoomed_width = fitted_width * self.zoom;
-            let zoomed_height = fitted_height * self.zoom;
-            let pan_px_x = self.offset.x * fitted_width;
-            let pan_px_y = self.offset.y * fitted_height;
-            let image_x = center_x - (zoomed_width / 2.0) + pan_px_x;
-            let image_y = center_y - (zoomed_height / 2.0) + pan_px_y;
+        // WB eyedropper: emit the display-space UV of a left click.
+        if self.is_wb_picking {
+            if let canvas::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left)) = event {
+                let image_bounds = self.image_bounds(bounds.width, bounds.height);
+                let u = (cursor_position.x - image_bounds.x) / image_bounds.width.max(1.0);
+                let v = (cursor_position.y - image_bounds.y) / image_bounds.height.max(1.0);
+                if (0.0..=1.0).contains(&u) && (0.0..=1.0).contains(&v) {
+                    return (canvas::event::Status::Captured, Some(Message::WbPicked(u, v)));
+                }
+            }
+            return (canvas::event::Status::Ignored, None);
+        }
 
-            let image_bounds = Rectangle { x: image_x, y: image_y, width: zoomed_width, height: zoomed_height };
+        if let canvas::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left)) = event {
+            let image_bounds = self.image_bounds(bounds.width, bounds.height);
             let crop_x = image_bounds.x + (self.crop[0] * image_bounds.width);
             let crop_y = image_bounds.y + (self.crop[1] * image_bounds.height);
             let crop_w = self.crop[2] * image_bounds.width;
@@ -556,6 +577,9 @@ impl canvas::Program<Message> for CropOverlay {
         bounds: Rectangle,
         cursor: Cursor,
     ) -> iced::mouse::Interaction {
+        if self.is_wb_picking {
+            return iced::mouse::Interaction::Crosshair;
+        }
         if !self.is_cropping { return iced::mouse::Interaction::default(); }
         let cursor_position = match cursor.position_in(bounds) {
             Some(p) => p,

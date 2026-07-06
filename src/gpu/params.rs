@@ -50,7 +50,8 @@ pub struct GpuEditParams {
     pub is_cropping: u32,
     pub has_dcp: u32,
     pub dcp_has_curve: u32,
-    _pad_crop_3: u32,
+    /// EXIF orientation (1/3/6/8) — per-image, set from ImageResources.
+    pub orientation: u32,
 }
 
 impl From<&EditParams> for GpuEditParams {
@@ -101,7 +102,7 @@ impl From<&EditParams> for GpuEditParams {
             is_cropping: params.is_cropping,
             has_dcp: 0,
             dcp_has_curve: 0,
-            _pad_crop_3: 0,
+            orientation: 1,
         }
     }
 }

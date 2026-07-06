@@ -149,7 +149,9 @@ struct EditParams {
     // Padding to reach 256 bytes (16-byte alignment)
     has_dcp: u32,
     dcp_has_curve: u32,
-    pad_crop_3: u32,
+    // EXIF orientation: 1 normal, 3 = 180°, 6 = 90° CW, 8 = 270° CW.
+    // Display-space UVs are mapped to sensor space at the top of fs_main.
+    orientation: u32,
 }
 
 // Phase 128: Pass 2 now reads the debayered Rgba16Float intermediate texture.
@@ -278,12 +280,17 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         return vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
 
-    // Phase 52: Apply rotation to texture coordinates
+    // Phase 52: Apply straightening rotation in DISPLAY space.
+    // The aspect used for the angle correction must be the DISPLAY aspect —
+    // for 90°/270° EXIF orientations that's the sensor aspect inverted.
     var tex_coords = input.tex_coords;
 
     if (abs(params.rotation) > 0.01) {
         let dimensions_r = textureDimensions(input_texture);
-        let aspect = f32(dimensions_r.x) / f32(dimensions_r.y);
+        var aspect = f32(dimensions_r.x) / f32(dimensions_r.y);
+        if (params.orientation == 6u || params.orientation == 8u) {
+            aspect = 1.0 / aspect;
+        }
         let angle_rad = params.rotation * 3.14159265359 / 180.0;
         let cos_a = cos(angle_rad);
         let sin_a = sin(angle_rad);
@@ -304,6 +311,21 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             tex_coords.y < 0.0 || tex_coords.y > 1.0) {
             return vec4<f32>(0.0, 0.0, 0.0, 1.0);
         }
+    }
+
+    // EXIF orientation: map display-space UV → sensor-space UV. The debayered
+    // texture stays in native (landscape) sensor layout; the render target is
+    // sized to the ORIENTED aspect by the caller, so sampling through this
+    // mapping produces an upright image.
+    //   6 = 90° CW display rotation:  sensor = (v, 1-u)
+    //   8 = 270° CW (90° CCW):        sensor = (1-v, u)
+    //   3 = 180°:                     sensor = (1-u, 1-v)
+    if (params.orientation == 6u) {
+        tex_coords = vec2<f32>(tex_coords.y, 1.0 - tex_coords.x);
+    } else if (params.orientation == 8u) {
+        tex_coords = vec2<f32>(1.0 - tex_coords.y, tex_coords.x);
+    } else if (params.orientation == 3u) {
+        tex_coords = vec2<f32>(1.0 - tex_coords.x, 1.0 - tex_coords.y);
     }
 
     let dimensions = textureDimensions(input_texture);
@@ -910,7 +932,7 @@ struct EditParams {
     // Padding to reach 256 bytes
     has_dcp: u32,
     dcp_has_curve: u32,
-    pad_crop_3: u32,
+    orientation: u32, // unused in the debayer pass (sensor space throughout)
 }
 
 @group(0) @binding(0)

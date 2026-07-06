@@ -32,6 +32,9 @@ pub fn handle_close_modal(editor: &mut RawEditor) -> Task<Message> {
 pub fn handle_escape(editor: &mut RawEditor) -> Task<Message> {
     if editor.active_modal != Modal::None {
         editor.active_modal = Modal::None;
+    } else if editor.is_wb_picking {
+        editor.is_wb_picking = false;
+        editor.status.clear();
     }
     Task::none()
 }

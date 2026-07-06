@@ -431,6 +431,18 @@ pub fn solve_wb(
     (kelvin, tint, Some(wb))
 }
 
+/// Map a display-space UV to sensor-space UV for a normalised EXIF orientation
+/// (1/3/6/8). Must stay in lockstep with the identical transform at the top of
+/// the color shader's fs_main (shaders.rs).
+pub fn display_to_sensor_uv(u: f32, v: f32, orientation: u32) -> (f32, f32) {
+    match orientation {
+        6 => (v, 1.0 - u),
+        8 => (1.0 - v, u),
+        3 => (1.0 - u, 1.0 - v),
+        _ => (u, v),
+    }
+}
+
 /// As-shot (Kelvin, tint) for a loaded raw: solve the camera's WB multipliers
 /// through the best available XYZ→camera matrix (DCP dual-illuminant when
 /// present, otherwise the raw file's single matrix).
@@ -468,6 +480,51 @@ mod tests {
 
         let non_identity = [1.5, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
         assert!(!is_identity_matrix(&non_identity));
+    }
+
+    // ── Orientation UV mapping ────────────────────────────────────────────
+
+    /// 90° CW (6) and 270° CW (8) must be exact inverses, and 180° (3) must be
+    /// an involution — guards the transform shared with the WGSL shader.
+    #[test]
+    fn test_orientation_uv_mapping() {
+        let probes = [(0.0f32, 0.0f32), (1.0, 0.0), (0.25, 0.75), (0.5, 0.5)];
+        for &(u, v) in &probes {
+            let (a, b) = display_to_sensor_uv(u, v, 6);
+            let (u2, v2) = display_to_sensor_uv(a, b, 8);
+            assert!((u2 - u).abs() < 1e-6 && (v2 - v).abs() < 1e-6, "6∘8 ≠ id");
+
+            let (c, d) = display_to_sensor_uv(u, v, 3);
+            let (u3, v3) = display_to_sensor_uv(c, d, 3);
+            assert!((u3 - u).abs() < 1e-6 && (v3 - v).abs() < 1e-6, "3∘3 ≠ id");
+
+            assert_eq!(display_to_sensor_uv(u, v, 1), (u, v));
+        }
+        // Concrete corner: display top-left of a 90°-CW-rotated image is the
+        // sensor's bottom-left (sensor u=0, v=1).
+        assert_eq!(display_to_sensor_uv(0.0, 0.0, 6), (0.0, 1.0));
+    }
+
+    /// The eyedropper's slider-offset inversion must round-trip through
+    /// EditParams::kelvin_from_anchor at several anchors.
+    #[test]
+    fn test_kelvin_anchor_inversion() {
+        use crate::core::types::EditParams;
+        for &anchor in &[3200.0f32, 5000.0, 6500.0, 8000.0] {
+            for &target in &[4000.0f32, 5500.0, 7500.0] {
+                let anchor_mired = 1.0e6 / anchor;
+                let temperature = ((anchor_mired - 1.0e6 / target) / 120.0).clamp(-1.0, 1.0);
+                let params = EditParams { temperature, ..Default::default() };
+                let solved = params.kelvin_from_anchor(anchor);
+                // Only exact when the offset fits within the slider range.
+                if temperature.abs() < 1.0 {
+                    assert!(
+                        (solved - target).abs() / target < 0.005,
+                        "anchor {anchor} target {target} → solved {solved}"
+                    );
+                }
+            }
+        }
     }
 
     // ── CCT (Robertson) machinery ─────────────────────────────────────────

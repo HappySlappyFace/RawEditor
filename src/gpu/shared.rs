@@ -310,6 +310,10 @@ pub struct ImageResources {
     pub tone_curve_view: wgpu::TextureView,
     pub has_dcp: bool,
     pub dcp_has_curve: bool,
+    /// Normalised EXIF orientation (1/3/6/8). Sensor textures stay landscape;
+    /// the color pass maps display UVs to sensor space, and render targets are
+    /// sized to `oriented_*` dims.
+    pub orientation: u32,
     /// Cache key of the last DCP LUT upload: (kelvin, profile_curve strength).
     /// Skips redundant HSM-3D-LUT / tone-curve texture uploads per render.
     pub last_uploaded_dcp_kelvin: std::sync::RwLock<Option<(f32, f32)>>,
@@ -458,6 +462,7 @@ impl ImageResources {
         white_level: u32,
         dcp_profile: Option<&crate::raw::dcp::InterpolatedProfile>,
         max_preview_width: Option<u32>,
+        orientation: u32,
     ) -> Result<Self, String> {
         const DEFAULT_PREVIEW_WIDTH: u32 = 1280;
         let max_w = max_preview_width.unwrap_or(u32::MAX);
@@ -591,6 +596,7 @@ impl ImageResources {
         gpu_params.white_level = white_level;
         gpu_params.has_dcp = if dcp_profile.is_some() { 1 } else { 0 };
         gpu_params.dcp_has_curve = if dcp_profile.is_some_and(|p| p.has_tone_curve) { 1 } else { 0 };
+        gpu_params.orientation = orientation;
 
         let uniform_buffer = context
             .device
@@ -742,6 +748,7 @@ impl ImageResources {
             tone_curve_view,
             has_dcp,
             dcp_has_curve,
+            orientation,
             // None → the first update_uniforms after load re-uploads the LUTs
             // once with the anchored-kelvin interpolation (cheap, ~90 KB).
             last_uploaded_dcp_kelvin: std::sync::RwLock::new(None),
@@ -782,6 +789,23 @@ impl ImageResources {
             rpass.draw(0..3, 0..1);
         }
         context.queue.submit(Some(encoder.finish()));
+    }
+
+    /// Display-space dimensions of the working (possibly subsampled) texture:
+    /// swapped for 90°/270° EXIF orientations.
+    pub fn oriented_dims(&self) -> (u32, u32) {
+        match self.orientation {
+            6 | 8 => (self.height, self.width),
+            _ => (self.width, self.height),
+        }
+    }
+
+    /// Display-space dimensions of the full-resolution sensor area.
+    pub fn oriented_original_dims(&self) -> (u32, u32) {
+        match self.orientation {
+            6 | 8 => (self.original_height, self.original_width),
+            _ => (self.original_width, self.original_height),
+        }
     }
 
     /// Update uniforms with new edit parameters.
@@ -860,6 +884,7 @@ impl ImageResources {
         gpu_params.white_level = self.white_level;
         gpu_params.has_dcp = if self.has_dcp { 1 } else { 0 };
         gpu_params.dcp_has_curve = if self.dcp_has_curve { 1 } else { 0 };
+        gpu_params.orientation = self.orientation;
 
         context
             .queue
@@ -892,6 +917,7 @@ impl ImageResources {
         gpu_params.white_level = self.white_level;
         gpu_params.has_dcp = if self.has_dcp { 1 } else { 0 };
         gpu_params.dcp_has_curve = if self.dcp_has_curve { 1 } else { 0 };
+        gpu_params.orientation = self.orientation;
         gpu_params.zoom = zoom;
         gpu_params.pan_x = pan_x;
         gpu_params.pan_y = pan_y;

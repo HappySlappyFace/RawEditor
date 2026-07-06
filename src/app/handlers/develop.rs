@@ -109,6 +109,7 @@ pub fn handle_set_crop(editor: &mut RawEditor, crop: [f32; 4]) -> Task<Message> 
 }
 
 pub fn handle_toggle_crop(editor: &mut RawEditor) -> Task<Message> {
+    editor.is_wb_picking = false; // tools are mutually exclusive
     editor.is_cropping = !editor.is_cropping;
     if editor.is_cropping {
         editor.drag_mode = DragMode::Crop;
@@ -306,11 +307,13 @@ pub fn trigger_async_render(editor: &mut RawEditor) -> Task<Message> {
         let ctx = ctx.clone();
         let resources = resources.clone();
 
-        let original_aspect = resources.width as f32 / resources.height as f32;
+        // Oriented (display-space) dims: portrait images render portrait.
+        let (disp_w, disp_h) = resources.oriented_dims();
+        let original_aspect = disp_w as f32 / disp_h as f32;
         let (vw, _) = editor.viewport_size;
         let viewport_px = (vw * editor.scale_factor).round() as u32;
         let zoomed_px = (viewport_px as f32 * editor.zoom).round() as u32;
-        let max_size = zoomed_px.clamp(800, resources.width);
+        let max_size = zoomed_px.clamp(800, disp_w.max(disp_h));
 
         let (target_w, target_h) = if original_aspect > 1.0 {
             let w = max_size;
@@ -348,6 +351,117 @@ pub fn trigger_async_render(editor: &mut RawEditor) -> Task<Message> {
     editor.is_rendering = false;
     editor.pending_render = false;
     Task::none()
+}
+
+pub fn handle_toggle_wb_picker(editor: &mut RawEditor) -> Task<Message> {
+    editor.is_wb_picking = !editor.is_wb_picking;
+    if editor.is_wb_picking {
+        // Tools are mutually exclusive; leaving crop mode also clears its GPU flag.
+        if editor.is_cropping {
+            editor.is_cropping = false;
+            editor.drag_mode = DragMode::None;
+            editor.current_edit_params.is_cropping = 0;
+        }
+        editor.status = "WB picker: click a neutral grey/white area".to_string();
+    } else {
+        editor.status.clear();
+    }
+    update_pipeline(editor)
+}
+
+/// WB eyedropper: `(u, v)` is the display-space UV of the click within the
+/// rendered image. Samples the raw Bayer mosaic around that point, derives the
+/// neutral's WB multipliers, converts to Kelvin/tint, and sets the sliders.
+pub fn handle_wb_picked(editor: &mut RawEditor, u: f32, v: f32) -> Task<Message> {
+    // On a failed pick (clipped/dark area) the tool stays active so the user
+    // can simply click elsewhere; it exits on success or on missing data.
+    let Some(image_id) = editor.selected_image_id else {
+        editor.is_wb_picking = false;
+        return Task::none();
+    };
+    let Some(raw) = editor.raw_cache.get(&image_id).cloned() else {
+        editor.is_wb_picking = false;
+        editor.status = "WB picker: raw data not in memory (reopen the image)".to_string();
+        return Task::none();
+    };
+    if raw.data.is_empty() || raw.width == 0 || raw.height == 0 {
+        editor.is_wb_picking = false;
+        editor.status = "WB picker: no raw pixels available".to_string();
+        return Task::none();
+    }
+
+    // Display UV → sensor UV: undo the crop remap (the vertex shader shows the
+    // crop sub-rect when not in crop mode), then the EXIF orientation mapping —
+    // the same transform the fragment shader applies.
+    let crop = editor.current_edit_params.crop;
+    let cu = crop[0] + u.clamp(0.0, 1.0) * crop[2];
+    let cv = crop[1] + v.clamp(0.0, 1.0) * crop[3];
+    let (su, sv) = crate::color::display_to_sensor_uv(cu, cv, raw.orientation);
+
+    // Sample a 16×16 sensor window centred on the pick, per CFA channel.
+    let w = raw.width as i64;
+    let h = raw.height as i64;
+    let cx = ((su * w as f32) as i64).clamp(8, w - 9);
+    let cy = ((sv * h as f32) as i64).clamp(8, h - 9);
+
+    let mean_black =
+        raw.black_levels.iter().sum::<u32>() as f32 / raw.black_levels.len() as f32;
+    let clip_threshold = (raw.white_level as f32 * 0.98) as u16;
+
+    let mut sums = [0.0f64; 3]; // R, G, B
+    let mut counts = [0u32; 3];
+    for y in (cy - 8)..(cy + 8) {
+        for x in (cx - 8)..(cx + 8) {
+            let value = raw.data[(y * w + x) as usize];
+            if value >= clip_threshold {
+                editor.status = "WB picker: area is clipped — pick a darker neutral".to_string();
+                return Task::none();
+            }
+            // CFA channel for (x%2, y%2) per pattern: 0=RGGB 1=GRBG 2=GBRG 3=BGGR
+            let (px, py) = ((x % 2) as u32, (y % 2) as u32);
+            let channel = match (raw.cfa_pattern, py, px) {
+                (0, 0, 0) | (1, 0, 1) | (2, 1, 0) | (3, 1, 1) => 0, // R
+                (0, 1, 1) | (1, 1, 0) | (2, 0, 1) | (3, 0, 0) => 2, // B
+                _ => 1,                                             // G (both sites)
+            };
+            sums[channel] += (value as f32 - mean_black).max(0.0) as f64;
+            counts[channel] += 1;
+        }
+    }
+    if counts.iter().any(|&c| c == 0) {
+        return Task::none();
+    }
+    let r = (sums[0] / counts[0] as f64) as f32;
+    let g = (sums[1] / counts[1] as f64) as f32;
+    let b = (sums[2] / counts[2] as f64) as f32;
+    if r < 1.0 || g < 1.0 || b < 1.0 {
+        editor.status = "WB picker: area too dark for a reliable neutral".to_string();
+        return Task::none();
+    }
+
+    // Neutral → multipliers → (Kelvin, tint) through the camera matrix.
+    let wb_picked = [(g / r).clamp(0.05, 20.0), 1.0, (g / b).clamp(0.05, 20.0), 1.0];
+    let matrices = match editor.current_dcp_profile.as_deref() {
+        Some(p) => crate::color::CameraMatrices::Dcp(p),
+        None => crate::color::CameraMatrices::Single(raw.color_matrix),
+    };
+    let (kelvin, tint) = crate::color::wb_to_kelvin_tint(wb_picked, &matrices);
+
+    // Absolute Kelvin/tint → slider offsets around the as-shot anchor
+    // (inverse of EditParams::kelvin_from_anchor / tint_from_anchor).
+    let (anchor_kelvin, anchor_tint) = editor.as_shot_wb.unwrap_or((5000.0, 0.0));
+    let anchor_mired = 1.0e6 / anchor_kelvin.clamp(1500.0, 50000.0);
+    let temperature = ((anchor_mired - 1.0e6 / kelvin) / 120.0).clamp(-1.0, 1.0);
+    let tint_offset = ((tint - anchor_tint) / 50.0).clamp(-1.0, 1.0);
+
+    editor.is_wb_picking = false;
+    editor.current_edit_params.temperature = temperature;
+    editor.current_edit_params.tint = tint_offset;
+    editor.status = format!("WB picked: {:.0}K, tint {:+.0}", kelvin, tint);
+
+    let task = update_pipeline(editor);
+    editor.commit_current_state();
+    task
 }
 
 /// Resolve the DCP interpolation and WB override for the editor's current

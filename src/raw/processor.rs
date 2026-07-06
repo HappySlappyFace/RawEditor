@@ -73,6 +73,11 @@ pub fn process_image(
     let source = decode_jpeg(&jpeg_data)
         .map_err(|e| format!("Failed to decode JPEG: {}", e))?;
 
+    // Embedded previews are stored in native sensor orientation; the camera
+    // only records the rotation as an EXIF tag. Apply it here so the library
+    // grid and cached previews show portrait shots upright.
+    let source = apply_exif_orientation(source, raw_path);
+
     tracing::debug!("   Original size: {}x{}", source.width(), source.height());
 
     // Cascade: each tier is resized from the previous (already-small) image.
@@ -89,6 +94,30 @@ pub fn process_image(
 
     tracing::info!("Generated 3 cache tiers for image {}", image_id);
     Ok((thumb_path, instant_path, working_path))
+}
+
+/// Rotate a decoded embedded JPEG to match the raw file's EXIF orientation
+/// (1/3/6/8 after normalisation; mirrored variants map to their rotations).
+pub fn apply_exif_orientation(img: image::DynamicImage, raw_path: &Path) -> image::DynamicImage {
+    let orientation = read_exif_orientation(raw_path);
+    match orientation {
+        3 => image::DynamicImage::ImageRgba8(image::imageops::rotate180(&img)),
+        6 => image::DynamicImage::ImageRgba8(image::imageops::rotate90(&img)),
+        8 => image::DynamicImage::ImageRgba8(image::imageops::rotate270(&img)),
+        _ => img,
+    }
+}
+
+/// Container-level EXIF orientation read (cheap — no image decode).
+fn read_exif_orientation(path: &Path) -> u32 {
+    let Ok(file) = std::fs::File::open(path) else { return 1 };
+    let mut bufreader = std::io::BufReader::new(&file);
+    let Ok(exif_data) = exif::Reader::new().read_from_container(&mut bufreader) else { return 1 };
+    let orientation = exif_data
+        .get_field(exif::Tag::Orientation, exif::In::PRIMARY)
+        .and_then(|f| f.value.get_uint(0))
+        .unwrap_or(1);
+    crate::raw::loader::normalize_orientation(orientation)
 }
 
 fn resize_to_width(img: &image::DynamicImage, target_width: u32, filter: FilterType) -> image::DynamicImage {
