@@ -73,6 +73,24 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::CropHandleGrabbed(h, b) => {
             handlers::develop::handle_crop_handle_grabbed(editor, h, b)
         }
+        Message::ToggleMaskPlacement(t) => {
+            handlers::masks::handle_toggle_mask_placement(editor, t)
+        }
+        Message::SelectMask(i) => handlers::masks::handle_select_mask(editor, i),
+        Message::DeleteMask(i) => handlers::masks::handle_delete_mask(editor, i),
+        Message::ToggleMaskEnabled(i, e) => {
+            handlers::masks::handle_toggle_mask_enabled(editor, i, e)
+        }
+        Message::ToggleMaskInvert(inv) => handlers::masks::handle_toggle_mask_invert(editor, inv),
+        Message::MaskAdjustmentChanged(which, v) => {
+            handlers::masks::handle_mask_adjustment_changed(editor, which, v)
+        }
+        Message::MaskPlacementStarted(u, v) => {
+            handlers::masks::handle_mask_placement_started(editor, u, v)
+        }
+        Message::MaskHandleGrabbed(h, b) => {
+            handlers::masks::handle_mask_handle_grabbed(editor, h, b)
+        }
         Message::CommitEdit => handlers::develop::handle_commit_edit(editor),
         Message::Undo => handlers::develop::handle_undo(editor),
         Message::Redo => handlers::develop::handle_redo(editor),

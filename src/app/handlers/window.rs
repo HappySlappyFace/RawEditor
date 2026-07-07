@@ -35,6 +35,12 @@ pub fn handle_escape(editor: &mut RawEditor) -> Task<Message> {
     } else if editor.is_wb_picking {
         editor.is_wb_picking = false;
         editor.status.clear();
+    } else if editor.mask_tool != crate::app::state::MaskTool::Inactive {
+        editor.mask_tool = crate::app::state::MaskTool::Inactive;
+        editor.status.clear();
+    } else if editor.selected_mask.is_some() {
+        editor.selected_mask = None;
+        editor.canvas_cache.clear();
     }
     Task::none()
 }

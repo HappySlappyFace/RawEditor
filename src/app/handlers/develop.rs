@@ -110,6 +110,8 @@ pub fn handle_set_crop(editor: &mut RawEditor, crop: [f32; 4]) -> Task<Message> 
 
 pub fn handle_toggle_crop(editor: &mut RawEditor) -> Task<Message> {
     editor.is_wb_picking = false; // tools are mutually exclusive
+    editor.mask_tool = crate::app::state::MaskTool::Inactive;
+    editor.selected_mask = None;
     editor.is_cropping = !editor.is_cropping;
     if editor.is_cropping {
         editor.drag_mode = DragMode::Crop;
@@ -167,6 +169,9 @@ pub fn handle_redo(editor: &mut RawEditor) -> Task<Message> {
 
 pub fn handle_reset_edits(editor: &mut RawEditor) -> Task<Message> {
     editor.current_edit_params.reset();
+    // The masks just got wiped; drop the selection/tool that pointed at them.
+    editor.selected_mask = None;
+    editor.mask_tool = crate::app::state::MaskTool::Inactive;
     if let Some(lib) = &editor.library {
         if let Some(id) = editor.selected_image_id {
             let _ = lib.delete_edits(id);
@@ -362,6 +367,8 @@ pub fn handle_toggle_wb_picker(editor: &mut RawEditor) -> Task<Message> {
             editor.drag_mode = DragMode::None;
             editor.current_edit_params.is_cropping = 0;
         }
+        editor.mask_tool = crate::app::state::MaskTool::Inactive;
+        editor.selected_mask = None;
         editor.status = "WB picker: click a neutral grey/white area".to_string();
     } else {
         editor.status.clear();
@@ -491,7 +498,7 @@ pub fn resolve_wb_and_dcp(
     (interpolated, wb_override)
 }
 
-fn update_pipeline(editor: &mut RawEditor) -> Task<Message> {
+pub(crate) fn update_pipeline(editor: &mut RawEditor) -> Task<Message> {
     editor.save_current_edits();
     if let (Some(ctx), Some(resources)) = (&editor.gpu_context, &editor.image_resources) {
         // Phase 140: Interpolate DCP + resolve slider WB

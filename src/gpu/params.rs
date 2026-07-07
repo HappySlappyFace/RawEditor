@@ -1,4 +1,30 @@
-use crate::core::types::EditParams;
+use crate::core::types::{EditParams, MaskParams, MAX_MASKS};
+
+/// GPU-friendly local adjustment mask: four vec4s (64 bytes), so the WGSL
+/// uniform array stride is a multiple of 16 and Pod has no padding holes.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GpuMask {
+    /// x: type (0 linear / 1 radial), y: enabled, z: invert, w: feather
+    pub info: [f32; 4],
+    /// linear: (ax, ay, bx, by); radial: (cx, cy, rx, ry)
+    pub geom: [f32; 4],
+    /// exposure, contrast, saturation, warmth
+    pub adj0: [f32; 4],
+    /// highlights, shadows, unused, unused
+    pub adj1: [f32; 4],
+}
+
+impl From<&MaskParams> for GpuMask {
+    fn from(m: &MaskParams) -> Self {
+        Self {
+            info: [m.mask_type as f32, m.enabled as f32, m.invert as f32, m.feather],
+            geom: [m.ax, m.ay, m.bx, m.by],
+            adj0: [m.exposure, m.contrast, m.saturation, m.warmth],
+            adj1: [m.highlights, m.shadows, 0.0, 0.0],
+        }
+    }
+}
 
 /// GPU-friendly representation of edit parameters.
 /// Must match the WGSL struct layout with strict 16-byte alignment.
@@ -52,6 +78,13 @@ pub struct GpuEditParams {
     pub dcp_has_curve: u32,
     /// EXIF orientation (1/3/6/8) — per-image, set from ImageResources.
     pub orientation: u32,
+    /// Number of active local adjustment masks (0..=8)
+    pub mask_count: u32,
+    _pad_masks_1: u32,
+    _pad_masks_2: u32,
+    _pad_masks_3: u32,
+    /// Local adjustment masks; only the first `mask_count` are evaluated.
+    pub masks: [GpuMask; MAX_MASKS],
 }
 
 impl From<&EditParams> for GpuEditParams {
@@ -103,6 +136,36 @@ impl From<&EditParams> for GpuEditParams {
             has_dcp: 0,
             dcp_has_curve: 0,
             orientation: 1,
+            mask_count: params.mask_count.min(MAX_MASKS as u32),
+            _pad_masks_1: 0,
+            _pad_masks_2: 0,
+            _pad_masks_3: 0,
+            masks: std::array::from_fn(|i| GpuMask::from(&params.masks[i])),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The WGSL EditParams structs in BOTH shaders alias this exact layout in
+    /// one shared uniform buffer — a size drift here corrupts GPU memory.
+    #[test]
+    fn gpu_struct_sizes_match_wgsl_layout() {
+        assert_eq!(std::mem::size_of::<GpuMask>(), 64);
+        // 256 (base) + 16 (mask_count + pad) + 8 × 64 (masks)
+        assert_eq!(std::mem::size_of::<GpuEditParams>(), 784);
+    }
+
+    #[test]
+    fn mask_mapping_preserves_fields() {
+        let mut m = MaskParams::new_radial(0.5, 0.4, 0.3, 0.2);
+        m.exposure = -1.5;
+        m.invert = 1;
+        let g = GpuMask::from(&m);
+        assert_eq!(g.info, [1.0, 1.0, 1.0, 0.5]);
+        assert_eq!(g.geom, [0.5, 0.4, 0.3, 0.2]);
+        assert_eq!(g.adj0[0], -1.5);
     }
 }

@@ -336,6 +336,8 @@ fn view_sidebar(editor: &RawEditor) -> iced::widget::Column<'_, Message> {
             .spacing(5),
         );
 
+    sidebar = push_mask_section(sidebar, editor);
+
     if crate::debug::SHOW_SENSOR_CORRECTION {
         sidebar = sidebar
             .push(text("Sensor Correction").size(14))
@@ -579,6 +581,11 @@ fn view_main_content<'a>(
                     is_cropping: editor.is_cropping,
                     is_wb_picking: editor.is_wb_picking,
                     crop: editor.current_edit_params.crop,
+                    is_mask_placing: editor.mask_tool != crate::app::state::MaskTool::Inactive,
+                    selected_mask: editor.selected_mask.and_then(|i| {
+                        (i < editor.current_edit_params.mask_count as usize)
+                            .then(|| editor.current_edit_params.masks[i])
+                    }),
                 })
                 .width(Length::Fill)
                 .height(Length::Fill)
@@ -742,6 +749,135 @@ fn view_main_content<'a>(
             ..Default::default()
         })
         .into()
+}
+
+/// "Local Masks" sidebar section: add-mask buttons, the mask list, and the
+/// per-mask adjustment sliders for the selected mask.
+fn push_mask_section<'a>(
+    mut sidebar: iced::widget::Column<'a, Message>,
+    editor: &'a RawEditor,
+) -> iced::widget::Column<'a, Message> {
+    use crate::app::message::MaskAdjustment;
+    use crate::app::state::MaskTool;
+    use crate::core::types::MAX_MASKS;
+
+    let params = &editor.current_edit_params;
+    let count = params.mask_count as usize;
+
+    sidebar = sidebar.push(text("Local Masks").size(14).font(Font {
+        weight: Weight::Bold,
+        ..Default::default()
+    }));
+
+    // Add-mask buttons: toggle placement mode (next click-drag on the preview
+    // places the mask). Disabled at the mask limit, except to cancel a mode.
+    let can_add = count < MAX_MASKS;
+    let linear_active = editor.mask_tool == MaskTool::PlacingLinear;
+    let radial_active = editor.mask_tool == MaskTool::PlacingRadial;
+    sidebar = sidebar.push(
+        row![
+            button(text(if linear_active { "Click image…" } else { "+ Linear" }).size(12))
+                .style(if linear_active {
+                    ui::styles::AccentButton::style
+                } else {
+                    ui::styles::NeutralButton::style
+                })
+                .on_press_maybe(
+                    (can_add || linear_active).then_some(Message::ToggleMaskPlacement(0)),
+                )
+                .width(Length::Fill),
+            button(text(if radial_active { "Click image…" } else { "+ Radial" }).size(12))
+                .style(if radial_active {
+                    ui::styles::AccentButton::style
+                } else {
+                    ui::styles::NeutralButton::style
+                })
+                .on_press_maybe(
+                    (can_add || radial_active).then_some(Message::ToggleMaskPlacement(1)),
+                )
+                .width(Length::Fill),
+        ]
+        .spacing(5),
+    );
+
+    // Mask list: select / enable / delete
+    for i in 0..count {
+        let m = params.masks[i];
+        let selected = editor.selected_mask == Some(i);
+        let label = format!(
+            "{} {}",
+            if m.mask_type == 0 { "Linear" } else { "Radial" },
+            i + 1
+        );
+        sidebar = sidebar.push(
+            row![
+                button(text(label).size(12))
+                    .style(if selected {
+                        ui::styles::AccentButton::style
+                    } else {
+                        ui::styles::NeutralButton::style
+                    })
+                    .on_press(Message::SelectMask(if selected { None } else { Some(i) }))
+                    .width(Length::Fill),
+                checkbox("", m.enabled != 0)
+                    .on_toggle(move |checked| Message::ToggleMaskEnabled(i, checked))
+                    .size(16),
+                button(text(ui::icons::TIMES).font(ICON_FONT).size(12))
+                    .style(ui::styles::NeutralButton::style)
+                    .on_press(Message::DeleteMask(i))
+                    .padding(6),
+            ]
+            .spacing(5)
+            .align_y(Alignment::Center),
+        );
+    }
+
+    // Per-mask adjustments for the selected mask
+    if let Some(i) = editor.selected_mask {
+        if i < count {
+            let m = params.masks[i];
+            sidebar = sidebar
+                .push(
+                    checkbox("Invert", m.invert != 0)
+                        .on_toggle(Message::ToggleMaskInvert)
+                        .size(16)
+                        .text_size(13),
+                )
+                .push(slider_row("Exposure", m.exposure, -4.0..=4.0, 0.05, |v| {
+                    Message::MaskAdjustmentChanged(MaskAdjustment::Exposure, v)
+                }))
+                .push(slider_row("Contrast", m.contrast, -1.0..=1.0, 0.01, |v| {
+                    Message::MaskAdjustmentChanged(MaskAdjustment::Contrast, v)
+                }))
+                .push(slider_row(
+                    "Highlights",
+                    m.highlights,
+                    -1.0..=1.0,
+                    0.01,
+                    |v| Message::MaskAdjustmentChanged(MaskAdjustment::Highlights, v),
+                ))
+                .push(slider_row("Shadows", m.shadows, -1.0..=1.0, 0.01, |v| {
+                    Message::MaskAdjustmentChanged(MaskAdjustment::Shadows, v)
+                }))
+                .push(slider_row(
+                    "Saturation",
+                    m.saturation,
+                    -1.0..=1.0,
+                    0.01,
+                    |v| Message::MaskAdjustmentChanged(MaskAdjustment::Saturation, v),
+                ))
+                .push(slider_row("Warmth", m.warmth, -1.0..=1.0, 0.01, |v| {
+                    Message::MaskAdjustmentChanged(MaskAdjustment::Warmth, v)
+                }));
+            if m.mask_type == 1 {
+                sidebar = sidebar.push(slider_row("Feather", m.feather, 0.0..=1.0, 0.01, |v| {
+                    Message::MaskAdjustmentChanged(MaskAdjustment::Feather, v)
+                }));
+            }
+        }
+    }
+
+    sidebar
 }
 
 fn slider_row<'a, F>(

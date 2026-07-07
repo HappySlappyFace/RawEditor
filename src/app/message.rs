@@ -1,8 +1,20 @@
 use crate::database::models::Image as ImageData;
 use crate::raw;
-use crate::ui::preview_renderer::CropHandle;
+use crate::ui::preview_renderer::{CropHandle, MaskHandle};
 use iced::{Point, Rectangle};
 use std::path::PathBuf;
+
+/// Which per-mask adjustment a slider targets (see MaskAdjustmentChanged)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MaskAdjustment {
+    Exposure,
+    Contrast,
+    Saturation,
+    Warmth,
+    Highlights,
+    Shadows,
+    Feather,
+}
 
 /// Application tabs/modules
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -138,6 +150,25 @@ pub enum Message {
     /// Phase 67: Interactive Crop
     ToggleCrop,
     CropHandleGrabbed(CropHandle, Rectangle),
+
+    // ========== Local Adjustment Masks ==========
+    /// Toggle mask placement mode (0 = linear, 1 = radial)
+    ToggleMaskPlacement(u32),
+    /// Select a mask in the list (None = deselect)
+    SelectMask(Option<usize>),
+    /// Delete a mask by index
+    DeleteMask(usize),
+    /// Enable/disable a mask by index
+    ToggleMaskEnabled(usize, bool),
+    /// Invert the selected mask
+    ToggleMaskInvert(bool),
+    /// Change one adjustment of the selected mask
+    MaskAdjustmentChanged(MaskAdjustment, f32),
+    /// User clicked the preview while placing a mask.
+    /// Payload: full-image display UV (0..1) — crop remap already applied.
+    MaskPlacementStarted(f32, f32),
+    /// User grabbed a handle of the selected mask on the canvas
+    MaskHandleGrabbed(MaskHandle, Rectangle),
     /// Phase 67: Delete Image
     DeleteImage,
     /// Phase 65: Undo/Redo History

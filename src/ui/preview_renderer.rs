@@ -25,6 +25,21 @@ pub enum CropHandle {
     Body,
 }
 
+/// Draggable handles of the selected local adjustment mask
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MaskHandle {
+    /// Linear: ramp start pin (weight 1)
+    LinearStart,
+    /// Linear: ramp end pin (weight 0)
+    LinearEnd,
+    /// Radial: center pin (also moves the whole linear mask if hit on the line)
+    Center,
+    /// Radial: horizontal radius handle
+    RadiusX,
+    /// Radial: vertical radius handle
+    RadiusY,
+}
+
 // ─────────────────────────────── ViewportPrimitive ────────────────────────
 
 /// Data passed from ViewportProgram::draw() to the GPU prepare/render calls.
@@ -393,6 +408,12 @@ pub struct CropOverlay {
     /// display-space UV of the click (letterbox/zoom/pan corrected).
     pub is_wb_picking: bool,
     pub crop: [f32; 4],
+    /// Mask placement mode active: a left press emits MaskPlacementStarted
+    /// with the full-image UV (crop remap applied).
+    pub is_mask_placing: bool,
+    /// The selected mask (geometry drawn + handles hit-tested). Copy of the
+    /// MaskParams — geometry is full-image display UV, same space as `crop`.
+    pub selected_mask: Option<crate::core::types::MaskParams>,
 }
 
 impl CropOverlay {
@@ -416,6 +437,147 @@ impl CropOverlay {
             height: zoomed_height,
         }
     }
+
+    /// Full-image UV → screen point. When not cropping (the only state mask
+    /// editing runs in), the displayed image is the crop sub-rect, so the crop
+    /// remap applies. Affine, so UV-space lines map to straight screen lines.
+    fn uv_to_screen(&self, u: f32, v: f32, ib: &Rectangle) -> iced::Point {
+        let view_u = (u - self.crop[0]) / self.crop[2].max(1e-6);
+        let view_v = (v - self.crop[1]) / self.crop[3].max(1e-6);
+        iced::Point::new(ib.x + view_u * ib.width, ib.y + view_v * ib.height)
+    }
+
+    /// Screen point → full-image UV (inverse of `uv_to_screen`).
+    fn screen_to_uv(&self, p: iced::Point, ib: &Rectangle) -> (f32, f32) {
+        let view_u = (p.x - ib.x) / ib.width.max(1.0);
+        let view_v = (p.y - ib.y) / ib.height.max(1.0);
+        (
+            self.crop[0] + view_u * self.crop[2],
+            self.crop[1] + view_v * self.crop[3],
+        )
+    }
+
+    /// Draw the selected mask's geometry: pins + connecting line + the two
+    /// weight iso-lines for linear masks; outer/feather ellipses for radial.
+    /// Everything is computed in UV space and mapped through `uv_to_screen`,
+    /// so the overlay matches the shader's mask exactly at any zoom/pan/crop.
+    fn draw_mask_overlay(
+        &self,
+        renderer: &iced::Renderer,
+        bounds: Rectangle,
+    ) -> Vec<canvas::Geometry> {
+        let Some(m) = self.selected_mask else {
+            return vec![];
+        };
+
+        let ib = self.image_bounds(bounds.width, bounds.height);
+        let mut frame = canvas::Frame::new(renderer, bounds.size());
+
+        let stroke = canvas::Stroke::default()
+            .with_color(Color::from_rgba(1.0, 1.0, 1.0, 0.9))
+            .with_width(1.5);
+        let faint = canvas::Stroke::default()
+            .with_color(Color::from_rgba(1.0, 1.0, 1.0, 0.45))
+            .with_width(1.0);
+
+        let handle_size = 12.0;
+        let draw_pin = |frame: &mut canvas::Frame, p: iced::Point| {
+            let pos = iced::Point::new(p.x - handle_size / 2.0, p.y - handle_size / 2.0);
+            let size = iced::Size::new(handle_size, handle_size);
+            frame.fill_rectangle(pos, size, Color::WHITE);
+            frame.stroke(
+                &canvas::Path::rectangle(pos, size),
+                canvas::Stroke::default()
+                    .with_color(Color::BLACK)
+                    .with_width(1.0),
+            );
+        };
+
+        if m.mask_type == 0 {
+            // Linear: iso-lines are perpendicular to B−A in UV space. Mapping
+            // UV endpoints through the affine uv_to_screen keeps them exact
+            // even though UV→screen scales axes unequally.
+            let (dx, dy) = (m.bx - m.ax, m.by - m.ay);
+            let len = (dx * dx + dy * dy).sqrt();
+            if len > 1e-5 {
+                // Perpendicular direction in UV, extended well past the image
+                let (px, py) = (-dy / len, dx / len);
+                let ext = 4.0;
+                let iso = |cx: f32, cy: f32| {
+                    canvas::Path::line(
+                        self.uv_to_screen(cx - px * ext, cy - py * ext, &ib),
+                        self.uv_to_screen(cx + px * ext, cy + py * ext, &ib),
+                    )
+                };
+                frame.stroke(&iso(m.ax, m.ay), stroke);
+                frame.stroke(&iso(m.bx, m.by), stroke);
+                frame.stroke(
+                    &canvas::Path::line(
+                        self.uv_to_screen(m.ax, m.ay, &ib),
+                        self.uv_to_screen(m.bx, m.by, &ib),
+                    ),
+                    faint,
+                );
+            }
+            draw_pin(&mut frame, self.uv_to_screen(m.ax, m.ay, &ib));
+            draw_pin(&mut frame, self.uv_to_screen(m.bx, m.by, &ib));
+            draw_pin(
+                &mut frame,
+                self.uv_to_screen((m.ax + m.bx) * 0.5, (m.ay + m.by) * 0.5, &ib),
+            );
+        } else {
+            // Radial: axis-aligned ellipse in UV space → axis-aligned on screen
+            let center = self.uv_to_screen(m.ax, m.ay, &ib);
+            let rx = m.bx / self.crop[2].max(1e-6) * ib.width;
+            let ry = m.by / self.crop[3].max(1e-6) * ib.height;
+            let ellipse = |radii: iced::Vector| {
+                canvas::Path::new(|b| {
+                    b.ellipse(canvas::path::arc::Elliptical {
+                        center,
+                        radii,
+                        rotation: iced::Radians(0.0),
+                        start_angle: iced::Radians(0.0),
+                        end_angle: iced::Radians(std::f32::consts::TAU),
+                    });
+                })
+            };
+            frame.stroke(&ellipse(iced::Vector::new(rx, ry)), stroke);
+            // Inner feather edge: full weight inside, falloff between the two
+            let inner = 1.0 - m.feather.clamp(0.0, 0.999);
+            if inner > 0.01 && m.feather > 0.01 {
+                frame.stroke(&ellipse(iced::Vector::new(rx * inner, ry * inner)), faint);
+            }
+            draw_pin(&mut frame, center);
+            draw_pin(&mut frame, self.uv_to_screen(m.ax + m.bx, m.ay, &ib));
+            draw_pin(&mut frame, self.uv_to_screen(m.ax, m.ay + m.by, &ib));
+        }
+
+        vec![frame.into_geometry()]
+    }
+
+    /// Screen positions of the selected mask's drag handles, in hit-test
+    /// priority order (geometry handles before the center pin).
+    fn mask_handle_positions(&self, ib: &Rectangle) -> Vec<(MaskHandle, iced::Point)> {
+        let Some(m) = self.selected_mask else {
+            return vec![];
+        };
+        if m.mask_type == 0 {
+            vec![
+                (MaskHandle::LinearStart, self.uv_to_screen(m.ax, m.ay, ib)),
+                (MaskHandle::LinearEnd, self.uv_to_screen(m.bx, m.by, ib)),
+                (
+                    MaskHandle::Center,
+                    self.uv_to_screen((m.ax + m.bx) * 0.5, (m.ay + m.by) * 0.5, ib),
+                ),
+            ]
+        } else {
+            vec![
+                (MaskHandle::RadiusX, self.uv_to_screen(m.ax + m.bx, m.ay, ib)),
+                (MaskHandle::RadiusY, self.uv_to_screen(m.ax, m.ay + m.by, ib)),
+                (MaskHandle::Center, self.uv_to_screen(m.ax, m.ay, ib)),
+            ]
+        }
+    }
 }
 
 impl canvas::Program<Message> for CropOverlay {
@@ -430,7 +592,7 @@ impl canvas::Program<Message> for CropOverlay {
         _cursor: Cursor,
     ) -> Vec<canvas::Geometry> {
         if !self.is_cropping {
-            return vec![];
+            return self.draw_mask_overlay(renderer, bounds);
         }
 
         let viewport_width = bounds.width;
@@ -522,7 +684,11 @@ impl canvas::Program<Message> for CropOverlay {
             return (canvas::event::Status::Captured, Some(Message::ViewportResized(bounds.width, bounds.height, scale_factor)));
         }
 
-        if !self.is_cropping && !self.is_wb_picking {
+        if !self.is_cropping
+            && !self.is_wb_picking
+            && !self.is_mask_placing
+            && self.selected_mask.is_none()
+        {
             return (canvas::event::Status::Ignored, None);
         }
 
@@ -539,6 +705,45 @@ impl canvas::Program<Message> for CropOverlay {
                 let v = (cursor_position.y - image_bounds.y) / image_bounds.height.max(1.0);
                 if (0.0..=1.0).contains(&u) && (0.0..=1.0).contains(&v) {
                     return (canvas::event::Status::Captured, Some(Message::WbPicked(u, v)));
+                }
+            }
+            return (canvas::event::Status::Ignored, None);
+        }
+
+        // Mask placement: a left press creates the mask at the pressed point
+        // (the handler converts the press into an in-flight handle drag so the
+        // same gesture sizes the new mask).
+        if self.is_mask_placing {
+            if let canvas::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left)) = event {
+                let image_bounds = self.image_bounds(bounds.width, bounds.height);
+                let view_u = (cursor_position.x - image_bounds.x) / image_bounds.width.max(1.0);
+                let view_v = (cursor_position.y - image_bounds.y) / image_bounds.height.max(1.0);
+                if (0.0..=1.0).contains(&view_u) && (0.0..=1.0).contains(&view_v) {
+                    let (u, v) = self.screen_to_uv(cursor_position, &image_bounds);
+                    return (
+                        canvas::event::Status::Captured,
+                        Some(Message::MaskPlacementStarted(u, v)),
+                    );
+                }
+            }
+            return (canvas::event::Status::Ignored, None);
+        }
+
+        // Selected mask: hit-test its handles (mask editing and crop mode are
+        // mutually exclusive, so is_cropping is false on this path).
+        if !self.is_cropping && self.selected_mask.is_some() {
+            if let canvas::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left)) = event {
+                let image_bounds = self.image_bounds(bounds.width, bounds.height);
+                let hr = 15.0_f32;
+                for (handle, p) in self.mask_handle_positions(&image_bounds) {
+                    let dx = cursor_position.x - p.x;
+                    let dy = cursor_position.y - p.y;
+                    if dx * dx + dy * dy < hr * hr {
+                        return (
+                            canvas::event::Status::Captured,
+                            Some(Message::MaskHandleGrabbed(handle, image_bounds)),
+                        );
+                    }
                 }
             }
             return (canvas::event::Status::Ignored, None);
@@ -577,10 +782,26 @@ impl canvas::Program<Message> for CropOverlay {
         bounds: Rectangle,
         cursor: Cursor,
     ) -> iced::mouse::Interaction {
-        if self.is_wb_picking {
+        if self.is_wb_picking || self.is_mask_placing {
             return iced::mouse::Interaction::Crosshair;
         }
-        if !self.is_cropping { return iced::mouse::Interaction::default(); }
+        if !self.is_cropping {
+            // Grab cursor over the selected mask's handles
+            if self.selected_mask.is_some() {
+                if let Some(p) = cursor.position_in(bounds) {
+                    let ib = self.image_bounds(bounds.width, bounds.height);
+                    let hr = 15.0_f32;
+                    for (_, hp) in self.mask_handle_positions(&ib) {
+                        let dx = p.x - hp.x;
+                        let dy = p.y - hp.y;
+                        if dx * dx + dy * dy < hr * hr {
+                            return iced::mouse::Interaction::Grab;
+                        }
+                    }
+                }
+            }
+            return iced::mouse::Interaction::default();
+        }
         let cursor_position = match cursor.position_in(bounds) {
             Some(p) => p,
             None => return iced::mouse::Interaction::default(),

@@ -3,7 +3,7 @@ use crate::database;
 use crate::database::models::Image as ImageData;
 use crate::gpu;
 use crate::raw;
-use crate::ui::preview_renderer::CropHandle;
+use crate::ui::preview_renderer::{CropHandle, MaskHandle};
 use iced::widget::image::Handle;
 use iced::{Point, Rectangle, Task};
 use std::collections::{HashMap, HashSet};
@@ -30,6 +30,18 @@ pub enum DragMode {
     Pan,
     CropHandle(CropHandle),
     Crop,
+    /// Dragging a handle of the selected local adjustment mask
+    MaskHandle(MaskHandle),
+}
+
+/// Local adjustment mask tool mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MaskTool {
+    Inactive,
+    /// Next click on the preview places a linear gradient
+    PlacingLinear,
+    /// Next click on the preview places a radial gradient
+    PlacingRadial,
 }
 
 /// Phase 83: Pick/Reject flags
@@ -209,6 +221,12 @@ pub struct RawEditor {
     /// WB eyedropper tool active: next click on the preview samples a neutral.
     /// Mutually exclusive with `is_cropping`.
     pub is_wb_picking: bool,
+    /// Local adjustment mask tool (placement mode). Mutually exclusive with
+    /// crop and WB picker.
+    pub mask_tool: MaskTool,
+    /// Index into current_edit_params.masks of the mask being edited
+    /// (overlay handles + sidebar sliders). None = no mask selected.
+    pub selected_mask: Option<usize>,
     /// Phase 67: Drag mode for interaction
     pub drag_mode: DragMode,
     /// Phase 78: Async Task Deduplication (track pending preview loads)
@@ -370,6 +388,8 @@ impl RawEditor {
                 history_map: HashMap::new(),
                 is_cropping: false,
                 is_wb_picking: false,
+                mask_tool: MaskTool::Inactive,
+                selected_mask: None,
                 drag_mode: DragMode::None,
                 pending_loads: HashSet::new(),
                 queued_loads: Vec::new(),
@@ -419,6 +439,12 @@ impl RawEditor {
                 *index
             );
         }
+    }
+
+    /// True while the mask tool wants the preview canvas (placement mode or a
+    /// selected mask with visible handles) — suppresses panning, like crop.
+    pub fn mask_overlay_active(&self) -> bool {
+        self.mask_tool != MaskTool::Inactive || self.selected_mask.is_some()
     }
 
     // Phase 67: Calculate image screen bounds for interaction

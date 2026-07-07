@@ -152,6 +152,24 @@ struct EditParams {
     // EXIF orientation: 1 normal, 3 = 180°, 6 = 90° CW, 8 = 270° CW.
     // Display-space UVs are mapped to sensor space at the top of fs_main.
     orientation: u32,
+
+    // Local adjustment masks (Step 10.5). Only the first mask_count are active.
+    mask_count: u32,
+    pad_masks_1: u32,
+    pad_masks_2: u32,
+    pad_masks_3: u32,
+    masks: array<Mask, 8>,
+}
+
+// One local adjustment mask (64 bytes — uniform array stride must be ×16).
+// Geometry lives in full-image display UV, the same space as params.crop, so
+// masks stay glued to image content when the crop changes. Like the crop
+// rectangle, masks do not follow the straighten rotation.
+struct Mask {
+    info: vec4<f32>,  // x: type (0 linear / 1 radial), y: enabled, z: invert, w: feather
+    geom: vec4<f32>,  // linear: ax, ay, bx, by;  radial: cx, cy, rx, ry
+    adj0: vec4<f32>,  // exposure (EV), contrast, saturation, warmth
+    adj1: vec4<f32>,  // highlights, shadows, unused, unused
 }
 
 // Phase 128: Pass 2 now reads the debayered Rgba16Float intermediate texture.
@@ -200,6 +218,30 @@ fn get_cam_luma(coords: vec2<i32>, dimensions: vec2<u32>) -> f32 {
     let clamped = clamp(coords, vec2<i32>(0), vec2<i32>(dimensions) - vec2<i32>(1));
     let cam = textureLoad(input_texture, clamped, 0).rgb * params.wb_multipliers.rgb;
     return cam.r * 0.25 + cam.g * 0.50 + cam.b * 0.25;
+}
+
+// Weight of a local adjustment mask at point p (full-image display UV,
+// the same space as params.crop). Closed-form — no mask texture needed.
+fn mask_weight(m: Mask, p: vec2<f32>) -> f32 {
+    var w: f32;
+    if (m.info.x < 0.5) {
+        // Linear gradient: weight 1 at A falling smoothly to 0 at B.
+        // Iso-lines are perpendicular to B−A in UV space.
+        let d = m.geom.zw - m.geom.xy;
+        let t = dot(p - m.geom.xy, d) / max(dot(d, d), 1e-6);
+        w = 1.0 - smoothstep(0.0, 1.0, t);
+    } else {
+        // Radial ellipse with per-axis radii; feather sets where the
+        // falloff starts (1 = from center, 0 = hard edge).
+        let q = (p - m.geom.xy) / max(m.geom.zw, vec2<f32>(1e-4));
+        let r = length(q); // 1.0 at the ellipse edge
+        let inner = 1.0 - clamp(m.info.w, 0.0, 0.999);
+        w = 1.0 - smoothstep(inner, 1.0, r);
+    }
+    if (m.info.z > 0.5) {
+        w = 1.0 - w;
+    }
+    return w;
 }
 
 // Sample the DCP ProfileToneCurve at texel centers.
@@ -757,6 +799,63 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // matrix (Robertson CCT, see src/color.rs) and updates the wb_multipliers
     // uniform. Post-matrix sRGB channel scaling twisted hues at extremes.)
 
+    // ── Step 10.5: Local Adjustment Masks ────────────────────────────────────
+    // Applied in sRGB-linear space, after global highlights/shadows + gamut
+    // compression and before global contrast/saturation, so local adjustments
+    // compose consistently with their global counterparts. Mask geometry is
+    // evaluated against input.tex_coords (full-image display UV, pre-rotation)
+    // — the same convention as the crop rectangle.
+    for (var mi = 0u; mi < min(params.mask_count, 8u); mi = mi + 1u) {
+        let m = params.masks[mi];
+        if (m.info.y < 0.5) {
+            continue;
+        }
+        let w = mask_weight(m, input.tex_coords);
+        if (w < 0.001) {
+            continue;
+        }
+
+        // Adjustment ranges: exposure ±4 EV; all others −1..1 (same units as
+        // the global highlights/shadows sliders).
+
+        // Exposure: weighted stops
+        color = color * exp2(m.adj0.x * w);
+
+        // Warmth: gentle sRGB-linear channel tilt (±10% at ±1). Real WB is
+        // uniform-wide (can't vary per pixel), so this local tilt is kept
+        // deliberately modest — large post-matrix channel scaling twists hues.
+        let warm = m.adj0.w * w;
+        if (warm != 0.0) {
+            color = color * vec3<f32>(1.0 + 0.10 * warm, 1.0, 1.0 - 0.10 * warm);
+        }
+
+        // Highlights: same luma-weighted multiplicative form as Step 10
+        let m_hl = m.adj1.x * w;
+        if (m_hl != 0.0) {
+            let luma_mh = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
+            let hl_w = smoothstep(0.5, 1.5, luma_mh);
+            let strength = select(0.4, 0.6, m_hl < 0.0);
+            color = color * max(1.0 + m_hl * strength * hl_w, 0.2);
+        }
+
+        // Shadows: same additive luma-weighted lift as Step 10
+        let m_sh = m.adj1.y * w;
+        if (m_sh != 0.0) {
+            let luma_ms = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
+            let sh_w = clamp(1.0 - luma_ms / 0.5, 0.0, 1.0);
+            color = color + vec3<f32>(sh_w * m_sh * 0.15);
+        }
+
+        // Contrast: pivoted at middle grey, matching Step 11's form
+        color = (color - 0.18) * max(1.0 + m.adj0.y * w, 0.0) + 0.18;
+
+        // Saturation: luma-preserving mix, matching Step 13's form
+        let luma_msat = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
+        color = mix(vec3<f32>(luma_msat), color, 1.0 + m.adj0.z * w);
+
+        color = max(color, vec3<f32>(0.0));
+    }
+
     // ── Step 11: Contrast ─────────────────────────────────────────────────────
     let contrast_factor = 1.0 + (params.contrast / 100.0);
     color = (color - 0.18) * contrast_factor + 0.18;
@@ -933,6 +1032,22 @@ struct EditParams {
     has_dcp: u32,
     dcp_has_curve: u32,
     orientation: u32, // unused in the debayer pass (sensor space throughout)
+
+    // Local adjustment masks — unused in the debayer pass, but the layout must
+    // stay byte-identical to the color shader's EditParams (shared buffer).
+    mask_count: u32,
+    pad_masks_1: u32,
+    pad_masks_2: u32,
+    pad_masks_3: u32,
+    masks: array<Mask, 8>,
+}
+
+// Mirror of the color shader's Mask struct (layout only; not evaluated here).
+struct Mask {
+    info: vec4<f32>,
+    geom: vec4<f32>,
+    adj0: vec4<f32>,
+    adj1: vec4<f32>,
 }
 
 @group(0) @binding(0)

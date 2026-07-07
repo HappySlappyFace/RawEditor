@@ -3,7 +3,7 @@ use iced::widget::image::Handle;
 use crate::app::state::{RawEditor, EditorReadiness, DragMode};
 use crate::app::message::{Message, AppTab};
 use crate::raw;
-use crate::ui::preview_renderer::CropHandle;
+use crate::ui::preview_renderer::{CropHandle, MaskHandle};
 
 pub fn handle_image_selected(editor: &mut RawEditor, image_id: i64) -> Task<Message> {
     if editor.last_modifiers.command() {
@@ -14,7 +14,11 @@ pub fn handle_image_selected(editor: &mut RawEditor, image_id: i64) -> Task<Mess
     }
     editor.selected_image_id = Some(image_id);
     editor.canvas_cache.clear();
-    
+    // Mask selection is an index into the previous image's mask list — clear
+    // both it and any pending placement mode when the image changes.
+    editor.selected_mask = None;
+    editor.mask_tool = crate::app::state::MaskTool::Inactive;
+
     if let Some(library) = &editor.library {
         editor.current_edit_params = library.load_edit_params(image_id).unwrap_or_default();
         editor.history_map.entry(image_id).or_insert_with(|| (vec![editor.current_edit_params], 0));
@@ -174,7 +178,7 @@ pub fn handle_mouse_pressed(editor: &mut RawEditor) -> Task<Message> {
     let double = editor.last_click_time.map(|t| now.duration_since(t).as_millis() < 300).unwrap_or(false);
     editor.last_click_time = Some(now);
     if double { return Task::done(Message::ResetView); }
-    if !editor.is_cropping && !editor.is_wb_picking {
+    if !editor.is_cropping && !editor.is_wb_picking && !editor.mask_overlay_active() {
         editor.is_dragging = true;
         editor.drag_mode = DragMode::Pan;
     }
@@ -182,15 +186,19 @@ pub fn handle_mouse_pressed(editor: &mut RawEditor) -> Task<Message> {
 }
 
 pub fn handle_mouse_released(editor: &mut RawEditor) -> Task<Message> {
-    if editor.is_dragging {
-        if let DragMode::CropHandle(_) = editor.drag_mode {
-            editor.save_current_edits();
-            editor.commit_current_state();
-            if let (Some(ctx), Some(res)) = (&editor.gpu_context, &editor.image_resources) {
-                let (interpolated, wb_override) =
-                    crate::app::handlers::develop::resolve_wb_and_dcp(editor);
-                res.update_uniforms(ctx, &editor.current_edit_params, interpolated.as_ref(), wb_override);
-            }        }
+    if editor.is_dragging
+        && matches!(
+            editor.drag_mode,
+            DragMode::CropHandle(_) | DragMode::MaskHandle(_)
+        )
+    {
+        editor.save_current_edits();
+        editor.commit_current_state();
+        if let (Some(ctx), Some(res)) = (&editor.gpu_context, &editor.image_resources) {
+            let (interpolated, wb_override) =
+                crate::app::handlers::develop::resolve_wb_and_dcp(editor);
+            res.update_uniforms(ctx, &editor.current_edit_params, interpolated.as_ref(), wb_override);
+        }
     }
     editor.is_dragging = false;
     editor.drag_mode = DragMode::None;
@@ -204,6 +212,10 @@ pub fn handle_mouse_moved(editor: &mut RawEditor, pos: Point) -> Task<Message> {
     
     if editor.is_cropping {
         handle_crop_interaction(editor, pos)
+    } else if editor.mask_overlay_active()
+        || matches!(editor.drag_mode, DragMode::MaskHandle(_))
+    {
+        handle_mask_interaction(editor, pos)
     } else {
         handle_pan_interaction(editor, pos)
     }
@@ -357,6 +369,81 @@ fn apply_crop_drag(editor: &mut RawEditor, pos: Point, last: Point, h: CropHandl
         let (interpolated, wb_override) =
             crate::app::handlers::develop::resolve_wb_and_dcp(editor);
         resources.update_uniforms(ctx, &editor.current_edit_params, interpolated.as_ref(), wb_override);
+    }
+}
+
+fn handle_mask_interaction(editor: &mut RawEditor, pos: Point) -> Task<Message> {
+    if editor.is_dragging {
+        if let DragMode::MaskHandle(h) = editor.drag_mode {
+            if let Some(last) = editor.last_cursor_position {
+                apply_mask_drag(editor, pos, last, h);
+                editor.last_cursor_position = Some(pos);
+                editor.canvas_cache.clear();
+                // Unlike crop (a canvas-only overlay), the mask's effect is
+                // baked into the render — re-render live, throttled.
+                return crate::app::handlers::develop::update_pipeline(editor);
+            }
+        }
+    } else {
+        editor.last_cursor_position = Some(pos);
+    }
+    Task::none()
+}
+
+fn apply_mask_drag(editor: &mut RawEditor, pos: Point, last: Point, h: MaskHandle) {
+    let Some(index) = editor.selected_mask else {
+        return;
+    };
+    if index >= editor.current_edit_params.mask_count as usize {
+        return;
+    }
+    let Some(resources) = &editor.image_resources else {
+        return;
+    };
+
+    // Same letterbox/zoom math as apply_crop_drag, but with the ORIENTED
+    // dimensions — the displayed image is upright, portrait shots included.
+    let (ow, oh) = resources.oriented_dims();
+    let img_aspect = ow as f32 / oh.max(1) as f32;
+    let (bw, bh) = editor.viewport_size;
+    let vp_aspect = bw / bh;
+
+    let (fw, fh) = if img_aspect > vp_aspect {
+        (bw, bw / img_aspect)
+    } else {
+        (bh * img_aspect, bh)
+    };
+
+    let zw = fw * editor.zoom;
+    let zh = fh * editor.zoom;
+
+    // Screen deltas map to visible-area UV; mask geometry lives in full-image
+    // UV (the crop sub-rect is what's displayed), so scale by the crop extent.
+    let crop = editor.current_edit_params.crop;
+    let du = (pos.x - last.x) / zw.max(1.0) * crop[2];
+    let dv = (pos.y - last.y) / zh.max(1.0) * crop[3];
+
+    let m = &mut editor.current_edit_params.masks[index];
+    match h {
+        MaskHandle::LinearStart => {
+            m.ax += du;
+            m.ay += dv;
+        }
+        MaskHandle::LinearEnd => {
+            m.bx += du;
+            m.by += dv;
+        }
+        MaskHandle::Center => {
+            // Radial: move the center. Linear: move the whole gradient.
+            m.ax += du;
+            m.ay += dv;
+            if m.mask_type == 0 {
+                m.bx += du;
+                m.by += dv;
+            }
+        }
+        MaskHandle::RadiusX => m.bx = (m.bx + du).max(0.005),
+        MaskHandle::RadiusY => m.by = (m.by + dv).max(0.005),
     }
 }
 
