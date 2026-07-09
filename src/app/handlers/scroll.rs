@@ -46,9 +46,13 @@ const GESTURE_GAP: f32 = 0.3;
 const INPUT_SMOOTH: f32 = 0.5;
 
 /// Input speed (px/s) that maps to "fully fast" for the weight interpolation.
-const SPEED_REF: f32 = 2500.0;
+/// Raised from an earlier value so decay ramps more gradually across the
+/// range of speeds a human actually reaches with a wheel — otherwise decay
+/// saturates too early and cancels out the extra impulse from scrolling
+/// faster, making speed changes barely register.
+const SPEED_REF: f32 = 3500.0;
 /// Velocity (px/s) added per (px/s) of measured input speed, per tick.
-const IMPULSE_GAIN: f32 = 0.9;
+const IMPULSE_GAIN: f32 = 1.3;
 const MAX_SPEED: f32 = 5000.0;
 const STOP_SPEED: f32 = 15.0;
 
@@ -56,8 +60,21 @@ const STOP_SPEED: f32 = 15.0;
 /// even though the input itself was gentle); fast input -> DECAY_FAST
 /// (light — stops/redirects quickly so a fast flick stays controllable
 /// instead of sailing past where you meant to land).
-const DECAY_SLOW: f32 = 1.4;
-const DECAY_FAST: f32 = 9.0;
+const DECAY_SLOW: f32 = 1.2;
+const DECAY_FAST: f32 = 6.5;
+
+/// iced's scrollable always applies its own hardcoded ~60px/line scroll on
+/// top of anything we do — that native jump can't be intercepted (the
+/// Scrollable widget captures the wheel event before our subscription-based
+/// routing ever sees it). Rather than leave a visible seam between that
+/// instant jump and our comparatively small first physics-tick step, we
+/// "pre-play" a short slice of the glide synchronously right here: exactly
+/// the distance and velocity-reduction a real kinetic tick would produce
+/// over CATCHUP_DT seconds (closed-form, from the same exponential-decay
+/// model `handle_kinetic_tick` steps numerically), so the following ticks
+/// continue the glide already in motion instead of visibly ramping up from
+/// a near-standstill right after the native jump.
+const CATCHUP_DT: f32 = 0.03;
 
 pub fn handle_global_cursor_moved(editor: &mut RawEditor, pos: iced::Point) -> Task<Message> {
     editor.global_cursor = pos;
@@ -134,11 +151,22 @@ pub fn handle_wheel(editor: &mut RawEditor, delta: ScrollDelta) -> Task<Message>
                 let t = (editor.filmstrip_input_speed / SPEED_REF).clamp(0.0, 1.0);
                 editor.filmstrip_decay = DECAY_SLOW + (DECAY_FAST - DECAY_SLOW) * t;
 
-                // Anchor the next kinetic tick's dt to this exact moment
-                // (more accurate than assuming a nominal frame time), and
-                // let the tick loop itself render the resulting scroll —
-                // no separate instant nudge needed.
+                // Closed-form: exact distance covered and velocity remaining
+                // after CATCHUP_DT seconds of exponential decay from the
+                // velocity we just set. Applying this synchronously bridges
+                // the gap to the real per-frame kinetic ticks (which pick up
+                // from the reduced velocity below), so there's no visible
+                // cliff between iced's native jump and the glide.
+                let v0 = editor.filmstrip_velocity;
+                let k = editor.filmstrip_decay;
+                let instant_step = v0 / k * (1.0 - (-k * CATCHUP_DT).exp());
+                editor.filmstrip_velocity = v0 * (-k * CATCHUP_DT).exp();
                 editor.last_kinetic_tick = Some(now);
+
+                return scrollable::scroll_by(
+                    crate::ui::filmstrip::scroll_id(),
+                    AbsoluteOffset { x: instant_step, y: 0.0 },
+                );
             }
         }
     }
