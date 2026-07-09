@@ -1,4 +1,4 @@
-use iced::widget::{button, container, image, row, scrollable, text, stack};
+use iced::widget::{button, container, image, mouse_area, row, scrollable, text, stack, Space};
 use iced::{Background, Border, Color, Element, Length, Theme};
 use std::path::PathBuf;
 use std::collections::HashSet;  // Phase 55: Multi-selection
@@ -211,7 +211,7 @@ pub fn view<'a>(
         });
     
     // Dark background container (no padding to avoid wasted space)
-    container(scrollable_film)
+    let scroll_surface = container(scrollable_film)
         .width(Length::Fill)
         .height(Length::Fill)
         .padding(0)
@@ -221,6 +221,19 @@ pub fn view<'a>(
                 background: Some(Background::Color(Color::from_rgb(0.08, 0.08, 0.08))),
                 ..Default::default()
             }
-        })
+        });
+
+    // Wheel interceptor, stacked ABOVE the scrollable (later stack children
+    // get first crack at events in iced). Capturing the wheel event here
+    // short-circuits iced's Stack dispatch before the scrollable underneath
+    // ever sees it, so its hardcoded ~60px/line native scroll never fires —
+    // handlers::scroll::handle_filmstrip_wheel drives 100% of the motion,
+    // giving a single continuous physics model with no jump/seam.
+    let wheel_capture = mouse_area(Space::new(Length::Fill, Length::Fill))
+        .on_scroll(Message::FilmstripWheel);
+
+    stack![scroll_surface, wheel_capture]
+        .width(Length::Fill)
+        .height(Length::Fill)
         .into()
 }

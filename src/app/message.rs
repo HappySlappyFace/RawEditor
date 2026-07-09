@@ -321,7 +321,8 @@ pub enum Message {
 
     // ========== Scroll boost + filmstrip momentum ==========
     /// Raw wheel event from the global subscription, routed by cursor
-    /// position to whichever scrollable (library grid / filmstrip) it's over.
+    /// position to the library grid (the filmstrip has its own dedicated
+    /// interceptor — see FilmstripWheel — so it isn't handled here).
     WheelScrolled(iced::mouse::ScrollDelta),
     /// Window-space cursor position, tracked globally so wheel routing knows
     /// which region the cursor is over (WheelScrolled itself carries no position).
@@ -330,4 +331,9 @@ pub enum Message {
     WindowResized(iced::Size),
     /// One frame tick of the filmstrip's kinetic (momentum) scroll.
     KineticTick(std::time::Instant),
+    /// Wheel event captured directly by the filmstrip's own overlay
+    /// (src/ui/filmstrip.rs), which sits above its scrollable in a `stack!`
+    /// specifically so iced's native ~60px/line jump never fires there —
+    /// all filmstrip scrolling comes from our own physics instead.
+    FilmstripWheel(iced::mouse::ScrollDelta),
 }

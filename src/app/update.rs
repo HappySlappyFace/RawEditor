@@ -217,5 +217,6 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::GlobalCursorMoved(pos) => handlers::scroll::handle_global_cursor_moved(editor, pos),
         Message::WindowResized(size) => handlers::scroll::handle_window_resized(editor, size),
         Message::KineticTick(now) => handlers::scroll::handle_kinetic_tick(editor, now),
+        Message::FilmstripWheel(delta) => handlers::scroll::handle_filmstrip_wheel(editor, delta),
     }
 }

@@ -1,13 +1,23 @@
-// Wheel scroll boost + filmstrip momentum.
+// Wheel scroll boost (library grid) + filmstrip momentum.
 //
 // iced 0.13's scrollable hardcodes wheel scrolling at 60px/line with no
-// configuration API. Rather than fight that, we let iced apply its native
-// scroll and then nudge the same scrollable further with `scroll_by`,
-// routed by which region the (globally-tracked) cursor is currently over.
+// configuration API.
+//
+// Library grid: we let iced apply its native scroll and nudge it further
+// with `scroll_by`, routed by the globally-tracked cursor position.
+//
+// Filmstrip: iced's Stack widget dispatches wheel events top-layer-first and
+// stops at the first layer that captures them (see iced_widget::stack::
+// on_event — `.find(Captured)` short-circuits a lazy iterator), so
+// src/ui/filmstrip.rs stacks a transparent `mouse_area::on_scroll` ABOVE its
+// scrollable. That interceptor captures every wheel event before the
+// scrollable underneath ever sees it, fully suppressing iced's native jump —
+// all filmstrip scrolling below is 100% our own physics, so there's no
+// native contribution to blend with and no seam.
+//
 // The develop preview's own `mouse_area::on_scroll` already consumes wheel
 // events for zoom, and everything else (sidebars, library folder list)
-// deliberately keeps native speed — only the library grid and the
-// cull/develop filmstrip get boosted.
+// deliberately keeps native speed.
 
 use iced::mouse::ScrollDelta;
 use iced::widget::scrollable::{self, AbsoluteOffset};
@@ -18,7 +28,6 @@ use crate::app::state::RawEditor;
 use crate::app::state::Modal;
 
 const TITLE_BAR_H: f32 = 35.0;
-const FILMSTRIP_H: f32 = 115.0;
 const LIB_SIDEBAR_W: f32 = 250.0;
 const LIB_TOOLBAR_H: f32 = 56.0;
 const LIB_STATUS_H: f32 = 42.0;
@@ -28,12 +37,12 @@ const GRID_MULT: f32 = 4.0;
 
 const STRIP_LINE_PX: f32 = 60.0;
 
-// ── Filmstrip momentum physics (all deltaT-driven — see handle_wheel) ─────
+// ── Filmstrip momentum physics (all deltaT-driven) ─────────────────────────
 //
-// Every wheel tick over the filmstrip measures how fast the user is actually
-// spinning the wheel (pixels-equivalent / real elapsed time since the last
-// tick), and that measured speed drives two things: how much velocity gets
-// added, and how heavy the resulting glide feels.
+// Every wheel tick measures how fast the user is actually spinning the wheel
+// (pixels-equivalent / real elapsed time since the last tick), and that
+// measured speed drives two things: how much velocity gets added, and how
+// heavy the resulting glide feels.
 
 /// Clamp bounds for the deltaT used to estimate input speed: a floor so two
 /// events arriving almost simultaneously (fast trackpad bursts) don't blow
@@ -46,10 +55,6 @@ const GESTURE_GAP: f32 = 0.3;
 const INPUT_SMOOTH: f32 = 0.5;
 
 /// Input speed (px/s) that maps to "fully fast" for the weight interpolation.
-/// Raised from an earlier value so decay ramps more gradually across the
-/// range of speeds a human actually reaches with a wheel — otherwise decay
-/// saturates too early and cancels out the extra impulse from scrolling
-/// faster, making speed changes barely register.
 const SPEED_REF: f32 = 3500.0;
 /// Velocity (px/s) added per (px/s) of measured input speed, per tick.
 const IMPULSE_GAIN: f32 = 1.3;
@@ -63,19 +68,6 @@ const STOP_SPEED: f32 = 15.0;
 const DECAY_SLOW: f32 = 1.2;
 const DECAY_FAST: f32 = 6.5;
 
-/// iced's scrollable always applies its own hardcoded ~60px/line scroll on
-/// top of anything we do — that native jump can't be intercepted (the
-/// Scrollable widget captures the wheel event before our subscription-based
-/// routing ever sees it). Rather than leave a visible seam between that
-/// instant jump and our comparatively small first physics-tick step, we
-/// "pre-play" a short slice of the glide synchronously right here: exactly
-/// the distance and velocity-reduction a real kinetic tick would produce
-/// over CATCHUP_DT seconds (closed-form, from the same exponential-decay
-/// model `handle_kinetic_tick` steps numerically), so the following ticks
-/// continue the glide already in motion instead of visibly ramping up from
-/// a near-standstill right after the native jump.
-const CATCHUP_DT: f32 = 0.03;
-
 pub fn handle_global_cursor_moved(editor: &mut RawEditor, pos: iced::Point) -> Task<Message> {
     editor.global_cursor = pos;
     Task::none()
@@ -86,8 +78,9 @@ pub fn handle_window_resized(editor: &mut RawEditor, size: iced::Size) -> Task<M
     Task::none()
 }
 
+/// Library grid boost, routed by cursor position from the global subscription.
 pub fn handle_wheel(editor: &mut RawEditor, delta: ScrollDelta) -> Task<Message> {
-    if editor.active_modal != Modal::None {
+    if editor.active_modal != Modal::None || editor.current_tab != AppTab::Library {
         return Task::none();
     }
     let lines = match delta {
@@ -100,76 +93,73 @@ pub fn handle_wheel(editor: &mut RawEditor, delta: ScrollDelta) -> Task<Message>
 
     let c = editor.global_cursor;
     let w = editor.window_size;
-
-    match editor.current_tab {
-        AppTab::Library => {
-            let over_grid = c.x > LIB_SIDEBAR_W
-                && c.y > TITLE_BAR_H + LIB_TOOLBAR_H
-                && c.y < w.height - LIB_STATUS_H;
-            if over_grid {
-                return scrollable::scroll_by(
-                    crate::app::views::library::grid_scroll_id(),
-                    AbsoluteOffset { x: 0.0, y: -(GRID_MULT - 1.0) * 60.0 * lines },
-                );
-            }
-        }
-        AppTab::Cull | AppTab::Develop => {
-            // Filmstrip band only — never the develop preview (wheel = zoom
-            // there) or the develop sidebar (native speed stays).
-            if c.y > w.height - FILMSTRIP_H {
-                let now = std::time::Instant::now();
-                let raw_dt = editor
-                    .last_wheel_time
-                    .map(|t| now.duration_since(t).as_secs_f32());
-                editor.last_wheel_time = Some(now);
-
-                // How fast is the wheel actually spinning right now?
-                let dt_for_rate = raw_dt.unwrap_or(GESTURE_GAP).clamp(MIN_WHEEL_DT, GESTURE_GAP);
-                let raw_rate = (lines.abs() * STRIP_LINE_PX) / dt_for_rate;
-                // A real pause (or the very first tick) means the previous
-                // estimate is stale — start fresh instead of blending into it.
-                let is_new_gesture = raw_dt.map(|d| d >= GESTURE_GAP).unwrap_or(true);
-                editor.filmstrip_input_speed = if is_new_gesture {
-                    raw_rate
-                } else {
-                    editor.filmstrip_input_speed * (1.0 - INPUT_SMOOTH) + raw_rate * INPUT_SMOOTH
-                }
-                .min(SPEED_REF * 2.0);
-
-                // Opposite direction: cancel the old glide instantly instead
-                // of fighting it with a subtracted impulse.
-                let dir = -lines.signum();
-                if editor.filmstrip_velocity != 0.0 && editor.filmstrip_velocity.signum() != dir {
-                    editor.filmstrip_velocity = 0.0;
-                }
-                let impulse = dir * editor.filmstrip_input_speed * IMPULSE_GAIN;
-                editor.filmstrip_velocity =
-                    (editor.filmstrip_velocity + impulse).clamp(-MAX_SPEED, MAX_SPEED);
-
-                // Weight for this glide: fast input -> low weight (high decay,
-                // stops quickly); slow input -> high weight (low decay, glides).
-                let t = (editor.filmstrip_input_speed / SPEED_REF).clamp(0.0, 1.0);
-                editor.filmstrip_decay = DECAY_SLOW + (DECAY_FAST - DECAY_SLOW) * t;
-
-                // Closed-form: exact distance covered and velocity remaining
-                // after CATCHUP_DT seconds of exponential decay from the
-                // velocity we just set. Applying this synchronously bridges
-                // the gap to the real per-frame kinetic ticks (which pick up
-                // from the reduced velocity below), so there's no visible
-                // cliff between iced's native jump and the glide.
-                let v0 = editor.filmstrip_velocity;
-                let k = editor.filmstrip_decay;
-                let instant_step = v0 / k * (1.0 - (-k * CATCHUP_DT).exp());
-                editor.filmstrip_velocity = v0 * (-k * CATCHUP_DT).exp();
-                editor.last_kinetic_tick = Some(now);
-
-                return scrollable::scroll_by(
-                    crate::ui::filmstrip::scroll_id(),
-                    AbsoluteOffset { x: instant_step, y: 0.0 },
-                );
-            }
-        }
+    let over_grid = c.x > LIB_SIDEBAR_W
+        && c.y > TITLE_BAR_H + LIB_TOOLBAR_H
+        && c.y < w.height - LIB_STATUS_H;
+    if over_grid {
+        return scrollable::scroll_by(
+            crate::app::views::library::grid_scroll_id(),
+            AbsoluteOffset { x: 0.0, y: -(GRID_MULT - 1.0) * 60.0 * lines },
+        );
     }
+    Task::none()
+}
+
+/// Filmstrip wheel input, captured directly by its own overlay (native
+/// scrolling never fires — see module docs) so this drives 100% of the motion.
+pub fn handle_filmstrip_wheel(editor: &mut RawEditor, delta: ScrollDelta) -> Task<Message> {
+    if editor.active_modal != Modal::None {
+        return Task::none();
+    }
+    let lines = match delta {
+        ScrollDelta::Lines { y, .. } => y,
+        ScrollDelta::Pixels { y, .. } => y / 60.0,
+    };
+    if lines == 0.0 {
+        return Task::none();
+    }
+
+    let now = std::time::Instant::now();
+    let raw_dt = editor
+        .last_wheel_time
+        .map(|t| now.duration_since(t).as_secs_f32());
+    editor.last_wheel_time = Some(now);
+
+    // How fast is the wheel actually spinning right now?
+    let dt_for_rate = raw_dt.unwrap_or(GESTURE_GAP).clamp(MIN_WHEEL_DT, GESTURE_GAP);
+    let raw_rate = (lines.abs() * STRIP_LINE_PX) / dt_for_rate;
+    // A real pause (or the very first tick) means the previous estimate is
+    // stale — start fresh instead of blending into it.
+    let is_new_gesture = raw_dt.map(|d| d >= GESTURE_GAP).unwrap_or(true);
+    editor.filmstrip_input_speed = if is_new_gesture {
+        raw_rate
+    } else {
+        editor.filmstrip_input_speed * (1.0 - INPUT_SMOOTH) + raw_rate * INPUT_SMOOTH
+    }
+    .min(SPEED_REF * 2.0);
+
+    // Opposite direction: cancel the old glide instantly instead of
+    // fighting it with a subtracted impulse.
+    let dir = -lines.signum();
+    if editor.filmstrip_velocity != 0.0 && editor.filmstrip_velocity.signum() != dir {
+        editor.filmstrip_velocity = 0.0;
+    }
+    let impulse = dir * editor.filmstrip_input_speed * IMPULSE_GAIN;
+    editor.filmstrip_velocity = (editor.filmstrip_velocity + impulse).clamp(-MAX_SPEED, MAX_SPEED);
+
+    // Weight for this glide: fast input -> low weight (high decay, stops
+    // quickly); slow input -> high weight (low decay, glides for a while).
+    let t = (editor.filmstrip_input_speed / SPEED_REF).clamp(0.0, 1.0);
+    editor.filmstrip_decay = DECAY_SLOW + (DECAY_FAST - DECAY_SLOW) * t;
+
+    // No synchronous scroll_by here: velocity is already at its peak right
+    // after the impulse (it only decays from here, never ramps up), so
+    // letting the per-frame kinetic tick loop apply it from t=0 is already
+    // smooth by construction — a synchronous "catch-up" chunk would just
+    // front-load a disproportionately large jump relative to the small
+    // per-frame steps that follow, recreating the exact discontinuity this
+    // whole interceptor was built to eliminate.
+    editor.last_kinetic_tick = Some(now);
     Task::none()
 }
 
