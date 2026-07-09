@@ -79,48 +79,27 @@ pub fn handle_zoom(editor: &mut RawEditor, d: f32, mut p: Point) -> Task<Message
     if editor.is_cropping { return Task::none(); }
     if p.x < 0.0 { p = editor.last_cursor_position.unwrap_or(Point::ORIGIN); }
 
-    if let Some(resources) = &editor.image_resources {
+    if editor.image_resources.is_some() {
         let old_zoom = editor.zoom;
-        let iw = resources.width as f32;
-        let ih = resources.height as f32;
-        let img_aspect = iw / ih;
+        let (dw, dh) = editor.display_dims();
         let (vw, vh) = editor.viewport_size;
-        let vp_aspect = vw / vh;
+        let (fw, fh) = crate::core::viewport::fitted_size(dw, dh, vw, vh);
+        let ib = crate::core::viewport::image_rect(dw, dh, vw, vh, old_zoom, editor.pan_offset);
 
-        let (fw, fh) = if img_aspect > vp_aspect {
-            (vw, vw / img_aspect)
-        } else {
-            (vh * img_aspect, vh)
-        };
-
-        let xo = (vw - fw) / 2.0;
-        let yo = (vh - fh) / 2.0;
-
-        // Cursor position in fitted-image space [0..1]
-        let icx = (p.x - xo).clamp(0.0, fw);
-        let icy = (p.y - yo).clamp(0.0, fh);
-        let nx = icx / fw;
-        let ny = icy / fh;
-
-        // pan_x/pan_y are in UV space (what the shader sees).
-        // ViewportProgram converts: pan_x = offset.x * (fw/vw), pan_y = offset.y * (fh/vh)
-        let scale_x = if vw > 0.0 { fw / vw } else { 1.0 };
-        let scale_y = if vh > 0.0 { fh / vh } else { 1.0 };
-        let pan_x = editor.pan_offset.x * scale_x;
-        let pan_y = editor.pan_offset.y * scale_y;
+        // Fraction of the CURRENT on-screen image rect under the cursor —
+        // this is the point we want to keep fixed on screen as zoom changes.
+        let tx = ((p.x - ib.x) / ib.width.max(1.0)).clamp(0.0, 1.0);
+        let ty = ((p.y - ib.y) / ib.height.max(1.0)).clamp(0.0, 1.0);
 
         let new_zoom = if d > 0.0 { old_zoom * (1.0 + d * 0.8) } else { old_zoom / (1.0 + (-d * 0.8)) }.clamp(0.1, 10.0);
         editor.zoom = new_zoom;
 
-        // Image UV under cursor must stay fixed: img_uv = (n - 0.5)/zoom - pan + 0.5
-        let img_uv_x = (nx - 0.5) / old_zoom - pan_x + 0.5;
-        let img_uv_y = (ny - 0.5) / old_zoom - pan_y + 0.5;
-
-        // Solve for new offset: new_pan = (n-0.5)/new_zoom - img_uv + 0.5
-        let new_pan_x = (nx - 0.5) / editor.zoom - img_uv_x + 0.5;
-        let new_pan_y = (ny - 0.5) / editor.zoom - img_uv_y + 0.5;
-        editor.pan_offset.x = if scale_x > 0.0 { new_pan_x / scale_x } else { 0.0 };
-        editor.pan_offset.y = if scale_y > 0.0 { new_pan_y / scale_y } else { 0.0 };
+        // Closed-form inversion of image_rect: solve pan so that the point at
+        // fraction (tx, ty) of the rect lands back under the cursor at the
+        // new zoom. From image_rect: p.x = vw/2 - fw*zoom/2 + offset.x*fw + tx*fw*zoom
+        //   => offset.x = (p.x - vw/2)/fw - zoom*(tx - 0.5)
+        editor.pan_offset.x = (p.x - vw / 2.0) / fw.max(1.0) - new_zoom * (tx - 0.5);
+        editor.pan_offset.y = (p.y - vh / 2.0) / fh.max(1.0) - new_zoom * (ty - 0.5);
     } else {
         editor.zoom = if d > 0.0 { editor.zoom * (1.0 + d * 0.8) } else { editor.zoom / (1.0 + (-d * 0.8)) }.clamp(0.1, 10.0);
     }
@@ -262,29 +241,14 @@ fn handle_pan_interaction(editor: &mut RawEditor, pos: Point) -> Task<Message> {
             editor.last_cursor_position = Some(pos);
 
             let (vw, vh) = editor.viewport_size;
-            let zoom = editor.zoom;
+            let (dw, dh) = editor.display_dims();
+            let (fw, fh) = crate::core::viewport::fitted_size(dw, dh, vw, vh);
 
-            // Fitted image dimensions (same logic as ViewportProgram::draw and handle_zoom)
-            let (fitted_w, fitted_h) = if let Some(res) = &editor.image_resources {
-                let img_aspect = res.width as f32 / res.height as f32;
-                let vp_aspect = if vh > 0.0 { vw / vh } else { 1.0 };
-                if img_aspect > vp_aspect {
-                    (vw, vw / img_aspect)
-                } else {
-                    (vh * img_aspect, vh)
-                }
-            } else {
-                (vw.max(1.0), vh.max(1.0))
-            };
-
-            // For 1:1 cursor tracking, account for the quad-to-viewport scale factor.
-            // The shader UV spans the quad's pixel width (fitted_w), not the full viewport (vw).
-            // Δpan_x = Δx / (fitted_w * zoom) where Δx is in quad-pixels, but Δx is in viewport
-            // pixels. So Δpan_x = Δx / (fit_w * vw * zoom) where fit_w = fitted_w / vw.
-            // pan_x (UV) = offset.x * fit_w → Δoffset.x = Δpan_x / fit_w = Δx / (fit_w² * vw * zoom)
-            //                                             = Δx * vw / (fitted_w² * zoom)
-            let dx = if fitted_w > 0.0 { delta.x * vw / (fitted_w * fitted_w * zoom) } else { 0.0 };
-            let dy = if fitted_h > 0.0 { delta.y * vh / (fitted_h * fitted_h * zoom) } else { 0.0 };
+            // Pan is in fitted-size fractions with no zoom term (see
+            // core::viewport::image_rect), so this is exact 1:1 cursor
+            // tracking at any zoom level.
+            let dx = if fw > 0.0 { delta.x / fw } else { 0.0 };
+            let dy = if fh > 0.0 { delta.y / fh } else { 0.0 };
             return Task::done(Message::Pan(cgmath::Vector2::new(dx, dy)));
         }
     }
@@ -313,16 +277,10 @@ fn apply_crop_drag(editor: &mut RawEditor, pos: Point, last: Point, h: CropHandl
         None => return,
     };
     
-    let img_aspect = resources.width as f32 / resources.height as f32;
+    let (dw, dh) = editor.display_dims();
     let (bw, bh) = editor.viewport_size;
-    let vp_aspect = bw / bh;
-    
-    let (fw, fh) = if img_aspect > vp_aspect {
-        (bw, bw / img_aspect)
-    } else {
-        (bh * img_aspect, bh)
-    };
-    
+    let (fw, fh) = crate::core::viewport::fitted_size(dw, dh, bw, bh);
+
     let zw = fw * editor.zoom;
     let zh = fh * editor.zoom;
     
@@ -397,22 +355,15 @@ fn apply_mask_drag(editor: &mut RawEditor, pos: Point, last: Point, h: MaskHandl
     if index >= editor.current_edit_params.mask_count as usize {
         return;
     }
-    let Some(resources) = &editor.image_resources else {
+    if editor.image_resources.is_none() {
         return;
-    };
+    }
 
-    // Same letterbox/zoom math as apply_crop_drag, but with the ORIENTED
-    // dimensions — the displayed image is upright, portrait shots included.
-    let (ow, oh) = resources.oriented_dims();
-    let img_aspect = ow as f32 / oh.max(1) as f32;
+    // Same letterbox/zoom math as apply_crop_drag, sharing the same dims
+    // source as every other on-screen geometry consumer.
+    let (dw, dh) = editor.display_dims();
     let (bw, bh) = editor.viewport_size;
-    let vp_aspect = bw / bh;
-
-    let (fw, fh) = if img_aspect > vp_aspect {
-        (bw, bw / img_aspect)
-    } else {
-        (bh * img_aspect, bh)
-    };
+    let (fw, fh) = crate::core::viewport::fitted_size(dw, dh, bw, bh);
 
     let zw = fw * editor.zoom;
     let zh = fh * editor.zoom;

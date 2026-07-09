@@ -21,6 +21,11 @@ const THUMB_PRESET_XL: f32 = 280.0;
 const LIBRARY_TOOLBAR_HEIGHT: f32 = 56.0;
 const LIBRARY_STATUS_HEIGHT: f32 = 42.0;
 
+/// Scroll routing (`handlers::scroll`) targets the grid by this id.
+pub fn grid_scroll_id() -> scrollable::Id {
+    scrollable::Id::new("library_grid")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ThumbnailState {
     Ready,
@@ -858,6 +863,7 @@ pub fn view_library(editor: &RawEditor) -> Element<'_, Message> {
                     .align_x(iced::alignment::Horizontal::Center)
                     .padding([12, 12]),
             )
+            .id(grid_scroll_id())
             .height(Length::Fill)
             .width(Length::Fill),
         )
@@ -901,18 +907,29 @@ pub fn view_library(editor: &RawEditor) -> Element<'_, Message> {
     .clip(true)
     .align_y(iced::alignment::Vertical::Bottom);
 
-    container(
+    // Toolbar and status bar are LATER stack children than `body`, not earlier
+    // column siblings — scrolled Image thumbnails in the grid don't respect
+    // ancestor clip bounds and would otherwise bleed over them. The Spaces
+    // reserve their bands in the layout flow so `body` is sized identically.
+    container(stack![
         column![
-            toolbar,
+            Space::with_height(Length::Fixed(LIBRARY_TOOLBAR_HEIGHT)),
             container(body)
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .clip(true),
-            status,
+            Space::with_height(Length::Fixed(LIBRARY_STATUS_HEIGHT)),
         ]
         .width(Length::Fill)
         .height(Length::Fill),
-    )
+        container(toolbar)
+            .width(Length::Fill)
+            .align_y(iced::alignment::Vertical::Top),
+        container(status)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_y(iced::alignment::Vertical::Bottom),
+    ])
     .width(Length::Fill)
     .height(Length::Fill)
     .clip(true)

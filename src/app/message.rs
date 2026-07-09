@@ -318,4 +318,16 @@ pub enum Message {
 
     /// Phase 22: User toggled histogram on/off
     HistogramToggled(bool),
+
+    // ========== Scroll boost + filmstrip momentum ==========
+    /// Raw wheel event from the global subscription, routed by cursor
+    /// position to whichever scrollable (library grid / filmstrip) it's over.
+    WheelScrolled(iced::mouse::ScrollDelta),
+    /// Window-space cursor position, tracked globally so wheel routing knows
+    /// which region the cursor is over (WheelScrolled itself carries no position).
+    GlobalCursorMoved(iced::Point),
+    /// Window resize, needed for the same region routing.
+    WindowResized(iced::Size),
+    /// One frame tick of the filmstrip's kinetic (momentum) scroll.
+    KineticTick(std::time::Instant),
 }

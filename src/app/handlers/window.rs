@@ -8,15 +8,26 @@ pub fn handle_minimize_window() -> Task<Message> {
 }
 
 pub fn handle_maximize_window() -> Task<Message> {
-    window::get_latest().and_then(|id| window::maximize(id, true))
+    window::get_latest().and_then(window::toggle_maximize)
 }
 
 pub fn handle_close_window() -> Task<Message> {
     window::get_latest().and_then(window::close)
 }
 
-pub fn handle_drag_window() -> Task<Message> {
-    window::get_latest().and_then(window::drag)
+pub fn handle_drag_window(editor: &mut RawEditor) -> Task<Message> {
+    let now = std::time::Instant::now();
+    let double = editor
+        .last_titlebar_click
+        .map(|t| now.duration_since(t).as_millis() < 400)
+        .unwrap_or(false);
+    editor.last_titlebar_click = Some(now);
+    if double {
+        editor.last_titlebar_click = None; // don't chain into a triple-click drag
+        window::get_latest().and_then(window::toggle_maximize)
+    } else {
+        window::get_latest().and_then(window::drag)
+    }
 }
 
 pub fn handle_open_modal(editor: &mut RawEditor, modal: Modal) -> Task<Message> {

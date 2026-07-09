@@ -7,7 +7,7 @@ use iced_wgpu::wgpu;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
-use super::pipeline::GpuEditParams;
+use super::params::GpuEditParams;
 use crate::core::types::EditParams;
 use crate::gpu::shaders;
 
@@ -895,41 +895,6 @@ impl ImageResources {
         }
     }
 
-    /// Update uniforms with zoom and pan
-    pub fn update_uniforms_with_zoom(
-        &self,
-        context: &SharedContext,
-        params: &EditParams,
-        zoom: f32,
-        pan_x: f32,
-        pan_y: f32,
-    ) {
-        let mut gpu_params = GpuEditParams::from(params);
-        // Use the ACTIVE WB (slider-derived), not the as-shot multipliers —
-        // otherwise a zoom/resize render silently reverts the WB sliders.
-        gpu_params.wb_multipliers = *self.wb_current.read().unwrap_or_else(|e| e.into_inner());
-        let fm = *self.forward_matrix.read().unwrap_or_else(|e| e.into_inner());
-        gpu_params.forward_matrix_0 = [fm[0], fm[1], fm[2]];
-        gpu_params.forward_matrix_1 = [fm[3], fm[4], fm[5]];
-        gpu_params.forward_matrix_2 = [fm[6], fm[7], fm[8]];
-        gpu_params.cfa_pattern = self.cfa_pattern;
-        gpu_params.black_levels = self.black_levels;
-        gpu_params.white_level = self.white_level;
-        gpu_params.has_dcp = if self.has_dcp { 1 } else { 0 };
-        gpu_params.dcp_has_curve = if self.dcp_has_curve { 1 } else { 0 };
-        gpu_params.orientation = self.orientation;
-        gpu_params.zoom = zoom;
-        gpu_params.pan_x = pan_x;
-        gpu_params.pan_y = pan_y;
-
-        context
-            .queue
-            .write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[gpu_params]));
-
-        if let Ok(mut current) = self.current_params.lock() {
-            *current = gpu_params;
-        }
-    }
 }
 
 #[cfg(test)]

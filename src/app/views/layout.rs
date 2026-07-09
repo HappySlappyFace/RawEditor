@@ -137,15 +137,29 @@ fn view_main(editor: &RawEditor) -> Element<'_, Message> {
     };
     
     // Phase 116: Root layout container with sleek dark polish
-    container(column![title_bar, content])
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .style(|_theme| container::Style {
-            background: Some(Background::Color(Color::from_rgb(0.08, 0.08, 0.08))),
-            text_color: Some(Color::WHITE),
-            ..Default::default()
-        })
-        .into()
+    //
+    // The title bar is the LAST stack child (not the first column child) so it
+    // always paints over `content` — some content widgets (notably scrolled
+    // Image thumbnails) don't respect ancestor clip/scissor bounds and would
+    // otherwise bleed over the bar. The Space reserves its 35px in the normal
+    // layout flow so `content` is sized identically to before.
+    const TITLE_BAR_HEIGHT: f32 = 35.0;
+    container(stack![
+        column![Space::with_height(Length::Fixed(TITLE_BAR_HEIGHT)), content]
+            .width(Length::Fill)
+            .height(Length::Fill),
+        container(title_bar)
+            .width(Length::Fill)
+            .align_y(iced::alignment::Vertical::Top),
+    ])
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .style(|_theme| container::Style {
+        background: Some(Background::Color(Color::from_rgb(0.08, 0.08, 0.08))),
+        text_color: Some(Color::WHITE),
+        ..Default::default()
+    })
+    .into()
 }
 
 /// Build the custom window title bar
@@ -188,7 +202,15 @@ fn view_title_bar(editor: &RawEditor) -> Element<'_, Message> {
 
     container(
         stack![
-            row![menus, iced::widget::mouse_area(container(iced::widget::Space::with_width(Length::Fill))).on_press(Message::DragWindow), controls].height(Length::Fill).align_y(Alignment::Center).padding(0),
+            // Bottom layer: the entire bar is draggable. Buttons/tabs stacked
+            // above capture their own clicks first (iced dispatches stack
+            // events last-child-first), so this only fires on empty space.
+            iced::widget::mouse_area(Space::new(Length::Fill, Length::Fill))
+                .on_press(Message::DragWindow),
+            row![menus, Space::with_width(Length::Fill), controls]
+                .height(Length::Fill)
+                .align_y(Alignment::Center)
+                .padding(0),
             navigation,
         ]
     ).height(Length::Fixed(35.0)).style(|_theme| container::Style { background: Some(Background::Color(Color::from_rgb(0.05, 0.05, 0.05))), ..Default::default() }).into()

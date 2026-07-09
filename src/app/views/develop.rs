@@ -46,6 +46,7 @@ pub fn view_develop(editor: &RawEditor) -> Element<'_, Message> {
         Container::new(filmstrip)
             .width(Length::Fill)
             .height(Length::Fixed(115.0))
+            .clip(true)
     ]
     .width(Length::Fill)
     .height(Length::Fill)
@@ -564,7 +565,6 @@ fn view_main_content<'a>(
                     image_height: img_h,
                     zoom: editor.zoom,
                     offset: editor.pan_offset,
-                    background_color: Color::from_rgb(0.12, 0.12, 0.12),
                 })
                 .width(Length::Fill)
                 .height(Length::Fill)
@@ -745,7 +745,10 @@ fn view_main_content<'a>(
         .center_x(Length::Fill)
         .center_y(Length::Fill)
         .style(|_| container::Style {
-            background: Some(Background::Color(Color::BLACK)),
+            // The shader quad now covers exactly the on-screen image rect (no
+            // more, no less), so this container background IS the letterbox
+            // color on every side, including portrait side bars.
+            background: Some(Background::Color(Color::from_rgb(0.12, 0.12, 0.12))),
             ..Default::default()
         })
         .into()

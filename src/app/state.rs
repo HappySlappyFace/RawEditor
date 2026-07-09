@@ -191,6 +191,9 @@ pub struct RawEditor {
     pub last_cursor_position: Option<Point>,
     /// Phase 26: Double-click detection
     pub last_click_time: Option<std::time::Instant>,
+    /// Double-click detection for the title bar drag surface (toggles maximize).
+    /// Separate from `last_click_time`, which is scoped to the preview canvas.
+    pub last_titlebar_click: Option<std::time::Instant>,
     /// Phase 26: Viewport size for zoom-to-cursor calculations (actual displayed size)
     pub viewport_size: (f32, f32), // (width, height) in screen pixels
     pub scale_factor: f32,
@@ -249,6 +252,17 @@ pub struct RawEditor {
     pub pending_render: bool,
     /// True while a full-resolution resource rebuild is in flight (zoom-in upgrade).
     pub full_res_upgrading: bool,
+
+    // ── Scroll boost + filmstrip momentum ──────────────────────────────────
+    /// Window-space cursor position, updated by the global CursorMoved
+    /// subscription. Used to route wheel events to the region under the cursor.
+    pub global_cursor: Point,
+    /// Current window size, updated by the global Resized subscription.
+    pub window_size: iced::Size,
+    /// Filmstrip momentum velocity in px/s along the scroll axis; 0.0 = idle
+    /// (the kinetic `window::frames()` subscription only runs while nonzero).
+    pub filmstrip_velocity: f32,
+    pub last_kinetic_tick: Option<std::time::Instant>,
 }
 
 /// Phase 79: Modular Info Overlay States
@@ -348,6 +362,7 @@ impl RawEditor {
                 is_dragging: false,
                 last_cursor_position: None,
                 last_click_time: None,
+                last_titlebar_click: None,
                 viewport_size: (800.0, 400.0),
                 scale_factor: 1.0,
                 working_preview: None,
@@ -382,6 +397,10 @@ impl RawEditor {
                 is_rendering: false,
                 pending_render: false,
                 full_res_upgrading: false,
+                global_cursor: Point::ORIGIN,
+                window_size: iced::Size::new(1920.0, 1080.0),
+                filmstrip_velocity: 0.0,
+                last_kinetic_tick: None,
 
                 // Background task
                 // background_task: None, // This field is not defined in the struct
@@ -447,43 +466,32 @@ impl RawEditor {
         self.mask_tool != MaskTool::Inactive || self.selected_mask.is_some()
     }
 
-    // Phase 67: Calculate image screen bounds for interaction
-    pub fn get_image_screen_bounds(
-        &self,
-        resources: &crate::gpu::shared::ImageResources,
-    ) -> Rectangle {
-        let (vw, vh) = self.viewport_size;
-        let img_aspect = resources.width as f32 / resources.height as f32;
-        let vp_aspect = vw / vh;
-        
-        let (fw, fh) = if img_aspect > vp_aspect {
-            (vw, vw / img_aspect)
+    /// Dimensions of the pixel buffer currently shown by the develop viewport
+    /// (already EXIF-oriented — the render target is sized to
+    /// `oriented_dims()`). MUST mirror the fallback priority used to pick the
+    /// image handle in `views/develop.rs` (rendered > working > placeholder),
+    /// since this is the single dims source for all on-screen geometry math.
+    pub fn display_dims(&self) -> (u32, u32) {
+        if self.rendered_preview_bytes.is_some() {
+            self.rendered_preview_dims
+        } else if self.working_preview_bytes.is_some() {
+            self.working_preview_dims
         } else {
-            (vh * img_aspect, vh)
-        };
-        
-        let cx = vw / 2.0;
-        let cy = vh / 2.0;
-        
-        let zw = fw * self.zoom;
-        let zh = fh * self.zoom;
-        
-        // Pan is relative to the fitted image size
-        let px = self.pan_offset.x * fw;
-        let py = self.pan_offset.y * fh;
-        
-        Rectangle {
-            x: cx - (zw / 2.0) + px,
-            y: cy - (zh / 2.0) + py,
-            width: zw,
-            height: zh,
+            (1280, 853)
         }
+    }
+
+    // Phase 67: Calculate image screen bounds for interaction
+    pub fn get_image_screen_bounds(&self) -> Rectangle {
+        let (vw, vh) = self.viewport_size;
+        let (dw, dh) = self.display_dims();
+        crate::core::viewport::image_rect(dw, dh, vw, vh, self.zoom, self.pan_offset)
     }
 
     // Phase 67: Detect if cursor is over a crop handle
     pub fn detect_crop_handle(&self, cursor_pos: Point) -> Option<CropHandle> {
-        if let Some(resources) = &self.image_resources {
-            let bounds = self.get_image_screen_bounds(resources);
+        if self.image_resources.is_some() {
+            let bounds = self.get_image_screen_bounds();
             let crop = self.current_edit_params.crop;
 
             let crop_x = bounds.x + (crop[0] * bounds.width);
@@ -631,6 +639,18 @@ impl RawEditor {
                 return Some(Message::ModifiersChanged(modifiers));
             }
 
+            // Scroll boost + filmstrip momentum: routed by cursor region in
+            // handlers::scroll, so we just forward these globally.
+            if let iced::Event::Mouse(iced::mouse::Event::WheelScrolled { delta }) = event {
+                return Some(Message::WheelScrolled(delta));
+            }
+            if let iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) = event {
+                return Some(Message::GlobalCursorMoved(position));
+            }
+            if let iced::Event::Window(iced::window::Event::Resized(size)) = event {
+                return Some(Message::WindowResized(size));
+            }
+
             if let iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) = event
             {
                 // Phase 54: Settings Clipboard (Ctrl/Cmd+C/V)
@@ -711,6 +731,12 @@ impl RawEditor {
             self.queued_raw_loads.clone(),
         );
 
-        iced::Subscription::batch(vec![keyboard_subscription, loader_subscription])
+        let mut subs = vec![keyboard_subscription, loader_subscription];
+        // Only tick while a filmstrip glide is in progress — avoids driving a
+        // redraw-linked subscription at all times.
+        if self.filmstrip_velocity != 0.0 {
+            subs.push(iced::window::frames().map(Message::KineticTick));
+        }
+        iced::Subscription::batch(subs)
     }
 }

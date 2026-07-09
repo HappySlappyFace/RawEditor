@@ -412,7 +412,7 @@ pub fn bake_tone_curve(points: &[(f32, f32)], strength: f32) -> Vec<f32> {
     }).collect()
 }
 
-pub fn find_profile_for_camera(make: &str, model: &str) -> Option<PathBuf> {
+pub fn find_profile_for_camera(_make: &str, model: &str) -> Option<PathBuf> {
     let base = dirs::data_dir()
         .or_else(dirs::home_dir)
         .unwrap_or_else(|| PathBuf::from("."))

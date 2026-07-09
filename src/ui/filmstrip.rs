@@ -7,6 +7,12 @@ use crate::database::models::Image;
 use crate::app::message::Message;
 use crate::ui::icons;  // Phase 58: Icon constants
 
+/// Id shared by the Cull and Develop filmstrips — only one is ever mounted at
+/// a time, so a single static id is enough to target it with `scroll_by`.
+pub fn scroll_id() -> scrollable::Id {
+    scrollable::Id::new("filmstrip")
+}
+
 /// Render the filmstrip timeline at the bottom of the Develop tab
 /// Phase 55: Now accepts HashSet for multi-selection
 /// Phase 59: Accepts &[&Image] for filtered view
@@ -172,6 +178,7 @@ pub fn view<'a>(
         });
     // Make it scrollable horizontally
     let scrollable_film = scrollable(film_row)
+        .id(scroll_id())
         .direction(scrollable::Direction::Horizontal(
             scrollable::Scrollbar::new()
                 .width(8)
@@ -208,6 +215,7 @@ pub fn view<'a>(
         .width(Length::Fill)
         .height(Length::Fill)
         .padding(0)
+        .clip(true)
         .style(|_theme: &Theme| {
             container::Style {
                 background: Some(Background::Color(Color::from_rgb(0.08, 0.08, 0.08))),

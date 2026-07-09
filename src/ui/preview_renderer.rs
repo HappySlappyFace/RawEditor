@@ -51,11 +51,9 @@ pub struct ViewportPrimitive {
     pub height: u32,
     /// Zoom level (1.0 = fit-to-screen)
     pub zoom: f32,
-    /// Pan offset (normalised, same coordinate space as shaders)
-    pub pan_x: f32,
-    pub pan_y: f32,
-    /// Background colour (displayed behind the image)
-    pub background: Color,
+    /// Pan offset, fitted-size fractions (see core::viewport::image_rect)
+    pub offset_x: f32,
+    pub offset_y: f32,
 }
 
 /// Cached GPU state kept in iced's Storage between frames.
@@ -79,15 +77,9 @@ struct ViewportPipeline {
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct Uniforms {
-    /// Orthographic projection matrix for centering and aspect-ratio fit
+    /// Maps the fixed [-1,1] quad to the image_rect placement on screen —
+    /// letterbox fit, zoom, and pan are all baked in here (see prepare()).
     proj: [[f32; 4]; 4],
-    zoom:      f32,
-    pan_x:     f32,
-    pan_y:     f32,
-    /// image width / image height
-    img_aspect: f32,
-    /// background RGBA (linear)
-    bg: [f32; 4],
 }
 
 use cgmath::Matrix4;
@@ -268,27 +260,32 @@ impl shader::Primitive for ViewportPrimitive {
             );
         }
 
-        // --- PHASE 134: Aspect-Ratio Centering & Projection Matrix ---
-        let img_aspect = self.width as f32 / self.height as f32;
-        let vp_aspect = bounds.width / bounds.height;
-        
-        let (fit_w, fit_h) = if img_aspect > vp_aspect {
-            (1.0, 1.0 / (img_aspect / vp_aspect))
-        } else {
-            (img_aspect / vp_aspect, 1.0)
-        };
+        // The quad's on-screen placement (letterbox fit + zoom + pan) — the
+        // SAME rectangle the crop/mask canvas overlay computes via
+        // `CropOverlay::image_bounds`, so the shader and the overlay always
+        // agree. Zoom grows this rect (rather than magnifying UV inside a
+        // fixed quad), so on zoom the image physically covers more of the
+        // viewport and any letterbox area shrinks — fixing the old "black
+        // bars that never fill" bug on portrait images.
+        let rect = crate::core::viewport::image_rect(
+            self.width,
+            self.height,
+            bounds.width,
+            bounds.height,
+            self.zoom,
+            cgmath::Vector2::new(self.offset_x, self.offset_y),
+        );
+        let sx = rect.width / bounds.width;
+        let sy = rect.height / bounds.height;
+        // Center of the rect, normalized to [0,1] then to clip space [-1,1].
+        // Y is flipped: screen space grows downward, clip space grows upward.
+        let tx = ((rect.x + rect.width / 2.0) / bounds.width) * 2.0 - 1.0;
+        let ty = -(((rect.y + rect.height / 2.0) / bounds.height) * 2.0 - 1.0);
 
-        // Orthographic matrix that maps [-1, 1] to the fitted aspect ratio
-        let matrix = Matrix4::from_nonuniform_scale(fit_w, fit_h, 1.0);
-        
-        let uniforms = Uniforms {
-            proj: matrix.into(),
-            zoom: self.zoom,
-            pan_x: self.pan_x,
-            pan_y: self.pan_y,
-            img_aspect,
-            bg: [self.background.r, self.background.g, self.background.b, self.background.a],
-        };
+        let matrix = Matrix4::from_translation(cgmath::vec3(tx, ty, 0.0))
+            * Matrix4::from_nonuniform_scale(sx, sy, 1.0);
+
+        let uniforms = Uniforms { proj: matrix.into() };
         queue.write_buffer(&state.uniform_buf, 0, bytemuck::bytes_of(&uniforms));
     }
 
@@ -346,7 +343,6 @@ pub struct ViewportProgram {
     pub image_height: u32,
     pub zoom: f32,
     pub offset: cgmath::Vector2<f32>,
-    pub background_color: Color,
 }
 
 impl shader::Program<Message> for ViewportProgram {
@@ -357,22 +353,8 @@ impl shader::Program<Message> for ViewportProgram {
         &self,
         _state: &Self::State,
         _cursor: iced::mouse::Cursor,
-        bounds: Rectangle,
+        _bounds: Rectangle,
     ) -> Self::Primitive {
-        // Mirror the pan math from the old canvas renderer so zoom/pan feel identical.
-        let image_aspect = self.image_width as f32 / self.image_height.max(1) as f32;
-        let viewport_aspect = bounds.width / bounds.height;
-        let (fitted_w, _fitted_h) = if image_aspect > viewport_aspect {
-            (bounds.width, bounds.width / image_aspect)
-        } else {
-            (bounds.height * image_aspect, bounds.height)
-        };
-        // pan_x / pan_y in normalised image-space (matches GPU shader coordinate system).
-        // Phase 116: Normalise pixels to [0, 1] for the GPU shader.
-        // We divide pixels by viewport width to get 0-1 range.
-        let pan_x = (self.offset.x * fitted_w) / bounds.width;
-        let pan_y = (self.offset.y * fitted_w / image_aspect) / bounds.height;
-
         // Placeholder 1×1 white pixel if no image is loaded yet.
         let (pixels, w, h) = match &self.pixels {
             Some(p) if !p.is_empty() => (p.clone(), self.image_width, self.image_height),
@@ -387,9 +369,8 @@ impl shader::Program<Message> for ViewportProgram {
             width: w,
             height: h,
             zoom: self.zoom,
-            pan_x,
-            pan_y,
-            background: self.background_color,
+            offset_x: self.offset.x,
+            offset_y: self.offset.y,
         }
     }
 }
@@ -418,24 +399,18 @@ pub struct CropOverlay {
 
 impl CropOverlay {
     /// Screen-space rectangle the (zoomed, panned, letterboxed) image occupies
-    /// within the viewport. Single source of truth for the transform that
-    /// draw/update/mouse_interaction all rely on.
+    /// within the viewport. Thin wrapper around the shared transform
+    /// (`core::viewport::image_rect`) that the display shader and all input
+    /// math also use — draw/update/mouse_interaction all rely on this.
     fn image_bounds(&self, viewport_width: f32, viewport_height: f32) -> Rectangle {
-        let image_aspect = self.image_width as f32 / self.image_height.max(1) as f32;
-        let viewport_aspect = viewport_width / viewport_height;
-        let (fitted_width, fitted_height) = if image_aspect > viewport_aspect {
-            (viewport_width, viewport_width / image_aspect)
-        } else {
-            (viewport_height * image_aspect, viewport_height)
-        };
-        let zoomed_width = fitted_width * self.zoom;
-        let zoomed_height = fitted_height * self.zoom;
-        Rectangle {
-            x: viewport_width / 2.0 - zoomed_width / 2.0 + self.offset.x * fitted_width,
-            y: viewport_height / 2.0 - zoomed_height / 2.0 + self.offset.y * fitted_height,
-            width: zoomed_width,
-            height: zoomed_height,
-        }
+        crate::core::viewport::image_rect(
+            self.image_width,
+            self.image_height,
+            viewport_width,
+            viewport_height,
+            self.zoom,
+            self.offset,
+        )
     }
 
     /// Full-image UV → screen point. When not cropping (the only state mask
@@ -595,36 +570,7 @@ impl canvas::Program<Message> for CropOverlay {
             return self.draw_mask_overlay(renderer, bounds);
         }
 
-        let viewport_width = bounds.width;
-        let viewport_height = bounds.height;
-        let image_aspect = self.image_width as f32 / self.image_height.max(1) as f32;
-        let viewport_aspect = viewport_width / viewport_height;
-
-        let (fitted_width, fitted_height) = if image_aspect > viewport_aspect {
-            let w = viewport_width;
-            let h = w / image_aspect;
-            (w, h)
-        } else {
-            let h = viewport_height;
-            let w = h * image_aspect;
-            (w, h)
-        };
-
-        let center_x = viewport_width / 2.0;
-        let center_y = viewport_height / 2.0;
-        let zoomed_width = fitted_width * self.zoom;
-        let zoomed_height = fitted_height * self.zoom;
-        let pan_px_x = self.offset.x * fitted_width;
-        let pan_px_y = self.offset.y * fitted_height;
-        let image_x = center_x - (zoomed_width / 2.0) + pan_px_x;
-        let image_y = center_y - (zoomed_height / 2.0) + pan_px_y;
-
-        let image_bounds = Rectangle {
-            x: image_x,
-            y: image_y,
-            width: zoomed_width,
-            height: zoomed_height,
-        };
+        let image_bounds = self.image_bounds(bounds.width, bounds.height);
 
         let crop_x = image_bounds.x + (self.crop[0] * image_bounds.width);
         let crop_y = image_bounds.y + (self.crop[1] * image_bounds.height);
@@ -807,16 +753,7 @@ impl canvas::Program<Message> for CropOverlay {
             None => return iced::mouse::Interaction::default(),
         };
 
-        let image_aspect = self.image_width as f32 / self.image_height.max(1) as f32;
-        let vp_aspect = bounds.width / bounds.height;
-        let (fw, fh) = if image_aspect > vp_aspect { (bounds.width, bounds.width / image_aspect) } else { (bounds.height * image_aspect, bounds.height) };
-        let cx = bounds.width / 2.0;
-        let cy = bounds.height / 2.0;
-        let zw = fw * self.zoom;
-        let zh = fh * self.zoom;
-        let px_x = self.offset.x * fw;
-        let px_y = self.offset.y * fh;
-        let image_bounds = Rectangle { x: cx - zw / 2.0 + px_x, y: cy - zh / 2.0 + px_y, width: zw, height: zh };
+        let image_bounds = self.image_bounds(bounds.width, bounds.height);
 
         let crop_x = image_bounds.x + (self.crop[0] * image_bounds.width);
         let crop_y = image_bounds.y + (self.crop[1] * image_bounds.height);

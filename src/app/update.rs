@@ -143,7 +143,7 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::MinimizeWindow => handlers::window::handle_minimize_window(),
         Message::MaximizeWindow => handlers::window::handle_maximize_window(),
         Message::CloseWindow => handlers::window::handle_close_window(),
-        Message::DragWindow => handlers::window::handle_drag_window(),
+        Message::DragWindow => handlers::window::handle_drag_window(editor),
         Message::OpenModal(m) => handlers::window::handle_open_modal(editor, m),
         Message::CloseModal => handlers::window::handle_close_modal(editor),
         Message::ModalNoOp => Task::none(),
@@ -211,5 +211,11 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
             handlers::loading::handle_image_resources_ready(editor, id, res)
         }
         Message::PreviewGenerated(_) => Task::none(),
+
+        // Scroll boost + filmstrip momentum
+        Message::WheelScrolled(delta) => handlers::scroll::handle_wheel(editor, delta),
+        Message::GlobalCursorMoved(pos) => handlers::scroll::handle_global_cursor_moved(editor, pos),
+        Message::WindowResized(size) => handlers::scroll::handle_window_resized(editor, size),
+        Message::KineticTick(now) => handlers::scroll::handle_kinetic_tick(editor, now),
     }
 }

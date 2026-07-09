@@ -1,5 +1,5 @@
 use crate::app::message::Message;
-use crate::app::state::{EditorReadiness, ExportFormat, ExportSettings, Modal, RawEditor};
+use crate::app::state::{ExportFormat, ExportSettings, Modal, RawEditor};
 use crate::gpu;
 use crate::raw;
 use iced::Task;

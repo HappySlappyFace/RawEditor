@@ -236,6 +236,42 @@ impl Library {
 
     /// Verify cached tier files actually exist on disk.
     /// Resets the image to pending and clears cached paths when any tier is missing.
+    /// Bump when cache-tier generation changes in a way that invalidates
+    /// previously-generated files. v2: EXIF orientation is now baked into all
+    /// three tiers (older tiers were rendered without rotation).
+    pub const CURRENT_CACHE_VERSION: i32 = 2;
+
+    /// Invalidate every cached tier if the on-disk files predate
+    /// `CURRENT_CACHE_VERSION`. Uses `PRAGMA user_version` instead of a schema
+    /// column, so no migration of the `images` table is needed. Returns true
+    /// if a reset was performed (caller should also clear the on-disk tiers).
+    pub fn migrate_cache_version(&self) -> SqlResult<bool> {
+        let stored: i32 = self
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        if stored >= Self::CURRENT_CACHE_VERSION {
+            return Ok(false);
+        }
+
+        self.conn.execute(
+            "UPDATE images
+             SET cache_status = 'pending',
+                 cache_path_thumb = NULL,
+                 cache_path_instant = NULL,
+                 cache_path_working = NULL",
+            [],
+        )?;
+        self.conn
+            .pragma_update(None, "user_version", Self::CURRENT_CACHE_VERSION)?;
+
+        tracing::warn!(
+            "Cache version {} < {}: all cache tiers reset to pending",
+            stored,
+            Self::CURRENT_CACHE_VERSION
+        );
+        Ok(true)
+    }
+
     pub fn verify_cache_paths(&self) -> SqlResult<usize> {
         type CachedPathsRow = (i64, Option<String>, Option<String>, Option<String>);
 
@@ -597,6 +633,31 @@ mod tests {
         assert_eq!(img.flag, -1);
     }
 
+    // ── cache version migration resets stale cached images ────────────────────
+
+    #[test]
+    fn test_migrate_cache_version_resets_stale_cache() {
+        let lib = in_memory_library();
+        let id = lib.import_image("/img.nef", "img.nef").unwrap();
+        lib.set_image_cache_paths(id, "/t.jpg", "/i.jpg", "/w.jpg").unwrap();
+
+        // Fresh in-memory DB starts at user_version 0 < CURRENT_CACHE_VERSION.
+        assert!(lib.migrate_cache_version().unwrap());
+
+        let images = lib.get_all_images().unwrap();
+        let img = images.iter().find(|i| i.id == id).unwrap();
+        assert!(img.cache_path_thumb.is_none());
+
+        let status: String = lib
+            .conn
+            .query_row("SELECT cache_status FROM images WHERE id = ?1", [id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(status, "pending");
+
+        // Second call is a no-op: version already current.
+        assert!(!lib.migrate_cache_version().unwrap());
+    }
+
     // ── get_pending_images respects limit ─────────────────────────────────────
 
     #[test]
@@ -623,6 +684,17 @@ impl std::fmt::Debug for Library {
 pub async fn load_database(_path: String) -> Result<Vec<super::models::Image>, String> {
     match Library::new() {
         Ok(lib) => {
+            if lib.migrate_cache_version().unwrap_or(false) {
+                for tier in ["thumb", "instant", "working"] {
+                    if let Some(mut dir) = dirs_next::cache_dir() {
+                        dir.push("raw-editor");
+                        dir.push(tier);
+                        if let Err(e) = std::fs::remove_dir_all(&dir) {
+                            tracing::warn!("Could not clear stale cache tier {tier}: {e}");
+                        }
+                    }
+                }
+            }
             let _ = lib.verify_cache_paths();
             let _ = lib.verify_files();
             match lib.get_all_images() {

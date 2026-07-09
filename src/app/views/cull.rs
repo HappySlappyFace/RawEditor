@@ -22,7 +22,7 @@ pub fn view_cull(editor: &RawEditor) -> Element<'_, Message> {
     
     column![
         main_content, 
-        Container::new(filmstrip).width(Length::Fill).height(Length::Fixed(115.0))
+        Container::new(filmstrip).width(Length::Fill).height(Length::Fixed(115.0)).clip(true)
     ].width(Length::Fill).height(Length::Fill).into()
 }
 
