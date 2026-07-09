@@ -38,6 +38,11 @@ pub enum MaskHandle {
     RadiusX,
     /// Radial: vertical radius handle
     RadiusY,
+    /// Radial only, used transiently during initial placement: grows both
+    /// radii together (aspect-corrected) so a single drag makes a circle
+    /// instead of a flat horizontal sliver. Never hit-tested afterward —
+    /// once placed, RadiusX/RadiusY resize a single axis as normal.
+    RadiusUniform,
 }
 
 // ─────────────────────────────── ViewportPrimitive ────────────────────────

@@ -395,6 +395,16 @@ fn apply_mask_drag(editor: &mut RawEditor, pos: Point, last: Point, h: MaskHandl
         }
         MaskHandle::RadiusX => m.bx = (m.bx + du).max(0.005),
         MaskHandle::RadiusY => m.by = (m.by + dv).max(0.005),
+        MaskHandle::RadiusUniform => {
+            // Grow both radii from the same horizontal delta so a single
+            // drag makes a circle by default. UV isn't square-pixel — a
+            // radius of `r` physical pixels is `r/width` in u but `r/height`
+            // in v — so the v radius must be scaled by width/height to look
+            // circular on screen rather than squashed/stretched.
+            let aspect = dw as f32 / dh.max(1) as f32;
+            m.bx = (m.bx + du).max(0.005);
+            m.by = (m.by + du * aspect).max(0.005);
+        }
     }
 }
 

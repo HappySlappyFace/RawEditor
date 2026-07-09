@@ -263,6 +263,17 @@ pub struct RawEditor {
     /// (the kinetic `window::frames()` subscription only runs while nonzero).
     pub filmstrip_velocity: f32,
     pub last_kinetic_tick: Option<std::time::Instant>,
+    /// Timestamp of the last wheel event over the filmstrip, used to measure
+    /// how fast the user is actually spinning the wheel (deltaT-based).
+    pub last_wheel_time: Option<std::time::Instant>,
+    /// Smoothed estimate of wheel input speed, px/s. Drives both the size of
+    /// the velocity impulse added per tick and the glide's "weight" (decay).
+    pub filmstrip_input_speed: f32,
+    /// Decay rate (1/s) for the current glide, chosen from input speed at the
+    /// moment of the last wheel tick: slow input -> low decay (heavy, glides
+    /// a long time); fast input -> high decay (light, stops quickly so it
+    /// stays controllable).
+    pub filmstrip_decay: f32,
 }
 
 /// Phase 79: Modular Info Overlay States
@@ -401,6 +412,9 @@ impl RawEditor {
                 window_size: iced::Size::new(1920.0, 1080.0),
                 filmstrip_velocity: 0.0,
                 last_kinetic_tick: None,
+                last_wheel_time: None,
+                filmstrip_input_speed: 0.0,
+                filmstrip_decay: 4.0,
 
                 // Background task
                 // background_task: None, // This field is not defined in the struct

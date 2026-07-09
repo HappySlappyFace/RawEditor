@@ -58,7 +58,7 @@ pub fn handle_mask_placement_started(editor: &mut RawEditor, u: f32, v: f32) -> 
         ),
         MaskTool::PlacingRadial => (
             MaskParams::new_radial(u, v, 0.001, 0.001),
-            MaskHandle::RadiusX,
+            MaskHandle::RadiusUniform,
         ),
         MaskTool::Inactive => return Task::none(),
     };
