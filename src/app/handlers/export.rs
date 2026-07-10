@@ -228,14 +228,26 @@ pub fn handle_export_pipeline_ready(
 
             Task::perform(
                 async move {
-                    let (bytes, _, _) = crate::gpu::render_functions::render_to_bytes(
-                        &context,
-                        &resources,
-                        target_width,
-                        target_height,
-                    )
-                    .await;
-                    save_export_async(filename, bytes, target_width, target_height, settings).await
+                    let pixels = if settings.format == ExportFormat::Tiff {
+                        let (samples, _, _) = crate::gpu::render_functions::render_to_bytes_16bit(
+                            &context,
+                            &resources,
+                            target_width,
+                            target_height,
+                        )
+                        .await;
+                        ExportPixels::Rgb16(samples)
+                    } else {
+                        let (bytes, _, _) = crate::gpu::render_functions::render_to_bytes(
+                            &context,
+                            &resources,
+                            target_width,
+                            target_height,
+                        )
+                        .await;
+                        ExportPixels::Rgba8(bytes)
+                    };
+                    save_export_async(filename, pixels, target_width, target_height, settings).await
                 },
                 move |res| Message::ExportSaveComplete(image_id, res),
             )
@@ -267,9 +279,17 @@ pub fn handle_export_save_complete(
 
 // Helpers
 
+/// Carries either an 8-bit RGBA (JPEG/PNG) or 16-bit RGB (TIFF) sample
+/// buffer through the async save step, so `save_export_async` can't be
+/// called with a format/pixel-type mismatch.
+enum ExportPixels {
+    Rgba8(Vec<u8>),
+    Rgb16(Vec<u16>),
+}
+
 async fn save_export_async(
     filename: String,
-    bytes: Vec<u8>,
+    pixels: ExportPixels,
     width: u32,
     height: u32,
     settings: ExportSettings,
@@ -284,14 +304,15 @@ async fn save_export_async(
         let extension = match settings.format {
             ExportFormat::Jpeg => "jpg",
             ExportFormat::Png => "png",
+            ExportFormat::Tiff => "tiff",
         };
 
         let output_path = output_dir.join(format!("{}.{}", filename, extension));
         let file = File::create(&output_path).map_err(|e| e.to_string())?;
         let writer = BufWriter::new(file);
 
-        match settings.format {
-            ExportFormat::Png => {
+        match (settings.format, pixels) {
+            (ExportFormat::Png, ExportPixels::Rgba8(bytes)) => {
                 let mut encoder = png::Encoder::new(writer, width, height);
                 encoder.set_color(png::ColorType::Rgba);
                 encoder.set_depth(png::BitDepth::Eight);
@@ -301,7 +322,7 @@ async fn save_export_async(
                     .write_image_data(&bytes)
                     .map_err(|e| e.to_string())?;
             }
-            ExportFormat::Jpeg => {
+            (ExportFormat::Jpeg, ExportPixels::Rgba8(bytes)) => {
                 if !bytes.len().is_multiple_of(4) {
                     return Err(format!(
                         "Export buffer length {} is not a multiple of 4",
@@ -322,6 +343,15 @@ async fn save_export_async(
                         jpeg_encoder::ColorType::Rgb,
                     )
                     .map_err(|e| e.to_string())?;
+            }
+            (ExportFormat::Tiff, ExportPixels::Rgb16(samples)) => {
+                tiff::encoder::TiffEncoder::new(writer)
+                    .map_err(|e| e.to_string())?
+                    .write_image::<tiff::encoder::colortype::RGB16>(width, height, &samples)
+                    .map_err(|e| e.to_string())?;
+            }
+            (format, _) => {
+                return Err(format!("Export pixel buffer does not match format {format}"));
             }
         }
 

@@ -386,6 +386,16 @@ pub fn view_export_modal<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
             .spacing(5)
             .text_size(13)
             .style(ui::styles::radio_style),
+            radio(
+                "TIFF (16-bit)",
+                crate::app::state::ExportFormat::Tiff,
+                Some(settings.format),
+                Message::SetExportFormat
+            )
+            .size(14)
+            .spacing(5)
+            .text_size(13)
+            .style(ui::styles::radio_style),
         ]
         .spacing(20),
         if settings.format == crate::app::state::ExportFormat::Jpeg {

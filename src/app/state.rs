@@ -70,6 +70,7 @@ pub enum Modal {
 pub enum ExportFormat {
     Jpeg,
     Png,
+    Tiff,
 }
 
 impl std::fmt::Display for ExportFormat {
@@ -77,6 +78,7 @@ impl std::fmt::Display for ExportFormat {
         match self {
             ExportFormat::Jpeg => write!(f, "JPEG"),
             ExportFormat::Png => write!(f, "PNG"),
+            ExportFormat::Tiff => write!(f, "TIFF"),
         }
     }
 }

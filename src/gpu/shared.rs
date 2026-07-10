@@ -19,6 +19,12 @@ pub struct SharedContext {
     pub queue: Arc<wgpu::Queue>,
     /// Phase 128: Color science pipeline (Pass 2 — reads Rgba16Float)
     pub pipeline: wgpu::RenderPipeline,
+    /// Same Pass-2 shader/layout as `pipeline`, but with an Rgba16Float
+    /// output target instead of Rgba8Unorm — used only for 16-bit TIFF
+    /// export. A wgpu RenderPipeline's output format is baked in at
+    /// creation time, so a second pipeline is required rather than
+    /// swapping the render target's format on the existing one.
+    pub pipeline_16: wgpu::RenderPipeline,
     pub bind_group_layout: wgpu::BindGroupLayout,
     /// Phase 128: Debayer pipeline (Pass 1 — reads R16Uint, writes Rgba16Float)
     pub debayer_pipeline: wgpu::RenderPipeline,
@@ -236,6 +242,34 @@ impl SharedContext {
             multiview: None,
         });
 
+        // Same pipeline as above, targeting Rgba16Float instead of
+        // Rgba8Unorm — used only for 16-bit TIFF export.
+        let pipeline_16 = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Color Render Pipeline 16-bit (Export)"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &color_shader,
+                entry_point: "vs_main",
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &color_shader,
+                entry_point: "fs_main",
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba16Float,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+        });
+
         // Create samplers
         // 1. Nearest sampler (NonFiltering — for Pass 1 RAW u16 integer texture)
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -259,6 +293,7 @@ impl SharedContext {
             device,
             queue,
             pipeline,
+            pipeline_16,
             bind_group_layout,
             debayer_pipeline,
             debayer_bind_group_layout,
