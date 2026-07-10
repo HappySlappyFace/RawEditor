@@ -708,10 +708,14 @@ impl RawEditor {
                     keyboard::Key::Named(Named::ArrowLeft) => Some(Message::SelectPreviousImage),
                     keyboard::Key::Named(Named::Delete)
                     | keyboard::Key::Named(Named::Backspace) => Some(Message::DeleteImage),
-                    // Global Enter binding for the Delete confirmation modal
-                    // ("Delete from Disk"). Safe everywhere else — the
-                    // handler no-ops unless Modal::Delete is actually open.
+                    // Global Enter/D bindings for the Delete confirmation
+                    // modal ("Delete from Disk" / "Mark for Removal"). Safe
+                    // everywhere else — both handlers no-op unless
+                    // Modal::Delete is actually open.
                     keyboard::Key::Named(Named::Enter) => Some(Message::DeleteFromDiskConfirmed),
+                    keyboard::Key::Character(c) if c == "d" || c == "D" => {
+                        Some(Message::MarkForRemovalConfirmed)
+                    }
                     // Phase 56: Rating Shortcuts (1-5)
                     keyboard::Key::Character(c) if c == "0" => Some(Message::SetRating(0)),
                     keyboard::Key::Character(c) if c == "1" => Some(Message::SetRating(1)),

@@ -107,6 +107,9 @@ pub fn view_help_modal<'a>() -> Element<'a, Message> {
             shortcut("P", "Pick"),
             shortcut("X", "Reject"),
             shortcut("U", "Unflag"),
+            shortcut("Delete / Backspace", "Delete Image (or unmark if already marked)"),
+            shortcut("D", "Mark for Removal (in Delete dialog)"),
+            shortcut("Enter", "Delete from Disk (in Delete dialog)"),
             text("Editing")
                 .size(12)
                 .font(Font {
@@ -606,7 +609,7 @@ pub fn view_delete_modal<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
         text(body).size(13).style(|_theme: &Theme| text::Style {
             color: Some(Color::from_rgb(0.75, 0.75, 0.75))
         }),
-        text("\"Mark\" hides it from Develop but keeps it (and the file) untouched. \"Delete from Disk\" moves the RAW and cache files to the system trash and removes it from the library. Enter confirms Delete from Disk.")
+        text("\"Mark\" hides it from Develop but keeps it (and the file) untouched. \"Delete from Disk\" moves the RAW and cache files to the system trash and removes it from the library. Enter confirms Delete from Disk, D confirms Mark for Removal.")
             .size(11)
             .style(|_theme: &Theme| text::Style {
                 color: Some(Color::from_rgb(0.5, 0.5, 0.5))
