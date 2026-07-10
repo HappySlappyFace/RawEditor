@@ -62,6 +62,7 @@ pub enum Modal {
     Help,
     Preferences,
     Export,
+    Delete,
 }
 
 /// Phase 89: Export Format
@@ -109,6 +110,13 @@ impl Default for ExportSettings {
 pub struct RawEditor {
     // Phase 84: Active modal overlay
     pub active_modal: Modal,
+
+    /// Image IDs the open Delete modal acts on — a stable snapshot taken
+    /// when the modal opens, not re-read live from multi_selection.
+    pub pending_delete_ids: Vec<i64>,
+    /// Guards against a double Enter-press firing two overlapping delete
+    /// batches while a hard-delete is already in flight.
+    pub is_deleting: bool,
 
     // Phase 85: User-configurable cache capacity
     pub cache_capacity: usize,
@@ -392,6 +400,8 @@ impl RawEditor {
                 info_overlay: crate::app::state::InfoOverlayState::Metadata,
                 // Phase 84
                 active_modal: Modal::None,
+                pending_delete_ids: Vec::new(),
+                is_deleting: false,
                 // Phase 85
                 cache_capacity,
                 // Phase 88
@@ -623,6 +633,16 @@ impl RawEditor {
         self.evict_raw_cache_to_budget();
     }
 
+    /// Drop a deleted image's entry from the raw cache, keeping
+    /// `raw_cache_bytes` accounting correct.
+    pub fn remove_from_raw_cache(&mut self, image_id: i64) {
+        if let Some(old) = self.raw_cache.pop(&image_id) {
+            self.raw_cache_bytes = self
+                .raw_cache_bytes
+                .saturating_sub(Self::raw_cache_entry_bytes(&old));
+        }
+    }
+
     pub fn save_preferences(&self) {
         let settings = crate::core::settings::AppSettings {
             cache_capacity: self.cache_capacity,
@@ -688,6 +708,10 @@ impl RawEditor {
                     keyboard::Key::Named(Named::ArrowLeft) => Some(Message::SelectPreviousImage),
                     keyboard::Key::Named(Named::Delete)
                     | keyboard::Key::Named(Named::Backspace) => Some(Message::DeleteImage),
+                    // Global Enter binding for the Delete confirmation modal
+                    // ("Delete from Disk"). Safe everywhere else — the
+                    // handler no-ops unless Modal::Delete is actually open.
+                    keyboard::Key::Named(Named::Enter) => Some(Message::DeleteFromDiskConfirmed),
                     // Phase 56: Rating Shortcuts (1-5)
                     keyboard::Key::Character(c) if c == "0" => Some(Message::SetRating(0)),
                     keyboard::Key::Character(c) if c == "1" => Some(Message::SetRating(1)),

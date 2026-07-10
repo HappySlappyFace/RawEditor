@@ -39,6 +39,8 @@ pub fn view_develop(editor: &RawEditor) -> Element<'_, Message> {
         .images
         .iter()
         .filter(|img| editor.min_filter_rating == 0 || img.rating >= editor.min_filter_rating)
+        // Marked-for-removal images never appear in Develop, unlike Library/Cull.
+        .filter(|img| img.rating != crate::database::models::MARKED_FOR_REMOVAL_RATING)
         .collect();
     let filmstrip = ui::filmstrip::view(&filtered_images, &editor.multi_selection);
     let content: Element<_> = column![

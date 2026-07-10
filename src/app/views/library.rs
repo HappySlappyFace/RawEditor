@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use crate::app::message::Message;
 use crate::app::state::RawEditor;
-use crate::database::models::Image as ImageData;
+use crate::database::models::{Image as ImageData, MARKED_FOR_REMOVAL_RATING};
 use crate::ui;
 use crate::ui::icons::ICON_FONT;
 use crate::ui::palette;
@@ -406,7 +406,28 @@ fn view_image_card<'a>(img: &'a ImageData, is_selected: bool, size: f32) -> Elem
         container(Space::with_width(0)).into()
     };
 
-    let top_right_badge: Element<'a, Message> = if has_loaded_thumb && img.rating > 0 {
+    let top_right_badge: Element<'a, Message> = if has_loaded_thumb
+        && img.rating == MARKED_FOR_REMOVAL_RATING
+    {
+        container(
+            row![
+                text(ui::icons::TIMES).font(ICON_FONT).size(11),
+                text("Marked").size(11)
+            ]
+            .spacing(4)
+            .align_y(Alignment::Center),
+        )
+        .padding([3, 7])
+        .style(|_| container::Style {
+            background: Some(Background::Color(Color::from_rgba(0.85, 0.55, 0.05, 0.95))),
+            border: Border {
+                radius: 10.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .into()
+    } else if has_loaded_thumb && img.rating > 0 {
         let stars = vec![ui::icons::STAR; img.rating as usize].join(" ");
         container(text(stars).font(ICON_FONT).size(10))
             .padding([3, 7])
@@ -781,6 +802,9 @@ pub fn view_library(editor: &RawEditor) -> Element<'_, Message> {
     let filtered_images: Vec<&ImageData> = editor
         .images
         .iter()
+        // MARKED_FOR_REMOVAL_RATING (255) always satisfies `>=` against any
+        // real threshold 0-5, so marked images stay visible here regardless
+        // of the rating filter — intentional, not an oversight.
         .filter(|img| editor.min_filter_rating == 0 || img.rating >= editor.min_filter_rating)
         .filter(|img| {
             editor

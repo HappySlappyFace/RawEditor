@@ -435,6 +435,15 @@ impl Library {
         Ok(())
     }
 
+    /// Remove an image's catalog row entirely (used by hard delete). The
+    /// async hard-delete task opens its own connection rather than calling
+    /// this directly (Send-safety across the task boundary — see
+    /// handlers::delete) but this is kept for API completeness.
+    pub fn delete_image(&self, id: i64) -> SqlResult<()> {
+        self.conn.execute("DELETE FROM images WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
     /// Phase 28: Set all 3 cache tier paths for an image
     /// Updates cache_status to 'cached' and stores paths for thumb, instant, and working tiers
     pub fn set_image_cache_paths(
@@ -631,6 +640,36 @@ mod tests {
         let images = lib.get_all_images().unwrap();
         let img = images.iter().find(|i| i.id == id).unwrap();
         assert_eq!(img.flag, -1);
+    }
+
+    // ── delete image: sentinel rating round-trip + row removal ────────────────
+
+    #[test]
+    fn test_marked_for_removal_sentinel_round_trip() {
+        use crate::database::models::MARKED_FOR_REMOVAL_RATING;
+        let lib = in_memory_library();
+        let id = lib.import_image("/mark.nef", "mark.nef").unwrap();
+
+        lib.set_image_rating(id, MARKED_FOR_REMOVAL_RATING).unwrap();
+        let images = lib.get_all_images().unwrap();
+        let img = images.iter().find(|i| i.id == id).unwrap();
+        assert_eq!(img.rating, MARKED_FOR_REMOVAL_RATING);
+
+        // Un-marking reuses the same setter with a normal rating.
+        lib.set_image_rating(id, 0).unwrap();
+        let images = lib.get_all_images().unwrap();
+        let img = images.iter().find(|i| i.id == id).unwrap();
+        assert_eq!(img.rating, 0);
+    }
+
+    #[test]
+    fn test_delete_image_removes_row() {
+        let lib = in_memory_library();
+        let id = lib.import_image("/gone.nef", "gone.nef").unwrap();
+        assert!(lib.get_all_images().unwrap().iter().any(|i| i.id == id));
+
+        lib.delete_image(id).unwrap();
+        assert!(!lib.get_all_images().unwrap().iter().any(|i| i.id == id));
     }
 
     // ── cache version migration resets stale cached images ────────────────────

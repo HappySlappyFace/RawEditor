@@ -24,3 +24,10 @@ pub struct Image {
     /// Phase 83: Pick/Reject flag (0=None, 1=Pick, -1=Reject)
     pub flag: i8,
 }
+
+/// Sentinel `rating` value meaning "marked for removal" (soft delete).
+/// 255 is far outside the real 0-5 range so a future defensive
+/// `.clamp(0,5)` would obviously misbehave rather than silently losing the
+/// mark. The ONLY writer of this value is handlers::delete — never the
+/// digit-key (0-5) rating shortcuts.
+pub const MARKED_FOR_REMOVAL_RATING: u8 = 255;

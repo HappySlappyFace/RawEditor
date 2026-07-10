@@ -169,8 +169,15 @@ pub enum Message {
     MaskPlacementStarted(f32, f32),
     /// User grabbed a handle of the selected mask on the canvas
     MaskHandleGrabbed(MaskHandle, Rectangle),
-    /// Phase 67: Delete Image
+    /// Phase 67: Delete Image — opens the confirm modal, or (if every
+    /// targeted image is already marked) instantly toggles the mark off.
     DeleteImage,
+    /// "Mark for Removal" button in the delete modal.
+    MarkForRemovalConfirmed,
+    /// "Delete from Disk" button in the delete modal, and the global Enter key.
+    DeleteFromDiskConfirmed,
+    /// Background hard-delete (trash move + DB row removal) batch finished.
+    HardDeleteComplete(crate::app::handlers::delete::HardDeleteOutcome),
     /// Phase 65: Undo/Redo History
     Undo,
     Redo,

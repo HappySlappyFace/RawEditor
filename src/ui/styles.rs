@@ -204,6 +204,58 @@ impl AccentButton {
     }
 }
 
+/// Destructive-action button (e.g. "Delete from Disk"). Red, distinct from
+/// AccentButton's neutral-accent styling.
+pub struct DangerButton;
+
+impl DangerButton {
+    pub fn style(_theme: &Theme, status: iced::widget::button::Status) -> iced::widget::button::Style {
+        match status {
+            iced::widget::button::Status::Active => iced::widget::button::Style {
+                background: Some(Background::Color(Color::from_rgb(0.75, 0.15, 0.15))),
+                text_color: Color::WHITE,
+                border: Border {
+                    radius: 4.0.into(),
+                    width: 0.0,
+                    color: Color::TRANSPARENT,
+                },
+                ..Default::default()
+            },
+            iced::widget::button::Status::Hovered => iced::widget::button::Style {
+                // Matches the title-bar close-button hover color (layout.rs).
+                background: Some(Background::Color(Color::from_rgb(0.9, 0.2, 0.2))),
+                text_color: Color::WHITE,
+                border: Border {
+                    radius: 4.0.into(),
+                    width: 0.0,
+                    color: Color::TRANSPARENT,
+                },
+                ..Default::default()
+            },
+            iced::widget::button::Status::Pressed => iced::widget::button::Style {
+                background: Some(Background::Color(Color::from_rgb(0.55, 0.1, 0.1))),
+                text_color: Color::from_rgb(0.9, 0.9, 0.9),
+                border: Border {
+                    radius: 4.0.into(),
+                    width: 0.0,
+                    color: Color::TRANSPARENT,
+                },
+                ..Default::default()
+            },
+            iced::widget::button::Status::Disabled => iced::widget::button::Style {
+                background: None,
+                text_color: Color::from_rgb(0.4, 0.4, 0.4),
+                border: Border {
+                    radius: 4.0.into(),
+                    width: 0.0,
+                    color: Color::TRANSPARENT,
+                },
+                ..Default::default()
+            },
+        }
+    }
+}
+
 pub fn radio_style(_theme: &Theme, _status: iced::widget::radio::Status) -> iced::widget::radio::Style {
     iced::widget::radio::Style {
         background: Background::Color(Color::from_rgb(0.2, 0.2, 0.2)),

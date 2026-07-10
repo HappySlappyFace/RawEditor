@@ -109,6 +109,9 @@ pub fn handle_set_crop(editor: &mut RawEditor, crop: [f32; 4]) -> Task<Message> 
 }
 
 pub fn handle_toggle_crop(editor: &mut RawEditor) -> Task<Message> {
+    if editor.active_modal != crate::app::state::Modal::None {
+        return Task::none();
+    }
     editor.is_wb_picking = false; // tools are mutually exclusive
     editor.mask_tool = crate::app::state::MaskTool::Inactive;
     editor.selected_mask = None;
@@ -140,6 +143,9 @@ pub fn handle_commit_edit(editor: &mut RawEditor) -> Task<Message> {
 }
 
 pub fn handle_undo(editor: &mut RawEditor) -> Task<Message> {
+    if editor.active_modal != crate::app::state::Modal::None {
+        return Task::none();
+    }
     if let Some((stack, index)) = editor.get_current_history() {
         if *index > 0 {
             *index -= 1;
@@ -154,6 +160,9 @@ pub fn handle_undo(editor: &mut RawEditor) -> Task<Message> {
 }
 
 pub fn handle_redo(editor: &mut RawEditor) -> Task<Message> {
+    if editor.active_modal != crate::app::state::Modal::None {
+        return Task::none();
+    }
     if let Some((stack, index)) = editor.get_current_history() {
         if *index < stack.len() - 1 {
             *index += 1;
@@ -168,6 +177,9 @@ pub fn handle_redo(editor: &mut RawEditor) -> Task<Message> {
 }
 
 pub fn handle_reset_edits(editor: &mut RawEditor) -> Task<Message> {
+    if editor.active_modal != crate::app::state::Modal::None {
+        return Task::none();
+    }
     editor.current_edit_params.reset();
     // The masks just got wiped; drop the selection/tool that pointed at them.
     editor.selected_mask = None;
@@ -359,6 +371,9 @@ pub fn trigger_async_render(editor: &mut RawEditor) -> Task<Message> {
 }
 
 pub fn handle_toggle_wb_picker(editor: &mut RawEditor) -> Task<Message> {
+    if editor.active_modal != crate::app::state::Modal::None {
+        return Task::none();
+    }
     editor.is_wb_picking = !editor.is_wb_picking;
     if editor.is_wb_picking {
         // Tools are mutually exclusive; leaving crop mode also clears its GPU flag.

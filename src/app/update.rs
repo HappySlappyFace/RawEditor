@@ -113,10 +113,10 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::SetLibraryFolderFilter(folder_filter) => {
             handlers::library::handle_set_library_folder_filter(editor, folder_filter)
         }
-        Message::DeleteImage => {
-            tracing::warn!("Delete image requested (not implemented yet)");
-            Task::none()
-        }
+        Message::DeleteImage => handlers::delete::handle_delete_image_requested(editor),
+        Message::MarkForRemovalConfirmed => handlers::delete::handle_mark_for_removal_confirmed(editor),
+        Message::DeleteFromDiskConfirmed => handlers::delete::handle_delete_from_disk_confirmed(editor),
+        Message::HardDeleteComplete(outcome) => handlers::delete::handle_hard_delete_complete(editor, outcome),
 
         // Export
         Message::SetExportFormat(f) => handlers::export::handle_set_export_format(editor, f),

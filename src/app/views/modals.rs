@@ -575,3 +575,63 @@ pub fn view_export_modal<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
     .width(400)
     .into()
 }
+
+pub fn view_delete_modal<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
+    let count = editor.pending_delete_ids.len();
+    let body = if count == 1 {
+        let name = editor
+            .images
+            .iter()
+            .find(|i| i.id == editor.pending_delete_ids[0])
+            .map(|i| i.filename.clone())
+            .unwrap_or_default();
+        format!("\"{}\" will be removed.", name)
+    } else {
+        format!("{} images will be removed.", count)
+    };
+
+    column![
+        text("Delete Image").size(18).font(Font {
+            weight: Weight::Bold,
+            ..Default::default()
+        }).style(|_| text::Style {
+            color: Some(Color::from_rgb(0.85, 0.85, 0.85))
+        }),
+        iced::widget::horizontal_rule(1.0).style(|_| iced::widget::rule::Style {
+            color: Color::from_rgb(0.3, 0.3, 0.3),
+            width: 1,
+            radius: 0.0.into(),
+            fill_mode: iced::widget::rule::FillMode::Full
+        }),
+        text(body).size(13).style(|_theme: &Theme| text::Style {
+            color: Some(Color::from_rgb(0.75, 0.75, 0.75))
+        }),
+        text("\"Mark\" hides it from Develop but keeps it (and the file) untouched. \"Delete from Disk\" moves the RAW and cache files to the system trash and removes it from the library. Enter confirms Delete from Disk.")
+            .size(11)
+            .style(|_theme: &Theme| text::Style {
+                color: Some(Color::from_rgb(0.5, 0.5, 0.5))
+            }),
+        iced::widget::vertical_space().height(10),
+        row![
+            button(text("Cancel").align_x(iced::alignment::Horizontal::Center))
+                .on_press(Message::CloseModal)
+                .padding(10)
+                .width(Length::Fill)
+                .style(ui::styles::NeutralButton::style),
+            button(text("Mark for Removal").align_x(iced::alignment::Horizontal::Center))
+                .on_press(Message::MarkForRemovalConfirmed)
+                .padding(10)
+                .width(Length::Fill)
+                .style(ui::styles::AccentButton::style),
+            button(text("Delete from Disk").align_x(iced::alignment::Horizontal::Center))
+                .on_press(Message::DeleteFromDiskConfirmed)
+                .padding(10)
+                .width(Length::Fill)
+                .style(ui::styles::DangerButton::style),
+        ]
+        .spacing(10)
+    ]
+    .spacing(15)
+    .width(440)
+    .into()
+}

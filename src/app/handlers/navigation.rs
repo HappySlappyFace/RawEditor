@@ -41,6 +41,13 @@ pub fn handle_image_selected(editor: &mut RawEditor, image_id: i64) -> Task<Mess
 pub fn handle_tab_changed(editor: &mut RawEditor, tab: AppTab) -> Task<Message> {
     editor.current_tab = tab;
     if tab == AppTab::Develop {
+        // An image could have been marked for removal while a different tab
+        // was active — handle_tab_changed itself has no rating-awareness
+        // otherwise, so a stale marked selection would silently load and
+        // display in Develop without this check.
+        if selection_is_marked(editor) {
+            return ensure_develop_selection_not_marked(editor);
+        }
         if let Some(image_id) = editor.selected_image_id {
             let needs_load = match &editor.editor_readiness {
                 EditorReadiness::Ready(id) => *id != image_id,
@@ -55,7 +62,66 @@ pub fn handle_tab_changed(editor: &mut RawEditor, tab: AppTab) -> Task<Message> 
     Task::none()
 }
 
+/// Cyclic search starting just after `from_id` for the next image that is
+/// NOT marked for removal. Bounded to `images.len()` steps, so it can never
+/// infinite-loop even if every image (including `from_id`) is marked.
+pub fn find_next_unmarked_image_id(editor: &RawEditor, from_id: i64) -> Option<i64> {
+    let idx = editor.images.iter().position(|i| i.id == from_id)?;
+    let len = editor.images.len();
+    for step in 1..=len {
+        let candidate = &editor.images[(idx + step) % len];
+        if candidate.rating != crate::database::models::MARKED_FOR_REMOVAL_RATING {
+            return Some(candidate.id);
+        }
+    }
+    None
+}
+
+/// True when Develop is active and its current selection is marked for
+/// removal — the condition `ensure_develop_selection_not_marked` acts on.
+fn selection_is_marked(editor: &RawEditor) -> bool {
+    if editor.current_tab != AppTab::Develop {
+        return false;
+    }
+    let Some(sel) = editor.selected_image_id else {
+        return false;
+    };
+    editor
+        .images
+        .iter()
+        .find(|i| i.id == sel)
+        .map(|i| i.rating == crate::database::models::MARKED_FOR_REMOVAL_RATING)
+        .unwrap_or(false)
+}
+
+/// If Develop is the active tab and its selection is marked for removal,
+/// navigate to the next unmarked image, or clear the selection if none
+/// exists. Called both right after marking an image (handlers::delete) and
+/// when switching into the Develop tab (above), since marking most commonly
+/// happens from Library/Cull, not Develop itself.
+pub fn ensure_develop_selection_not_marked(editor: &mut RawEditor) -> Task<Message> {
+    if !selection_is_marked(editor) {
+        return Task::none();
+    }
+    let Some(sel) = editor.selected_image_id else {
+        return Task::none();
+    };
+
+    if let Some(next_id) = find_next_unmarked_image_id(editor, sel) {
+        Task::done(Message::ImageSelected(next_id))
+    } else {
+        editor.selected_image_id = None;
+        editor.editor_readiness = EditorReadiness::NoSelection;
+        editor.working_preview = None;
+        editor.rendered_preview = None;
+        Task::none()
+    }
+}
+
 pub fn handle_select_next_image(editor: &mut RawEditor) -> Task<Message> {
+    if editor.active_modal != crate::app::state::Modal::None {
+        return Task::none();
+    }
     if let Some(id) = editor.selected_image_id {
         if let Some(idx) = editor.images.iter().position(|i| i.id == id) {
             let next = editor.images[(idx + 1) % editor.images.len()].id;
@@ -66,6 +132,9 @@ pub fn handle_select_next_image(editor: &mut RawEditor) -> Task<Message> {
 }
 
 pub fn handle_select_previous_image(editor: &mut RawEditor) -> Task<Message> {
+    if editor.active_modal != crate::app::state::Modal::None {
+        return Task::none();
+    }
     if let Some(id) = editor.selected_image_id {
         if let Some(idx) = editor.images.iter().position(|i| i.id == id) {
             let prev = editor.images[if idx == 0 { editor.images.len() - 1 } else { idx - 1 }].id;

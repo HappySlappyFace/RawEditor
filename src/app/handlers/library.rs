@@ -100,6 +100,9 @@ pub fn handle_cache_processed(editor: &mut RawEditor, result: Result<(i64, Strin
 }
 
 pub fn handle_set_rating(editor: &mut RawEditor, rating: u8) -> Task<Message> {
+    if editor.active_modal != crate::app::state::Modal::None {
+        return Task::none();
+    }
     let ids: Vec<i64> = if !editor.multi_selection.is_empty() { 
         editor.multi_selection.iter().copied().collect() 
     } else if let Some(id) = editor.selected_image_id { 
@@ -122,6 +125,9 @@ pub fn handle_set_rating(editor: &mut RawEditor, rating: u8) -> Task<Message> {
 }
 
 pub fn handle_set_flag(editor: &mut RawEditor, flag: i8) -> Task<Message> {
+    if editor.active_modal != crate::app::state::Modal::None {
+        return Task::none();
+    }
     let ids: Vec<i64> = if !editor.multi_selection.is_empty() { 
         editor.multi_selection.iter().copied().collect() 
     } else if let Some(id) = editor.selected_image_id { 

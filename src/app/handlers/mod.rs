@@ -6,3 +6,4 @@ pub mod navigation;
 pub mod export;
 pub mod window;
 pub mod loading;
+pub mod delete;

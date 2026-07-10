@@ -3,7 +3,7 @@ use iced::{Background, Border, Color, Element, Length, Theme};
 use std::path::PathBuf;
 use std::collections::HashSet;  // Phase 55: Multi-selection
 
-use crate::database::models::Image;
+use crate::database::models::{Image, MARKED_FOR_REMOVAL_RATING};
 use crate::app::message::Message;
 use crate::ui::icons;  // Phase 58: Icon constants
 
@@ -42,8 +42,35 @@ pub fn view<'a>(
             .width(Length::Fixed(140.0))
             .height(Length::Fixed(105.0));
         
-        // Phase 56: Overlay star rating on bottom-left corner
-        let rating_overlay = if img.rating > 0 {
+        // Phase 56: Overlay star rating (or the "marked for removal" badge,
+        // which reuses this same field via a reserved sentinel — must be
+        // checked first or `img.rating as usize` below would try to build a
+        // 255-element star vec) on the bottom-left corner.
+        let rating_overlay = if img.rating == MARKED_FOR_REMOVAL_RATING {
+            Element::from(container(
+                container(
+                    row![
+                        text(icons::TIMES).size(12).font(crate::app::view::ICON_FONT),
+                        text("Marked").size(12),
+                    ]
+                    .spacing(4)
+                    .align_y(iced::Alignment::Center)
+                )
+                .padding(iced::Padding { top: 2.0, right: 4.0, bottom: 2.0, left: 4.0 })
+                .style(|_theme: &Theme| {
+                    container::Style {
+                        background: Some(Background::Color(Color::from_rgba(0.85, 0.55, 0.05, 0.9))),
+                        border: Border { radius: 3.0.into(), ..Default::default() },
+                        ..Default::default()
+                    }
+                })
+            )
+            .padding(iced::Padding { top: 0.0, right: 0.0, bottom: 2.0, left: 2.0 })
+            .align_y(iced::alignment::Vertical::Bottom)
+            .align_x(iced::alignment::Horizontal::Left)
+            .width(Length::Fill)
+            .height(Length::Fill))
+        } else if img.rating > 0 {
             let stars_text = vec![icons::STAR; img.rating as usize].join(" ");
             Element::from(container(
                 container(
