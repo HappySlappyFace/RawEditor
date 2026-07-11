@@ -43,6 +43,9 @@ pub enum MaskHandle {
     /// instead of a flat horizontal sliver. Never hit-tested afterward —
     /// once placed, RadiusX/RadiusY resize a single axis as normal.
     RadiusUniform,
+    /// Radial only: rotates the ellipse. Dragged via angle (atan2 around the
+    /// screen-space center), not a UV delta like the other handles.
+    Rotation,
 }
 
 // ─────────────────────────────── ViewportPrimitive ────────────────────────
@@ -506,16 +509,22 @@ impl CropOverlay {
                 self.uv_to_screen((m.ax + m.bx) * 0.5, (m.ay + m.by) * 0.5, &ib),
             );
         } else {
-            // Radial: axis-aligned ellipse in UV space → axis-aligned on screen
+            // Radial: ellipse in UV space, screen radii already account for
+            // the UV→screen aspect distortion (same conversion RadiusUniform
+            // uses at placement time). rx/ry being genuine screen-space
+            // pixel radii is why the rotation below needs NO further aspect
+            // correction — unlike mask_weight's UV-space math, this is
+            // already isotropic.
             let center = self.uv_to_screen(m.ax, m.ay, &ib);
             let rx = m.bx / self.crop[2].max(1e-6) * ib.width;
             let ry = m.by / self.crop[3].max(1e-6) * ib.height;
+            let rotation = iced::Radians(m.rotation.to_radians());
             let ellipse = |radii: iced::Vector| {
                 canvas::Path::new(|b| {
                     b.ellipse(canvas::path::arc::Elliptical {
                         center,
                         radii,
-                        rotation: iced::Radians(0.0),
+                        rotation,
                         start_angle: iced::Radians(0.0),
                         end_angle: iced::Radians(std::f32::consts::TAU),
                     });
@@ -528,11 +537,30 @@ impl CropOverlay {
                 frame.stroke(&ellipse(iced::Vector::new(rx * inner, ry * inner)), faint);
             }
             draw_pin(&mut frame, center);
-            draw_pin(&mut frame, self.uv_to_screen(m.ax + m.bx, m.ay, &ib));
-            draw_pin(&mut frame, self.uv_to_screen(m.ax, m.ay + m.by, &ib));
+            draw_pin(&mut frame, center + Self::rotate_screen_vector(m.rotation, rx, 0.0));
+            draw_pin(&mut frame, center + Self::rotate_screen_vector(m.rotation, 0.0, ry));
+
+            // Rotation handle: further out along the ellipse's own (rotated)
+            // major-radius direction, with a thin line back to center as a
+            // visual angle indicator.
+            let handle_dist = rx.max(ry) * 1.25;
+            let rotation_handle = center + Self::rotate_screen_vector(m.rotation, handle_dist, 0.0);
+            frame.stroke(&canvas::Path::line(center, rotation_handle), faint);
+            draw_pin(&mut frame, rotation_handle);
         }
 
         vec![frame.into_geometry()]
+    }
+
+    /// Rotate a screen-space vector by `degrees`, matching iced's
+    /// `Elliptical.rotation` convention (clockwise for positive angles,
+    /// since screen Y increases downward) — the standard rotation matrix
+    /// applied directly in screen coordinates, no aspect correction needed
+    /// since screen space is already isotropic (unlike UV space).
+    fn rotate_screen_vector(degrees: f32, x: f32, y: f32) -> iced::Vector {
+        let r = degrees.to_radians();
+        let (c, s) = (r.cos(), r.sin());
+        iced::Vector::new(x * c - y * s, x * s + y * c)
     }
 
     /// Screen positions of the selected mask's drag handles, in hit-test
@@ -551,10 +579,21 @@ impl CropOverlay {
                 ),
             ]
         } else {
+            // Handle positions rotate with the ellipse (matching
+            // draw_mask_overlay) so they stay exactly on its visual
+            // boundary — and so dragging RadiusX/RadiusY still moves the
+            // handle in the direction it's visually pointing at any
+            // rotation (apply_mask_drag projects the drag delta onto these
+            // same rotated local axes).
+            let center = self.uv_to_screen(m.ax, m.ay, ib);
+            let rx = m.bx / self.crop[2].max(1e-6) * ib.width;
+            let ry = m.by / self.crop[3].max(1e-6) * ib.height;
+            let handle_dist = rx.max(ry) * 1.25;
             vec![
-                (MaskHandle::RadiusX, self.uv_to_screen(m.ax + m.bx, m.ay, ib)),
-                (MaskHandle::RadiusY, self.uv_to_screen(m.ax, m.ay + m.by, ib)),
-                (MaskHandle::Center, self.uv_to_screen(m.ax, m.ay, ib)),
+                (MaskHandle::RadiusX, center + Self::rotate_screen_vector(m.rotation, rx, 0.0)),
+                (MaskHandle::RadiusY, center + Self::rotate_screen_vector(m.rotation, 0.0, ry)),
+                (MaskHandle::Rotation, center + Self::rotate_screen_vector(m.rotation, handle_dist, 0.0)),
+                (MaskHandle::Center, center),
             ]
         }
     }
@@ -737,16 +776,26 @@ impl canvas::Program<Message> for CropOverlay {
             return iced::mouse::Interaction::Crosshair;
         }
         if !self.is_cropping {
-            // Grab cursor over the selected mask's handles
+            // Distinct cursor per handle type over the selected mask's
+            // handles. iced has no dedicated "rotate" cursor, so Rotation
+            // uses Move (the closest "manipulate this element" hint) rather
+            // than Crosshair, which already means "placement mode" elsewhere.
+            // Resize cursors are a static approximation — they don't tilt
+            // to match the mask's actual rotation angle.
             if self.selected_mask.is_some() {
                 if let Some(p) = cursor.position_in(bounds) {
                     let ib = self.image_bounds(bounds.width, bounds.height);
                     let hr = 15.0_f32;
-                    for (_, hp) in self.mask_handle_positions(&ib) {
+                    for (handle, hp) in self.mask_handle_positions(&ib) {
                         let dx = p.x - hp.x;
                         let dy = p.y - hp.y;
                         if dx * dx + dy * dy < hr * hr {
-                            return iced::mouse::Interaction::Grab;
+                            return match handle {
+                                MaskHandle::RadiusX => iced::mouse::Interaction::ResizingHorizontally,
+                                MaskHandle::RadiusY => iced::mouse::Interaction::ResizingVertically,
+                                MaskHandle::Rotation => iced::mouse::Interaction::Move,
+                                _ => iced::mouse::Interaction::Grab,
+                            };
                         }
                     }
                 }

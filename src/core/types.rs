@@ -186,6 +186,18 @@ pub struct MaskParams {
     pub highlights: f32,
     /// Local shadows (-1.0 to +1.0), same units as the global slider
     pub shadows: f32,
+    /// Local green/magenta shift (-1.0 to +1.0), both mask types. Pairs
+    /// with `warmth` (blue/amber) for full local white-balance-style
+    /// control — same gentle sRGB-linear channel-tilt technique.
+    /// serde default keeps masks saved before this field existed loadable.
+    #[serde(default)]
+    pub tint: f32,
+    /// Radial only: ellipse rotation in degrees (-180.0 to +180.0).
+    /// Unused for linear (a gradient's direction is already fully
+    /// described by its two endpoints).
+    /// serde default keeps masks saved before this field existed loadable.
+    #[serde(default)]
+    pub rotation: f32,
 }
 
 impl MaskParams {

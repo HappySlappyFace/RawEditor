@@ -156,6 +156,8 @@ pub fn handle_mask_adjustment_changed(
         MaskAdjustment::Highlights => mask.highlights = value,
         MaskAdjustment::Shadows => mask.shadows = value,
         MaskAdjustment::Feather => mask.feather = value.clamp(0.0, 1.0),
+        MaskAdjustment::Tint => mask.tint = value.clamp(-1.0, 1.0),
+        MaskAdjustment::Rotation => mask.rotation = value.clamp(-180.0, 180.0),
     }
     update_pipeline(editor)
 }

@@ -873,11 +873,23 @@ fn push_mask_section<'a>(
                 ))
                 .push(slider_row("Warmth", m.warmth, -1.0..=1.0, 0.01, |v| {
                     Message::MaskAdjustmentChanged(MaskAdjustment::Warmth, v)
+                }))
+                .push(slider_row("Tint", m.tint, -1.0..=1.0, 0.01, |v| {
+                    Message::MaskAdjustmentChanged(MaskAdjustment::Tint, v)
                 }));
             if m.mask_type == 1 {
-                sidebar = sidebar.push(slider_row("Feather", m.feather, 0.0..=1.0, 0.01, |v| {
-                    Message::MaskAdjustmentChanged(MaskAdjustment::Feather, v)
-                }));
+                sidebar = sidebar
+                    .push(slider_row("Feather", m.feather, 0.0..=1.0, 0.01, |v| {
+                        Message::MaskAdjustmentChanged(MaskAdjustment::Feather, v)
+                    }))
+                    .push(slider_row_display(
+                        "Rotation",
+                        m.rotation,
+                        -180.0..=180.0,
+                        1.0,
+                        format!("{:.0}°", m.rotation),
+                        |v| Message::MaskAdjustmentChanged(MaskAdjustment::Rotation, v),
+                    ));
             }
         }
     }

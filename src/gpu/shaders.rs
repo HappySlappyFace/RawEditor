@@ -169,7 +169,7 @@ struct Mask {
     info: vec4<f32>,  // x: type (0 linear / 1 radial), y: enabled, z: invert, w: feather
     geom: vec4<f32>,  // linear: ax, ay, bx, by;  radial: cx, cy, rx, ry
     adj0: vec4<f32>,  // exposure (EV), contrast, saturation, warmth
-    adj1: vec4<f32>,  // highlights, shadows, unused, unused
+    adj1: vec4<f32>,  // highlights, shadows, tint, rotation (radians)
 }
 
 // Phase 128: Pass 2 now reads the debayered Rgba16Float intermediate texture.
@@ -222,7 +222,11 @@ fn get_cam_luma(coords: vec2<i32>, dimensions: vec2<u32>) -> f32 {
 
 // Weight of a local adjustment mask at point p (full-image display UV,
 // the same space as params.crop). Closed-form — no mask texture needed.
-fn mask_weight(m: Mask, p: vec2<f32>) -> f32 {
+// `aspect` is the display (post-orientation) width/height ratio: UV space
+// isn't square-pixel, so the radial branch's rotation must un-distort to an
+// isotropic frame before rotating, or a rotated ellipse would come out
+// sheared instead of rotated on any non-square image.
+fn mask_weight(m: Mask, p: vec2<f32>, aspect: f32) -> f32 {
     var w: f32;
     if (m.info.x < 0.5) {
         // Linear gradient: weight 1 at A falling smoothly to 0 at B.
@@ -233,7 +237,20 @@ fn mask_weight(m: Mask, p: vec2<f32>) -> f32 {
     } else {
         // Radial ellipse with per-axis radii; feather sets where the
         // falloff starts (1 = from center, 0 = hard edge).
-        let q = (p - m.geom.xy) / max(m.geom.zw, vec2<f32>(1e-4));
+        let d = p - m.geom.xy;
+        let cos_r = cos(-m.adj1.w);
+        let sin_r = sin(-m.adj1.w);
+        // Un-distort to isotropic space, apply the inverse rotation (maps
+        // the sample point into the ellipse's unrotated local frame), then
+        // redistort back before comparing against the (raw UV) radii. At
+        // rotation=0 this reduces exactly to the un-rotated formula.
+        let iso = vec2<f32>(d.x * aspect, d.y);
+        let rotated_iso = vec2<f32>(
+            iso.x * cos_r - iso.y * sin_r,
+            iso.x * sin_r + iso.y * cos_r,
+        );
+        let rotated = vec2<f32>(rotated_iso.x / aspect, rotated_iso.y);
+        let q = rotated / max(m.geom.zw, vec2<f32>(1e-4));
         let r = length(q); // 1.0 at the ellipse edge
         let inner = 1.0 - clamp(m.info.w, 0.0, 0.999);
         w = 1.0 - smoothstep(inner, 1.0, r);
@@ -805,12 +822,20 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // compose consistently with their global counterparts. Mask geometry is
     // evaluated against input.tex_coords (full-image display UV, pre-rotation)
     // — the same convention as the crop rectangle.
+    //
+    // Display (post-orientation) aspect ratio for mask_weight's rotation
+    // math — mirrors the straightening-rotation block's orientation swap
+    // above, reusing the `dimensions` variable already computed for Step 1.
+    var mask_aspect = f32(dimensions.x) / f32(dimensions.y);
+    if (params.orientation == 6u || params.orientation == 8u) {
+        mask_aspect = 1.0 / mask_aspect;
+    }
     for (var mi = 0u; mi < min(params.mask_count, 8u); mi = mi + 1u) {
         let m = params.masks[mi];
         if (m.info.y < 0.5) {
             continue;
         }
-        let w = mask_weight(m, input.tex_coords);
+        let w = mask_weight(m, input.tex_coords, mask_aspect);
         if (w < 0.001) {
             continue;
         }
@@ -827,6 +852,13 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         let warm = m.adj0.w * w;
         if (warm != 0.0) {
             color = color * vec3<f32>(1.0 + 0.10 * warm, 1.0, 1.0 - 0.10 * warm);
+        }
+
+        // Tint: same gentle-tilt technique as warmth, on the green/magenta
+        // axis instead of blue/amber. Positive = more green (Adobe convention).
+        let tint = m.adj1.z * w;
+        if (tint != 0.0) {
+            color = color * vec3<f32>(1.0 - 0.10 * tint, 1.0 + 0.10 * tint, 1.0 - 0.10 * tint);
         }
 
         // Highlights: same luma-weighted multiplicative form as Step 10
@@ -1047,7 +1079,7 @@ struct Mask {
     info: vec4<f32>,
     geom: vec4<f32>,
     adj0: vec4<f32>,
-    adj1: vec4<f32>,
+    adj1: vec4<f32>,  // highlights, shadows, tint, rotation (radians)
 }
 
 @group(0) @binding(0)

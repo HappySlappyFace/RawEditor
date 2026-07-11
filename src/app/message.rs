@@ -14,6 +14,8 @@ pub enum MaskAdjustment {
     Highlights,
     Shadows,
     Feather,
+    Tint,
+    Rotation,
 }
 
 /// Application tabs/modules

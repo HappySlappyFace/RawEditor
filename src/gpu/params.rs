@@ -11,7 +11,7 @@ pub struct GpuMask {
     pub geom: [f32; 4],
     /// exposure, contrast, saturation, warmth
     pub adj0: [f32; 4],
-    /// highlights, shadows, unused, unused
+    /// highlights, shadows, tint, rotation (radians)
     pub adj1: [f32; 4],
 }
 
@@ -21,7 +21,7 @@ impl From<&MaskParams> for GpuMask {
             info: [m.mask_type as f32, m.enabled as f32, m.invert as f32, m.feather],
             geom: [m.ax, m.ay, m.bx, m.by],
             adj0: [m.exposure, m.contrast, m.saturation, m.warmth],
-            adj1: [m.highlights, m.shadows, 0.0, 0.0],
+            adj1: [m.highlights, m.shadows, m.tint, m.rotation.to_radians()],
         }
     }
 }
@@ -163,9 +163,15 @@ mod tests {
         let mut m = MaskParams::new_radial(0.5, 0.4, 0.3, 0.2);
         m.exposure = -1.5;
         m.invert = 1;
+        m.tint = 0.4;
+        m.rotation = 90.0;
         let g = GpuMask::from(&m);
         assert_eq!(g.info, [1.0, 1.0, 1.0, 0.5]);
         assert_eq!(g.geom, [0.5, 0.4, 0.3, 0.2]);
         assert_eq!(g.adj0[0], -1.5);
+        assert_eq!(g.adj1[2], 0.4);
+        // Rotation is converted to radians in the mapping, matching the
+        // shader's convention (see mask_weight's aspect-corrected rotation).
+        assert!((g.adj1[3] - std::f32::consts::FRAC_PI_2).abs() < 1e-5);
     }
 }

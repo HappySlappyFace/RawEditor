@@ -433,15 +433,23 @@ fn apply_mask_drag(editor: &mut RawEditor, pos: Point, last: Point, h: MaskHandl
     let (dw, dh) = editor.display_dims();
     let (bw, bh) = editor.viewport_size;
     let (fw, fh) = crate::core::viewport::fitted_size(dw, dh, bw, bh);
+    // Captured before `m` borrows editor.current_edit_params below — needed
+    // by the Rotation arm's image_rect call.
+    let zoom = editor.zoom;
+    let pan_offset = editor.pan_offset;
 
-    let zw = fw * editor.zoom;
-    let zh = fh * editor.zoom;
+    let zw = fw * zoom;
+    let zh = fh * zoom;
 
     // Screen deltas map to visible-area UV; mask geometry lives in full-image
     // UV (the crop sub-rect is what's displayed), so scale by the crop extent.
     let crop = editor.current_edit_params.crop;
     let du = (pos.x - last.x) / zw.max(1.0) * crop[2];
     let dv = (pos.y - last.y) / zh.max(1.0) * crop[3];
+    // dw/dh are already the oriented display dims (editor.display_dims()),
+    // so this is the display aspect with no separate orientation swap
+    // needed — unlike the shader, which starts from raw sensor dims.
+    let aspect = dw as f32 / dh.max(1) as f32;
 
     let m = &mut editor.current_edit_params.masks[index];
     match h {
@@ -455,6 +463,8 @@ fn apply_mask_drag(editor: &mut RawEditor, pos: Point, last: Point, h: MaskHandl
         }
         MaskHandle::Center => {
             // Radial: move the center. Linear: move the whole gradient.
+            // Translation commutes with rotation, so no rotation-aware math
+            // is needed here even for a rotated ellipse.
             m.ax += du;
             m.ay += dv;
             if m.mask_type == 0 {
@@ -462,17 +472,53 @@ fn apply_mask_drag(editor: &mut RawEditor, pos: Point, last: Point, h: MaskHandl
                 m.by += dv;
             }
         }
-        MaskHandle::RadiusX => m.bx = (m.bx + du).max(0.005),
-        MaskHandle::RadiusY => m.by = (m.by + dv).max(0.005),
+        MaskHandle::RadiusX | MaskHandle::RadiusY => {
+            // The handles themselves are drawn rotated with the ellipse
+            // (see mask_handle_positions), so dragging must project the
+            // screen delta onto the ellipse's own (rotated) local axes —
+            // otherwise the handle would visually stop responding to drags
+            // once rotated away from the image axes. Same isotropic
+            // un-distort/rotate/redistort technique as mask_weight's
+            // aspect correction, just for a delta vector instead of a point.
+            let rot = m.rotation.to_radians();
+            let (rc, rs) = (rot.cos(), rot.sin());
+            let iso_du = du * aspect;
+            let iso_dv = dv;
+            let local_dx = (iso_du * rc + iso_dv * rs) / aspect.max(1e-6);
+            let local_dy = -iso_du * rs + iso_dv * rc;
+            if h == MaskHandle::RadiusX {
+                m.bx = (m.bx + local_dx).max(0.005);
+            } else {
+                m.by = (m.by + local_dy).max(0.005);
+            }
+        }
         MaskHandle::RadiusUniform => {
             // Grow both radii from the same horizontal delta so a single
             // drag makes a circle by default. UV isn't square-pixel — a
             // radius of `r` physical pixels is `r/width` in u but `r/height`
             // in v — so the v radius must be scaled by width/height to look
             // circular on screen rather than squashed/stretched.
-            let aspect = dw as f32 / dh.max(1) as f32;
             m.bx = (m.bx + du).max(0.005);
             m.by = (m.by + du * aspect).max(0.005);
+        }
+        MaskHandle::Rotation => {
+            // Angle-based, not delta-based: compute the ellipse's
+            // screen-space center via the same shared transform/crop-remap
+            // CropOverlay's uv_to_screen uses, then rotate by the change in
+            // atan2 angle from center to cursor between the last and
+            // current positions. Matches iced's Elliptical.rotation
+            // convention (clockwise for positive angles, screen Y down).
+            let ib = crate::core::viewport::image_rect(dw, dh, bw, bh, zoom, pan_offset);
+            let to_screen = |u: f32, v: f32| {
+                let vu = (u - crop[0]) / crop[2].max(1e-6);
+                let vv = (v - crop[1]) / crop[3].max(1e-6);
+                Point::new(ib.x + vu * ib.width, ib.y + vv * ib.height)
+            };
+            let center = to_screen(m.ax, m.ay);
+            let a0 = (last.y - center.y).atan2(last.x - center.x);
+            let a1 = (pos.y - center.y).atan2(pos.x - center.x);
+            let delta_deg = (a1 - a0).to_degrees();
+            m.rotation = (m.rotation + delta_deg).clamp(-180.0, 180.0);
         }
     }
 }
