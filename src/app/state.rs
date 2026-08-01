@@ -241,6 +241,13 @@ pub struct RawEditor {
     /// Bump via `bump_preview_generation` whenever either bytes field is
     /// replaced. Starts at 1; 0 is the shader's placeholder sentinel.
     pub preview_generation: u64,
+    /// Region of the image the current preview buffer covers, `(u0, v0, du,
+    /// dv)` in view UV. `(0,0,1,1)` until a windowed render lands.
+    ///
+    /// Two consumers: the viewport shader, to place the quad over the right
+    /// slice; and `handle_pan`, to notice when the user has panned outside
+    /// what was rendered and needs a refresh.
+    pub rendered_view_rect: [f32; 4],
     /// Phase 115: Pixel dimensions for the above preview byte buffers
     pub working_preview_dims: (u32, u32),
     pub rendered_preview_dims: (u32, u32),
@@ -447,6 +454,7 @@ impl RawEditor {
                 working_preview_bytes: None,
                 rendered_preview_bytes: None,
                 preview_generation: 1,
+                rendered_view_rect: crate::gpu::params::FULL_VIEW_RECT,
                 working_preview_dims: (1, 1),
                 rendered_preview_dims: (1, 1),
                 current_metadata: None,
@@ -555,12 +563,15 @@ impl RawEditor {
         self.mask_tool != MaskTool::Inactive || self.selected_mask.is_some()
     }
 
-    /// Dimensions of the pixel buffer currently shown by the develop viewport
-    /// (already EXIF-oriented — the render target is sized to
-    /// `oriented_dims()`). MUST mirror the fallback priority used to pick the
-    /// image handle in `views/develop.rs` (rendered > working > placeholder),
-    /// since this is the single dims source for all on-screen geometry math.
-    pub fn display_dims(&self) -> (u32, u32) {
+    /// Size of the pixel buffer the develop viewport currently holds.
+    ///
+    /// This is the RENDER TARGET size, which since the windowed render is no
+    /// longer the image's shape: at zoom it covers only the visible slice.
+    /// Use it to size textures and nothing else — for anything that reasons
+    /// about where the image sits on screen, use `image_display_dims`.
+    /// MUST mirror the fallback priority in `views/develop.rs`
+    /// (rendered > working > placeholder).
+    pub fn buffer_dims(&self) -> (u32, u32) {
         if self.rendered_preview_bytes.is_some() {
             self.rendered_preview_dims
         } else if self.working_preview_bytes.is_some() {
@@ -570,10 +581,29 @@ impl RawEditor {
         }
     }
 
+    /// Display-space (EXIF-oriented) dimensions of the whole image.
+    ///
+    /// The single dims source for all on-screen geometry: letterbox fit,
+    /// zoom-to-cursor, crop and mask drag math, and the canvas overlay. Only
+    /// the ASPECT actually matters to `core::viewport::image_rect`, which is
+    /// why taking it from the GPU resources is safe even while a preview of a
+    /// different resolution is on screen — and why it must not come from the
+    /// render buffer, whose aspect now tracks the viewport rather than the
+    /// image.
+    pub fn image_display_dims(&self) -> (u32, u32) {
+        if let Some(res) = &self.image_resources {
+            return res.oriented_dims();
+        }
+        if self.working_preview_bytes.is_some() {
+            return self.working_preview_dims;
+        }
+        (1280, 853)
+    }
+
     // Phase 67: Calculate image screen bounds for interaction
     pub fn get_image_screen_bounds(&self) -> Rectangle {
         let (vw, vh) = self.viewport_size;
-        let (dw, dh) = self.display_dims();
+        let (dw, dh) = self.image_display_dims();
         crate::core::viewport::image_rect(dw, dh, vw, vh, self.zoom, self.pan_offset)
     }
 

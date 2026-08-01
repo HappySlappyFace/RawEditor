@@ -53,10 +53,21 @@ pub enum MaskHandle {
 /// Data passed from ViewportProgram::draw() to the GPU prepare/render calls.
 #[derive(Debug)]
 pub struct ViewportPrimitive {
-    /// RGBA pixels, width × height
+    /// RGBA pixels, `width` × `height`
     pub pixels: std::sync::Arc<[u8]>,
+    /// Size of the pixel buffer — the render target, which since the windowed
+    /// render covers only `view_rect` of the image, not the whole thing.
+    /// Sizes the texture; says nothing about on-screen placement.
     pub width: u32,
     pub height: u32,
+    /// Display-space dimensions of the WHOLE image. Only the aspect is used,
+    /// to letterbox-fit the image inside the widget.
+    pub image_width: u32,
+    pub image_height: u32,
+    /// Which sub-region of the displayed image `pixels` actually contains,
+    /// as `(u0, v0, du, dv)` in view UV. `(0,0,1,1)` = the whole image.
+    /// The quad is drawn over exactly this fraction of the fitted image rect.
+    pub view_rect: [f32; 4],
     /// Zoom level (1.0 = fit-to-screen)
     pub zoom: f32,
     /// Pan offset, fitted-size fractions (see core::viewport::image_rect)
@@ -302,14 +313,28 @@ impl shader::Primitive for ViewportPrimitive {
         // fixed quad), so on zoom the image physically covers more of the
         // viewport and any letterbox area shrinks — fixing the old "black
         // bars that never fill" bug on portrait images.
-        let rect = crate::core::viewport::image_rect(
-            self.width,
-            self.height,
+        // Fit the WHOLE image first, from the live `bounds` — deriving this
+        // here rather than accepting a precomputed rect means a window resize
+        // between the render and this draw self-corrects instead of showing a
+        // misplaced image until the next render lands.
+        let image_rect = crate::core::viewport::image_rect(
+            self.image_width,
+            self.image_height,
             bounds.width,
             bounds.height,
             self.zoom,
             cgmath::Vector2::new(self.offset_x, self.offset_y),
         );
+        // Then place the quad over just the slice the buffer holds. At
+        // view_rect = (0,0,1,1) this is the whole fitted rect, i.e. exactly
+        // the pre-windowing behaviour.
+        let [u0, v0, du, dv] = self.view_rect;
+        let rect = Rectangle {
+            x: image_rect.x + u0 * image_rect.width,
+            y: image_rect.y + v0 * image_rect.height,
+            width: du * image_rect.width,
+            height: dv * image_rect.height,
+        };
         let sx = rect.width / bounds.width;
         let sy = rect.height / bounds.height;
         // Center of the rect, normalized to [0,1] then to clip space [-1,1].
@@ -374,8 +399,15 @@ impl shader::Primitive for ViewportPrimitive {
 /// Implements `iced::widget::shader::Program` – the scissor rect is respected natively.
 pub struct ViewportProgram {
     pub pixels: Option<std::sync::Arc<[u8]>>,
+    /// Render-target size of `pixels`. See `ViewportPrimitive::width`.
+    pub buffer_width: u32,
+    pub buffer_height: u32,
+    /// Display-space size of the whole image. See
+    /// `ViewportPrimitive::image_width`.
     pub image_width: u32,
     pub image_height: u32,
+    /// Region of the image `pixels` covers. See `ViewportPrimitive::view_rect`.
+    pub view_rect: [f32; 4],
     pub zoom: f32,
     pub offset: cgmath::Vector2<f32>,
     /// Bumped by the app whenever `pixels` is replaced. See
@@ -396,7 +428,7 @@ impl shader::Program<Message> for ViewportProgram {
         // Placeholder 1×1 white pixel if no image is loaded yet.
         let mut is_placeholder = false;
         let (pixels, w, h) = match &self.pixels {
-            Some(p) if !p.is_empty() => (p.clone(), self.image_width, self.image_height),
+            Some(p) if !p.is_empty() => (p.clone(), self.buffer_width, self.buffer_height),
             _ => {
                 is_placeholder = true;
                 let white: std::sync::Arc<[u8]> = std::sync::Arc::from([255u8, 255, 255, 255].as_ref());
@@ -408,6 +440,15 @@ impl shader::Program<Message> for ViewportProgram {
             pixels,
             width: w,
             height: h,
+            image_width: self.image_width.max(1),
+            image_height: self.image_height.max(1),
+            // The placeholder is stretched over the whole fitted rect, as
+            // before — it has no meaningful sub-region.
+            view_rect: if is_placeholder {
+                crate::gpu::params::FULL_VIEW_RECT
+            } else {
+                self.view_rect
+            },
             zoom: self.zoom,
             offset_x: self.offset.x,
             offset_y: self.offset.y,

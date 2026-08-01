@@ -307,21 +307,11 @@ pub enum Message {
     /// Phase 116: Interaction & Coordinate System Fixes
     ViewportResized(f32, f32, f32),
 
-    /// GPU render completed — fires immediately after readback, BEFORE histogram.
-    /// Releases the render throttle so the next slider/zoom event can start a render
-    /// while the histogram computes concurrently in a separate task.
-    RenderPreview(
-        std::sync::Arc<[u8]>, // bytes for Shader Viewport
-        (u32, u32),           // rendered pixel dimensions
-        f32, // Upload ms
-        f32, // Render ms
-        f32, // CPU update ms
-    ),
-    /// Histogram computation finished (fires after RenderPreview, non-blocking).
-    HistogramReady(crate::core::histogram::HistogramData),
     /// Render task failed (GPU error / shader panic) — releases the throttle lock
     RenderFailed,
-    /// Phase 104/105: Async Render Finished (Preview + Histogram + Timing) — kept for compat
+    /// A develop render completed: display window bytes, their dimensions, the
+    /// whole-image histogram, and timings. Both GPU passes land together, so
+    /// this is the only render-completion message.
     RenderFinished(
         std::sync::Arc<[u8]>,
         (u32, u32),

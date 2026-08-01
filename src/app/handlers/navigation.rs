@@ -155,7 +155,7 @@ pub fn handle_zoom(editor: &mut RawEditor, d: f32, mut p: Point) -> Task<Message
 
     if editor.image_resources.is_some() {
         let old_zoom = editor.zoom;
-        let (dw, dh) = editor.display_dims();
+        let (dw, dh) = editor.image_display_dims();
         let (vw, vh) = editor.viewport_size;
         let (fw, fh) = crate::core::viewport::fitted_size(dw, dh, vw, vh);
         let ib = crate::core::viewport::image_rect(dw, dh, vw, vh, old_zoom, editor.pan_offset);
@@ -185,19 +185,9 @@ pub fn handle_zoom(editor: &mut RawEditor, d: f32, mut p: Point) -> Task<Message
     if editor.current_tab == AppTab::Develop
         && matches!(editor.editor_readiness, EditorReadiness::Ready(_))
     {
-        // Apply the same is_rendering/pending_render throttle as update_pipeline.
-        // Without this, each scroll event spawns a new GPU task (dozens of concurrent
-        // readback buffers → CPU/RAM spike). With throttling: at most one in-flight
-        // render + one pending; the pending render fires after the current one finishes,
-        // picking up the latest zoom at that point.
-        let render_task = if editor.is_rendering {
-            editor.pending_render = true;
-            Task::none()
-        } else {
-            editor.is_rendering = true;
-            editor.pending_render = false;
-            crate::app::handlers::develop::trigger_async_render(editor)
-        };
+        // Zoom always re-renders: the window and its resolution both change.
+        // Throttled so a stream of scroll events can't pile up GPU tasks.
+        let render_task = throttled_render(editor);
 
         let upgrade_task = if editor.zoom > 1.5 {
             crate::app::handlers::loading::trigger_full_res_upgrade(editor)
@@ -216,7 +206,49 @@ pub fn handle_pan(editor: &mut RawEditor, d: cgmath::Vector2<f32>) -> Task<Messa
     editor.pan_offset.x += d.x;
     editor.pan_offset.y += d.y;
     editor.canvas_cache.clear();
+
+    // The pan itself stays free — the viewport shader just re-projects the
+    // existing texture. But that texture now only covers `rendered_view_rect`,
+    // so once the user drags past the overscan margin there is nothing left to
+    // project and the window has to be re-rendered.
+    if needs_render_for_view(editor) {
+        return throttled_render(editor);
+    }
     Task::none()
+}
+
+/// True when the on-screen region has moved outside what the current preview
+/// buffer covers. Always false at fit, where the buffer holds the whole image.
+fn needs_render_for_view(editor: &RawEditor) -> bool {
+    use crate::app::state::EditorReadiness;
+    if editor.current_tab != AppTab::Develop
+        || !matches!(editor.editor_readiness, EditorReadiness::Ready(_))
+    {
+        return false;
+    }
+    let (dw, dh) = editor.image_display_dims();
+    let (vw, vh) = editor.viewport_size;
+    // Overscan 1.0: ask only what is strictly visible right now. The rendered
+    // window already carries the margin, so this asks "have we run out of
+    // margin?" rather than "has anything moved at all?".
+    let needed = crate::core::viewport::visible_view_rect(
+        dw, dh, vw, vh, editor.zoom, editor.pan_offset, 1.0,
+    );
+    !crate::core::viewport::view_rect_contains(editor.rendered_view_rect, needed)
+}
+
+/// Start a render unless one is already in flight, in which case mark a
+/// follow-up. At most one running plus one pending — without this, a stream of
+/// scroll or drag events spawns a GPU task each, piling up readback buffers.
+fn throttled_render(editor: &mut RawEditor) -> Task<Message> {
+    if editor.is_rendering {
+        editor.pending_render = true;
+        Task::none()
+    } else {
+        editor.is_rendering = true;
+        editor.pending_render = false;
+        crate::app::handlers::develop::trigger_async_render(editor)
+    }
 }
 
 pub fn handle_reset_view(editor: &mut RawEditor) -> Task<Message> {
@@ -334,7 +366,7 @@ fn handle_pan_interaction(editor: &mut RawEditor, pos: Point) -> Task<Message> {
             editor.last_cursor_position = Some(pos);
 
             let (vw, vh) = editor.viewport_size;
-            let (dw, dh) = editor.display_dims();
+            let (dw, dh) = editor.image_display_dims();
             let (fw, fh) = crate::core::viewport::fitted_size(dw, dh, vw, vh);
 
             // Pan is in fitted-size fractions with no zoom term (see
@@ -370,7 +402,7 @@ fn apply_crop_drag(editor: &mut RawEditor, pos: Point, last: Point, h: CropHandl
         None => return,
     };
     
-    let (dw, dh) = editor.display_dims();
+    let (dw, dh) = editor.image_display_dims();
     let (bw, bh) = editor.viewport_size;
     let (fw, fh) = crate::core::viewport::fitted_size(dw, dh, bw, bh);
 
@@ -454,7 +486,7 @@ fn apply_mask_drag(editor: &mut RawEditor, pos: Point, last: Point, h: MaskHandl
 
     // Same letterbox/zoom math as apply_crop_drag, sharing the same dims
     // source as every other on-screen geometry consumer.
-    let (dw, dh) = editor.display_dims();
+    let (dw, dh) = editor.image_display_dims();
     let (bw, bh) = editor.viewport_size;
     let (fw, fh) = crate::core::viewport::fitted_size(dw, dh, bw, bh);
     // Captured before `m` borrows editor.current_edit_params below — needed
@@ -470,7 +502,7 @@ fn apply_mask_drag(editor: &mut RawEditor, pos: Point, last: Point, h: MaskHandl
     let crop = editor.current_edit_params.crop;
     let du = (pos.x - last.x) / zw.max(1.0) * crop[2];
     let dv = (pos.y - last.y) / zh.max(1.0) * crop[3];
-    // dw/dh are already the oriented display dims (editor.display_dims()), so
+    // dw/dh are already the oriented display dims (editor.image_display_dims()), so
     // no separate orientation swap is needed here — unlike the shader, which
     // starts from raw sensor dims. The crop term matters: the displayed image
     // is the crop sub-rect stretched to the full target, so under a crop whose

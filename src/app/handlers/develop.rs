@@ -232,68 +232,14 @@ pub fn handle_paste_settings(editor: &mut RawEditor) -> Task<Message> {
     }
 }
 
-// Fires immediately after GPU render — stores the new preview and releases the
-// render throttle.  Histogram computation is spawned as a separate task so it
-// never blocks the next slider event from starting its own render.
-#[allow(clippy::too_many_arguments)]
-pub fn handle_render_preview(
-    editor: &mut RawEditor,
-    bytes: std::sync::Arc<[u8]>,
-    dims: (u32, u32),
-    upload_ms: f32,
-    render_ms: f32,
-    update_ms: f32,
-) -> Task<Message> {
-    editor.rendered_preview_bytes = Some(bytes.clone());
-    editor.rendered_preview_dims = dims;
-    editor.bump_preview_generation();
-    editor.canvas_cache.clear();
 
-    editor.profiler.push_frame(crate::core::profiler::ProfilerFrame {
-        update_ms,
-        upload_ms,
-        render_ms,
-        total_ms: update_ms + upload_ms + render_ms,
-    });
-    editor.profiler_cache.clear();
-
-    // Release the render lock — next slider/zoom event can start immediately.
-    editor.is_rendering = false;
-    let render_task = if editor.pending_render {
-        editor.is_rendering = true;
-        editor.pending_render = false;
-        trigger_async_render(editor)
-    } else {
-        Task::none()
-    };
-
-    // Histogram runs concurrently; result arrives shortly after via HistogramReady.
-    let hist_task = Task::perform(
-        async move {
-            tokio::task::spawn_blocking(move || crate::core::histogram::calculate(&bytes))
-                .await
-                .ok()
-        },
-        |res| match res {
-            Some(data) => Message::HistogramReady(data),
-            None => Message::ModalNoOp,
-        },
-    );
-
-    Task::batch(vec![render_task, hist_task])
-}
-
-pub fn handle_histogram_ready(
-    editor: &mut RawEditor,
-    data: crate::core::histogram::HistogramData,
-) -> Task<Message> {
-    *editor.histogram_data.borrow_mut() = data;
-    editor.histogram_cache.clear();
-    Task::none()
-}
-
-// Kept for backward-compat (used by RenderFinished variant which may come from
-// older code paths or exports).
+// The single landing point for a completed develop render: stores the new
+// preview, applies the histogram, and releases the render throttle.
+//
+// This used to be split into RenderPreview (release the throttle) then
+// HistogramReady (the slow part), because the histogram scanned the entire
+// display buffer on the CPU. The dedicated 128px pass made that scan trivial,
+// so the split — and the extra message round-trip — no longer earn their keep.
 #[allow(clippy::too_many_arguments)]
 pub fn handle_render_finished(
     editor: &mut RawEditor,
@@ -337,37 +283,87 @@ pub fn trigger_async_render(editor: &mut RawEditor) -> Task<Message> {
 
         // Oriented (display-space) dims: portrait images render portrait.
         let (disp_w, disp_h) = resources.oriented_dims();
-        let original_aspect = disp_w as f32 / disp_h as f32;
-        let (vw, _) = editor.viewport_size;
-        let viewport_px = (vw * editor.scale_factor).round() as u32;
-        let zoomed_px = (viewport_px as f32 * editor.zoom).round() as u32;
-        let max_size = zoomed_px.clamp(800, disp_w.max(disp_h));
+        let (vw, vh) = editor.viewport_size;
+        let crop = editor.current_edit_params.crop;
 
-        let (target_w, target_h) = if original_aspect > 1.0 {
-            let w = max_size;
-            let h = (w as f32 / original_aspect).round() as u32;
-            (w, h)
+        // Render only the slice of the image that is actually on screen.
+        // Sizing the target to the whole image at zoom-scaled resolution made
+        // its area grow as zoom^2 — at 100% on a 24MP file that meant
+        // rendering, reading back and re-uploading ~24M pixels to display ~2M.
+        //
+        // In crop mode the shader deliberately reveals the full sensor so the
+        // handles can be dragged over it, and zoom/pan are both disabled
+        // there, so windowing neither applies nor helps.
+        let view_rect = if editor.is_cropping {
+            crate::gpu::params::FULL_VIEW_RECT
         } else {
-            let h = max_size;
-            let w = (h as f32 * original_aspect).round() as u32;
-            (w, h)
+            crate::core::viewport::visible_view_rect(
+                disp_w,
+                disp_h,
+                vw,
+                vh,
+                editor.zoom,
+                editor.pan_offset,
+                crate::core::viewport::RENDER_OVERSCAN,
+            )
         };
+
+        let ib = crate::core::viewport::image_rect(
+            disp_w, disp_h, vw, vh, editor.zoom, editor.pan_offset,
+        );
+        // On-screen size of the windowed region, in physical pixels — this is
+        // the resolution at which it will actually be displayed.
+        let win_px_w = (view_rect[2] * ib.width * editor.scale_factor).round();
+        let win_px_h = (view_rect[3] * ib.height * editor.scale_factor).round();
+
+        // Never exceed 1:1 with the source: past that there is no more detail
+        // to resolve, only wasted pixels. The window spans `du * crop.w` of
+        // the source's width.
+        let src_avail_w = view_rect[2] * crop[2] * disp_w as f32;
+        let src_avail_h = view_rect[3] * crop[3] * disp_h as f32;
+
+        let target_w = (win_px_w.min(src_avail_w).round() as u32).clamp(16, 16384);
+        let target_h = (win_px_h.min(src_avail_h).round() as u32).clamp(16, 16384);
+
+        editor.rendered_view_rect = view_rect;
+        tracing::debug!(
+            "render window: zoom={:.2} view_rect=[{:.3},{:.3},{:.3},{:.3}] target={}x{}",
+            editor.zoom,
+            view_rect[0],
+            view_rect[1],
+            view_rect[2],
+            view_rect[3],
+            target_w,
+            target_h,
+        );
         let update_ms = t_update_start.elapsed().as_secs_f32() * 1000.0;
+
+        let (hist_w, hist_h) = resources.histogram_dims();
 
         return Task::perform(
             async move {
-                let (bytes, upload_ms, render_ms) = crate::gpu::render_functions::render_to_bytes(
-                    &ctx, &resources, target_w, target_h,
-                )
-                .await;
+                // Display window and the whole-image histogram pass share one
+                // GPU wait. The histogram is now ~11k pixels, so there is no
+                // longer any reason to report it separately from the render.
+                let (bytes, histogram, upload_ms, render_ms) =
+                    crate::gpu::render_functions::render_display_and_histogram(
+                        &ctx, &resources, target_w, target_h, view_rect, hist_w, hist_h,
+                    )
+                    .await;
 
-                // render_to_bytes already returns the shared buffer, so there
-                // is nothing to copy or wrap here.
-                Some((bytes, target_w, target_h, upload_ms, render_ms, update_ms))
+                // The buffer arrives already shared — nothing to copy here.
+                Some((bytes, histogram, target_w, target_h, upload_ms, render_ms, update_ms))
             },
             |res| match res {
-                Some((byte_arc, tw, th, upload_ms, render_ms, update_ms)) => {
-                    Message::RenderPreview(byte_arc, (tw, th), upload_ms, render_ms, update_ms)
+                Some((byte_arc, histogram, tw, th, upload_ms, render_ms, update_ms)) => {
+                    Message::RenderFinished(
+                        byte_arc,
+                        (tw, th),
+                        histogram,
+                        upload_ms,
+                        render_ms,
+                        update_ms,
+                    )
                 }
                 None => Message::RenderFailed,
             },

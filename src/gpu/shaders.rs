@@ -42,31 +42,28 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 
     output.clip_position = vec4<f32>(x, -y, 0.0, 1.0);
 
-    // Phase 25: Apply zoom and pan transformations
-    var tex_x = (x + 1.0) * 0.5;
-    var tex_y = (y + 1.0) * 0.5;
-
-    tex_x -= 0.5;
-    tex_y -= 0.5;
-
-    tex_x /= params.zoom;
-    tex_y /= params.zoom;
-
-    tex_x -= params.pan_x;
-    tex_y -= params.pan_y;
-
-    tex_x += 0.5;
-    tex_y += 0.5;
+    // Map the target across `view_rect` — the sub-region of the displayed
+    // image this pass is asked to produce. At (0,0,1,1) this is the identity
+    // and the pass covers the whole image, which is what the histogram pass
+    // and every un-zoomed display render use.
+    //
+    // Rendering only the visible window is what keeps cost flat as the user
+    // zooms in: the target no longer grows with zoom, it just looks at a
+    // smaller slice of the source at higher magnification.
+    //
+    // (params.zoom / pan_x / pan_y are vestigial and intentionally unread —
+    // the viewport shader's projection matrix owns zoom and pan.)
+    let t = vec2<f32>((x + 1.0) * 0.5, (y + 1.0) * 0.5);
+    let view = params.view_rect.xy + t * params.view_rect.zw;
 
     // Phase 135: Conditional Crop
     // When is_cropping is active, we render the full image bounds [0, 1]
     // allowing the user to see and adjust the crop handles non-destructively.
     if (params.is_cropping == 0u) {
-        tex_x = params.crop.x + (tex_x * params.crop.z);
-        tex_y = params.crop.y + (tex_y * params.crop.w);
+        output.tex_coords = params.crop.xy + view * params.crop.zw;
+    } else {
+        output.tex_coords = view;
     }
-
-    output.tex_coords = vec2<f32>(tex_x, tex_y);
 
     return output;
 }
@@ -101,11 +98,10 @@ struct EditParams {
     // Phase 34: CFA Pattern
     cfa_pattern: u32,
 
-    // Padding to align black_levels to 16 bytes
-    pad_cfa_1: f32,
-    pad_cfa_2: f32,
-    pad_cfa_3: f32,
-    pad_cfa_4: f32,
+    // Sub-region of the displayed image this render covers: (u0, v0, du, dv)
+    // in view UV. (0,0,1,1) = the whole image. Occupies four formerly-dead
+    // padding floats, so offsets are unchanged. See gpu/params.rs.
+    view_rect: vec4<f32>,
 
     // Phase 36: Per-channel Black Levels (vec4 alignment = 16 bytes)
     black_levels: vec4<u32>,
@@ -1050,10 +1046,8 @@ struct EditParams {
     pan_x: f32,
     pan_y: f32,
     cfa_pattern: u32,
-    pad_cfa_1: f32,
-    pad_cfa_2: f32,
-    pad_cfa_3: f32,
-    pad_cfa_4: f32,
+    // Layout-matching only; the debayer pass never reads the display window.
+    view_rect: vec4<f32>,
     black_levels: vec4<u32>,
     white_level: u32,
     pad_end_1: f32,

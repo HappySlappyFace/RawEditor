@@ -265,6 +265,9 @@ pub fn handle_export_pipeline_ready(
                             &resources,
                             target_width,
                             target_height,
+                            // Export always renders the whole cropped frame,
+                            // never the on-screen window.
+                            crate::gpu::params::FULL_VIEW_RECT,
                         )
                         .await;
                         ExportPixels::Rgba8(bytes)

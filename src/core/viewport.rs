@@ -44,6 +44,71 @@ pub fn image_rect(
     }
 }
 
+/// How much larger than the strictly-visible area the develop render covers.
+///
+/// Panning does not re-render (see `handle_pan`) — the viewport shader just
+/// re-projects the existing texture — so a render covering exactly the visible
+/// pixels would expose unrendered edges the moment the user drags. This margin
+/// buys a band of free panning before a refresh is needed. Raising it costs
+/// render area quadratically; lowering it makes pan refreshes more frequent.
+pub const RENDER_OVERSCAN: f32 = 1.25;
+
+/// The sub-region of the displayed image that needs rendering, as
+/// `(u0, v0, du, dv)` in view UV — 0..1 across the fitted image rect.
+///
+/// Returns `(0,0,1,1)` whenever the whole image is on screen (any zoom ≤ fit),
+/// which keeps the un-zoomed path byte-identical to the pre-windowing
+/// behaviour. Zoomed in, it returns the visible slice grown by
+/// `RENDER_OVERSCAN` and clamped back inside the image.
+pub fn visible_view_rect(
+    image_w: u32,
+    image_h: u32,
+    vp_w: f32,
+    vp_h: f32,
+    zoom: f32,
+    offset: cgmath::Vector2<f32>,
+    overscan: f32,
+) -> [f32; 4] {
+    let ib = image_rect(image_w, image_h, vp_w, vp_h, zoom, offset);
+    if ib.width <= 0.0 || ib.height <= 0.0 {
+        return [0.0, 0.0, 1.0, 1.0];
+    }
+
+    // Visible slice of the image rect, in view UV.
+    let u0 = ((0.0 - ib.x) / ib.width).clamp(0.0, 1.0);
+    let u1 = ((vp_w - ib.x) / ib.width).clamp(0.0, 1.0);
+    let v0 = ((0.0 - ib.y) / ib.height).clamp(0.0, 1.0);
+    let v1 = ((vp_h - ib.y) / ib.height).clamp(0.0, 1.0);
+
+    // Degenerate (image entirely off-screen): render everything rather than
+    // nothing, so there is always something sensible to show.
+    if u1 <= u0 || v1 <= v0 {
+        return [0.0, 0.0, 1.0, 1.0];
+    }
+
+    let grow = |a: f32, b: f32| -> (f32, f32) {
+        let half = (b - a) * 0.5 * overscan;
+        let mid = (a + b) * 0.5;
+        ((mid - half).max(0.0), (mid + half).min(1.0))
+    };
+    let (gu0, gu1) = grow(u0, u1);
+    let (gv0, gv1) = grow(v0, v1);
+
+    [gu0, gv0, gu1 - gu0, gv1 - gv0]
+}
+
+/// True when `inner` lies entirely within `outer` (both `(u0, v0, du, dv)`).
+///
+/// Used after a pan to decide whether the already-rendered window still covers
+/// what the user is looking at, or whether a refresh is due.
+pub fn view_rect_contains(outer: [f32; 4], inner: [f32; 4]) -> bool {
+    const EPS: f32 = 1e-4;
+    inner[0] >= outer[0] - EPS
+        && inner[1] >= outer[1] - EPS
+        && inner[0] + inner[2] <= outer[0] + outer[2] + EPS
+        && inner[1] + inner[3] <= outer[1] + outer[3] + EPS
+}
+
 /// UV→isotropic scale factor for mask geometry: the horizontal display pixels
 /// spanned by one unit of full-image `u`, divided by the vertical pixels
 /// spanned by one unit of `v`.
@@ -71,6 +136,105 @@ pub fn wrap_degrees(deg: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn no_offset() -> cgmath::Vector2<f32> {
+        cgmath::Vector2::new(0.0, 0.0)
+    }
+
+    // ── visible_view_rect ────────────────────────────────────────────────────
+
+    #[test]
+    fn visible_view_rect_at_fit_covers_the_whole_image() {
+        // The no-regression guarantee: un-zoomed rendering must be unchanged.
+        let r = visible_view_rect(3000, 2000, 1600.0, 1000.0, 1.0, no_offset(), 1.25);
+        assert_eq!(r, [0.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn visible_view_rect_below_fit_still_covers_the_whole_image() {
+        let r = visible_view_rect(3000, 2000, 1600.0, 1000.0, 0.5, no_offset(), 1.25);
+        assert_eq!(r, [0.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn visible_view_rect_zoomed_and_centred_is_centred_and_overscanned() {
+        // 3000x2000 in a 1600x1000 viewport is height-limited, so the fitted
+        // size is 1500x1000 — NOT 1600 wide. At zoom 4 the image spans
+        // 6000x4000, so the visible fraction is 1600/6000 by 1000/4000.
+        let visible_du = 1600.0 / (1500.0 * 4.0);
+        let visible_dv = 1000.0 / (1000.0 * 4.0);
+        let r = visible_view_rect(3000, 2000, 1600.0, 1000.0, 4.0, no_offset(), 1.25);
+        assert!((r[2] - visible_du * 1.25).abs() < 1e-3, "du was {}", r[2]);
+        assert!((r[3] - visible_dv * 1.25).abs() < 1e-3, "dv was {}", r[3]);
+        // Centred pan, so the window is centred too.
+        assert!((r[0] + r[2] / 2.0 - 0.5).abs() < 1e-3);
+        assert!((r[1] + r[3] / 2.0 - 0.5).abs() < 1e-3);
+    }
+
+    #[test]
+    fn visible_view_rect_clamps_at_the_image_edge() {
+        // Panned hard to one corner: overscan must not push the window
+        // outside [0,1], or the shader samples off the image.
+        let r = visible_view_rect(
+            3000,
+            2000,
+            1600.0,
+            1000.0,
+            4.0,
+            cgmath::Vector2::new(2.0, 2.0),
+            1.25,
+        );
+        assert!(r[0] >= 0.0 && r[1] >= 0.0, "origin {:?}", r);
+        assert!(r[0] + r[2] <= 1.0 + 1e-4, "u overflow {:?}", r);
+        assert!(r[1] + r[3] <= 1.0 + 1e-4, "v overflow {:?}", r);
+    }
+
+    #[test]
+    fn visible_view_rect_shrinks_as_zoom_grows() {
+        let a = visible_view_rect(3000, 2000, 1600.0, 1000.0, 2.0, no_offset(), 1.25);
+        let b = visible_view_rect(3000, 2000, 1600.0, 1000.0, 8.0, no_offset(), 1.25);
+        // This is the whole point: 4x the zoom renders ~1/4 the width.
+        assert!(b[2] < a[2] / 3.0, "{} vs {}", b[2], a[2]);
+    }
+
+    // ── view_rect_contains ───────────────────────────────────────────────────
+
+    #[test]
+    fn view_rect_contains_accepts_a_small_pan_inside_the_margin() {
+        let rendered = visible_view_rect(3000, 2000, 1600.0, 1000.0, 4.0, no_offset(), 1.25);
+        // A pan small enough to stay inside the overscan band.
+        let after = visible_view_rect(
+            3000,
+            2000,
+            1600.0,
+            1000.0,
+            4.0,
+            cgmath::Vector2::new(0.01, 0.0),
+            1.0,
+        );
+        assert!(view_rect_contains(rendered, after));
+    }
+
+    #[test]
+    fn view_rect_contains_rejects_a_pan_past_the_margin() {
+        let rendered = visible_view_rect(3000, 2000, 1600.0, 1000.0, 4.0, no_offset(), 1.25);
+        let after = visible_view_rect(
+            3000,
+            2000,
+            1600.0,
+            1000.0,
+            4.0,
+            cgmath::Vector2::new(0.5, 0.0),
+            1.0,
+        );
+        assert!(!view_rect_contains(rendered, after));
+    }
+
+    #[test]
+    fn view_rect_contains_is_reflexive() {
+        let r = [0.2, 0.3, 0.4, 0.5];
+        assert!(view_rect_contains(r, r));
+    }
 
     #[test]
     fn mask_uv_aspect_uncropped_is_display_aspect() {

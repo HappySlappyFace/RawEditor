@@ -1,5 +1,10 @@
 use crate::core::types::{EditParams, MaskParams, MAX_MASKS};
 
+/// `view_rect` covering the entire displayed image — the pre-windowing
+/// behaviour, and what the histogram pass always uses so its result stays
+/// whole-image regardless of where the display pass is looking.
+pub const FULL_VIEW_RECT: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
+
 /// GPU-friendly local adjustment mask: four vec4s (64 bytes), so the WGSL
 /// uniform array stride is a multiple of 16 and Pod has no padding holes.
 #[repr(C)]
@@ -50,14 +55,25 @@ pub struct GpuEditParams {
     _padding4: f32,
     pub forward_matrix_2: [f32; 3],
     _padding5: f32,
+    /// Vestigial (Phase 25). Zoom and pan are applied by the viewport shader's
+    /// projection matrix, not here; these have been written as 1.0/0.0/0.0
+    /// since the viewport took over. Kept only so every later field's byte
+    /// offset stays put — see `view_rect` below.
     pub zoom: f32,
     pub pan_x: f32,
     pub pan_y: f32,
     pub cfa_pattern: u32,
-    _pad_cfa_1: f32,
-    _pad_cfa_2: f32,
-    _pad_cfa_3: f32,
-    _pad_cfa_4: f32,
+    /// Sub-region of the displayed image this render covers, as
+    /// `(u0, v0, du, dv)` in VIEW UV — 0..1 across the post-crop image.
+    /// `(0, 0, 1, 1)` means "the whole thing", which is what every pre-windowing
+    /// caller wants.
+    ///
+    /// Occupies what used to be four dead `_pad_cfa_*` floats. That slot was
+    /// already 16-byte aligned and 16 bytes wide, so adopting it changes
+    /// neither the struct size nor any other field's offset — the safest place
+    /// to add a `vec4` given the alignment constraint in CLAUDE.md. The size
+    /// and offset are both asserted in the tests below.
+    pub view_rect: [f32; 4],
     pub black_levels: [u32; 4],
     pub white_level: u32,
     _pad_end_1: f32,
@@ -113,10 +129,9 @@ impl From<&EditParams> for GpuEditParams {
             pan_x: 0.0,
             pan_y: 0.0,
             cfa_pattern: 0,
-            _pad_cfa_1: 0.0,
-            _pad_cfa_2: 0.0,
-            _pad_cfa_3: 0.0,
-            _pad_cfa_4: 0.0,
+            // Whole image by default; the windowed render path overwrites just
+            // these 16 bytes per pass (see render_functions).
+            view_rect: FULL_VIEW_RECT,
             black_levels: [0, 0, 0, 0],
             white_level: 65535,
             _pad_end_1: 0.0,
@@ -156,6 +171,26 @@ mod tests {
         assert_eq!(std::mem::size_of::<GpuMask>(), 64);
         // 256 (base) + 16 (mask_count + pad) + 8 × 64 (masks)
         assert_eq!(std::mem::size_of::<GpuEditParams>(), 784);
+    }
+
+    /// `view_rect` replaced four dead padding floats specifically so that
+    /// nothing else moved. If this offset shifts, the partial `write_buffer`
+    /// in the render path silently overwrites the wrong fields.
+    #[test]
+    fn view_rect_occupies_the_old_padding_slot() {
+        let off = std::mem::offset_of!(GpuEditParams, view_rect);
+        // Immediately after cfa_pattern, which completes its own 16-byte block.
+        assert_eq!(off, std::mem::offset_of!(GpuEditParams, cfa_pattern) + 4);
+        // A vec4 must sit on a 16-byte boundary or the GPU reads garbage.
+        assert_eq!(off % 16, 0);
+        // And it must not have pushed black_levels off its own boundary.
+        assert_eq!(std::mem::offset_of!(GpuEditParams, black_levels), off + 16);
+    }
+
+    #[test]
+    fn default_view_rect_covers_the_whole_image() {
+        let g = GpuEditParams::from(&EditParams::default());
+        assert_eq!(g.view_rect, FULL_VIEW_RECT);
     }
 
     #[test]

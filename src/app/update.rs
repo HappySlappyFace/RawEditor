@@ -170,12 +170,6 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
             editor.show_profiler = !editor.show_profiler;
             Task::none()
         }
-        Message::RenderPreview(bytes, dims, u, r, cpu) => {
-            handlers::develop::handle_render_preview(editor, bytes, dims, u, r, cpu)
-        }
-        Message::HistogramReady(data) => {
-            handlers::develop::handle_histogram_ready(editor, data)
-        }
         Message::RenderFinished(bytes, dims, d, u, r, cpu) => {
             handlers::develop::handle_render_finished(editor, bytes, dims, d, u, r, cpu)
         }

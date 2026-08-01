@@ -548,23 +548,27 @@ fn view_main_content<'a>(
         let active_bytes = editor.rendered_preview_bytes.clone()
             .or_else(|| editor.working_preview_bytes.clone());
         
-        // Phase 115: Use the stored byte buffer dimensions (CRITICAL: not raw file dims!)
-        // Priority matches the bytes priority: rendered > working > fallback.
-        let (img_w, img_h) = if editor.rendered_preview_bytes.is_some() {
-            editor.rendered_preview_dims
-        } else if editor.working_preview_bytes.is_some() {
-            editor.working_preview_dims
-        } else {
-            (1280, 853)
-        };
+        // Two DIFFERENT dims are needed here and conflating them is the classic
+        // bug in this file:
+        //   buffer_dims  — size of the pixel buffer, i.e. the render target.
+        //                  Since the windowed render this is viewport-shaped,
+        //                  not image-shaped. Only the texture cares.
+        //   image_dims   — the whole image's display shape. Everything that
+        //                  positions pixels on screen (letterbox fit, zoom,
+        //                  pan, crop/mask handles) must use this.
+        let (buf_w, buf_h) = editor.buffer_dims();
+        let (img_w, img_h) = editor.image_display_dims();
 
         match &editor.editor_readiness {
             EditorReadiness::Loading(_) | EditorReadiness::Ready(_) => {
                 // Phase 115: Bottom layer – native GPU shader viewport (respects scissor rects!)
                 let viewport: Element<'_, Message> = Shader::new(ViewportProgram {
                     pixels: active_bytes,
+                    buffer_width: buf_w,
+                    buffer_height: buf_h,
                     image_width: img_w,
                     image_height: img_h,
+                    view_rect: editor.rendered_view_rect,
                     zoom: editor.zoom,
                     offset: editor.pan_offset,
                     generation: editor.preview_generation,

@@ -523,9 +523,17 @@ impl ImageResources {
         let preview_width = width.min(DEFAULT_PREVIEW_WIDTH);
         let preview_height = (preview_width as f32 / aspect_ratio) as u32;
 
+        // Dedicated whole-image pass for the histogram. Sized from the
+        // DISPLAY aspect, not the sensor aspect: a portrait shot has its
+        // width/height swapped by EXIF orientation, and using `aspect_ratio`
+        // here gave it a landscape histogram target.
         const HISTOGRAM_WIDTH: u32 = 128;
+        let display_aspect = match orientation {
+            6 | 8 => height as f32 / width.max(1) as f32,
+            _ => width as f32 / height.max(1) as f32,
+        };
         let histogram_width = HISTOGRAM_WIDTH;
-        let histogram_height = (histogram_width as f32 / aspect_ratio) as u32;
+        let histogram_height = ((histogram_width as f32 / display_aspect) as u32).max(1);
 
         tracing::debug!(
             "Texture {}x{}, Preview {}x{}, Histogram {}x{}",
@@ -828,6 +836,12 @@ impl ImageResources {
 
     /// Display-space dimensions of the working (possibly subsampled) texture:
     /// swapped for 90°/270° EXIF orientations.
+    /// Target size for the small whole-image histogram pass. Display-oriented,
+    /// so portrait shots get a portrait target.
+    pub fn histogram_dims(&self) -> (u32, u32) {
+        (self.histogram_width.max(1), self.histogram_height.max(1))
+    }
+
     pub fn oriented_dims(&self) -> (u32, u32) {
         match self.orientation {
             6 | 8 => (self.height, self.width),
