@@ -66,6 +66,9 @@ pub fn prepare_image_resources_from_raw(
 
     // Phase 140: Store current DCP profile
     editor.current_dcp_profile = raw.dcp_profile.clone();
+    // The memo is keyed only on (kelvin, profile_curve), so a new profile at
+    // the same slider values would otherwise return the previous image's LUT.
+    editor.dcp_memo.replace(None);
 
     // As-shot WB anchor: solve the camera multipliers to (Kelvin, tint) so the
     // Temp/Tint sliders can display and pivot around the real camera values.
@@ -144,7 +147,7 @@ pub fn handle_image_resources_ready(editor: &mut RawEditor, image_id: i64, resul
             if let Some(ctx) = &editor.gpu_context {
                 let (interpolated, wb_override) =
                     crate::app::handlers::develop::resolve_wb_and_dcp(editor);
-                resources.update_uniforms(ctx, &editor.current_edit_params, interpolated.as_ref(), wb_override);
+                resources.update_uniforms(ctx, &editor.current_edit_params, interpolated.as_deref(), wb_override);
             }
 
             editor.image_resources = Some(resources);

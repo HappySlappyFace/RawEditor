@@ -129,15 +129,21 @@ pub fn handle_toggle_crop(editor: &mut RawEditor) -> Task<Message> {
 pub fn handle_crop_handle_grabbed(
     editor: &mut RawEditor,
     handle: CropHandle,
-    bounds: iced::Rectangle,
+    _bounds: iced::Rectangle,
 ) -> Task<Message> {
     editor.drag_mode = DragMode::CropHandle(handle);
     editor.is_dragging = true;
-    editor.viewport_size = (bounds.width, bounds.height);
+    // See handle_mask_handle_grabbed: `_bounds` is the image rect, and
+    // `viewport_size` must stay the canvas size. Overwriting it here made
+    // apply_crop_drag re-apply zoom to already-zoomed dims (zoom² scaling),
+    // so crop handles drifted from the cursor at any zoom != 1.
     Task::none()
 }
 
 pub fn handle_commit_edit(editor: &mut RawEditor) -> Task<Message> {
+    // Every slider's on_release maps here, so this is the primary persistence
+    // point now that update_pipeline only marks the state dirty.
+    // commit_current_state flushes.
     editor.commit_current_state();
     Task::none()
 }
@@ -150,7 +156,11 @@ pub fn handle_undo(editor: &mut RawEditor) -> Task<Message> {
         if *index > 0 {
             *index -= 1;
             editor.current_edit_params = stack[*index];
-            update_pipeline(editor)
+            // Undo/redo don't commit to history (they move within it), so they
+            // don't get commit_current_state's flush — persist explicitly.
+            let task = update_pipeline(editor);
+            editor.flush_edits();
+            task
         } else {
             Task::none()
         }
@@ -167,7 +177,10 @@ pub fn handle_redo(editor: &mut RawEditor) -> Task<Message> {
         if *index < stack.len() - 1 {
             *index += 1;
             editor.current_edit_params = stack[*index];
-            update_pipeline(editor)
+            // See handle_undo.
+            let task = update_pipeline(editor);
+            editor.flush_edits();
+            task
         } else {
             Task::none()
         }
@@ -225,16 +238,15 @@ pub fn handle_paste_settings(editor: &mut RawEditor) -> Task<Message> {
 #[allow(clippy::too_many_arguments)]
 pub fn handle_render_preview(
     editor: &mut RawEditor,
-    handle: iced::widget::image::Handle,
     bytes: std::sync::Arc<[u8]>,
     dims: (u32, u32),
     upload_ms: f32,
     render_ms: f32,
     update_ms: f32,
 ) -> Task<Message> {
-    editor.rendered_preview = Some(handle);
     editor.rendered_preview_bytes = Some(bytes.clone());
     editor.rendered_preview_dims = dims;
+    editor.bump_preview_generation();
     editor.canvas_cache.clear();
 
     editor.profiler.push_frame(crate::core::profiler::ProfilerFrame {
@@ -285,7 +297,6 @@ pub fn handle_histogram_ready(
 #[allow(clippy::too_many_arguments)]
 pub fn handle_render_finished(
     editor: &mut RawEditor,
-    handle: iced::widget::image::Handle,
     bytes: std::sync::Arc<[u8]>,
     dims: (u32, u32),
     data: crate::core::histogram::HistogramData,
@@ -293,9 +304,9 @@ pub fn handle_render_finished(
     render_ms: f32,
     update_ms: f32,
 ) -> Task<Message> {
-    editor.rendered_preview = Some(handle);
     editor.rendered_preview_bytes = Some(bytes);
     editor.rendered_preview_dims = dims;
+    editor.bump_preview_generation();
     *editor.histogram_data.borrow_mut() = data;
     editor.histogram_cache.clear();
     editor.canvas_cache.clear();
@@ -350,15 +361,13 @@ pub fn trigger_async_render(editor: &mut RawEditor) -> Task<Message> {
                 )
                 .await;
 
-                // Only the two fast memory operations — no histogram here.
-                // Arc::from copies once; Handle::from_rgba moves (no copy).
-                let byte_arc: std::sync::Arc<[u8]> = std::sync::Arc::from(bytes.as_slice());
-                let handle = iced::widget::image::Handle::from_rgba(target_w, target_h, bytes);
-                Some((handle, byte_arc, target_w, target_h, upload_ms, render_ms, update_ms))
+                // render_to_bytes already returns the shared buffer, so there
+                // is nothing to copy or wrap here.
+                Some((bytes, target_w, target_h, upload_ms, render_ms, update_ms))
             },
             |res| match res {
-                Some((handle, byte_arc, tw, th, upload_ms, render_ms, update_ms)) => {
-                    Message::RenderPreview(handle, byte_arc, (tw, th), upload_ms, render_ms, update_ms)
+                Some((byte_arc, tw, th, upload_ms, render_ms, update_ms)) => {
+                    Message::RenderPreview(byte_arc, (tw, th), upload_ms, render_ms, update_ms)
                 }
                 None => Message::RenderFailed,
             },
@@ -486,12 +495,36 @@ pub fn handle_wb_picked(editor: &mut RawEditor, u: f32, v: f32) -> Task<Message>
     task
 }
 
+/// Tolerances for reusing a memoized DCP interpolation. `kelvin` comes out of
+/// `solve_wb`, which is deterministic, so identical slider state reproduces it
+/// bit-for-bit; the epsilon only absorbs noise, it does not coarsen the slider.
+const DCP_MEMO_KELVIN_EPS: f32 = 0.01;
+const DCP_MEMO_CURVE_EPS: f32 = 0.0005;
+
+/// True when a memo recorded at `(memo_kelvin, memo_curve)` is still valid for
+/// `(kelvin, curve)`.
+fn dcp_memo_is_valid(memo_kelvin: f32, memo_curve: f32, kelvin: f32, curve: f32) -> bool {
+    (memo_kelvin - kelvin).abs() < DCP_MEMO_KELVIN_EPS
+        && (memo_curve - curve).abs() < DCP_MEMO_CURVE_EPS
+}
+
 /// Resolve the DCP interpolation and WB override for the editor's current
 /// slider state. Shared by every path that refreshes uniforms (slider edits,
 /// image-ready, preview upgrades).
+///
+/// The interpolation depends only on `(kelvin, profile_curve)`, but this is
+/// called from `update_pipeline` on every slider tick — including sliders that
+/// cannot affect it. It is memoized in `editor.dcp_memo` because rebuilding the
+/// HueSatMap LUT and re-baking the tone curve is a multi-allocation,
+/// `powf`-heavy job that `update_uniforms` would then throw away via its own
+/// dirty-check.
+///
+/// The two dirty-checks are independent and cannot disagree harmfully: both are
+/// functions of the same slider state, so a miss on either side merely repeats
+/// work that produces the same result.
 pub fn resolve_wb_and_dcp(
     editor: &RawEditor,
-) -> (Option<crate::raw::dcp::InterpolatedProfile>, Option<[f32; 4]>) {
+) -> (Option<std::sync::Arc<crate::raw::dcp::InterpolatedProfile>>, Option<[f32; 4]>) {
     let as_shot = editor.as_shot_wb.unwrap_or((5000.0, 0.0));
     let fallback_matrix = editor
         .current_metadata
@@ -506,19 +539,39 @@ pub fn resolve_wb_and_dcp(
         fallback_matrix,
     );
 
-    let interpolated = editor.current_dcp_profile.as_ref().map(|dcp| {
-        crate::raw::dcp::interpolate_at_temperature(dcp, kelvin, editor.current_edit_params.profile_curve)
-    });
+    let Some(dcp) = editor.current_dcp_profile.as_ref() else {
+        return (None, wb_override);
+    };
+    let curve = editor.current_edit_params.profile_curve;
 
-    (interpolated, wb_override)
+    if let Ok(memo) = editor.dcp_memo.try_borrow() {
+        if let Some((k, c, profile)) = memo.as_ref() {
+            if dcp_memo_is_valid(*k, *c, kelvin, curve) {
+                return (Some(profile.clone()), wb_override);
+            }
+        }
+    }
+
+    let interpolated = std::sync::Arc::new(crate::raw::dcp::interpolate_at_temperature(
+        dcp, kelvin, curve,
+    ));
+    if let Ok(mut memo) = editor.dcp_memo.try_borrow_mut() {
+        *memo = Some((kelvin, curve, interpolated.clone()));
+    }
+
+    (Some(interpolated), wb_override)
 }
 
 pub(crate) fn update_pipeline(editor: &mut RawEditor) -> Task<Message> {
-    editor.save_current_edits();
+    // Deferred, not written here: this runs once per mouse-move during a
+    // slider or mask drag, and a synchronous SQLite write on that path cost
+    // an fsync per event on the UI thread. `flush_edits` at the commit points
+    // (CommitEdit, drag release, image/tab switch, close) does the write.
+    editor.mark_edits_dirty();
     if let (Some(ctx), Some(resources)) = (&editor.gpu_context, &editor.image_resources) {
         // Phase 140: Interpolate DCP + resolve slider WB
         let (interpolated, wb_override) = resolve_wb_and_dcp(editor);
-        resources.update_uniforms(ctx, &editor.current_edit_params, interpolated.as_ref(), wb_override);
+        resources.update_uniforms(ctx, &editor.current_edit_params, interpolated.as_deref(), wb_override);
         editor.canvas_cache.clear();
     }
     
@@ -530,5 +583,34 @@ pub(crate) fn update_pipeline(editor: &mut RawEditor) -> Task<Message> {
         editor.is_rendering = true;
         editor.pending_render = false;
         trigger_async_render(editor)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dcp_memo_hits_on_identical_state() {
+        assert!(dcp_memo_is_valid(5500.0, 0.33, 5500.0, 0.33));
+    }
+
+    #[test]
+    fn dcp_memo_misses_when_temperature_moves() {
+        // One Kelvin is far below what any slider step produces, and must
+        // still invalidate — the memo must never coarsen the temperature.
+        assert!(!dcp_memo_is_valid(5500.0, 0.33, 5501.0, 0.33));
+    }
+
+    #[test]
+    fn dcp_memo_misses_when_profile_curve_moves() {
+        assert!(!dcp_memo_is_valid(5500.0, 0.33, 5500.0, 0.34));
+    }
+
+    #[test]
+    fn dcp_memo_absorbs_float_noise_only() {
+        // Recomputing solve_wb from identical inputs is deterministic, so the
+        // epsilon exists purely to tolerate last-bit drift, not real changes.
+        assert!(dcp_memo_is_valid(5500.0, 0.33, 5500.0 + 1e-4, 0.33 + 1e-6));
     }
 }

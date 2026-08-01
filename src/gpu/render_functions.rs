@@ -5,12 +5,20 @@ use iced_wgpu::wgpu;
 
 /// Render to bytes at specified resolution
 /// Render to bytes at specified resolution (Async + Instrumented)
+/// Render the color pass and read the result back to CPU memory.
+///
+/// Returns `Arc<[u8]>` rather than `Vec<u8>` because every caller immediately
+/// needs shared ownership: the develop path hands the same buffer to the
+/// viewport shader and the histogram task. Doing the conversion here keeps it
+/// to one place — the caller used to build the `Arc` *and* retain the original
+/// `Vec` inside an unused `image::Handle`, holding two full-size copies of a
+/// buffer that can reach tens of megabytes at zoom.
 pub async fn render_to_bytes(
     context: &SharedContext,
     resources: &ImageResources,
     width: u32,
     height: u32,
-) -> (Vec<u8>, f32, f32) {
+) -> (std::sync::Arc<[u8]>, f32, f32) {
     let t_upload_start = std::time::Instant::now();
 
     // Create output texture
@@ -117,9 +125,12 @@ pub async fn render_to_bytes(
         readback_buffer.unmap();
 
         let render_ms = t_render_start.elapsed().as_secs_f32() * 1000.0;
-        (result, upload_ms, render_ms)
+        // One copy: `Arc<[u8]>` needs a refcount header ahead of the data, so
+        // it cannot adopt the Vec's allocation. Building it here rather than at
+        // the call site at least keeps the total to a single conversion.
+        (std::sync::Arc::from(result), upload_ms, render_ms)
     } else {
-        (Vec::new(), upload_ms, 0.0)
+        (std::sync::Arc::from(Vec::new()), upload_ms, 0.0)
     }
 }
 

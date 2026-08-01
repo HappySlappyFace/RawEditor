@@ -823,12 +823,23 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // evaluated against input.tex_coords (full-image display UV, pre-rotation)
     // — the same convention as the crop rectangle.
     //
-    // Display (post-orientation) aspect ratio for mask_weight's rotation
-    // math — mirrors the straightening-rotation block's orientation swap
-    // above, reusing the `dimensions` variable already computed for Step 1.
+    // UV→isotropic scale factor for mask_weight's rotation math. Starts from
+    // the display (post-orientation) aspect — mirroring the straightening-
+    // rotation block's orientation swap above, reusing the `dimensions`
+    // variable already computed for Step 1.
     var mask_aspect = f32(dimensions.x) / f32(dimensions.y);
     if (params.orientation == 6u || params.orientation == 8u) {
         mask_aspect = 1.0 / mask_aspect;
+    }
+    // When not in crop mode the vertex shader stretches the crop sub-rect
+    // across the whole (full-image-aspect) target, so one unit of u spans
+    // target_w/crop.z pixels while one unit of v spans target_h/crop.w. Under
+    // a crop whose aspect differs from the frame's, omitting this term renders
+    // rotated ellipses sheared and at a different angle than the canvas
+    // overlay — which uses genuine screen-space radii. Keep in sync with
+    // core::viewport::mask_uv_aspect, which is the CPU side of this.
+    if (params.is_cropping == 0u) {
+        mask_aspect = mask_aspect * (max(params.crop.w, 1e-6) / max(params.crop.z, 1e-6));
     }
     for (var mi = 0u; mi < min(params.mask_count, 8u); mi = mi + 1u) {
         let m = params.masks[mi];
@@ -855,10 +866,13 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         }
 
         // Tint: same gentle-tilt technique as warmth, on the green/magenta
-        // axis instead of blue/amber. Positive = more green (Adobe convention).
+        // axis instead of blue/amber. Positive = MAGENTA, matching the ACR
+        // slider and this codebase's global tint (see TINT_SCALE in
+        // src/color.rs) — the two tint sliders sit in the same sidebar and
+        // must not run in opposite directions.
         let tint = m.adj1.z * w;
         if (tint != 0.0) {
-            color = color * vec3<f32>(1.0 - 0.10 * tint, 1.0 + 0.10 * tint, 1.0 - 0.10 * tint);
+            color = color * vec3<f32>(1.0 + 0.10 * tint, 1.0 - 0.10 * tint, 1.0 + 0.10 * tint);
         }
 
         // Highlights: same luma-weighted multiplicative form as Step 10

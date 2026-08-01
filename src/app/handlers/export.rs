@@ -101,8 +101,28 @@ pub fn handle_process_next_export(editor: &mut RawEditor) -> Task<Message> {
         editor.status = format!("Exporting image {}...", image_id);
         if let Some(img) = editor.images.iter().find(|i| i.id == image_id) {
             let path = img.path.clone();
+            // Each image's own saved edits. For the image currently open in
+            // Develop, prefer the in-memory params: they may hold a gesture
+            // that has not been flushed to SQLite yet.
+            let params = if Some(image_id) == editor.selected_image_id {
+                editor.current_edit_params
+            } else {
+                editor
+                    .library
+                    .as_ref()
+                    .and_then(|lib| lib.load_edit_params(image_id).ok())
+                    .unwrap_or_default()
+            };
+            // Reuse an already-decoded RAW when the develop/cull preload has
+            // one. Skips a multi-second decode per image for the common
+            // "cull, then export the selects" flow, and costs nothing: the
+            // cache is already byte-budgeted and the entry is shared, not
+            // copied.
+            if let Some(cached) = editor.raw_cache.get(&image_id).cloned() {
+                return Task::done(Message::ExportRawLoaded(image_id, params, Ok(cached)));
+            }
             return Task::perform(raw::loader::load_raw_data(path), move |res| {
-                Message::ExportRawLoaded(image_id, res)
+                Message::ExportRawLoaded(image_id, params, res.map(std::sync::Arc::new))
             });
         }
         Task::perform(async {}, |_| Message::ProcessNextExport)
@@ -116,15 +136,14 @@ pub fn handle_process_next_export(editor: &mut RawEditor) -> Task<Message> {
 pub fn handle_export_raw_loaded(
     editor: &mut RawEditor,
     image_id: i64,
-    result: Result<raw::loader::RawDataResult, String>,
+    params: crate::core::types::EditParams,
+    result: Result<Arc<raw::loader::RawDataResult>, String>,
 ) -> Task<Message> {
     match result {
         Ok(raw_data) => {
             // Always build fresh full-resolution resources for export.
             // The develop pipeline uses a subsampled preview; export must use the
             // original sensor dimensions so we don't re-use those resources here.
-
-            let params = editor.current_edit_params;
             let ctx = editor.gpu_context.clone();
 
             // Must mirror the develop path (loading.rs): with a DCP the shader takes the
@@ -183,7 +202,7 @@ pub fn handle_export_raw_loaded(
                     )
                     .map(|res| (context, Arc::new(res)))
                 },
-                move |res| Message::ExportPipelineReady(image_id, res),
+                move |res| Message::ExportPipelineReady(image_id, params, res),
             )
         }
         Err(e) => {
@@ -196,6 +215,7 @@ pub fn handle_export_raw_loaded(
 pub fn handle_export_pipeline_ready(
     editor: &mut RawEditor,
     image_id: i64,
+    params: crate::core::types::EditParams,
     result: Result<
         (
             Arc<gpu::shared::SharedContext>,
@@ -206,7 +226,9 @@ pub fn handle_export_pipeline_ready(
 ) -> Task<Message> {
     match result {
         Ok((context, resources)) => {
-            let crop = editor.current_edit_params.crop;
+            // This image's own crop, not the one open in Develop — otherwise
+            // the output is sized from the wrong image's crop rectangle.
+            let crop = params.crop;
             let crop_w = crop[2].clamp(0.001, 1.0);
             let crop_h = crop[3].clamp(0.001, 1.0);
             // Use original (full-sensor) dimensions in DISPLAY orientation —
@@ -283,7 +305,9 @@ pub fn handle_export_save_complete(
 /// buffer through the async save step, so `save_export_async` can't be
 /// called with a format/pixel-type mismatch.
 enum ExportPixels {
-    Rgba8(Vec<u8>),
+    /// Shared rather than owned because `render_to_bytes` returns the buffer
+    /// already wrapped; the encoders only ever read it as a slice.
+    Rgba8(std::sync::Arc<[u8]>),
     Rgb16(Vec<u16>),
 }
 

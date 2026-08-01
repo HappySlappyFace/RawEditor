@@ -44,9 +44,77 @@ pub fn image_rect(
     }
 }
 
+/// UV→isotropic scale factor for mask geometry: the horizontal display pixels
+/// spanned by one unit of full-image `u`, divided by the vertical pixels
+/// spanned by one unit of `v`.
+///
+/// Mask geometry lives in full-image UV, but what's *displayed* is the crop
+/// sub-rect stretched across the whole render target (the vertex shader remaps
+/// tex coords through `params.crop`, and the target is always the full-image
+/// aspect). So a crop whose aspect differs from the frame's rescales the two
+/// axes unequally, and a rotated ellipse renders sheared — and at a visibly
+/// different angle from the canvas overlay — unless that term is included.
+/// At `crop = [0, 0, 1, 1]` this reduces to the plain display aspect.
+pub fn mask_uv_aspect(image_w: u32, image_h: u32, crop: [f32; 4]) -> f32 {
+    let display_aspect = image_w as f32 / image_h.max(1) as f32;
+    display_aspect * (crop[3].max(1e-6) / crop[2].max(1e-6))
+}
+
+/// Normalize an angle in degrees into [-180, 180).
+///
+/// Rotation is cyclic: `atan2` deltas jump by ~360° across the ±180° branch
+/// cut, and a raw clamp would make a continuous drag stick at the ends.
+pub fn wrap_degrees(deg: f32) -> f32 {
+    (deg + 180.0).rem_euclid(360.0) - 180.0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mask_uv_aspect_uncropped_is_display_aspect() {
+        let a = mask_uv_aspect(3000, 2000, [0.0, 0.0, 1.0, 1.0]);
+        assert!((a - 1.5).abs() < 1e-4);
+    }
+
+    #[test]
+    fn mask_uv_aspect_accounts_for_non_matching_crop() {
+        // 16:9 crop out of a 3:2 frame: full width, 0.844 of the height.
+        let a = mask_uv_aspect(3000, 2000, [0.0, 0.078, 1.0, 0.84375]);
+        // 1.5 * 0.84375 / 1.0
+        assert!((a - 1.265_625).abs() < 1e-4);
+    }
+
+    #[test]
+    fn mask_uv_aspect_narrow_crop_stretches_u() {
+        // Half-width crop of a 3:2 frame: the 1500px-wide region is stretched
+        // back over the full-width target, doubling the pixels per unit u
+        // while v is untouched.
+        let a = mask_uv_aspect(3000, 2000, [0.0, 0.0, 0.5, 1.0]);
+        assert!((a - 3.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn wrap_degrees_passes_through_small_angles() {
+        assert!((wrap_degrees(0.0) - 0.0).abs() < 1e-4);
+        assert!((wrap_degrees(45.0) - 45.0).abs() < 1e-4);
+        assert!((wrap_degrees(-90.0) + 90.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn wrap_degrees_folds_branch_cut_jumps() {
+        // The atan2 failure case: ~0.6 deg of motion reported as -359.4.
+        assert!((wrap_degrees(-359.4) - 0.6).abs() < 1e-3);
+        assert!((wrap_degrees(359.4) + 0.6).abs() < 1e-3);
+    }
+
+    #[test]
+    fn wrap_degrees_is_cyclic_past_half_turn() {
+        assert!((wrap_degrees(190.0) + 170.0).abs() < 1e-3);
+        assert!((wrap_degrees(-190.0) - 170.0).abs() < 1e-3);
+        assert!((wrap_degrees(540.0) + 180.0).abs() < 1e-3);
+    }
 
     #[test]
     fn fitted_size_landscape_image_in_landscape_viewport() {

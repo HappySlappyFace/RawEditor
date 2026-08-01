@@ -6,6 +6,10 @@ use crate::raw;
 use crate::ui::preview_renderer::{CropHandle, MaskHandle};
 
 pub fn handle_image_selected(editor: &mut RawEditor, image_id: i64) -> Task<Message> {
+    // Must run BEFORE selected_image_id moves: flush_edits writes
+    // current_edit_params against the currently-selected id, so flushing after
+    // the switch would write this image's edits onto the next one.
+    editor.flush_edits();
     if editor.last_modifiers.command() {
         if !editor.multi_selection.remove(&image_id) { editor.multi_selection.insert(image_id); }
     } else {
@@ -39,6 +43,8 @@ pub fn handle_image_selected(editor: &mut RawEditor, image_id: i64) -> Task<Mess
 }
 
 pub fn handle_tab_changed(editor: &mut RawEditor, tab: AppTab) -> Task<Message> {
+    // Leaving Develop mid-gesture must not strand unsaved slider edits.
+    editor.flush_edits();
     editor.current_tab = tab;
     if tab == AppTab::Develop {
         // An image could have been marked for removal while a different tab
@@ -113,7 +119,6 @@ pub fn ensure_develop_selection_not_marked(editor: &mut RawEditor) -> Task<Messa
         editor.selected_image_id = None;
         editor.editor_readiness = EditorReadiness::NoSelection;
         editor.working_preview = None;
-        editor.rendered_preview = None;
         Task::none()
     }
 }
@@ -240,12 +245,11 @@ pub fn handle_mouse_released(editor: &mut RawEditor) -> Task<Message> {
             DragMode::CropHandle(_) | DragMode::MaskHandle(_)
         )
     {
-        editor.save_current_edits();
         editor.commit_current_state();
         if let (Some(ctx), Some(res)) = (&editor.gpu_context, &editor.image_resources) {
             let (interpolated, wb_override) =
                 crate::app::handlers::develop::resolve_wb_and_dcp(editor);
-            res.update_uniforms(ctx, &editor.current_edit_params, interpolated.as_ref(), wb_override);
+            res.update_uniforms(ctx, &editor.current_edit_params, interpolated.as_deref(), wb_override);
         }
     }
     editor.is_dragging = false;
@@ -276,9 +280,23 @@ pub fn handle_working_preview_ready(
     bytes: Option<std::sync::Arc<[u8]>>,
     dims: (u32, u32),
 ) -> Task<Message> {
+    // Populate the look-ahead cache even when this is no longer the selected
+    // image: the decode already happened, and caching it makes navigating
+    // *back* free too, not just forward into preloaded territory.
+    if let Some(bytes) = &bytes {
+        editor.preview_cache.put(
+            id,
+            crate::app::state::CachedPreview {
+                width: dims.0,
+                height: dims.1,
+                bytes: bytes.clone(),
+            },
+        );
+    }
     if Some(id) == editor.selected_image_id {
         editor.working_preview = Some(handle);
         editor.working_preview_bytes = bytes;
+        editor.bump_preview_generation();
         editor.working_preview_dims = dims;
     }
     Task::none()
@@ -294,9 +312,15 @@ pub fn handle_preview_cached(
     // Phase 81: Cleanup queued load
     editor.queued_loads.retain(|(i, _)| *i != id);
     
-    if let Ok((width, height, pixels)) = result {
-        let handle = iced::widget::image::Handle::from_rgba(width, height, pixels.to_vec());
-        editor.preview_cache.put(id, handle);
+    if let Ok((width, height, bytes)) = result {
+        // Store the decoded pixels themselves. Previously this built a Handle
+        // from `pixels.to_vec()` — copying the buffer back out of the Arc — and
+        // dropped the Arc, so the Develop viewport had nothing to use and
+        // re-read the JPEG from disk on navigation.
+        editor.preview_cache.put(
+            id,
+            crate::app::state::CachedPreview { width, height, bytes },
+        );
     }
     Task::none()
 }
@@ -395,7 +419,7 @@ fn apply_crop_drag(editor: &mut RawEditor, pos: Point, last: Point, h: CropHandl
     if let Some(ctx) = &editor.gpu_context {
         let (interpolated, wb_override) =
             crate::app::handlers::develop::resolve_wb_and_dcp(editor);
-        resources.update_uniforms(ctx, &editor.current_edit_params, interpolated.as_ref(), wb_override);
+        resources.update_uniforms(ctx, &editor.current_edit_params, interpolated.as_deref(), wb_override);
     }
 }
 
@@ -446,10 +470,13 @@ fn apply_mask_drag(editor: &mut RawEditor, pos: Point, last: Point, h: MaskHandl
     let crop = editor.current_edit_params.crop;
     let du = (pos.x - last.x) / zw.max(1.0) * crop[2];
     let dv = (pos.y - last.y) / zh.max(1.0) * crop[3];
-    // dw/dh are already the oriented display dims (editor.display_dims()),
-    // so this is the display aspect with no separate orientation swap
-    // needed — unlike the shader, which starts from raw sensor dims.
-    let aspect = dw as f32 / dh.max(1) as f32;
+    // dw/dh are already the oriented display dims (editor.display_dims()), so
+    // no separate orientation swap is needed here — unlike the shader, which
+    // starts from raw sensor dims. The crop term matters: the displayed image
+    // is the crop sub-rect stretched to the full target, so under a crop whose
+    // aspect differs from the frame's the two UV axes carry different
+    // pixel-per-unit scales (see core::viewport::mask_uv_aspect).
+    let aspect = crate::core::viewport::mask_uv_aspect(dw, dh, crop);
 
     let m = &mut editor.current_edit_params.masks[index];
     match h {
@@ -517,8 +544,13 @@ fn apply_mask_drag(editor: &mut RawEditor, pos: Point, last: Point, h: MaskHandl
             let center = to_screen(m.ax, m.ay);
             let a0 = (last.y - center.y).atan2(last.x - center.x);
             let a1 = (pos.y - center.y).atan2(pos.x - center.x);
-            let delta_deg = (a1 - a0).to_degrees();
-            m.rotation = (m.rotation + delta_deg).clamp(-180.0, 180.0);
+            // atan2 returns (-pi, pi], so the raw difference jumps by ~360deg
+            // whenever the cursor crosses the -x ray from the center. Wrap the
+            // DELTA (not just the sum) or a 0.6deg move reads as -359.4deg.
+            let delta_deg = crate::core::viewport::wrap_degrees((a1 - a0).to_degrees());
+            // Wrap rather than clamp: angles are cyclic, and clamping detached
+            // the handle from the cursor once a drag passed +/-180deg.
+            m.rotation = crate::core::viewport::wrap_degrees(m.rotation + delta_deg);
         }
     }
 }
@@ -532,20 +564,31 @@ fn trigger_image_load(editor: &mut RawEditor, image_id: i64) -> Task<Message> {
         .find(|i| i.id == image_id)
         .map(|img| (img.cache_path_working.clone(), img.path.clone()))
     {
-        // Phase 73: Check RAM cache first
-        if let Some(handle) = editor.preview_cache.get(&image_id) {
-            editor.working_preview = Some(handle.clone());
-        } else if let Some(path) = &working_cache_path {
-            editor.working_preview = Some(Handle::from_path(path.clone()));
+        // Phase 73: Check RAM cache first. A hit is the whole point of the
+        // preloader — it supplies the decoded pixels directly, so the disk
+        // read + JPEG decode below is skipped entirely.
+        let cached_preview = editor.preview_cache.get(&image_id).cloned();
+        if let Some(cached) = &cached_preview {
+            editor.working_preview = Some(cached.to_handle());
+            editor.working_preview_bytes = Some(cached.bytes.clone());
+            editor.working_preview_dims = (cached.width, cached.height);
+            editor.bump_preview_generation();
+        } else {
+            editor.working_preview_bytes = None;
+            if let Some(path) = &working_cache_path {
+                editor.working_preview = Some(Handle::from_path(path.clone()));
+            }
         }
-        
+
         editor.editor_readiness = EditorReadiness::Loading(image_id);
         let mut tasks = Vec::new();
-        if let Some(path) = &working_cache_path {
-            tasks.push(Task::perform(
-                load_image_handle(image_id, path.clone()),
-                |(id, h, p, d)| Message::WorkingPreviewReady(id, h, p, d),
-            ));
+        if cached_preview.is_none() {
+            if let Some(path) = &working_cache_path {
+                tasks.push(Task::perform(
+                    load_image_handle(image_id, path.clone()),
+                    |(id, h, p, d)| Message::WorkingPreviewReady(id, h, p, d),
+                ));
+            }
         }
         
         // Only load full RAW data if we are in Develop mode

@@ -107,6 +107,35 @@ impl Default for ExportSettings {
     }
 }
 
+/// A preloaded 1280px working preview, held in the RAM look-ahead cache.
+///
+/// Stores the decoded pixels, not an `iced` `Handle`. The Develop viewport is a
+/// wgpu shader that needs the raw bytes; caching only a `Handle` meant the
+/// preloader's decode was thrown away and the JPEG was re-read from disk the
+/// moment the user navigated to the image it had just preloaded.
+#[derive(Debug, Clone)]
+pub struct CachedPreview {
+    pub width: u32,
+    pub height: u32,
+    pub bytes: Arc<[u8]>,
+}
+
+impl CachedPreview {
+    /// Build an `iced` image handle sharing this entry's allocation.
+    ///
+    /// `Bytes::from_owner` adopts the `Arc` instead of copying, so the Cull
+    /// tab's `Image` widget and the Develop viewport reference the same pixels.
+    /// Note `Handle::from_rgba` mints a fresh id each call, so callers should
+    /// build this once per cache hit rather than per frame.
+    pub fn to_handle(&self) -> Handle {
+        Handle::from_rgba(
+            self.width,
+            self.height,
+            iced::advanced::image::Bytes::from_owner(self.bytes.clone()),
+        )
+    }
+}
+
 /// Main application state
 #[derive(Debug)]
 pub struct RawEditor {
@@ -137,12 +166,17 @@ pub struct RawEditor {
     pub status: String,
     /// All images loaded from the database
     pub images: Vec<ImageData>,
+    /// Images still awaiting cache-tier generation. Seeded from SQLite once
+    /// when the workers start, then decremented in memory as each completes —
+    /// re-querying (and reloading the whole catalog) per completed image made
+    /// import O(N^2) and froze the UI.
+    pub pending_cache_count: i64,
     /// Currently selected image ID
     pub selected_image_id: Option<i64>,
     /// Cache directory for full-size previews
     pub preview_cache_dir: PathBuf,
     /// Phase 73: RAM cache for 1280px previews (Look-Ahead)
-    pub preview_cache: LruCache<i64, Handle>,
+    pub preview_cache: LruCache<i64, CachedPreview>,
     /// RAW preload RAM budget in MB (0 = disabled)
     pub raw_preload_budget_mb: u32,
     /// Decoded RAW cache for fast develop navigation
@@ -163,6 +197,19 @@ pub struct RawEditor {
     pub current_edit_params: crate::core::types::EditParams,
     // Phase 140: Currently loaded DCP profile
     pub current_dcp_profile: Option<Arc<crate::raw::dcp::DcpProfile>>,
+    /// Memo for `resolve_wb_and_dcp`, keyed on the only two inputs the
+    /// interpolation depends on: `(kelvin, profile_curve)`.
+    ///
+    /// Without it, every slider tick — exposure, contrast, a mask drag —
+    /// rebuilt the full HueSatMap LUT and re-baked the 1024-entry tone curve,
+    /// then handed the result to `update_uniforms`, which discarded it via its
+    /// own dirty-check on the same two values.
+    ///
+    /// `RefCell` rather than a plain field so `resolve_wb_and_dcp` can keep its
+    /// `&RawEditor` signature: the crop and mask drag paths call it while
+    /// holding an immutable borrow of `gpu_context`/`image_resources`.
+    /// Cleared on image load, where `current_dcp_profile` changes.
+    pub dcp_memo: std::cell::RefCell<Option<(f32, f32, Arc<crate::raw::dcp::InterpolatedProfile>)>>,
     /// As-shot white balance of the current image as (Kelvin, Adobe tint),
     /// solved from the camera's WB multipliers via the color matrix (Robertson
     /// CCT). Anchor for the Temp/Tint sliders; None until a raw is loaded.
@@ -189,6 +236,11 @@ pub struct RawEditor {
     /// Phase 115: Native GPU Shader Viewport raw pixel buffers
     pub working_preview_bytes: Option<std::sync::Arc<[u8]>>,
     pub rendered_preview_bytes: Option<std::sync::Arc<[u8]>>,
+    /// Monotonic id of the preview pixel contents, handed to the viewport
+    /// shader so it can skip re-uploading an unchanged texture every redraw.
+    /// Bump via `bump_preview_generation` whenever either bytes field is
+    /// replaced. Starts at 1; 0 is the shader's placeholder sentinel.
+    pub preview_generation: u64,
     /// Phase 115: Pixel dimensions for the above preview byte buffers
     pub working_preview_dims: (u32, u32),
     pub rendered_preview_dims: (u32, u32),
@@ -206,11 +258,13 @@ pub struct RawEditor {
     pub last_titlebar_click: Option<std::time::Instant>,
     /// Phase 26: Viewport size for zoom-to-cursor calculations (actual displayed size)
     pub viewport_size: (f32, f32), // (width, height) in screen pixels
+    /// Set by the per-tick edit path, cleared by `flush_edits` at commit
+    /// points. Keeps SQLite writes off the slider-drag hot path.
+    pub edits_dirty: bool,
     pub scale_factor: f32,
     /// Phase 29: Instant preview handle (displayed while RAW loads)
     pub working_preview: Option<Handle>,
     /// Phase 103: High-quality rendered preview (async updated)
-    pub rendered_preview: Option<Handle>,
     /// Phase 41: Current image metadata for inspection
     pub current_metadata: Option<raw::loader::RawDataResult>,
     /// Phase 54: Edit settings clipboard for copy/paste
@@ -353,6 +407,7 @@ impl RawEditor {
                 library: None, // Phase 23: Database loads in background
                 status: "Initializing...".to_string(),
                 images: Vec::new(), // Empty until database loads
+                pending_cache_count: 0,
                 selected_image_id: None,
                 preview_cache_dir,
                 preview_cache: LruCache::new(NonZeroUsize::new(cache_capacity).unwrap()),
@@ -366,6 +421,7 @@ impl RawEditor {
                 current_tab: AppTab::Library, // Start in Library view
                 current_edit_params: crate::core::types::EditParams::default(),
                 current_dcp_profile: None, // Phase 140: No DCP profile initially
+                dcp_memo: std::cell::RefCell::new(None),
                 as_shot_wb: None,
 
                 // Phase 95: Unified GPU Pipeline Architecture
@@ -385,11 +441,12 @@ impl RawEditor {
                 last_click_time: None,
                 last_titlebar_click: None,
                 viewport_size: (800.0, 400.0),
+                edits_dirty: false,
                 scale_factor: 1.0,
                 working_preview: None,
-                rendered_preview: None,
                 working_preview_bytes: None,
                 rendered_preview_bytes: None,
+                preview_generation: 1,
                 working_preview_dims: (1, 1),
                 rendered_preview_dims: (1, 1),
                 current_metadata: None,
@@ -467,8 +524,14 @@ impl RawEditor {
         }
     }
 
-    // Helper to push current state to history
+    /// Helper to push current state to history.
+    ///
+    /// Also flushes pending edits to SQLite: a history commit marks the end of
+    /// a gesture, which is exactly when the params are worth persisting. Tying
+    /// the two together means any future commit site gets persistence for free
+    /// and the two can't drift apart.
     pub fn commit_current_state(&mut self) {
+        self.flush_edits();
         let params_to_push = self.current_edit_params;
         if let Some((stack, index)) = self.get_current_history() {
             // Truncate any redo history
@@ -559,6 +622,46 @@ impl RawEditor {
     }
 
     /// Helper to save current edit parameters to database
+    /// Signal that the preview pixel buffer's contents changed, so the viewport
+    /// shader re-uploads its texture on the next redraw. Must be called
+    /// wherever `working_preview_bytes` or `rendered_preview_bytes` is
+    /// replaced — a missed call shows a stale image.
+    pub fn bump_preview_generation(&mut self) {
+        self.preview_generation = self.preview_generation.wrapping_add(1);
+        // 0 is reserved for the shader's 1x1 placeholder.
+        if self.preview_generation == 0 {
+            self.preview_generation = 1;
+        }
+    }
+
+    /// Mark the current image's edits as needing persistence.
+    ///
+    /// Called from the per-slider-tick path (`update_pipeline`). Writing to
+    /// SQLite there directly meant a JSON serialize + SELECT + UPDATE + fsync
+    /// per mouse-move event, on the UI thread; the flag defers that to the
+    /// commit points below.
+    pub fn mark_edits_dirty(&mut self) {
+        self.edits_dirty = true;
+    }
+
+    /// Persist the current image's edits if anything changed since the last
+    /// flush. Cheap and safe to call unconditionally at any commit point.
+    ///
+    /// Flush points must cover every way the current params can stop being
+    /// current: slider release (`CommitEdit`), drag release, image switch, tab
+    /// switch, and window close. Missing one loses the last gesture's edits.
+    pub fn flush_edits(&mut self) {
+        if !self.edits_dirty {
+            return;
+        }
+        // Clear first: a failed write should not spin on every later flush.
+        self.edits_dirty = false;
+        self.save_current_edits();
+    }
+
+    /// Unconditional write, bypassing the dirty flag. Prefer `flush_edits`;
+    /// this exists for callers that write params for an image other than the
+    /// selected one, or that must persist regardless of flag state.
     pub fn save_current_edits(&self) {
         // Phase 23: Only save if database is loaded
         if let Some(library) = &self.library {
@@ -566,9 +669,6 @@ impl RawEditor {
                 if let Err(e) = library.save_edit_params(image_id, &self.current_edit_params) {
                     tracing::error!("Failed to save edits for image {}: {:?}", image_id, e);
                 }
-                //  else {
-                //     tracing::info!("Saved edits for image {}", image_id);
-                // }
             }
         }
     }
@@ -770,10 +870,10 @@ impl RawEditor {
             }
         });
 
-        let loader_subscription = crate::app::loader::subscription(
-            self.queued_loads.clone(),
-            self.queued_raw_loads.clone(),
-        );
+        // Borrowed, not cloned: subscription() is rebuilt after every message,
+        // and only the head of each queue is ever read.
+        let loader_subscription =
+            crate::app::loader::subscription(&self.queued_loads, &self.queued_raw_loads);
 
         let mut subs = vec![keyboard_subscription, loader_subscription];
         // Only tick while a filmstrip glide is in progress — avoids driving a

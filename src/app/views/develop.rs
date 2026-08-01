@@ -1,6 +1,6 @@
 use iced::font::{Font, Weight};
 use iced::widget::{
-    button, checkbox, column, container, row, scrollable, slider, stack, text, Container, Image,
+    button, checkbox, column, container, row, scrollable, slider, stack, text, Container,
 };
 use iced::{Alignment, Background, Border, Color, Element, Length, Theme};
 
@@ -23,8 +23,8 @@ pub fn view_develop(editor: &RawEditor) -> Element<'_, Message> {
         ..Default::default()
     });
 
-    let (image_handle, overlay_content) = prepare_preview(editor);
-    let main_content = view_main_content(editor, image_handle, overlay_content);
+    let (has_pixels, overlay_content) = prepare_preview(editor);
+    let main_content = view_main_content(editor, has_pixels, overlay_content);
 
     if matches!(editor.editor_readiness, EditorReadiness::NoSelection) {
         return main_content;
@@ -441,16 +441,16 @@ fn view_sidebar(editor: &RawEditor) -> iced::widget::Column<'_, Message> {
         .padding(15)
 }
 
-fn prepare_preview(
-    editor: &RawEditor,
-) -> (
-    Option<iced::widget::image::Handle>,
-    Option<Element<'_, Message>>,
-) {
+/// `(has_pixels, overlay)`. The viewport is a wgpu shader fed from
+/// `working_preview_bytes` / `rendered_preview_bytes`, so all the caller needs
+/// is whether there is anything to draw — this used to return an
+/// `Option<Handle>` that was only ever pattern-matched for presence, which cost
+/// a full extra copy of every rendered frame to construct.
+fn prepare_preview(editor: &RawEditor) -> (bool, Option<Element<'_, Message>>) {
     match &editor.editor_readiness {
-        EditorReadiness::NoSelection => (None, Option::<Element<Message>>::None),
+        EditorReadiness::NoSelection => (false, Option::<Element<Message>>::None),
         EditorReadiness::Loading(_) => {
-            let handle = editor.working_preview.clone();
+            let has_pixels = editor.working_preview_bytes.is_some();
             let overlay = container(
                 column![row![
                     text(ui::icons::HOURGLASS)
@@ -476,18 +476,18 @@ fn prepare_preview(
             .padding(20)
             .align_x(iced::Alignment::End)
             .align_y(iced::Alignment::End);
-            (handle, Some(overlay.into()))
+            (has_pixels, Some(overlay.into()))
         }
         EditorReadiness::Ready(_) => {
             if let (Some(_ctx), Some(_resources)) = (&editor.gpu_context, &editor.image_resources) {
-                // Phase 103/104: Use async rendered preview
-                let handle = editor
-                    .rendered_preview
-                    .clone()
-                    .or(editor.working_preview.clone());
-                (handle, None)
+                // Phase 103/104: Use async rendered preview, falling back to
+                // the working preview until the first GPU render lands. Mirrors
+                // the byte-buffer priority in `view_main_content`.
+                let has_pixels = editor.rendered_preview_bytes.is_some()
+                    || editor.working_preview_bytes.is_some();
+                (has_pixels, None)
             } else {
-                (None, None)
+                (false, None)
             }
         }
         EditorReadiness::Failed(_, error) => {
@@ -507,14 +507,14 @@ fn prepare_preview(
                 .padding(40)
                 .align_x(Alignment::Center),
             );
-            (None, Some(overlay.into()))
+            (false, Some(overlay.into()))
         }
     }
 }
 
 fn view_main_content<'a>(
     editor: &'a RawEditor,
-    image_handle: Option<iced::widget::image::Handle>,
+    has_pixels: bool,
     overlay_content: Option<Element<'a, Message>>,
 ) -> Element<'a, Message> {
     if matches!(editor.editor_readiness, EditorReadiness::NoSelection) {
@@ -538,7 +538,7 @@ fn view_main_content<'a>(
         .into();
     }
 
-    let image_widget: Element<Message> = if let Some(_handle) = image_handle {
+    let image_widget: Element<Message> = if has_pixels {
         use crate::ui::preview_renderer::{ViewportProgram, CropOverlay};
         use iced::widget::shader::Shader;
         use iced::widget::canvas::Canvas;
@@ -567,6 +567,7 @@ fn view_main_content<'a>(
                     image_height: img_h,
                     zoom: editor.zoom,
                     offset: editor.pan_offset,
+                    generation: editor.preview_generation,
                 })
                 .width(Length::Fill)
                 .height(Length::Fill)
@@ -599,15 +600,10 @@ fn view_main_content<'a>(
                     .clip(true)
                     .into()
             }
-            _ => container(
-                    Image::new(_handle)
-                        .width(Length::Fill)
-                        .height(Length::Fill)
-                        .content_fit(iced::ContentFit::Contain),
-                )
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .into(),
+            // Unreachable in practice: prepare_preview only reports pixels for
+            // Loading/Ready, so has_pixels gates this whole block. The other
+            // states render their own overlay instead.
+            _ => iced::widget::Space::new(Length::Fill, Length::Fill).into(),
         }
 
     } else {

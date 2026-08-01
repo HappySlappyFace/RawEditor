@@ -134,9 +134,19 @@ pub enum Message {
     OpenExportModal,
     ExportConfirmed,
     ProcessNextExport,
-    ExportRawLoaded(i64, Result<raw::loader::RawDataResult, String>),
+    /// Carries the exported image's OWN saved edit params alongside its RAW
+    /// data. They must travel with the job rather than be read from
+    /// `editor.current_edit_params`, which is whatever image happens to be open
+    /// in Develop — a batch export previously applied that one image's edits to
+    /// every image in the queue.
+    ExportRawLoaded(
+        i64,
+        crate::core::types::EditParams,
+        Result<std::sync::Arc<raw::loader::RawDataResult>, String>,
+    ),
     ExportPipelineReady(
         i64,
+        crate::core::types::EditParams,
         Result<
             (
                 std::sync::Arc<crate::gpu::shared::SharedContext>,
@@ -301,7 +311,6 @@ pub enum Message {
     /// Releases the render throttle so the next slider/zoom event can start a render
     /// while the histogram computes concurrently in a separate task.
     RenderPreview(
-        iced::widget::image::Handle,
         std::sync::Arc<[u8]>, // bytes for Shader Viewport
         (u32, u32),           // rendered pixel dimensions
         f32, // Upload ms
@@ -314,7 +323,6 @@ pub enum Message {
     RenderFailed,
     /// Phase 104/105: Async Render Finished (Preview + Histogram + Timing) — kept for compat
     RenderFinished(
-        iced::widget::image::Handle,
         std::sync::Arc<[u8]>,
         (u32, u32),
         crate::core::histogram::HistogramData,

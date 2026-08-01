@@ -3,6 +3,37 @@ use crate::core::types::EditParams;
 use rusqlite::{Connection, Result as SqlResult};
 use std::path::PathBuf;
 
+/// Apply the connection-level pragmas this app depends on for write throughput.
+///
+/// Must be called on EVERY connection, not just the main one — the cache
+/// workers and the hard-delete task each open their own. Pragmas are per
+/// connection, except `journal_mode=WAL`, which is persistent in the database
+/// file; setting it repeatedly is harmless and keeps the workers correct even
+/// on a database created before this existed.
+///
+/// Without these, rusqlite defaults to `journal_mode=DELETE` +
+/// `synchronous=FULL`, i.e. an fsync per transaction. Edit saves, rating
+/// updates, and the 4 cache workers all pay that. WAL additionally lets the
+/// workers write while the UI thread reads instead of blocking on a shared
+/// write lock.
+///
+/// `synchronous=NORMAL` is the standard pairing with WAL: durable against
+/// process crash, with a small window for loss only on OS/power failure.
+/// Appropriate for a rebuildable image catalog.
+///
+/// Deliberately does NOT touch `foreign_keys`. The `edits` table declares
+/// `ON DELETE CASCADE`, which is inert while FK enforcement is off (SQLite's
+/// default); turning it on here would silently change delete semantics, which
+/// is a separate decision from write throughput.
+pub fn apply_pragmas(conn: &Connection) {
+    // Not fatal if these fail — the app works without them, just slower.
+    for (name, value) in [("journal_mode", "WAL"), ("synchronous", "NORMAL")] {
+        if let Err(e) = conn.pragma_update(None, name, value) {
+            tracing::warn!("Failed to set PRAGMA {name}={value}: {e}");
+        }
+    }
+}
+
 /// The Library manages the SQLite catalog database.
 /// It stores image metadata, edit history, and references to RAW files.
 pub struct Library {
@@ -28,6 +59,7 @@ impl Library {
 
         // Open or create the database
         let conn = Connection::open(&db_path)?;
+        apply_pragmas(&conn);
 
         tracing::info!("Database initialized at: {}", db_path.display());
 
@@ -353,6 +385,19 @@ impl Library {
 
     /// Save edit parameters for an image to the database
     /// Creates a new edit record or updates the most recent one
+    /// Number of images still awaiting cache-tier generation.
+    ///
+    /// Called once when the workers start, to seed an in-memory counter. It
+    /// used to run after *every* completed image, alongside a full
+    /// `get_all_images()` reload — O(N) queries over an O(N) import.
+    pub fn count_pending_cache(&self) -> SqlResult<i64> {
+        self.conn.query_row(
+            "SELECT COUNT(*) FROM images WHERE cache_status = 'pending'",
+            [],
+            |row| row.get(0),
+        )
+    }
+
     pub fn save_edit_params(&self, image_id: i64, params: &EditParams) -> SqlResult<()> {
         // Serialize params to JSON
         let json = params
@@ -480,6 +525,38 @@ mod tests {
         };
         lib.init_schema().expect("schema init");
         lib
+    }
+
+    // ── apply_pragmas actually takes effect on a file-backed connection ───────
+
+    #[test]
+    fn apply_pragmas_enables_wal_and_normal_sync() {
+        // WAL is meaningless for :memory: databases (SQLite reports "memory"),
+        // so this needs a real file.
+        let dir = std::env::temp_dir().join(format!(
+            "raw-editor-pragma-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let db_path = dir.join("pragma.db");
+        let _ = std::fs::remove_file(&db_path);
+
+        let conn = rusqlite::Connection::open(&db_path).expect("open");
+        apply_pragmas(&conn);
+
+        let journal: String = conn
+            .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+            .expect("journal_mode");
+        assert_eq!(journal.to_lowercase(), "wal");
+
+        // synchronous is reported as an integer: 1 == NORMAL.
+        let sync: i64 = conn
+            .query_row("PRAGMA synchronous", [], |r| r.get(0))
+            .expect("synchronous");
+        assert_eq!(sync, 1);
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // ── import_image stores an integer timestamp ──────────────────────────────

@@ -165,10 +165,16 @@ pub fn handle_mask_adjustment_changed(
 pub fn handle_mask_handle_grabbed(
     editor: &mut RawEditor,
     handle: MaskHandle,
-    bounds: iced::Rectangle,
+    _bounds: iced::Rectangle,
 ) -> Task<Message> {
     editor.drag_mode = DragMode::MaskHandle(handle);
     editor.is_dragging = true;
-    editor.viewport_size = (bounds.width, bounds.height);
+    // NOTE: `_bounds` is the image rect, NOT the canvas. `viewport_size` is
+    // the canvas size (set by Message::ViewportResized) and every consumer —
+    // zoom-to-cursor, pan, get_image_screen_bounds, and the drag math itself —
+    // re-derives the image rect from it via core::viewport::image_rect.
+    // Assigning the image rect here corrupted all of those for the rest of the
+    // session, and made the drag pivot around a phantom center on any
+    // letterboxed image.
     Task::none()
 }

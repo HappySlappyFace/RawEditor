@@ -1,28 +1,50 @@
 use crate::app::message::Message;
 
+/// Preview (JPEG) decodes allowed in flight at once. These are cheap and
+/// bounded in memory, so a few running together keeps arrow-key navigation
+/// ahead of the user instead of one decode behind.
+pub const MAX_CONCURRENT_PREVIEW_LOADS: usize = 4;
+
+/// RAW decodes allowed in flight at once. Deliberately lower than the preview
+/// limit: each one can hold ~100 MB of sensor data, and they are already
+/// bounded by `raw_preload_budget_mb` downstream.
+pub const MAX_CONCURRENT_RAW_LOADS: usize = 2;
+
+/// Drive the head of each load queue.
+///
+/// Takes the pre-truncated heads rather than the whole queues: `subscription()`
+/// is rebuilt after every message, and cloning two full `Vec`s each time to read
+/// only their first element was pure waste.
+///
+/// Each entry gets its own `run_with_id` key, so iced keeps them as distinct
+/// subscriptions and runs them concurrently. Previously only `.first()` was
+/// driven, which serialized every decode no matter how many cores were free or
+/// how deep the preload queue was.
 pub fn subscription(
-    queued_loads: Vec<(i64, String)>,
-    queued_raw_loads: Vec<(i64, String)>,
+    queued_loads: &[(i64, String)],
+    queued_raw_loads: &[(i64, String)],
 ) -> iced::Subscription<Message> {
-    let preview_subscription = if let Some((id, path)) = queued_loads.first() {
-        iced::Subscription::run_with_id(
-            ("preview", *id),
-            iced::futures::stream::once(process_load_request(*id, path.clone())),
-        )
-    } else {
-        iced::Subscription::none()
-    };
+    let previews = queued_loads
+        .iter()
+        .take(MAX_CONCURRENT_PREVIEW_LOADS)
+        .map(|(id, path)| {
+            iced::Subscription::run_with_id(
+                ("preview", *id),
+                iced::futures::stream::once(process_load_request(*id, path.clone())),
+            )
+        });
 
-    let raw_subscription = if let Some((id, path)) = queued_raw_loads.first() {
-        iced::Subscription::run_with_id(
-            ("raw", *id),
-            iced::futures::stream::once(process_raw_load_request(*id, path.clone())),
-        )
-    } else {
-        iced::Subscription::none()
-    };
+    let raws = queued_raw_loads
+        .iter()
+        .take(MAX_CONCURRENT_RAW_LOADS)
+        .map(|(id, path)| {
+            iced::Subscription::run_with_id(
+                ("raw", *id),
+                iced::futures::stream::once(process_raw_load_request(*id, path.clone())),
+            )
+        });
 
-    iced::Subscription::batch(vec![preview_subscription, raw_subscription])
+    iced::Subscription::batch(previews.chain(raws))
 }
 
 async fn process_load_request(id: i64, path: String) -> Message {

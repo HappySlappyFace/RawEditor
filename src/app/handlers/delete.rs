@@ -192,7 +192,6 @@ pub fn handle_hard_delete_complete(editor: &mut RawEditor, outcome: HardDeleteOu
             } else {
                 editor.editor_readiness = EditorReadiness::NoSelection;
                 editor.working_preview = None;
-                editor.rendered_preview = None;
             }
         }
     }
@@ -218,7 +217,10 @@ pub fn handle_hard_delete_complete(editor: &mut RawEditor, outcome: HardDeleteOu
 async fn hard_delete_async(targets: Vec<DeleteTarget>, db_path: PathBuf) -> HardDeleteOutcome {
     tokio::task::spawn_blocking(move || {
         let conn = match rusqlite::Connection::open(&db_path) {
-            Ok(c) => c,
+            Ok(c) => {
+                crate::database::library::apply_pragmas(&c);
+                c
+            }
             Err(e) => {
                 tracing::error!("delete: failed to open DB: {}", e);
                 return HardDeleteOutcome {

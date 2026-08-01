@@ -62,6 +62,20 @@ pub struct ViewportPrimitive {
     /// Pan offset, fitted-size fractions (see core::viewport::image_rect)
     pub offset_x: f32,
     pub offset_y: f32,
+    /// Monotonic id of the pixel buffer's contents, bumped whenever the app
+    /// replaces the preview bytes.
+    ///
+    /// `prepare` runs on every redraw, and redraws happen constantly — every
+    /// `CursorMoved` event is forwarded as a message that mutates state, so
+    /// merely moving the mouse over the window triggers one. Re-uploading the
+    /// full preview each time cost megabytes of PCIe traffic per event. This
+    /// counter lets `prepare` skip `write_texture` when the contents are
+    /// unchanged.
+    ///
+    /// A counter rather than an `Arc::as_ptr` comparison: a freed allocation
+    /// can be reused at the same address, which would silently skip a needed
+    /// upload.
+    pub generation: u64,
 }
 
 /// Cached GPU state kept in iced's Storage between frames.
@@ -77,6 +91,10 @@ struct ViewportPipeline {
     // Uniform buffer: [zoom, pan_x, pan_y, aspect_px (image_w/image_h), 4 background floats]
     uniform_buf: wgpu::Buffer,
     bind_group: Option<wgpu::BindGroup>,
+    /// Generation of the pixel data currently resident in `texture`.
+    /// `None` means the texture has no valid contents yet (freshly created),
+    /// which forces the next upload.
+    uploaded_generation: Option<u64>,
     // Vertex buffer: 6 vertices × (2 pos + 2 uv) floats
     vertex_buf: wgpu::Buffer,
 }
@@ -217,6 +235,7 @@ impl shader::Primitive for ViewportPrimitive {
                 texture_height: 0,
                 uniform_buf,
                 bind_group: None,
+                uploaded_generation: None,
                 vertex_buf,
             });
         }
@@ -252,20 +271,28 @@ impl shader::Primitive for ViewportPrimitive {
             state.texture_view = Some(view);
             state.texture = Some(tex);
             state.bind_group = Some(bind_group);
+            // A brand-new texture holds nothing, so the contents must be
+            // re-uploaded regardless of what generation was resident before.
+            state.uploaded_generation = None;
         }
 
-        // Upload pixels every frame.
-        if let Some(tex) = &state.texture {
-            queue.write_texture(
-                tex.as_image_copy(),
-                &self.pixels,
-                wgpu::ImageDataLayout {
-                    offset: 0,
-                    bytes_per_row: Some(4 * self.width),
-                    rows_per_image: None,
-                },
-                wgpu::Extent3d { width: self.width, height: self.height, depth_or_array_layers: 1 },
-            );
+        // Upload pixels only when the buffer contents actually changed.
+        // `prepare` runs on every redraw; without this guard the full preview
+        // was re-uploaded on every mouse move (see ViewportPrimitive::generation).
+        if state.uploaded_generation != Some(self.generation) {
+            if let Some(tex) = &state.texture {
+                queue.write_texture(
+                    tex.as_image_copy(),
+                    &self.pixels,
+                    wgpu::ImageDataLayout {
+                        offset: 0,
+                        bytes_per_row: Some(4 * self.width),
+                        rows_per_image: None,
+                    },
+                    wgpu::Extent3d { width: self.width, height: self.height, depth_or_array_layers: 1 },
+                );
+                state.uploaded_generation = Some(self.generation);
+            }
         }
 
         // The quad's on-screen placement (letterbox fit + zoom + pan) — the
@@ -351,6 +378,9 @@ pub struct ViewportProgram {
     pub image_height: u32,
     pub zoom: f32,
     pub offset: cgmath::Vector2<f32>,
+    /// Bumped by the app whenever `pixels` is replaced. See
+    /// `ViewportPrimitive::generation`.
+    pub generation: u64,
 }
 
 impl shader::Program<Message> for ViewportProgram {
@@ -364,9 +394,11 @@ impl shader::Program<Message> for ViewportProgram {
         _bounds: Rectangle,
     ) -> Self::Primitive {
         // Placeholder 1×1 white pixel if no image is loaded yet.
+        let mut is_placeholder = false;
         let (pixels, w, h) = match &self.pixels {
             Some(p) if !p.is_empty() => (p.clone(), self.image_width, self.image_height),
             _ => {
+                is_placeholder = true;
                 let white: std::sync::Arc<[u8]> = std::sync::Arc::from([255u8, 255, 255, 255].as_ref());
                 (white, 1, 1)
             }
@@ -379,11 +411,19 @@ impl shader::Program<Message> for ViewportProgram {
             zoom: self.zoom,
             offset_x: self.offset.x,
             offset_y: self.offset.y,
+            // Generation 0 is reserved for the placeholder, whose single white
+            // pixel never changes; real previews start at 1.
+            generation: if is_placeholder { 0 } else { self.generation },
         }
     }
 }
 
 // ─────────────────────────────── CropOverlay ───────────────────────────────
+
+/// Click radius, in logical pixels, for every draggable pin in the overlay
+/// (crop corners and mask handles). Pins that can coexist along the same
+/// direction must be spaced by more than twice this to stay separable.
+const HANDLE_HIT_RADIUS: f32 = 15.0;
 
 /// Transparent Canvas overlay drawn on top of ViewportProgram.
 /// Only draws crop UI elements (dim mask, rule-of-thirds, handles).
@@ -543,7 +583,7 @@ impl CropOverlay {
             // Rotation handle: further out along the ellipse's own (rotated)
             // major-radius direction, with a thin line back to center as a
             // visual angle indicator.
-            let handle_dist = rx.max(ry) * 1.25;
+            let handle_dist = Self::rotation_handle_dist(rx, ry);
             let rotation_handle = center + Self::rotate_screen_vector(m.rotation, handle_dist, 0.0);
             frame.stroke(&canvas::Path::line(center, rotation_handle), faint);
             draw_pin(&mut frame, rotation_handle);
@@ -561,6 +601,18 @@ impl CropOverlay {
         let r = degrees.to_radians();
         let (c, s) = (r.cos(), r.sin());
         iced::Vector::new(x * c - y * s, x * s + y * c)
+    }
+
+    /// Distance from the ellipse center to the rotation pin, along the
+    /// ellipse's own major-radius direction.
+    ///
+    /// Additive, not proportional: a multiplicative `rx.max(ry) * 1.25` put the
+    /// rotation pin only `0.25 * rx` from the RadiusX pin, so on any mask under
+    /// ~60px on screen (i.e. every freshly placed one) the two hit circles
+    /// overlapped and the earlier-listed RadiusX swallowed clicks meant for the
+    /// rotation pin. Keep the gap above `2 * HANDLE_HIT_RADIUS`.
+    fn rotation_handle_dist(rx: f32, ry: f32) -> f32 {
+        rx.max(ry) + 3.0 * HANDLE_HIT_RADIUS
     }
 
     /// Screen positions of the selected mask's drag handles, in hit-test
@@ -588,11 +640,14 @@ impl CropOverlay {
             let center = self.uv_to_screen(m.ax, m.ay, ib);
             let rx = m.bx / self.crop[2].max(1e-6) * ib.width;
             let ry = m.by / self.crop[3].max(1e-6) * ib.height;
-            let handle_dist = rx.max(ry) * 1.25;
+            let handle_dist = Self::rotation_handle_dist(rx, ry);
+            // Rotation before RadiusX: they share a direction from the center,
+            // so if a degenerate mask ever collapses the gap between them, the
+            // outer pin (the one the user aimed at) wins the first-match scan.
             vec![
+                (MaskHandle::Rotation, center + Self::rotate_screen_vector(m.rotation, handle_dist, 0.0)),
                 (MaskHandle::RadiusX, center + Self::rotate_screen_vector(m.rotation, rx, 0.0)),
                 (MaskHandle::RadiusY, center + Self::rotate_screen_vector(m.rotation, 0.0, ry)),
-                (MaskHandle::Rotation, center + Self::rotate_screen_vector(m.rotation, handle_dist, 0.0)),
                 (MaskHandle::Center, center),
             ]
         }
@@ -724,7 +779,7 @@ impl canvas::Program<Message> for CropOverlay {
         if !self.is_cropping && self.selected_mask.is_some() {
             if let canvas::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left)) = event {
                 let image_bounds = self.image_bounds(bounds.width, bounds.height);
-                let hr = 15.0_f32;
+                let hr = HANDLE_HIT_RADIUS;
                 for (handle, p) in self.mask_handle_positions(&image_bounds) {
                     let dx = cursor_position.x - p.x;
                     let dy = cursor_position.y - p.y;
@@ -745,7 +800,7 @@ impl canvas::Program<Message> for CropOverlay {
             let crop_y = image_bounds.y + (self.crop[1] * image_bounds.height);
             let crop_w = self.crop[2] * image_bounds.width;
             let crop_h = self.crop[3] * image_bounds.height;
-            let hr = 15.0_f32;
+            let hr = HANDLE_HIT_RADIUS;
             let chk = |x: f32, y: f32| -> bool {
                 let dx = cursor_position.x - x;
                 let dy = cursor_position.y - y;
@@ -785,7 +840,7 @@ impl canvas::Program<Message> for CropOverlay {
             if self.selected_mask.is_some() {
                 if let Some(p) = cursor.position_in(bounds) {
                     let ib = self.image_bounds(bounds.width, bounds.height);
-                    let hr = 15.0_f32;
+                    let hr = HANDLE_HIT_RADIUS;
                     for (handle, hp) in self.mask_handle_positions(&ib) {
                         let dx = p.x - hp.x;
                         let dy = p.y - hp.y;
@@ -813,7 +868,7 @@ impl canvas::Program<Message> for CropOverlay {
         let crop_y = image_bounds.y + (self.crop[1] * image_bounds.height);
         let crop_w = self.crop[2] * image_bounds.width;
         let crop_h = self.crop[3] * image_bounds.height;
-        let hr = 15.0_f32;
+        let hr = HANDLE_HIT_RADIUS;
         let chk = |x: f32, y: f32| -> bool { let dx = cursor_position.x - x; let dy = cursor_position.y - y; dx*dx+dy*dy < hr*hr };
 
         if chk(crop_x, crop_y) || chk(crop_x + crop_w, crop_y + crop_h) { return iced::mouse::Interaction::ResizingDiagonallyDown; }

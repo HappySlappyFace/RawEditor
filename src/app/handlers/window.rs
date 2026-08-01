@@ -11,7 +11,10 @@ pub fn handle_maximize_window() -> Task<Message> {
     window::get_latest().and_then(window::toggle_maximize)
 }
 
-pub fn handle_close_window() -> Task<Message> {
+pub fn handle_close_window(editor: &mut RawEditor) -> Task<Message> {
+    // Last chance to persist: a slider moved but never released still has its
+    // edits only in memory.
+    editor.flush_edits();
     window::get_latest().and_then(window::close)
 }
 

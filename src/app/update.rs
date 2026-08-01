@@ -129,11 +129,11 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::OpenExportModal => handlers::export::handle_open_export_modal(editor),
         Message::ExportConfirmed => handlers::export::handle_export_confirmed(editor),
         Message::ProcessNextExport => handlers::export::handle_process_next_export(editor),
-        Message::ExportRawLoaded(id, res) => {
-            handlers::export::handle_export_raw_loaded(editor, id, res)
+        Message::ExportRawLoaded(id, params, res) => {
+            handlers::export::handle_export_raw_loaded(editor, id, params, res)
         }
-        Message::ExportPipelineReady(id, res) => {
-            handlers::export::handle_export_pipeline_ready(editor, id, res)
+        Message::ExportPipelineReady(id, params, res) => {
+            handlers::export::handle_export_pipeline_ready(editor, id, params, res)
         }
         Message::ExportSaveComplete(id, res) => {
             handlers::export::handle_export_save_complete(editor, id, res)
@@ -142,7 +142,7 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
         // Window
         Message::MinimizeWindow => handlers::window::handle_minimize_window(),
         Message::MaximizeWindow => handlers::window::handle_maximize_window(),
-        Message::CloseWindow => handlers::window::handle_close_window(),
+        Message::CloseWindow => handlers::window::handle_close_window(editor),
         Message::DragWindow => handlers::window::handle_drag_window(editor),
         Message::OpenModal(m) => handlers::window::handle_open_modal(editor, m),
         Message::CloseModal => handlers::window::handle_close_modal(editor),
@@ -170,14 +170,14 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
             editor.show_profiler = !editor.show_profiler;
             Task::none()
         }
-        Message::RenderPreview(h, bytes, dims, u, r, cpu) => {
-            handlers::develop::handle_render_preview(editor, h, bytes, dims, u, r, cpu)
+        Message::RenderPreview(bytes, dims, u, r, cpu) => {
+            handlers::develop::handle_render_preview(editor, bytes, dims, u, r, cpu)
         }
         Message::HistogramReady(data) => {
             handlers::develop::handle_histogram_ready(editor, data)
         }
-        Message::RenderFinished(h, bytes, dims, d, u, r, cpu) => {
-            handlers::develop::handle_render_finished(editor, h, bytes, dims, d, u, r, cpu)
+        Message::RenderFinished(bytes, dims, d, u, r, cpu) => {
+            handlers::develop::handle_render_finished(editor, bytes, dims, d, u, r, cpu)
         }
         Message::RenderFailed => {
             // GPU render task failed (shader error, device lost, etc.).
