@@ -21,6 +21,29 @@
 ///  15.  sRGB TRC         – IEC 61966-2-1 piecewise (γ=2.4 + linear toe)
 ///  16.  Clamp
 pub const PASSTHROUGH_SHADER: &str = r#"
+// ── Highlights / Shadows tuning ──────────────────────────────────────────────
+// These operate in SCENE-LINEAR space, where values above 1.0 are real (WB
+// amplification plus Step 3's highlight reconstruction routinely reach ~2).
+// The knee range is therefore in scene-linear units: HL_KNEE_LO is "bright",
+// HL_KNEE_HI is "well past clipping".
+const HL_KNEE_LO: f32 = 0.5;
+const HL_KNEE_HI: f32 = 1.5;
+// At highlights = -1 with full weight the pixel scales by 1 - 0.6 = 0.4, which
+// maps a 2.0 scene-linear highlight to 0.8 — back into the part of the tone
+// curve that still resolves gradation.
+const HL_RECOVER_STRENGTH: f32 = 0.6;
+const HL_LIFT_STRENGTH: f32 = 0.4;
+// Shadows fades out by SH_RANGE. This is a SCENE-LINEAR threshold, so it is far
+// lower than the 0.5 that was correct when this ran display-referred: linear
+// 0.18 is middle grey (~0.46 sRGB), whereas linear 0.5 is already ~0.74 sRGB
+// and would drag most of the frame. Measured on _DSC0177: at 0.5 a shadows of
+// only +0.25 lifted the whole-image mean 53.7 → 75.5, which is a global
+// brightness control, not a shadow one.
+const SH_RANGE: f32 = 0.18;
+// Reduced from 0.15 for the same reason: an additive lift applied before the
+// tone curve gets expanded by it, so it lands much harder than it used to.
+const SH_LIFT_STRENGTH: f32 = 0.07;
+
 // ========== Vertex Shader ==========
 // Full-screen triangle (no vertex buffers needed)
 
@@ -264,6 +287,51 @@ fn sample_tone_curve(x: f32) -> f32 {
     let n = f32(textureDimensions(tone_curve));
     let c = (clamp(x, 0.0, 1.0) * (n - 1.0) + 0.5) / n;
     return textureSampleLevel(tone_curve, lut_sampler, c, 0.0).r;
+}
+
+// Highlights & Shadows, ratio-preserving.
+//
+// `level` is the scalar the weights key off, supplied by the CALLER rather than
+// derived here, because the right choice differs by colour space:
+//   • linear sRGB (no-DCP fallback) → luma, `dot(c, (0.2126, 0.7152, 0.0722))`
+//   • ProPhoto (DCP path)           → the PEAK CHANNEL
+// ProPhoto's Y coefficients are (0.2880, 0.7119, 0.0001) — blue contributes
+// essentially nothing, so a blown blue sky would score near-zero luma and the
+// highlight weight would never engage. The peak channel is also the more
+// meaningful quantity for recovery: what matters is proximity to clipping, not
+// perceived brightness.
+//
+// Highlights scale the whole pixel so colour ratios survive — partially
+// overexposed areas (warm-white cloud at R>G>B) stay warm instead of drifting
+// neutral. A pixel whose channels ALL clipped has no ratio left to preserve and
+// still goes neutral; that is a sensor limit, not a pipeline one.
+//
+// MUST run in scene-linear space, before any shoulder. Applied afterwards it is
+// just a uniform multiply on an already-compressed band: the highlight goes
+// grey and no texture comes back.
+fn apply_highlights_shadows(c: vec3<f32>, highlights: f32, shadows: f32, level: f32) -> vec3<f32> {
+    var color = c;
+    var lv = level;
+    if (highlights != 0.0) {
+        // 0 below HL_KNEE_LO (midtones untouched), 1 above HL_KNEE_HI
+        // (well past clipping).
+        let hl_weight = smoothstep(HL_KNEE_LO, HL_KNEE_HI, lv);
+        // Recovery gets more authority than lift: pulling a blown highlight
+        // back has further to travel than brightening one.
+        let strength = select(HL_LIFT_STRENGTH, HL_RECOVER_STRENGTH, highlights < 0.0);
+        let factor = max(1.0 + highlights * strength * hl_weight, 0.2);
+        color = color * factor;
+        // Shadows keys off the POST-highlight level so the two compose, which
+        // is what the original inline code did. Both luma and peak-channel are
+        // homogeneous of degree 1 in `color`, so tracking the uniform scale
+        // reproduces either exactly — no need to know which the caller passed.
+        lv = lv * factor;
+    }
+    if (shadows != 0.0) {
+        let sh_weight = clamp(1.0 - lv / SH_RANGE, 0.0, 1.0);
+        color = color + vec3<f32>(sh_weight * shadows * SH_LIFT_STRENGTH);
+    }
+    return color;
 }
 
 // Adobe DNG SDK "RGBTone": hue-preserving tone curve application.
@@ -573,6 +641,20 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         // the HueSatMap with correct hue/saturation. We clamp after reconstruction.
         var pp = xyz_to_prophoto * xyz;
 
+        // ── Highlights & Shadows (SCENE-LINEAR, before the shoulder) ────────
+        // Deliberately here and not at Step 10. Everything below — the knee,
+        // the HueSatMap value axis, the tone-curve LUT — works in [0,1], so by
+        // Step 10 a full stop of highlight (1.0 → 2.0 scene-linear) has already
+        // been squeezed by the knee into 0.850 → 0.944, about 9% of range.
+        // Recovery applied to that is a uniform multiply on a flattened band:
+        // the highlight goes grey and no texture returns. Running it here, on
+        // values that still exceed 1.0, redistributes them back down into the
+        // part of the curve that resolves detail.
+        //
+        // Peak channel rather than luma — see apply_highlights_shadows.
+        let hs_level = max(pp.r, max(pp.g, pp.b));
+        pp = apply_highlights_shadows(pp, params.highlights, params.shadows, hs_level);
+
         // Highlight shoulder: WB amplification pushes bright pixels above 1.0
         // linear (a bright blue puck: raw 0.75 × wb_b 1.45 ≈ 1.09).  Everything
         // downstream — the HueSatMap value axis and the tone-curve LUT — clamps
@@ -758,36 +840,19 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         color = color * sharpen_scale;
     }
 
-    // ── Step 10: Highlights & Shadows (before gamut compression) ─────────────
-    // Highlights runs here — before STAGE 2 — so overexposed areas that are still
-    // above 1.0 in linear space can be pulled back below the gamut-compression
-    // threshold.  Running it after would only compress values already flattened
-    // into the narrow 0.8–1.0 band, wiping out cloud/fabric texture.
+    // ── Step 10: Highlights & Shadows — FALLBACK PATH ONLY ───────────────────
+    // On the DCP path this already ran in ProPhoto scene-linear, before the
+    // shoulder (see the block above); running it again here would double-apply.
     //
-    // Formula: multiplicative scale weighted by luma (ratio-preserving).
-    // Scaling the full pixel keeps colour ratios intact so partially-overexposed
-    // areas (e.g. warm-white clouds at R>G>B) stay warm rather than shifting to
-    // neutral grey.  Truly clipped pixels (all channels equal ≥ 1) have no colour
-    // info to preserve and will still go neutral — that's a fundamental sensor limit.
-    if (params.highlights != 0.0) {
+    // The fallback path has no shoulder until the filmic curve at Step 15, and
+    // `color` here is linear sRGB that still exceeds 1.0, so this position is
+    // already scene-linear for that path — it needs no move.
+    //
+    // Gated on has_dcp, NOT dcp_has_curve: the knee runs for any DCP, curve or
+    // not, so any DCP means the work was already done upstream.
+    if (params.has_dcp == 0u) {
         let luma_hl = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
-        // Smooth weight: 0 at luma≤0.5 (midtones untouched), 1 at luma≥1.5+
-        let hl_weight = smoothstep(0.5, 1.5, luma_hl);
-        if (params.highlights < 0.0) {
-            // Recovery: compress the full pixel.  At -1 + luma≥1.5: factor≈0.4.
-            let hl_factor = max(1.0 + params.highlights * 0.6 * hl_weight, 0.2);
-            color = color * hl_factor;
-        } else {
-            // Lift: expand upper tones for a bright/airy look.
-            let hl_factor = 1.0 + params.highlights * 0.4 * hl_weight;
-            color = color * hl_factor;
-        }
-    }
-    if (params.shadows != 0.0) {
-        let sh_norm   = params.shadows * 0.15;
-        let sh_luma   = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
-        let sh_weight = clamp(1.0 - sh_luma / 0.5, 0.0, 1.0);
-        color = color + vec3<f32>(sh_weight * sh_norm);
+        color = apply_highlights_shadows(color, params.highlights, params.shadows, luma_hl);
     }
 
     // ── STAGE 2: Gamut Compression (True Path-to-White) ──────────────────────

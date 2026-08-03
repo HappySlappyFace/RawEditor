@@ -241,13 +241,20 @@ pub struct RawEditor {
     /// Bump via `bump_preview_generation` whenever either bytes field is
     /// replaced. Starts at 1; 0 is the shader's placeholder sentinel.
     pub preview_generation: u64,
-    /// Region of the image the current preview buffer covers, `(u0, v0, du,
-    /// dv)` in view UV. `(0,0,1,1)` until a windowed render lands.
+    /// Region of the image the preview buffer ACTUALLY on screen covers,
+    /// `(u0, v0, du, dv)` in view UV.
     ///
-    /// Two consumers: the viewport shader, to place the quad over the right
-    /// slice; and `handle_pan`, to notice when the user has panned outside
-    /// what was rendered and needs a refresh.
+    /// Published only when new bytes land, never when a render is merely
+    /// requested — the two must move together or the still-current texture
+    /// gets drawn at the incoming window's placement, which reads as the whole
+    /// image jumping for a frame.
     pub rendered_view_rect: [f32; 4],
+    /// Region the in-flight (or most recently requested) render covers.
+    ///
+    /// Separate from `rendered_view_rect` so "do we need to re-render?" can be
+    /// answered against what is already on its way, rather than re-requesting
+    /// the same window on every pan event while it is still rendering.
+    pub requested_view_rect: [f32; 4],
     /// Phase 115: Pixel dimensions for the above preview byte buffers
     pub working_preview_dims: (u32, u32),
     pub rendered_preview_dims: (u32, u32),
@@ -455,6 +462,7 @@ impl RawEditor {
                 rendered_preview_bytes: None,
                 preview_generation: 1,
                 rendered_view_rect: crate::gpu::params::FULL_VIEW_RECT,
+                requested_view_rect: crate::gpu::params::FULL_VIEW_RECT,
                 working_preview_dims: (1, 1),
                 rendered_preview_dims: (1, 1),
                 current_metadata: None,
@@ -598,6 +606,27 @@ impl RawEditor {
             return self.working_preview_dims;
         }
         (1280, 853)
+    }
+
+    /// Magnification as a photographer reads it: 100% means one full-resolution
+    /// sensor pixel per physical screen pixel.
+    ///
+    /// Distinct from `self.zoom`, which is relative to fit — at fit a 6000px
+    /// image on a 1900px viewport is `zoom == 1.0` but only ~32%.
+    pub fn zoom_percent(&self) -> f32 {
+        let (dw, dh) = self.image_display_dims();
+        let (vw, vh) = self.viewport_size;
+        let (fw, _) = crate::core::viewport::fitted_size(dw, dh, vw, vh);
+        // Against the FULL-resolution width: the develop texture may be a
+        // subsampled preview, and reporting against that would claim 100%
+        // while showing half the detail.
+        let full_w = self
+            .image_resources
+            .as_ref()
+            .map(|r| r.oriented_original_dims().0)
+            .unwrap_or(dw)
+            .max(1) as f32;
+        fw * self.zoom * self.scale_factor / full_w * 100.0
     }
 
     // Phase 67: Calculate image screen bounds for interaction

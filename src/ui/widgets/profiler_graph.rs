@@ -5,9 +5,21 @@ use iced::widget::{column, container, text};
 use iced::{Color, Element, Length, Point, Rectangle, Renderer, Size, Theme};
 
 /// Phase 105: Accept the shared canvas::Cache so the caller controls invalidation.
+/// What the render is currently being asked to produce — shown alongside the
+/// timings so the cost can be read against the work, rather than guessed at.
+pub struct RenderStats {
+    /// Magnification where 100% is one sensor pixel per screen pixel.
+    pub zoom_percent: f32,
+    /// Size of the render target, i.e. the windowed region actually drawn.
+    pub target: (u32, u32),
+    /// Fraction of the image that window covers, 0..1 on each axis.
+    pub view_extent: (f32, f32),
+}
+
 pub fn view_profiler_overlay<'a>(
     profiler: &'a Profiler,
     cache: &'a iced::widget::canvas::Cache,
+    stats: RenderStats,
 ) -> Element<'a, Message> {
     let avg_total = if profiler.history.is_empty() {
         0.0
@@ -32,7 +44,7 @@ pub fn view_profiler_overlay<'a>(
     // Phase 105: Per-frame breakdown from the most recent sample
     let frame_detail = if let Some(last) = profiler.history.back() {
         text(format!(
-            "CPU {:.1}ms  |  Upload {:.1}ms  |  GPU {:.1}ms  |  Total {:.1}ms",
+            "CPU {:.1}ms  |  Encode {:.1}ms  |  GPU {:.1}ms  |  Total {:.1}ms",
             last.update_ms, last.upload_ms, last.render_ms, last.total_ms
         ))
         .size(11)
@@ -40,14 +52,31 @@ pub fn view_profiler_overlay<'a>(
             color: Some(Color::from_rgba(1.0, 1.0, 1.0, 0.85)),
         })
     } else {
-        text("CPU --  |  Upload --  |  GPU --  |  Total --")
+        text("CPU --  |  Encode --  |  GPU --  |  Total --")
             .size(11)
             .style(|_| iced::widget::text::Style {
                 color: Some(Color::from_rgba(1.0, 1.0, 1.0, 0.5)),
             })
     };
 
-    let legend = text("■ CPU   ■ Upload   ■ GPU")
+    let megapixels = (stats.target.0 as f64 * stats.target.1 as f64) / 1.0e6;
+    let render_stats = text(format!(
+        "Zoom {:.0}%  |  Render {}×{} ({:.2} MP)  |  Window {:.0}%×{:.0}%",
+        stats.zoom_percent,
+        stats.target.0,
+        stats.target.1,
+        megapixels,
+        stats.view_extent.0 * 100.0,
+        stats.view_extent.1 * 100.0,
+    ))
+    .size(11)
+    .style(|_| iced::widget::text::Style {
+        color: Some(Color::from_rgba(0.98, 0.45, 0.09, 0.95)),
+    });
+
+    // "Upload" is CPU-side resource creation and command recording; every
+    // submit and the readback wait are counted under GPU.
+    let legend = text("■ CPU   ■ Encode   ■ GPU")
         .size(10)
         .style(|_| iced::widget::text::Style {
             color: Some(Color::from_rgba(1.0, 1.0, 1.0, 0.6)),
@@ -58,7 +87,7 @@ pub fn view_profiler_overlay<'a>(
         .height(Length::Fixed(100.0));
 
     container(
-        column![avg_header, frame_detail, graph, legend]
+        column![avg_header, frame_detail, render_stats, graph, legend]
             .spacing(4)
             .padding(10),
     )

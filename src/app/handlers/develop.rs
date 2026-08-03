@@ -245,6 +245,7 @@ pub fn handle_render_finished(
     editor: &mut RawEditor,
     bytes: std::sync::Arc<[u8]>,
     dims: (u32, u32),
+    view_rect: [f32; 4],
     data: crate::core::histogram::HistogramData,
     upload_ms: f32,
     render_ms: f32,
@@ -252,6 +253,9 @@ pub fn handle_render_finished(
 ) -> Task<Message> {
     editor.rendered_preview_bytes = Some(bytes);
     editor.rendered_preview_dims = dims;
+    // Buffer and window swap in the same frame — see the note in
+    // trigger_async_render about why this is not published earlier.
+    editor.rendered_view_rect = view_rect;
     editor.bump_preview_generation();
     *editor.histogram_data.borrow_mut() = data;
     editor.histogram_cache.clear();
@@ -325,7 +329,13 @@ pub fn trigger_async_render(editor: &mut RawEditor) -> Task<Message> {
         let target_w = (win_px_w.min(src_avail_w).round() as u32).clamp(16, 16384);
         let target_h = (win_px_h.min(src_avail_h).round() as u32).clamp(16, 16384);
 
-        editor.rendered_view_rect = view_rect;
+        // Only the REQUESTED window moves here. `rendered_view_rect` — what the
+        // viewport actually draws against — is published in
+        // `handle_render_finished`, together with the bytes it describes.
+        // Updating it now would place the still-current texture at the incoming
+        // window's position for the length of the render, which looks like the
+        // image jumping.
+        editor.requested_view_rect = view_rect;
         tracing::debug!(
             "render window: zoom={:.2} view_rect=[{:.3},{:.3},{:.3},{:.3}] target={}x{}",
             editor.zoom,
@@ -352,13 +362,17 @@ pub fn trigger_async_render(editor: &mut RawEditor) -> Task<Message> {
                     .await;
 
                 // The buffer arrives already shared — nothing to copy here.
-                Some((bytes, histogram, target_w, target_h, upload_ms, render_ms, update_ms))
+                Some((
+                    bytes, histogram, target_w, target_h, view_rect, upload_ms, render_ms,
+                    update_ms,
+                ))
             },
             |res| match res {
-                Some((byte_arc, histogram, tw, th, upload_ms, render_ms, update_ms)) => {
+                Some((byte_arc, histogram, tw, th, vr, upload_ms, render_ms, update_ms)) => {
                     Message::RenderFinished(
                         byte_arc,
                         (tw, th),
+                        vr,
                         histogram,
                         upload_ms,
                         render_ms,

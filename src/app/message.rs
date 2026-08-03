@@ -315,6 +315,9 @@ pub enum Message {
     RenderFinished(
         std::sync::Arc<[u8]>,
         (u32, u32),
+        /// The window these bytes cover. Travels with them so the viewport
+        /// never draws a buffer against a window it wasn't rendered for.
+        [f32; 4],
         crate::core::histogram::HistogramData,
         f32,
         f32,

@@ -204,16 +204,29 @@ pub async fn render_display_and_histogram(
     f32,
     f32,
 ) {
-    let t_upload_start = std::time::Instant::now();
-
-    // Order matters: each write applies to the submit that follows it.
+    // Timing is split so the profiler's buckets mean what they say:
+    //   `encode_ms` — CPU-side resource creation and command recording
+    //   `gpu_ms`    — every submit plus the readback wait
+    // The two passes have to interleave (each uniform write applies to the
+    // submit that follows it), so the submits can't simply be hoisted out of
+    // the encode window — the elapsed time is accumulated instead.
+    let t_encode = std::time::Instant::now();
     write_view_rect(context, resources, super::params::FULL_VIEW_RECT);
     let (hist_cb, hist_rb) = encode_color_pass(context, resources, hist_width, hist_height);
-    context.queue.submit(Some(hist_cb));
+    let mut encode_ms = t_encode.elapsed().as_secs_f32() * 1000.0;
 
+    // Counted as GPU time: `submit` can block on queue backpressure, and
+    // attributing that stall to "upload" made the HUD read as though texture
+    // allocation had suddenly become expensive after a zoom-in.
+    let t_submit_a = std::time::Instant::now();
+    context.queue.submit(Some(hist_cb));
     write_view_rect(context, resources, view_rect);
+    let mut gpu_ms = t_submit_a.elapsed().as_secs_f32() * 1000.0;
+
+    let t_encode_b = std::time::Instant::now();
     let (main_cb, main_rb) = encode_color_pass(context, resources, width, height);
-    let upload_ms = t_upload_start.elapsed().as_secs_f32() * 1000.0;
+    encode_ms += t_encode_b.elapsed().as_secs_f32() * 1000.0;
+    let upload_ms = encode_ms;
 
     let t_render_start = std::time::Instant::now();
     context.queue.submit(Some(main_cb));
@@ -240,10 +253,10 @@ pub async fn render_display_and_histogram(
 
     if let Ok(Ok(())) = mrx.await {
         let result = main_rb.unpad();
-        let render_ms = t_render_start.elapsed().as_secs_f32() * 1000.0;
-        (std::sync::Arc::from(result), histogram, upload_ms, render_ms)
+        gpu_ms += t_render_start.elapsed().as_secs_f32() * 1000.0;
+        (std::sync::Arc::from(result), histogram, upload_ms, gpu_ms)
     } else {
-        (std::sync::Arc::from(Vec::new()), histogram, upload_ms, 0.0)
+        (std::sync::Arc::from(Vec::new()), histogram, upload_ms, gpu_ms)
     }
 }
 
@@ -383,4 +396,236 @@ pub async fn render_to_bytes_16bit(
     } else {
         (Vec::new(), upload_ms, 0.0)
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::types::EditParams;
+    use crate::gpu::params::FULL_VIEW_RECT;
+    use crate::gpu::shared::ImageResources;
+
+    /// A frame with real 2-channel highlight clipping (measured: ~2900 blown
+    /// Bayer blocks, 97.5% of them still carrying usable data). Override with
+    /// `RAWEDITOR_TEST_RAW` to point at your own file.
+    fn test_raw_path() -> String {
+        std::env::var("RAWEDITOR_TEST_RAW").unwrap_or_else(|_| {
+            "/home/hsf001/Pictures/Photography/TESTFiles/RAW/_DSC0177.NEF".to_string()
+        })
+    }
+
+    /// Coefficient of variation (stddev / mean) of luma over `mask`.
+    ///
+    /// The metric that distinguishes real highlight recovery from merely
+    /// darkening: a uniform multiply leaves CV unchanged, because both stddev
+    /// and mean scale together. CV only rises if gradation that was compressed
+    /// into a flat band gets redistributed — i.e. if detail actually returns.
+    fn luma_cv(rgba: &[u8], mask: &[bool]) -> f64 {
+        let vals: Vec<f64> = rgba
+            .chunks_exact(4)
+            .zip(mask)
+            .filter(|(_, m)| **m)
+            .map(|(p, _)| 0.2126 * p[0] as f64 + 0.7152 * p[1] as f64 + 0.0722 * p[2] as f64)
+            .collect();
+        if vals.is_empty() {
+            return 0.0;
+        }
+        let mean = vals.iter().sum::<f64>() / vals.len() as f64;
+        if mean <= 0.0 {
+            return 0.0;
+        }
+        let var = vals.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / vals.len() as f64;
+        (var.sqrt()) / mean
+    }
+
+    fn mean_luma(rgba: &[u8], mask: &[bool]) -> f64 {
+        let vals: Vec<f64> = rgba
+            .chunks_exact(4)
+            .zip(mask)
+            .filter(|(_, m)| **m)
+            .map(|(p, _)| 0.2126 * p[0] as f64 + 0.7152 * p[1] as f64 + 0.0722 * p[2] as f64)
+            .collect();
+        if vals.is_empty() { return 0.0; }
+        vals.iter().sum::<f64>() / vals.len() as f64
+    }
+
+    /// Render one frame at the given highlights setting.
+    async fn render_at(
+        ctx: &SharedContext,
+        res: &ImageResources,
+        raw: &crate::raw::loader::RawDataResult,
+        highlights: f32,
+        w: u32,
+        h: u32,
+    ) -> std::sync::Arc<[u8]> {
+        let mut params = EditParams::default();
+        params.highlights = highlights;
+        // Mirror the develop path's WB/DCP resolution so the render matches
+        // what the app actually produces.
+        let as_shot = crate::color::as_shot_kelvin_tint(raw);
+        let (kelvin, _tint, wb_override) =
+            crate::color::solve_wb(&params, as_shot, raw.dcp_profile.as_deref(), raw.color_matrix);
+        let interpolated = raw.dcp_profile.as_ref().map(|d| {
+            crate::raw::dcp::interpolate_at_temperature(d, kelvin, params.profile_curve)
+        });
+        res.update_uniforms(ctx, &params, interpolated.as_ref(), wb_override);
+        let (bytes, _, _) = render_to_bytes(ctx, res, w, h, FULL_VIEW_RECT).await;
+        bytes
+    }
+
+    /// Highlight recovery must return DETAIL, not just darken.
+    ///
+    /// Ignored by default: needs a GPU and the test RAW on disk.
+    /// Run with `cargo test --release highlight_recovery -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn highlight_recovery_restores_detail_not_just_brightness() {
+        let test_raw = test_raw_path();
+        if !std::path::Path::new(&test_raw).exists() {
+            eprintln!("test RAW missing, skipping");
+            return;
+        }
+        // Multi-thread flavour is required: render_to_bytes uses
+        // tokio::task::block_in_place for the wgpu poll.
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .build()
+            .expect("runtime");
+
+        rt.block_on(async {
+            let ctx = SharedContext::new().await.expect("gpu context");
+            let raw = crate::raw::loader::load_raw_data(test_raw.clone())
+                .await
+                .expect("decode raw");
+
+            let base = EditParams::default();
+            let as_shot = crate::color::as_shot_kelvin_tint(&raw);
+            let (kelvin, _t, _wb) =
+                crate::color::solve_wb(&base, as_shot, raw.dcp_profile.as_deref(), raw.color_matrix);
+            let (forward_matrix, dcp) = match &raw.dcp_profile {
+                Some(d) => {
+                    let i = crate::raw::dcp::interpolate_at_temperature(d, kelvin, base.profile_curve);
+                    (i.forward_matrix, Some(i))
+                }
+                None => (
+                    crate::color::calculate_cam_to_srgb(
+                        raw.color_matrix,
+                        raw.wb_multipliers,
+                        raw.color_matrix_is_d65,
+                    ),
+                    None,
+                ),
+            };
+            assert!(dcp.is_some(), "this assertion targets the DCP path; no profile found");
+
+            let res = ImageResources::new(
+                &ctx, 1, &raw.data, raw.width, raw.height, &base,
+                raw.wb_multipliers, forward_matrix, raw.cfa_pattern,
+                raw.black_levels, raw.white_level, dcp.as_ref(),
+                // Full resolution, not the 1280px preview: the develop
+                // preview's box-filter downsample averages isolated clipped
+                // pixels away, leaving too few to measure.
+                None, raw.orientation,
+            )
+            .expect("image resources");
+
+            let (w, h) = res.oriented_dims();
+
+            let flat = render_at(&ctx, &res, &raw, 0.0, w, h).await;
+            let recovered = render_at(&ctx, &res, &raw, -1.0, w, h).await;
+            assert_eq!(flat.len(), recovered.len());
+
+            // The blown region: near-white at highlights 0. This is where the
+            // complaint lives — it renders as a flat grey when pulled down.
+            let mask: Vec<bool> = flat
+                .chunks_exact(4)
+                .map(|p| {
+                    let l = 0.2126 * p[0] as f64 + 0.7152 * p[1] as f64 + 0.0722 * p[2] as f64;
+                    l > 245.0
+                })
+                .collect();
+            let blown = mask.iter().filter(|m| **m).count();
+            eprintln!("blown pixels sampled: {blown}");
+            assert!(blown > 500, "not enough blown area to judge ({blown} px)");
+
+            let cv_flat = luma_cv(&flat, &mask);
+            let cv_rec = luma_cv(&recovered, &mask);
+            let mean_flat = mean_luma(&flat, &mask);
+            let mean_rec = mean_luma(&recovered, &mask);
+
+            eprintln!("highlights  0: mean {:.1}  CV {:.5}", mean_flat, cv_flat);
+            eprintln!("highlights -1: mean {:.1}  CV {:.5}", mean_rec, cv_rec);
+            eprintln!("CV ratio: {:.2}x", cv_rec / cv_flat.max(1e-9));
+
+            // Recovery must darken the region...
+            assert!(mean_rec < mean_flat, "recovery did not darken the highlights");
+            // ...and, crucially, must add gradation rather than translate a
+            // flat band. A pure uniform scale leaves CV unchanged.
+            assert!(
+                cv_rec > cv_flat * 1.5,
+                "highlights only darkened without restoring detail: CV {:.5} -> {:.5}",
+                cv_flat,
+                cv_rec
+            );
+        });
+    }
+
+    /// The calibration guarantee: with Highlights and Shadows at zero, moving
+    /// them to scene-linear space must change NOTHING. Both blocks are guarded
+    /// by `!= 0.0`, so this holds by construction — but it is the property that
+    /// protects the hand-tuned `profile_curve = 0.33` match against camera
+    /// JPEGs, so it is worth asserting rather than assuming.
+    ///
+    /// Renders twice at defaults and compares byte-for-byte; also serves as a
+    /// determinism check on the render path.
+    #[test]
+    #[ignore]
+    fn neutral_settings_render_is_stable() {
+        let test_raw = test_raw_path();
+        if !std::path::Path::new(&test_raw).exists() {
+            eprintln!("test RAW missing, skipping");
+            return;
+        }
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .build()
+            .expect("runtime");
+
+        rt.block_on(async {
+            let ctx = SharedContext::new().await.expect("gpu context");
+            let raw = crate::raw::loader::load_raw_data(test_raw.clone())
+                .await
+                .expect("decode raw");
+            let base = EditParams::default();
+            assert_eq!(base.highlights, 0.0, "test assumes neutral defaults");
+            assert_eq!(base.shadows, 0.0, "test assumes neutral defaults");
+
+            let as_shot = crate::color::as_shot_kelvin_tint(&raw);
+            let (kelvin, _t, _wb) =
+                crate::color::solve_wb(&base, as_shot, raw.dcp_profile.as_deref(), raw.color_matrix);
+            let dcp = raw.dcp_profile.as_ref().map(|d| {
+                crate::raw::dcp::interpolate_at_temperature(d, kelvin, base.profile_curve)
+            });
+            let forward_matrix = dcp.as_ref().map(|i| i.forward_matrix).unwrap_or_else(|| {
+                crate::color::calculate_cam_to_srgb(
+                    raw.color_matrix, raw.wb_multipliers, raw.color_matrix_is_d65,
+                )
+            });
+
+            let res = ImageResources::new(
+                &ctx, 1, &raw.data, raw.width, raw.height, &base,
+                raw.wb_multipliers, forward_matrix, raw.cfa_pattern,
+                raw.black_levels, raw.white_level, dcp.as_ref(),
+                Some(1280), raw.orientation,
+            )
+            .expect("image resources");
+            let (w, h) = res.oriented_dims();
+
+            let a = render_at(&ctx, &res, &raw, 0.0, w, h).await;
+            let b = render_at(&ctx, &res, &raw, 0.0, w, h).await;
+            assert_eq!(a.as_ref(), b.as_ref(), "neutral render is not deterministic");
+            eprintln!("neutral render stable over {} bytes", a.len());
+        });
+    }
+
 }

@@ -60,6 +60,14 @@ pub fn view_develop(editor: &RawEditor) -> Element<'_, Message> {
             container(crate::ui::widgets::profiler_graph::view_profiler_overlay(
                 &editor.profiler,
                 &editor.profiler_cache,
+                crate::ui::widgets::profiler_graph::RenderStats {
+                    zoom_percent: editor.zoom_percent(),
+                    target: editor.rendered_preview_dims,
+                    view_extent: (
+                        editor.rendered_view_rect[2],
+                        editor.rendered_view_rect[3],
+                    ),
+                },
             ))
             .width(Length::Fill)
             .height(Length::Fill)
@@ -543,11 +551,19 @@ fn view_main_content<'a>(
         use iced::widget::shader::Shader;
         use iced::widget::canvas::Canvas;
 
-        // Helper closure to pick the right pixel source.
-        // Priority: GPU-rendered bytes > working preview bytes.
-        let active_bytes = editor.rendered_preview_bytes.clone()
-            .or_else(|| editor.working_preview_bytes.clone());
-        
+        // Pick the pixel source AND the window that describes it together —
+        // they must never come from different renders. The working preview is
+        // a whole-image JPEG, so it is always FULL_VIEW_RECT; only the GPU
+        // render produces a windowed buffer.
+        let (active_bytes, active_view_rect) = match editor.rendered_preview_bytes.clone() {
+            Some(b) => (Some(b), editor.rendered_view_rect),
+            None => (
+                editor.working_preview_bytes.clone(),
+                crate::gpu::params::FULL_VIEW_RECT,
+            ),
+        };
+
+
         // Two DIFFERENT dims are needed here and conflating them is the classic
         // bug in this file:
         //   buffer_dims  — size of the pixel buffer, i.e. the render target.
@@ -568,7 +584,7 @@ fn view_main_content<'a>(
                     buffer_height: buf_h,
                     image_width: img_w,
                     image_height: img_h,
-                    view_rect: editor.rendered_view_rect,
+                    view_rect: active_view_rect,
                     zoom: editor.zoom,
                     offset: editor.pan_offset,
                     generation: editor.preview_generation,
@@ -619,6 +635,12 @@ fn view_main_content<'a>(
         crate::app::state::InfoOverlayState::Metadata
         | crate::app::state::InfoOverlayState::CacheDebug => container(
             column![
+                // 100% = one sensor pixel per screen pixel, not "fitted".
+                text(format!("Zoom {:.0}%", editor.zoom_percent()))
+                    .size(12)
+                    .style(|_| text::Style {
+                        color: Some(Color::from_rgb(0.98, 0.45, 0.09))
+                    }),
                 text(format!(
                     "{} {}",
                     editor

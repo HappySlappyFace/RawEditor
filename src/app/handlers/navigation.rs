@@ -234,13 +234,15 @@ fn needs_render_for_view(editor: &RawEditor) -> bool {
     let needed = crate::core::viewport::visible_view_rect(
         dw, dh, vw, vh, editor.zoom, editor.pan_offset, 1.0,
     );
-    !crate::core::viewport::view_rect_contains(editor.rendered_view_rect, needed)
+    // Against the REQUESTED window: if a render covering this area is already
+    // on its way, asking for another one would just churn.
+    !crate::core::viewport::view_rect_contains(editor.requested_view_rect, needed)
 }
 
 /// Start a render unless one is already in flight, in which case mark a
 /// follow-up. At most one running plus one pending — without this, a stream of
 /// scroll or drag events spawns a GPU task each, piling up readback buffers.
-fn throttled_render(editor: &mut RawEditor) -> Task<Message> {
+pub fn throttled_render(editor: &mut RawEditor) -> Task<Message> {
     if editor.is_rendering {
         editor.pending_render = true;
         Task::none()
@@ -255,7 +257,10 @@ pub fn handle_reset_view(editor: &mut RawEditor) -> Task<Message> {
     editor.zoom = 1.0;
     editor.pan_offset = cgmath::Vector2::new(0.0, 0.0);
     editor.canvas_cache.clear();
-    Task::none()
+    // Must re-render: the buffer holds whatever window the previous zoom
+    // needed, so without this the viewport would draw that small slice
+    // correctly positioned inside the now fit-sized image — the rest blank.
+    throttled_render(editor)
 }
 
 pub fn handle_mouse_pressed(editor: &mut RawEditor) -> Task<Message> {

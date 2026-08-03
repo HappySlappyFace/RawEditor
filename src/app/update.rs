@@ -170,8 +170,8 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
             editor.show_profiler = !editor.show_profiler;
             Task::none()
         }
-        Message::RenderFinished(bytes, dims, d, u, r, cpu) => {
-            handlers::develop::handle_render_finished(editor, bytes, dims, d, u, r, cpu)
+        Message::RenderFinished(bytes, dims, view_rect, d, u, r, cpu) => {
+            handlers::develop::handle_render_finished(editor, bytes, dims, view_rect, d, u, r, cpu)
         }
         Message::RenderFailed => {
             // GPU render task failed (shader error, device lost, etc.).
@@ -187,12 +187,16 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
         }
         Message::ViewportResized(w, h, s) => {
             let old_s = editor.scale_factor;
+            let (old_w, old_h) = editor.viewport_size;
             editor.viewport_size = (w, h);
             editor.scale_factor = s;
-            
-            // If scale factor changed, we definitely need to re-render the preview at new resolution
-            if (s - old_s).abs() > 0.001 {
-                handlers::develop::trigger_async_render(editor)
+
+            // Re-render on a scale-factor change (different resolution needed)
+            // and on a size change (different visible window, and at zoom the
+            // buffer only covers the window the old size implied).
+            let resized = (w - old_w).abs() > 0.5 || (h - old_h).abs() > 0.5;
+            if (s - old_s).abs() > 0.001 || resized {
+                handlers::navigation::throttled_render(editor)
             } else {
                 Task::none()
             }
