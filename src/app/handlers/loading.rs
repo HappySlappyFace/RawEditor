@@ -99,7 +99,7 @@ pub fn prepare_image_resources_from_raw(
 
             let (forward_matrix, interpolated_dcp) = if let Some(dcp) = &raw.dcp_profile {
                 let interpolated = crate::raw::dcp::interpolate_at_temperature(dcp, kelvin, params.profile_curve);
-                (interpolated.forward_matrix, Some(interpolated))
+                (interpolated.camera_to_prophoto, Some(interpolated))
             } else {
                 let xyz_to_cam = raw.color_matrix;
                 let cam_to_srgb = crate::color::calculate_cam_to_srgb(xyz_to_cam, raw.wb_multipliers, raw.color_matrix_is_d65);
@@ -210,7 +210,7 @@ pub fn trigger_full_res_upgrade(editor: &mut RawEditor) -> Task<Message> {
 
             let (forward_matrix, interpolated_dcp) = if let Some(dcp) = &raw.dcp_profile {
                 let interpolated = crate::raw::dcp::interpolate_at_temperature(dcp, kelvin, params.profile_curve);
-                (interpolated.forward_matrix, Some(interpolated))
+                (interpolated.camera_to_prophoto, Some(interpolated))
             } else {
                 let xyz_to_cam = raw.color_matrix;
                 let cam_to_srgb = crate::color::calculate_cam_to_srgb(xyz_to_cam, raw.wb_multipliers, raw.color_matrix_is_d65);

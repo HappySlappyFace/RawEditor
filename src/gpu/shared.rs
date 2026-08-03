@@ -887,7 +887,7 @@ impl ImageResources {
 
         if let Some(dcp) = dcp_profile {
             if let Ok(mut matrix) = self.forward_matrix.write() {
-                *matrix = dcp.forward_matrix;
+                *matrix = dcp.camera_to_prophoto;
             }
 
             if needs_lut_upload {

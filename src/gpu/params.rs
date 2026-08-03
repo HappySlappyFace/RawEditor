@@ -49,6 +49,14 @@ pub struct GpuEditParams {
     padding1: f32,
     padding2: f32,
     pub wb_multipliers: [f32; 4],
+    /// Camera RGB → working space, one row per field (the shader rebuilds it
+    /// with `transpose(mat3x3(...))`, so these are ROWS, not columns).
+    ///
+    /// Polymorphic by design — the destination space depends on `has_dcp`:
+    ///   • `has_dcp == 1` → camera → **ProPhoto** (the DCP ForwardMatrix with
+    ///     XYZ D50 → ProPhoto already folded in; see `raw::dcp`)
+    ///   • `has_dcp == 0` → camera → **linear sRGB** (`calculate_cam_to_srgb`)
+    /// Both paths therefore cost exactly one matrix multiply per pixel.
     pub forward_matrix_0: [f32; 3],
     _padding3: f32,
     pub forward_matrix_1: [f32; 3],

@@ -505,7 +505,7 @@ mod tests {
             let (forward_matrix, dcp) = match &raw.dcp_profile {
                 Some(d) => {
                     let i = crate::raw::dcp::interpolate_at_temperature(d, kelvin, base.profile_curve);
-                    (i.forward_matrix, Some(i))
+                    (i.camera_to_prophoto, Some(i))
                 }
                 None => (
                     crate::color::calculate_cam_to_srgb(
@@ -606,7 +606,7 @@ mod tests {
             let dcp = raw.dcp_profile.as_ref().map(|d| {
                 crate::raw::dcp::interpolate_at_temperature(d, kelvin, base.profile_curve)
             });
-            let forward_matrix = dcp.as_ref().map(|i| i.forward_matrix).unwrap_or_else(|| {
+            let forward_matrix = dcp.as_ref().map(|i| i.camera_to_prophoto).unwrap_or_else(|| {
                 crate::color::calculate_cam_to_srgb(
                     raw.color_matrix, raw.wb_multipliers, raw.color_matrix_is_d65,
                 )
@@ -628,4 +628,63 @@ mod tests {
         });
     }
 
+
+    /// General-purpose "did I change the render?" harness.
+    ///
+    /// Capture a baseline BEFORE a refactor, then compare after:
+    /// ```text
+    /// BASELINE=write cargo test --release render_matches_baseline -- --ignored
+    /// # ...make the change...
+    /// cargo test --release render_matches_baseline -- --ignored --nocapture
+    /// ```
+    /// Asserts ≤1 LSB per channel — not bit-exactness, because reassociating
+    /// float work legitimately shifts the last bit. Anything larger is a real
+    /// difference. Used to prove the camera→ProPhoto matrix fold was a pure
+    /// optimisation (result: max delta 1, 70 of 10.7M channels affected).
+    #[test]
+    #[ignore]
+    fn render_matches_baseline() {
+        let test_raw = test_raw_path();
+        if !std::path::Path::new(&test_raw).exists() { return; }
+        let dump = std::env::var("BASELINE_PATH")
+            .unwrap_or_else(|_| "/tmp/claude-1000/-home-hsf001-Documents-Projects-RawEditor/028f8b11-7603-4252-bf13-d33b9672250b/scratchpad/baseline.bin".to_string());
+        let writing = std::env::var("BASELINE").as_deref() == Ok("write");
+
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).build().unwrap();
+        rt.block_on(async {
+            let ctx = SharedContext::new().await.unwrap();
+            let raw = crate::raw::loader::load_raw_data(test_raw.clone()).await.unwrap();
+            let base = EditParams::default();
+            let as_shot = crate::color::as_shot_kelvin_tint(&raw);
+            let (kelvin, _t, _wb) = crate::color::solve_wb(&base, as_shot, raw.dcp_profile.as_deref(), raw.color_matrix);
+            let dcp = raw.dcp_profile.as_ref().map(|d| crate::raw::dcp::interpolate_at_temperature(d, kelvin, base.profile_curve));
+            assert!(dcp.is_some(), "needs the DCP path");
+            let fm = dcp.as_ref().map(|i| i.camera_to_prophoto).unwrap();
+            let res = ImageResources::new(&ctx, 1, &raw.data, raw.width, raw.height, &base,
+                raw.wb_multipliers, fm, raw.cfa_pattern, raw.black_levels, raw.white_level,
+                dcp.as_ref(), Some(1280), raw.orientation).unwrap();
+            let (w, h) = res.oriented_dims();
+            let bytes = render_at(&ctx, &res, &raw, 0.0, w, h).await;
+
+            if writing {
+                std::fs::write(&dump, bytes.as_ref()).unwrap();
+                eprintln!("BASELINE written: {} bytes -> {dump}", bytes.len());
+                return;
+            }
+            let Ok(old) = std::fs::read(&dump) else {
+                eprintln!("no baseline at {dump}; run with BASELINE=write first — skipping");
+                return;
+            };
+            assert_eq!(old.len(), bytes.len(), "render size changed");
+            let mut max_delta = 0i32;
+            let mut n_diff = 0usize;
+            for (a, b) in old.iter().zip(bytes.iter()) {
+                let d = (*a as i32 - *b as i32).abs();
+                if d > 0 { n_diff += 1; }
+                if d > max_delta { max_delta = d; }
+            }
+            eprintln!("EQUIV max per-channel delta = {max_delta}  ({n_diff} of {} channels differ)", old.len());
+            assert!(max_delta <= 1, "matrix fold changed the render by {max_delta} LSB — likely a transposition");
+        });
+    }
 }

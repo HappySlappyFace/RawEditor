@@ -108,11 +108,14 @@ struct EditParams {
     padding2: f32,
     // Phase 14: Color science metadata
     wb_multipliers: vec4<f32>,  // White balance [R, G, B, G2]
-    forward_matrix_0: vec3<f32>,  // Forward matrix row 0
+    // Camera RGB → working space, ROWS (rebuilt via transpose() below).
+    // has_dcp == 1 → camera → ProPhoto (XYZ D50 step folded in on the CPU)
+    // has_dcp == 0 → camera → linear sRGB
+    forward_matrix_0: vec3<f32>,  // row 0
     padding3: f32,
-    forward_matrix_1: vec3<f32>,  // Forward matrix row 1
+    forward_matrix_1: vec3<f32>,  // row 1
     padding4: f32,
-    forward_matrix_2: vec3<f32>,  // Forward matrix row 2
+    forward_matrix_2: vec3<f32>,  // row 2
     padding5: f32,
     // Phase 25: Zoom & Pan
     zoom: f32,
@@ -628,18 +631,15 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     ));
 
     if (params.has_dcp == 1u) {
-        // 1. Camera RGB → XYZ D50 via ForwardMatrix
-        var xyz = matrix_from_params * color;
-
-        // 2. XYZ D50 → ProPhoto RGB (ProPhoto uses D50, no Bradford needed)
-        let xyz_to_prophoto = mat3x3<f32>(
-            1.3459433, -0.5445989,  0.0000000,
-        -0.2556075,  1.5081673,  0.0000000,
-        -0.0511118,  0.0205351,  1.2118128
-        );
+        // 1. Camera RGB → ProPhoto RGB, in one multiply.
+        // The DCP's ForwardMatrix is camera → XYZ D50, and XYZ D50 → ProPhoto is
+        // a fixed matrix; both are constant across the frame, so their product
+        // is composed once on the CPU (raw/dcp.rs::interpolate_at_temperature)
+        // instead of traversing XYZ per pixel.
+        //
         // No pre-clamp here — negative ProPhoto values (wide-gamut colors) must reach
         // the HueSatMap with correct hue/saturation. We clamp after reconstruction.
-        var pp = xyz_to_prophoto * xyz;
+        var pp = matrix_from_params * color;
 
         // ── Highlights & Shadows (SCENE-LINEAR, before the shoulder) ────────
         // Deliberately here and not at Step 10. Everything below — the knee,

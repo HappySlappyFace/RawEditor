@@ -176,7 +176,17 @@ pub struct DcpProfile {
 
 #[derive(Debug, Clone)]
 pub struct InterpolatedProfile {
-    pub forward_matrix: [f32; 9],
+    /// Camera RGB → **ProPhoto** RGB, row-major.
+    ///
+    /// The DCP's ForwardMatrix is camera → XYZ D50; the XYZ → ProPhoto step is
+    /// folded in here rather than done per pixel on the GPU. XYZ is unavoidable
+    /// in the derivation (that is how the DCP defines its matrix, and ProPhoto's
+    /// primaries are specified in XYZ) but it does not belong in the hot path —
+    /// both matrices are constant across a frame, so their product is too.
+    ///
+    /// Recomputed only when the DCP is re-interpolated, which
+    /// `RawEditor::dcp_memo` already gates on `(kelvin, profile_curve)`.
+    pub camera_to_prophoto: [f32; 9],
     pub hue_sat_lut: Vec<[f32; 3]>,
     pub tone_curve: Vec<f32>,
     pub hue_sat_dims: (u32, u32, u32),
@@ -322,6 +332,11 @@ pub fn interpolate_at_temperature(
         forward_matrix[i] = (fm1[i] * (1.0 - weight) + fm2[i] * weight) * baseline_gain;
     }
 
+    // Fold XYZ D50 → ProPhoto in here so the shader multiplies by ONE matrix.
+    // Order matters: the camera matrix is applied to the pixel first, so it is
+    // the right-hand operand.
+    let camera_to_prophoto = crate::color::mat3_mul(&crate::color::XYZ_D50_TO_PROPHOTO, &forward_matrix);
+
     let num_elements = (profile.hue_sat_dims.0 * profile.hue_sat_dims.1 * profile.hue_sat_dims.2) as usize;
     let hue_sat_lut = if num_elements > 0 {
         match (&profile.hue_sat_data_1, &profile.hue_sat_data_2) {
@@ -347,7 +362,7 @@ pub fn interpolate_at_temperature(
         .unwrap_or_else(|| (0..1024).map(|i| i as f32 / 1023.0).collect());
 
     InterpolatedProfile {
-        forward_matrix,
+        camera_to_prophoto,
         hue_sat_lut,
         tone_curve: baked_curve,
         hue_sat_dims: profile.hue_sat_dims,

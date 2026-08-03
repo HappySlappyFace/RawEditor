@@ -162,7 +162,7 @@ pub fn handle_export_raw_loaded(
             let (forward_matrix, interpolated_dcp) = if let Some(dcp) = &raw_data.dcp_profile {
                 let interpolated =
                     crate::raw::dcp::interpolate_at_temperature(dcp, kelvin, params.profile_curve);
-                (interpolated.forward_matrix, Some(interpolated))
+                (interpolated.camera_to_prophoto, Some(interpolated))
             } else {
                 let xyz_to_cam = raw_data.color_matrix;
                 let cam_to_srgb = crate::color::calculate_cam_to_srgb(

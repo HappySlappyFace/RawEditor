@@ -6,6 +6,53 @@
 /// - sRGB (standard display color space)
 use cgmath::{Matrix3, SquareMatrix};
 
+/// XYZ D50 → ProPhoto RGB (ROMM), **row-major**.
+///
+/// ProPhoto is itself a D50 space, so this is a pure change of primaries with
+/// no chromatic adaptation.
+///
+/// Row-major to match the convention every `[f32; 9]` matrix in this codebase
+/// uses — the shader rebuilds them with `transpose(mat3x3(row0, row1, row2))`.
+/// The same numbers appear column-major inside WGSL literals, because
+/// `mat3x3<f32>(a, b, c)` takes columns; do not copy them between the two
+/// without transposing.
+pub const XYZ_D50_TO_PROPHOTO: [f32; 9] = [
+    1.3459433, -0.2556075, -0.0511118,
+    -0.5445989, 1.5081673, 0.0205351,
+    0.0000000, 0.0000000, 1.2118128,
+];
+
+/// Row-major 3×3 matrix product, `a × b`.
+///
+/// Accumulates in f64 and narrows once at the end: the result is folded into a
+/// matrix the GPU then applies per pixel, so it is worth being at least as
+/// accurate as the two sequential f32 multiplies it replaces.
+///
+/// Deliberately not `cgmath::Matrix3`, which is column-major — mixing the two
+/// conventions is the one mistake a fold like this is likely to make.
+pub fn mat3_mul(a: &[f32; 9], b: &[f32; 9]) -> [f32; 9] {
+    let mut out = [0.0f32; 9];
+    for row in 0..3 {
+        for col in 0..3 {
+            let mut acc = 0.0f64;
+            for k in 0..3 {
+                acc += a[row * 3 + k] as f64 * b[k * 3 + col] as f64;
+            }
+            out[row * 3 + col] = acc as f32;
+        }
+    }
+    out
+}
+
+/// Apply a row-major 3×3 to a colour triple. Test/utility helper.
+pub fn mat3_apply(m: &[f32; 9], v: [f32; 3]) -> [f32; 3] {
+    [
+        m[0] * v[0] + m[1] * v[1] + m[2] * v[2],
+        m[3] * v[0] + m[4] * v[1] + m[5] * v[2],
+        m[6] * v[0] + m[7] * v[1] + m[8] * v[2],
+    ]
+}
+
 /// Calculate the camera-to-sRGB colour conversion matrix.
 ///
 /// The WGSL shader pre-multiplies each camera pixel by the WB multipliers before
@@ -628,5 +675,64 @@ mod tests {
 
         // Result should not be all zeros
         assert!(result.iter().any(|&x| x != 0.0));
+    }
+
+
+    // ── Matrix helpers ───────────────────────────────────────────────────────
+
+    const IDENTITY: [f32; 9] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+
+    #[test]
+    fn mat3_mul_identity_is_a_no_op() {
+        let m = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
+        assert_eq!(mat3_mul(&IDENTITY, &m), m);
+        assert_eq!(mat3_mul(&m, &IDENTITY), m);
+    }
+
+    #[test]
+    fn mat3_mul_matches_a_hand_computed_product() {
+        // [1 2 0]   [0 1 0]   [2 1 0]
+        // [0 1 0] x [1 0 0] = [1 0 0]
+        // [0 0 1]   [0 0 1]   [0 0 1]
+        let a = [1.0, 2.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        let b = [0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+        assert_eq!(
+            mat3_mul(&a, &b),
+            [2.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+        );
+    }
+
+    #[test]
+    fn mat3_mul_is_not_commutative() {
+        // Guards against an accidentally symmetric test fixture hiding an
+        // argument-order bug in the fold.
+        let a = [1.0, 2.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        let b = [0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+        assert_ne!(mat3_mul(&a, &b), mat3_mul(&b, &a));
+    }
+
+    /// The transposition canary: XYZ D50 → ProPhoto must map the D50 white
+    /// point to neutral (1, 1, 1). A transposed constant fails here loudly,
+    /// whereas a render comparison would only show it as a colour shift.
+    #[test]
+    fn xyz_d50_to_prophoto_maps_white_point_to_neutral() {
+        let d50_white = [0.96422, 1.0, 0.82521];
+        let rgb = mat3_apply(&XYZ_D50_TO_PROPHOTO, d50_white);
+        for (i, c) in rgb.iter().enumerate() {
+            assert!(
+                (c - 1.0).abs() < 2e-3,
+                "channel {i} = {c}, expected ~1.0 — constant may be transposed"
+            );
+        }
+    }
+
+    #[test]
+    fn xyz_d50_to_prophoto_keeps_blue_out_of_the_luminance_row() {
+        // ProPhoto's Y row is (0.2880, 0.7119, 0.0001) in the INVERSE
+        // direction; here the giveaway for a transpose is the zero pair in the
+        // last ROW, which a column-major copy would put in the last column.
+        assert_eq!(XYZ_D50_TO_PROPHOTO[6], 0.0);
+        assert_eq!(XYZ_D50_TO_PROPHOTO[7], 0.0);
+        assert_ne!(XYZ_D50_TO_PROPHOTO[2], 0.0);
     }
 }
