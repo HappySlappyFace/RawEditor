@@ -113,16 +113,19 @@ pub fn view_rect_contains(outer: [f32; 4], inner: [f32; 4]) -> bool {
 /// spanned by one unit of full-image `u`, divided by the vertical pixels
 /// spanned by one unit of `v`.
 ///
-/// Mask geometry lives in full-image UV, but what's *displayed* is the crop
-/// sub-rect stretched across the whole render target (the vertex shader remaps
-/// tex coords through `params.crop`, and the target is always the full-image
-/// aspect). So a crop whose aspect differs from the frame's rescales the two
-/// axes unequally, and a rotated ellipse renders sheared — and at a visibly
-/// different angle from the canvas overlay — unless that term is included.
-/// At `crop = [0, 0, 1, 1]` this reduces to the plain display aspect.
-pub fn mask_uv_aspect(image_w: u32, image_h: u32, crop: [f32; 4]) -> f32 {
-    let display_aspect = image_w as f32 / image_h.max(1) as f32;
-    display_aspect * (crop[3].max(1e-6) / crop[2].max(1e-6))
+/// `image_w`/`image_h` are the ON-SCREEN (crop-aware) dims from
+/// `RawEditor::image_display_dims`, NOT the full frame's. Mask geometry lives
+/// in full-image UV while only the crop sub-rect is displayed, so the crop
+/// term converts between the two: one unit of `u` spans `image_w / crop.w`
+/// pixels and one unit of `v` spans `image_h / crop.h`.
+///
+/// Given crop-aware inputs this reduces to the FULL frame's display aspect —
+/// which is what the shader computes directly from the sensor dimensions, and
+/// the two must agree. Feeding it the full frame's dims instead silently
+/// yields a different number and shears rotated ellipses.
+pub fn mask_uv_aspect(display_w: u32, display_h: u32, crop: [f32; 4]) -> f32 {
+    let on_screen_aspect = display_w as f32 / display_h.max(1) as f32;
+    on_screen_aspect * (crop[3].max(1e-6) / crop[2].max(1e-6))
 }
 
 /// Normalize an angle in degrees into [-180, 180).
@@ -242,21 +245,41 @@ mod tests {
         assert!((a - 1.5).abs() < 1e-4);
     }
 
+    /// The property that keeps the CPU overlay and the shader in agreement:
+    /// fed crop-aware display dims, this must land on the FULL frame's aspect
+    /// for ANY crop — which is what the shader derives from the sensor dims
+    /// with no crop term at all.
     #[test]
-    fn mask_uv_aspect_accounts_for_non_matching_crop() {
-        // 16:9 crop out of a 3:2 frame: full width, 0.844 of the height.
-        let a = mask_uv_aspect(3000, 2000, [0.0, 0.078, 1.0, 0.84375]);
-        // 1.5 * 0.84375 / 1.0
-        assert!((a - 1.265_625).abs() < 1e-4);
+    fn mask_uv_aspect_with_cropped_dims_recovers_the_full_frame_aspect() {
+        let (full_w, full_h) = (3000.0f32, 2000.0f32);
+        for crop in [
+            [0.0, 0.078, 1.0, 0.84375], // 16:9 out of 3:2
+            [0.0, 0.0, 0.5, 1.0],       // half width
+            [0.1, 0.1, 0.4, 0.8],       // tall sliver
+            [0.0, 0.0, 1.0, 1.0],       // uncropped
+        ] {
+            // What image_display_dims now reports.
+            let dw = (full_w * crop[2]).round() as u32;
+            let dh = (full_h * crop[3]).round() as u32;
+            let a = mask_uv_aspect(dw, dh, crop);
+            assert!(
+                (a - full_w / full_h).abs() < 2e-3,
+                "crop {crop:?} gave {a}, expected the full frame's 1.5"
+            );
+        }
     }
 
+    /// Guards the caller convention: passing the FULL frame's dims (the old
+    /// behaviour) now produces a different, wrong number, and would shear
+    /// rotated ellipses under a non-matching crop.
     #[test]
-    fn mask_uv_aspect_narrow_crop_stretches_u() {
-        // Half-width crop of a 3:2 frame: the 1500px-wide region is stretched
-        // back over the full-width target, doubling the pixels per unit u
-        // while v is untouched.
-        let a = mask_uv_aspect(3000, 2000, [0.0, 0.0, 0.5, 1.0]);
-        assert!((a - 3.0).abs() < 1e-4);
+    fn mask_uv_aspect_rejects_full_frame_dims_by_disagreeing() {
+        let crop = [0.0, 0.0, 0.5, 1.0];
+        let with_full = mask_uv_aspect(3000, 2000, crop);
+        let with_cropped = mask_uv_aspect(1500, 2000, crop);
+        assert!((with_cropped - 1.5).abs() < 1e-4);
+        assert!((with_full - 3.0).abs() < 1e-4);
+        assert!((with_full - with_cropped).abs() > 1.0);
     }
 
     #[test]

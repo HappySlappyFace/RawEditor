@@ -922,19 +922,20 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // the display (post-orientation) aspect — mirroring the straightening-
     // rotation block's orientation swap above, reusing the `dimensions`
     // variable already computed for Step 1.
+    // This is the FULL frame's display aspect, with no crop term, and that is
+    // correct for both crop mode and normal viewing. The render target is now
+    // sized to the CROPPED aspect (see RawEditor::image_display_dims), so the
+    // crop sub-rect is scaled UNIFORMLY onto it: one unit of u spans
+    // target_w/crop.z pixels and one unit of v spans target_h/crop.w, and
+    // those two ratios reduce to exactly the full frame's aspect.
+    //
+    // A crop term used to live here to cancel the non-uniform stretch the
+    // old full-aspect target produced. Re-adding one would double-apply the
+    // crop and shear rotated ellipses. Keep in sync with
+    // core::viewport::mask_uv_aspect, the CPU side of this.
     var mask_aspect = f32(dimensions.x) / f32(dimensions.y);
     if (params.orientation == 6u || params.orientation == 8u) {
         mask_aspect = 1.0 / mask_aspect;
-    }
-    // When not in crop mode the vertex shader stretches the crop sub-rect
-    // across the whole (full-image-aspect) target, so one unit of u spans
-    // target_w/crop.z pixels while one unit of v spans target_h/crop.w. Under
-    // a crop whose aspect differs from the frame's, omitting this term renders
-    // rotated ellipses sheared and at a different angle than the canvas
-    // overlay — which uses genuine screen-space radii. Keep in sync with
-    // core::viewport::mask_uv_aspect, which is the CPU side of this.
-    if (params.is_cropping == 0u) {
-        mask_aspect = mask_aspect * (max(params.crop.w, 1e-6) / max(params.crop.z, 1e-6));
     }
     for (var mi = 0u; mi < min(params.mask_count, 8u); mi = mi + 1u) {
         let m = params.masks[mi];

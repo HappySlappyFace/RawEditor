@@ -612,7 +612,7 @@ impl RawEditor {
         }
     }
 
-    /// Display-space (EXIF-oriented) dimensions of the whole image.
+    /// Display-space (EXIF-oriented) dimensions of what is actually ON SCREEN.
     ///
     /// The single dims source for all on-screen geometry: letterbox fit,
     /// zoom-to-cursor, crop and mask drag math, and the canvas overlay. Only
@@ -621,14 +621,32 @@ impl RawEditor {
     /// different resolution is on screen — and why it must not come from the
     /// render buffer, whose aspect now tracks the viewport rather than the
     /// image.
+    ///
+    /// **Crop-aware.** Outside crop mode the viewport shows the crop sub-rect,
+    /// so these are the CROPPED dimensions. Returning the full frame's here
+    /// made the letterbox reserve the uncropped aspect and the shader stretch
+    /// the crop to fill it — a 16:9 crop of a 3:2 frame rendered vertically
+    /// squashed. (Export was unaffected: it renders the crop to its own
+    /// correctly-sized target.) In crop mode the shader deliberately reveals
+    /// the whole sensor so the handles can be dragged over it, so the full
+    /// frame genuinely is what's displayed and the crop must NOT be applied.
     pub fn image_display_dims(&self) -> (u32, u32) {
-        if let Some(res) = &self.image_resources {
-            return res.oriented_dims();
+        let (w, h) = if let Some(res) = &self.image_resources {
+            res.oriented_dims()
+        } else if self.working_preview_bytes.is_some() {
+            self.working_preview_dims
+        } else {
+            (1280, 853)
+        };
+
+        if self.is_cropping {
+            return (w, h);
         }
-        if self.working_preview_bytes.is_some() {
-            return self.working_preview_dims;
-        }
-        (1280, 853)
+        let crop = self.current_edit_params.crop;
+        (
+            ((w as f32 * crop[2]).round() as u32).max(1),
+            ((h as f32 * crop[3]).round() as u32).max(1),
+        )
     }
 
     /// Magnification as a photographer reads it: 100% means one full-resolution
@@ -649,7 +667,14 @@ impl RawEditor {
             .map(|r| r.oriented_original_dims().0)
             .unwrap_or(dw)
             .max(1) as f32;
-        fw * self.zoom * self.scale_factor / full_w * 100.0
+        // `fw` spans the CROPPED region (image_display_dims is crop-aware), so
+        // the sensor pixels it covers are only that fraction of the full width.
+        let visible_w = if self.is_cropping {
+            full_w
+        } else {
+            (full_w * self.current_edit_params.crop[2]).max(1.0)
+        };
+        fw * self.zoom * self.scale_factor / visible_w * 100.0
     }
 
     // Phase 67: Calculate image screen bounds for interaction
@@ -990,5 +1015,74 @@ impl RawEditor {
             subs.push(iced::window::frames().map(Message::KineticTick));
         }
         iced::Subscription::batch(subs)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// No GPU or image needed: with no resources loaded `image_display_dims`
+    /// falls back to the 1280x853 placeholder, which is enough to exercise the
+    /// crop arithmetic.
+    fn editor() -> RawEditor {
+        RawEditor::new().0
+    }
+
+    #[test]
+    fn image_display_dims_uncropped_is_the_whole_frame() {
+        let e = editor();
+        assert_eq!(e.current_edit_params.crop, [0.0, 0.0, 1.0, 1.0]);
+        assert_eq!(e.image_display_dims(), (1280, 853));
+    }
+
+    /// The bug this fixes: the viewport letterboxed using the FULL frame's
+    /// aspect while the shader drew the crop stretched to fill it, so a
+    /// half-width crop rendered horizontally stretched.
+    #[test]
+    fn image_display_dims_applies_the_crop_outside_crop_mode() {
+        let mut e = editor();
+        e.current_edit_params.crop = [0.0, 0.0, 0.5, 1.0];
+        assert_eq!(e.image_display_dims(), (640, 853));
+
+        // A 16:9 crop of the 3:2 placeholder must report ~16:9.
+        e.current_edit_params.crop = [0.0, 0.078, 1.0, 0.84375];
+        let (w, h) = e.image_display_dims();
+        let aspect = w as f32 / h as f32;
+        assert!((aspect - 16.0 / 9.0).abs() < 0.02, "aspect was {aspect}");
+    }
+
+    /// In crop mode the shader deliberately reveals the whole sensor so the
+    /// handles can be dragged over it — applying the crop here would make the
+    /// handles drift away from the cursor.
+    #[test]
+    fn image_display_dims_ignores_the_crop_while_cropping() {
+        let mut e = editor();
+        e.current_edit_params.crop = [0.0, 0.0, 0.5, 1.0];
+        e.is_cropping = true;
+        assert_eq!(e.image_display_dims(), (1280, 853));
+    }
+
+    /// A degenerate crop must not produce a zero-sized rect and divide by zero
+    /// downstream in `fitted_size`.
+    #[test]
+    fn image_display_dims_never_collapses_to_zero() {
+        let mut e = editor();
+        e.current_edit_params.crop = [0.0, 0.0, 0.0001, 0.0001];
+        let (w, h) = e.image_display_dims();
+        assert!(w >= 1 && h >= 1, "got {w}x{h}");
+    }
+
+    /// The peek must not change the framing — that is the whole reason
+    /// `before_reference` preserves crop.
+    #[test]
+    fn before_peek_does_not_change_the_displayed_aspect() {
+        let mut e = editor();
+        e.current_edit_params.crop = [0.0, 0.0, 0.5, 1.0];
+        let normal = e.image_display_dims();
+
+        let before = e.current_edit_params.before_reference();
+        e.current_edit_params = before;
+        assert_eq!(e.image_display_dims(), normal);
     }
 }

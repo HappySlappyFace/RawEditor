@@ -469,14 +469,17 @@ pub fn handle_render_finished(
 pub fn trigger_async_render(editor: &mut RawEditor) -> Task<Message> {
     let t_update_start = std::time::Instant::now();
 
+    // Oriented display dims of what is actually on screen — crop-aware, so the
+    // render target takes the CROPPED aspect. Must be the same source the
+    // viewport widget and the input math use, or the texture is drawn at a
+    // different shape than it was rendered for.
+    let (disp_w, disp_h) = editor.image_display_dims();
+
     if let (Some(ctx), Some(resources)) = (&editor.gpu_context, &editor.image_resources) {
         let ctx = ctx.clone();
         let resources = resources.clone();
 
-        // Oriented (display-space) dims: portrait images render portrait.
-        let (disp_w, disp_h) = resources.oriented_dims();
         let (vw, vh) = editor.viewport_size;
-        let crop = editor.current_edit_params.crop;
 
         // Render only the slice of the image that is actually on screen.
         // Sizing the target to the whole image at zoom-scaled resolution made
@@ -509,10 +512,12 @@ pub fn trigger_async_render(editor: &mut RawEditor) -> Task<Message> {
         let win_px_h = (view_rect[3] * ib.height * editor.scale_factor).round();
 
         // Never exceed 1:1 with the source: past that there is no more detail
-        // to resolve, only wasted pixels. The window spans `du * crop.w` of
-        // the source's width.
-        let src_avail_w = view_rect[2] * crop[2] * disp_w as f32;
-        let src_avail_h = view_rect[3] * crop[3] * disp_h as f32;
+        // to resolve, only wasted pixels. `disp_w`/`disp_h` already account for
+        // the crop, so the window simply spans `view_rect` of them — applying
+        // the crop factor again here would under-size the target and softening
+        // the preview.
+        let src_avail_w = view_rect[2] * disp_w as f32;
+        let src_avail_h = view_rect[3] * disp_h as f32;
 
         let target_w = (win_px_w.min(src_avail_w).round() as u32).clamp(16, 16384);
         let target_h = (win_px_h.min(src_avail_h).round() as u32).clamp(16, 16384);
