@@ -593,29 +593,74 @@ fn view_main_content<'a>(
                 // Always include the CropOverlay canvas so its update() fires
                 // ViewportResized whenever bounds change, keeping viewport_size accurate
                 // even when not cropping. Its draw() returns nothing when is_cropping=false.
+                // While peeking at the original, hide the editing furniture —
+                // crop and mask handles describe adjustments that aren't being
+                // applied to what's on screen. The Canvas itself must STAY in
+                // the stack regardless: its update() is what emits
+                // ViewportResized, which keeps viewport_size accurate.
+                let peeking = editor.before_peek;
                 let overlay: Element<'_, Message> = Canvas::new(CropOverlay {
                     zoom: editor.zoom,
                     offset: editor.pan_offset,
                     image_width: img_w,
                     image_height: img_h,
-                    is_cropping: editor.is_cropping,
-                    is_wb_picking: editor.is_wb_picking,
+                    is_cropping: editor.is_cropping && !peeking,
+                    is_wb_picking: editor.is_wb_picking && !peeking,
                     crop: editor.current_edit_params.crop,
-                    is_mask_placing: editor.mask_tool != crate::app::state::MaskTool::Inactive,
-                    selected_mask: editor.selected_mask.and_then(|i| {
-                        (i < editor.current_edit_params.mask_count as usize)
-                            .then(|| editor.current_edit_params.masks[i])
-                    }),
+                    is_mask_placing: !peeking
+                        && editor.mask_tool != crate::app::state::MaskTool::Inactive,
+                    selected_mask: if peeking {
+                        None
+                    } else {
+                        editor.selected_mask.and_then(|i| {
+                            (i < editor.current_edit_params.mask_count as usize)
+                                .then(|| editor.current_edit_params.masks[i])
+                        })
+                    },
                 })
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .into();
 
-                container(stack![viewport, overlay].width(Length::Fill).height(Length::Fill))
+                // Without a badge there is nothing distinguishing "the original"
+                // from "an edit that did nothing" — which is a fair part of why
+                // the old before/after went unnoticed after it broke.
+                let badge: Element<'_, Message> = if peeking {
+                    container(
+                        container(
+                            text("BEFORE")
+                                .size(11)
+                                .font(Font { weight: Weight::Bold, ..Default::default() })
+                                .style(|_theme| text::Style { color: Some(Color::WHITE) }),
+                        )
+                        .padding([4, 10])
+                        .style(|_theme| container::Style {
+                            background: Some(Background::Color(Color::from_rgb(
+                                0.98, 0.45, 0.09,
+                            ))),
+                            border: Border { radius: 3.0.into(), ..Default::default() },
+                            ..Default::default()
+                        }),
+                    )
                     .width(Length::Fill)
                     .height(Length::Fill)
-                    .clip(true)
+                    .align_x(iced::alignment::Horizontal::Center)
+                    .align_y(iced::alignment::Vertical::Top)
+                    .padding(16)
                     .into()
+                } else {
+                    iced::widget::Space::new(Length::Shrink, Length::Shrink).into()
+                };
+
+                container(
+                    stack![viewport, overlay, badge]
+                        .width(Length::Fill)
+                        .height(Length::Fill),
+                )
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .clip(true)
+                .into()
             }
             // Unreachable in practice: prepare_preview only reports pixels for
             // Loading/Ready, so has_pixels gates this whole block. The other

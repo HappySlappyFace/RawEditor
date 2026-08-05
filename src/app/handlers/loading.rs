@@ -146,7 +146,7 @@ pub fn handle_image_resources_ready(editor: &mut RawEditor, image_id: i64, resul
 
             if let Some(ctx) = &editor.gpu_context {
                 let (interpolated, wb_override) =
-                    crate::app::handlers::develop::resolve_wb_and_dcp(editor);
+                    crate::app::handlers::develop::resolve_wb_and_dcp(editor, &editor.current_edit_params);
                 resources.update_uniforms(ctx, &editor.current_edit_params, interpolated.as_deref(), wb_override);
             }
 

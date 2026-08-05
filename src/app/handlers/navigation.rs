@@ -10,6 +10,9 @@ pub fn handle_image_selected(editor: &mut RawEditor, image_id: i64) -> Task<Mess
     // current_edit_params against the currently-selected id, so flushing after
     // the switch would write this image's edits onto the next one.
     editor.flush_edits();
+    // The peek belongs to the outgoing image; carrying it across would show
+    // the new image unedited with no way to notice why.
+    editor.before_peek = false;
     if editor.last_modifiers.command() {
         if !editor.multi_selection.remove(&image_id) { editor.multi_selection.insert(image_id); }
     } else {
@@ -45,6 +48,8 @@ pub fn handle_image_selected(editor: &mut RawEditor, image_id: i64) -> Task<Mess
 pub fn handle_tab_changed(editor: &mut RawEditor, tab: AppTab) -> Task<Message> {
     // Leaving Develop mid-gesture must not strand unsaved slider edits.
     editor.flush_edits();
+    // Space only peeks in Develop; leaving with it held would strand the flag.
+    editor.before_peek = false;
     editor.current_tab = tab;
     if tab == AppTab::Develop {
         // An image could have been marked for removal while a different tab
@@ -285,7 +290,7 @@ pub fn handle_mouse_released(editor: &mut RawEditor) -> Task<Message> {
         editor.commit_current_state();
         if let (Some(ctx), Some(res)) = (&editor.gpu_context, &editor.image_resources) {
             let (interpolated, wb_override) =
-                crate::app::handlers::develop::resolve_wb_and_dcp(editor);
+                crate::app::handlers::develop::resolve_wb_and_dcp(editor, &editor.current_edit_params);
             res.update_uniforms(ctx, &editor.current_edit_params, interpolated.as_deref(), wb_override);
         }
     }
@@ -455,7 +460,7 @@ fn apply_crop_drag(editor: &mut RawEditor, pos: Point, last: Point, h: CropHandl
     
     if let Some(ctx) = &editor.gpu_context {
         let (interpolated, wb_override) =
-            crate::app::handlers::develop::resolve_wb_and_dcp(editor);
+            crate::app::handlers::develop::resolve_wb_and_dcp(editor, &editor.current_edit_params);
         resources.update_uniforms(ctx, &editor.current_edit_params, interpolated.as_deref(), wb_override);
     }
 }

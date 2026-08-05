@@ -29,6 +29,20 @@ pub enum GtParam {
     BlackTightness,
 }
 
+/// Which group of adjustments a Copy Settings checkbox targets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopyCategory {
+    Tone,
+    Color,
+    WhiteBalance,
+    Noise,
+    Detail,
+    Geometry,
+    Profile,
+    Masks,
+    BlackLevels,
+}
+
 /// Application tabs/modules
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppTab {
@@ -212,8 +226,16 @@ pub enum Message {
     CommitEdit,
 
     // ========== Phase 54: Settings Clipboard ==========
-    /// Copy current edit settings to clipboard (Ctrl/Cmd+C)
+    /// Open the category picker (Ctrl/Cmd+C)
     CopySettings,
+    /// Copy every category immediately, no modal (Ctrl/Cmd+Shift+C)
+    CopyAllSettings,
+    /// Confirm the category picker
+    CopySettingsConfirmed,
+    /// Toggle one category in the picker
+    ToggleCopyCategory(CopyCategory, bool),
+    /// Picker's All / None buttons
+    SetAllCopyCategories(bool),
     /// Paste edit settings from clipboard (Ctrl/Cmd+V)
     PasteSettings,
 
@@ -234,6 +256,12 @@ pub enum Message {
     CloseModal,
     ModalNoOp, // Swallows clicks
     Escape,    // Global Escape key
+    /// Enter pressed — routed to whichever modal is open.
+    ///
+    /// `subscription()` can only emit ONE message per key event, so Enter
+    /// cannot be bound separately per modal. This dispatches on
+    /// `active_modal` instead of each modal claiming the key.
+    ModalConfirm,
 
     // Phase 85: Preferences
     SetCacheCapacity(f32),
@@ -253,8 +281,9 @@ pub enum Message {
     SetLibraryFolderFilter(Option<String>),
 
     // ========== Phase 24: Workflow Messages ==========
-    /// Toggle Before/After view (Spacebar)
-    ToggleBeforeAfter,
+    /// Hold Space to peek at the unedited original; release to return.
+    /// `true` on key down, `false` on key up (and on focus loss).
+    SetBeforePeek(bool),
 
     /// Select next image (Right arrow)
     SelectNextImage,

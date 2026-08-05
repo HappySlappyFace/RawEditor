@@ -93,7 +93,7 @@ pub fn view_help_modal<'a>() -> Element<'a, Message> {
                     color: Some(Color::from_rgb(0.5, 0.5, 0.5))
                 }),
             shortcut("Arrow Keys", "Previous / Next Image"),
-            shortcut("Space", "Toggle Before/After"),
+            shortcut("Space (hold)", "Compare with the unedited original"),
             text("Rating & Culling")
                 .size(12)
                 .font(Font {
@@ -109,7 +109,7 @@ pub fn view_help_modal<'a>() -> Element<'a, Message> {
             shortcut("U", "Unflag"),
             shortcut("Delete / Backspace", "Delete Image (or unmark if already marked)"),
             shortcut("D", "Mark for Removal (in Delete dialog)"),
-            shortcut("Enter", "Delete from Disk (in Delete dialog)"),
+            shortcut("Enter", "Confirm the open dialog"),
             text("Editing")
                 .size(12)
                 .font(Font {
@@ -122,7 +122,9 @@ pub fn view_help_modal<'a>() -> Element<'a, Message> {
             shortcut("R", "Reset Edits"),
             shortcut("Ctrl + Z", "Undo"),
             shortcut("Ctrl + Shift + Z", "Redo"),
-            shortcut("Ctrl + C / V", "Copy / Paste Settings"),
+            shortcut("Ctrl + C", "Copy Settings (choose what)"),
+            shortcut("Ctrl + Shift + C", "Copy All Settings"),
+            shortcut("Ctrl + V", "Paste Settings"),
             shortcut("Double Click", "Reset Zoom"),
         ]
         .spacing(6),
@@ -586,6 +588,148 @@ pub fn view_export_modal<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
     ]
     .spacing(15)
     .width(400)
+    .into()
+}
+
+/// Per-category picker for Ctrl+C.
+///
+/// The chosen categories travel WITH the copied params (see
+/// `core::types::EditClipboard`), so paste merges only these groups onto the
+/// target and leaves everything else it had alone.
+pub fn view_copy_settings_modal(editor: &RawEditor) -> Element<'_, Message> {
+    use crate::app::message::CopyCategory;
+
+    let cats = editor.copy_categories;
+    let mask_count = editor.current_edit_params.mask_count;
+
+    // label, description, current value, which category
+    let mut rows: Vec<(&str, String, bool, CopyCategory)> = vec![
+        ("Tone", "Exposure, contrast, highlights, shadows, whites, blacks".into(), cats.tone, CopyCategory::Tone),
+        ("Color", "Vibrance, saturation".into(), cats.color, CopyCategory::Color),
+        ("White Balance", "Temperature, tint".into(), cats.white_balance, CopyCategory::WhiteBalance),
+        ("Noise Reduction", "Luma and color noise".into(), cats.noise, CopyCategory::Noise),
+        ("Detail", "Sharpening and masking".into(), cats.detail, CopyCategory::Detail),
+        ("Geometry & Crop", "Straighten angle and crop rectangle".into(), cats.geometry, CopyCategory::Geometry),
+        ("Profile & Tone Mapping", "Profile curve, tone mapper, GT shape".into(), cats.profile, CopyCategory::Profile),
+    ];
+
+    rows.push((
+        "Masks",
+        match mask_count {
+            0 => "No local adjustments on this image".to_string(),
+            1 => "1 local adjustment".to_string(),
+            n => format!("{n} local adjustments"),
+        },
+        cats.masks,
+        CopyCategory::Masks,
+    ));
+
+    // Sensor calibration, not a look — and camera-specific. Shown on the same
+    // terms as the develop sidebar's sensor section.
+    if crate::debug::SHOW_SENSOR_CORRECTION {
+        rows.push((
+            "Black Levels",
+            "Per-channel sensor black offsets".into(),
+            cats.black_levels,
+            CopyCategory::BlackLevels,
+        ));
+    }
+
+    let mut list = column![].spacing(8);
+    for (label, description, checked, category) in rows {
+        // Nothing to copy → nothing to tick.
+        let enabled = category != CopyCategory::Masks || mask_count > 0;
+        let mut cb = checkbox(label, checked && enabled)
+            .size(16)
+            .text_size(13)
+            .style(ui::styles::checkbox_style);
+        if enabled {
+            cb = cb.on_toggle(move |v| Message::ToggleCopyCategory(category, v));
+        }
+        list = list.push(
+            column![
+                cb,
+                text(description)
+                    .size(11)
+                    .style(|_theme: &Theme| text::Style {
+                        color: Some(Color::from_rgb(0.45, 0.45, 0.45))
+                    }),
+            ]
+            .spacing(2),
+        );
+    }
+
+    // Masks are positioned in normalized image UV, so the same numbers land
+    // somewhere else on a frame with a different shape.
+    let mask_caution: Element<'_, Message> = if cats.masks && mask_count > 0 {
+        text("Mask positions are relative to the frame — pasting onto a different aspect ratio will shift them.")
+            .size(11)
+            .style(|_theme: &Theme| text::Style {
+                color: Some(Color::from_rgb(0.85, 0.55, 0.2))
+            })
+            .into()
+    } else {
+        column![].into()
+    };
+
+    let nothing_selected = cats.is_empty();
+
+    column![
+        text("Copy Settings").size(18).font(Font {
+            weight: Weight::Bold,
+            ..Default::default()
+        }).style(|_| text::Style {
+            color: Some(Color::from_rgb(0.85, 0.85, 0.85))
+        }),
+        iced::widget::horizontal_rule(1.0).style(|_| iced::widget::rule::Style {
+            color: Color::from_rgb(0.3, 0.3, 0.3),
+            width: 1,
+            radius: 0.0.into(),
+            fill_mode: iced::widget::rule::FillMode::Full
+        }),
+        text("Only the ticked groups are pasted. Everything else on the target image is left alone.")
+            .size(11)
+            .style(|_theme: &Theme| text::Style {
+                color: Some(Color::from_rgb(0.5, 0.5, 0.5))
+            }),
+        list,
+        mask_caution,
+        row![
+            button(text("All").align_x(iced::alignment::Horizontal::Center))
+                .on_press(Message::SetAllCopyCategories(true))
+                .padding(6)
+                .width(Length::Fixed(70.0))
+                .style(ui::styles::NeutralButton::style),
+            button(text("None").align_x(iced::alignment::Horizontal::Center))
+                .on_press(Message::SetAllCopyCategories(false))
+                .padding(6)
+                .width(Length::Fixed(70.0))
+                .style(ui::styles::NeutralButton::style),
+        ]
+        .spacing(8),
+        text("Enter copies, Escape cancels. Ctrl+Shift+C copies everything without this dialog.")
+            .size(11)
+            .style(|_theme: &Theme| text::Style {
+                color: Some(Color::from_rgb(0.5, 0.5, 0.5))
+            }),
+        iced::widget::vertical_space().height(10),
+        row![
+            button(text("Cancel").align_x(iced::alignment::Horizontal::Center))
+                .on_press(Message::CloseModal)
+                .padding(10)
+                .width(Length::Fill)
+                .style(ui::styles::NeutralButton::style),
+            button(text("Copy").align_x(iced::alignment::Horizontal::Center))
+                // Greyed out rather than allowing a copy that could paste nothing.
+                .on_press_maybe((!nothing_selected).then_some(Message::CopySettingsConfirmed))
+                .padding(10)
+                .width(Length::Fill)
+                .style(ui::styles::AccentButton::style),
+        ]
+        .spacing(10)
+    ]
+    .spacing(12)
+    .width(420)
     .into()
 }
 

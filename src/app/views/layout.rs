@@ -10,7 +10,10 @@ use crate::ui::icons::ICON_FONT;
 use super::library::view_library;
 use super::cull::view_cull;
 use super::develop::view_develop;
-use super::modals::{view_help_modal, view_preferences_modal, view_export_modal, view_delete_modal};
+use super::modals::{
+    view_copy_settings_modal, view_delete_modal, view_export_modal, view_help_modal,
+    view_preferences_modal,
+};
 
 // Phase 69: Brand Identity
 const LOGO_BYTES: &[u8] = include_bytes!("../../../assets/logo.png");
@@ -30,6 +33,7 @@ pub fn view(editor: &RawEditor) -> Element<'_, Message> {
         Modal::Preferences => container(view_preferences_modal(editor)).style(ui::styles::modal_container_style).padding(20),
         Modal::Export => container(view_export_modal(editor)).style(ui::styles::modal_container_style).padding(20),
         Modal::Delete => container(view_delete_modal(editor)).style(ui::styles::modal_container_style).padding(20),
+        Modal::CopySettings => container(view_copy_settings_modal(editor)).style(ui::styles::modal_container_style).padding(20),
     };
     
     stack![

@@ -35,7 +35,28 @@ pub fn handle_drag_window(editor: &mut RawEditor) -> Task<Message> {
 
 pub fn handle_open_modal(editor: &mut RawEditor, modal: Modal) -> Task<Message> {
     editor.active_modal = modal;
-    Task::none()
+    // A modal takes the keyboard, so Space will never deliver its release
+    // edge — leave the before/after peek before it can get stranded.
+    crate::app::handlers::develop::clear_before_peek(editor)
+}
+
+/// Enter — route to whichever modal is open.
+///
+/// Centralised because `subscription()` emits at most one message per key
+/// event, so modals cannot each bind Enter for themselves. Adding a
+/// confirmable modal means adding an arm here.
+pub fn handle_modal_confirm(editor: &mut RawEditor) -> Task<Message> {
+    match editor.active_modal {
+        Modal::Delete => crate::app::handlers::delete::handle_delete_from_disk_confirmed(editor),
+        Modal::CopySettings => {
+            crate::app::handlers::develop::handle_copy_settings_confirmed(editor)
+        }
+        Modal::Export => crate::app::handlers::export::handle_export_confirmed(editor),
+        // Help and Preferences have nothing to confirm; Enter closes them,
+        // which is the least surprising thing a dialog can do.
+        Modal::Help | Modal::Preferences => handle_close_modal(editor),
+        Modal::None => Task::none(),
+    }
 }
 
 pub fn handle_close_modal(editor: &mut RawEditor) -> Task<Message> {

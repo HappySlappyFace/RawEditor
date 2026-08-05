@@ -63,6 +63,10 @@ pub enum Modal {
     Preferences,
     Export,
     Delete,
+    /// Per-category picker shown by Ctrl+C. Its selection lives in
+    /// `RawEditor::copy_categories`, mirroring how Export pairs with
+    /// `export_settings` and Delete with `pending_delete_ids`.
+    CopySettings,
 }
 
 /// Phase 89: Export Format
@@ -235,8 +239,14 @@ pub struct RawEditor {
     pub histogram_cache: iced::widget::canvas::Cache,
     /// Phase 22: Histogram toggle (keep for user control)
     pub histogram_enabled: bool,
-    /// Phase 24: Before/After toggle (show original vs edited)
-    pub show_before: bool,
+    /// True while Space is held to peek at the unedited original.
+    ///
+    /// Actually read, unlike the `show_before` flag this replaces: it selects
+    /// which params `handlers::develop::refresh_for_peek_state` uploads, and
+    /// drives the BEFORE badge in the develop view. Never persisted, and the
+    /// peek's params are never written to `current_edit_params` — doing so
+    /// would let a flush point save them over the user's real edits.
+    pub before_peek: bool,
     /// Phase 25: Zoom level (1.0 = 100%, 2.0 = 200%, etc.)
     pub zoom: f32,
     /// Phase 115: Native GPU Shader Viewport raw pixel buffers
@@ -287,8 +297,14 @@ pub struct RawEditor {
     /// Phase 103: High-quality rendered preview (async updated)
     /// Phase 41: Current image metadata for inspection
     pub current_metadata: Option<raw::loader::RawDataResult>,
-    /// Phase 54: Edit settings clipboard for copy/paste
-    pub edit_clipboard: Option<crate::core::types::EditParams>,
+    /// Phase 54: Edit settings clipboard for copy/paste.
+    ///
+    /// Carries the copied params AND which categories were selected, so paste
+    /// can merge rather than overwrite — see `core::types::EditClipboard`.
+    pub edit_clipboard: Option<crate::core::types::EditClipboard>,
+    /// Current selection in the Copy Settings picker. Persisted to
+    /// `AppSettings` so it survives a restart.
+    pub copy_categories: crate::core::types::CopyCategories,
     /// Phase 55: Multi-selection set (image IDs)
     pub multi_selection: HashSet<i64>,
     /// Phase 55: Track modifier keys for Ctrl/Cmd+Click
@@ -452,7 +468,7 @@ impl RawEditor {
                 histogram_data: std::cell::RefCell::new([[0; 256]; 3]),
                 histogram_cache: iced::widget::canvas::Cache::default(),
                 histogram_enabled: settings.histogram_enabled,
-                show_before: false,
+                before_peek: false,
                 zoom: 1.0,
                 pan_offset: cgmath::Vector2::new(0.0, 0.0),
                 canvas_cache: iced::widget::canvas::Cache::default(),
@@ -473,6 +489,7 @@ impl RawEditor {
                 rendered_preview_dims: (1, 1),
                 current_metadata: None,
                 edit_clipboard: None,
+                copy_categories: settings.copy_categories,
                 multi_selection: HashSet::new(),
                 last_modifiers: iced::keyboard::Modifiers::default(),
                 auto_advance: settings.auto_advance,
@@ -821,6 +838,7 @@ impl RawEditor {
             preview_preload_ahead: self.preview_preload_ahead,
             raw_preload_behind: self.raw_preload_behind,
             raw_preload_ahead: self.raw_preload_ahead,
+            copy_categories: self.copy_categories,
         };
 
         if let Err(e) = settings.save() {
@@ -851,14 +869,33 @@ impl RawEditor {
             if let iced::Event::Window(iced::window::Event::Resized(size)) = event {
                 return Some(Message::WindowResized(size));
             }
+            // Alt-tabbing away while Space is held sends the KeyReleased to
+            // the other window, which would otherwise strand the peek on.
+            if let iced::Event::Window(iced::window::Event::Unfocused) = event {
+                return Some(Message::SetBeforePeek(false));
+            }
+            // Hold-to-peek needs the release edge; every other shortcut here
+            // is press-only.
+            if let iced::Event::Keyboard(keyboard::Event::KeyReleased { key, .. }) = &event {
+                if matches!(key, keyboard::Key::Named(Named::Space)) {
+                    return Some(Message::SetBeforePeek(false));
+                }
+                return None;
+            }
 
             if let iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) = event
             {
                 // Phase 54: Settings Clipboard (Ctrl/Cmd+C/V)
                 if modifiers.command() {
                     match key {
+                        // Shift+C skips the picker and copies everything, so
+                        // the common case keeps zero friction.
                         keyboard::Key::Character(c) if c == "c" || c == "C" => {
-                            return Some(Message::CopySettings);
+                            return Some(if modifiers.shift() {
+                                Message::CopyAllSettings
+                            } else {
+                                Message::CopySettings
+                            });
                         }
                         keyboard::Key::Character(c) if c == "v" || c == "V" => {
                             return Some(Message::PasteSettings);
@@ -870,16 +907,22 @@ impl RawEditor {
                 match key {
                     keyboard::Key::Named(Named::F3) => Some(Message::ToggleProfiler),
                     keyboard::Key::Named(Named::Escape) => Some(Message::Escape),
-                    keyboard::Key::Named(Named::Space) => Some(Message::ToggleBeforeAfter),
+                    // Hold to peek at the original; the KeyReleased arm above
+                    // ends it. The handler ignores repeats and gates on tab /
+                    // modal / readiness.
+                    keyboard::Key::Named(Named::Space) => Some(Message::SetBeforePeek(true)),
                     keyboard::Key::Named(Named::ArrowRight) => Some(Message::SelectNextImage),
                     keyboard::Key::Named(Named::ArrowLeft) => Some(Message::SelectPreviousImage),
                     keyboard::Key::Named(Named::Delete)
                     | keyboard::Key::Named(Named::Backspace) => Some(Message::DeleteImage),
-                    // Global Enter/D bindings for the Delete confirmation
-                    // modal ("Delete from Disk" / "Mark for Removal"). Safe
-                    // everywhere else — both handlers no-op unless
-                    // Modal::Delete is actually open.
-                    keyboard::Key::Named(Named::Enter) => Some(Message::DeleteFromDiskConfirmed),
+                    // Enter confirms whichever modal is open. One key event can
+                    // only produce one message, so it routes on `active_modal`
+                    // in handle_modal_confirm rather than each modal trying to
+                    // claim the key. Inert when no modal is open.
+                    keyboard::Key::Named(Named::Enter) => Some(Message::ModalConfirm),
+                    // D confirms "Mark for Removal" in the Delete modal. Safe
+                    // everywhere else — the handler no-ops unless Modal::Delete
+                    // is actually open.
                     keyboard::Key::Character(c) if c == "d" || c == "D" => {
                         Some(Message::MarkForRemovalConfirmed)
                     }

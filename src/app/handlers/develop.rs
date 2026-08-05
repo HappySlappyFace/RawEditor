@@ -246,29 +246,178 @@ pub fn handle_reset_edits(editor: &mut RawEditor) -> Task<Message> {
     task
 }
 
+/// Ctrl+C — open the category picker so the user chooses what to copy.
 pub fn handle_copy_settings(editor: &mut RawEditor) -> Task<Message> {
-    editor.edit_clipboard = Some(editor.current_edit_params);
-    editor.status = "Settings copied!".to_string();
+    if editor.active_modal != crate::app::state::Modal::None
+        || editor.selected_image_id.is_none()
+    {
+        return Task::none();
+    }
+    // Masks can't be copied if there are none — drop the tick rather than let
+    // the user confirm a category that would silently do nothing.
+    if editor.current_edit_params.mask_count == 0 {
+        editor.copy_categories.masks = false;
+    }
+    editor.active_modal = crate::app::state::Modal::CopySettings;
     Task::none()
 }
 
-pub fn handle_paste_settings(editor: &mut RawEditor) -> Task<Message> {
-    if let Some(cb) = editor.edit_clipboard {
-        editor.current_edit_params = cb;
-        if let Some(lib) = &editor.library {
-            for &id in &editor.multi_selection {
-                if Some(id) != editor.selected_image_id {
-                    let _ = lib.save_edit_params(id, &editor.current_edit_params);
-                }
-            }
-            editor.status = "Settings pasted to selection".to_string();
-        }
-        let task = update_pipeline(editor);
-        editor.commit_current_state();
-        task
-    } else {
-        Task::none()
+/// Ctrl+Shift+C — copy everything with no modal, so the common case keeps
+/// zero friction.
+pub fn handle_copy_all_settings(editor: &mut RawEditor) -> Task<Message> {
+    if editor.active_modal != crate::app::state::Modal::None
+        || editor.selected_image_id.is_none()
+    {
+        return Task::none();
     }
+    store_clipboard(editor, crate::core::types::CopyCategories::all());
+    Task::none()
+}
+
+/// Confirm the picker (its Copy button, or Enter via `ModalConfirm`).
+pub fn handle_copy_settings_confirmed(editor: &mut RawEditor) -> Task<Message> {
+    if editor.active_modal != crate::app::state::Modal::CopySettings {
+        return Task::none();
+    }
+    editor.active_modal = crate::app::state::Modal::None;
+    if editor.copy_categories.is_empty() {
+        return Task::none();
+    }
+    store_clipboard(editor, editor.copy_categories);
+    Task::none()
+}
+
+/// Snapshot the current params plus the chosen categories.
+///
+/// Both halves are stored — see `EditClipboard`. Filtering the params here
+/// would make "not copied" indistinguishable from "copied as the default
+/// value" at paste time.
+fn store_clipboard(editor: &mut RawEditor, categories: crate::core::types::CopyCategories) {
+    editor.edit_clipboard = Some(crate::core::types::EditClipboard {
+        params: editor.current_edit_params,
+        categories,
+    });
+    editor.status = format!("Copied {}", describe_categories(&categories));
+}
+
+/// Human-readable summary of a selection, for the status line.
+fn describe_categories(c: &crate::core::types::CopyCategories) -> String {
+    let all = crate::core::types::CopyCategories::all();
+    if *c == all {
+        return "all settings".to_string();
+    }
+    let mut parts = Vec::new();
+    if c.tone { parts.push("tone"); }
+    if c.color { parts.push("color"); }
+    if c.white_balance { parts.push("WB"); }
+    if c.noise { parts.push("noise"); }
+    if c.detail { parts.push("detail"); }
+    if c.geometry { parts.push("crop"); }
+    if c.profile { parts.push("profile"); }
+    if c.masks { parts.push("masks"); }
+    if c.black_levels { parts.push("black levels"); }
+    if parts.is_empty() {
+        "nothing".to_string()
+    } else {
+        parts.join(", ")
+    }
+}
+
+pub fn handle_toggle_copy_category(
+    editor: &mut RawEditor,
+    category: crate::app::message::CopyCategory,
+    value: bool,
+) -> Task<Message> {
+    use crate::app::message::CopyCategory;
+    let c = &mut editor.copy_categories;
+    match category {
+        CopyCategory::Tone => c.tone = value,
+        CopyCategory::Color => c.color = value,
+        CopyCategory::WhiteBalance => c.white_balance = value,
+        CopyCategory::Noise => c.noise = value,
+        CopyCategory::Detail => c.detail = value,
+        CopyCategory::Geometry => c.geometry = value,
+        CopyCategory::Profile => c.profile = value,
+        CopyCategory::Masks => c.masks = value,
+        CopyCategory::BlackLevels => c.black_levels = value,
+    }
+    editor.save_preferences();
+    Task::none()
+}
+
+pub fn handle_set_all_copy_categories(editor: &mut RawEditor, all: bool) -> Task<Message> {
+    editor.copy_categories = if all {
+        crate::core::types::CopyCategories::all()
+    } else {
+        crate::core::types::CopyCategories::none()
+    };
+    // Never leave Masks ticked on an image that has none.
+    if editor.current_edit_params.mask_count == 0 {
+        editor.copy_categories.masks = false;
+    }
+    editor.save_preferences();
+    Task::none()
+}
+
+/// Ctrl+V — MERGE the clipboard's selected categories onto the target(s).
+///
+/// A merge, not a replace: only the categories the user ticked at copy time
+/// are written, and everything else on the target survives untouched.
+pub fn handle_paste_settings(editor: &mut RawEditor) -> Task<Message> {
+    if editor.active_modal != crate::app::state::Modal::None {
+        return Task::none();
+    }
+    let Some(clip) = editor.edit_clipboard else {
+        return Task::none();
+    };
+    if clip.categories.is_empty() {
+        return Task::none();
+    }
+
+    crate::core::types::apply_categories(
+        &mut editor.current_edit_params,
+        &clip.params,
+        clip.categories,
+    );
+
+    // A paste that lowered mask_count can leave `selected_mask` pointing past
+    // the end of the live masks, exactly as handle_reset_edits guards against.
+    let live_masks = editor.current_edit_params.mask_count as usize;
+    if editor.selected_mask.is_some_and(|i| i >= live_masks) {
+        editor.selected_mask = None;
+        editor.mask_tool = crate::app::state::MaskTool::Inactive;
+    }
+
+    // Other images in the selection: load each one's own params and merge into
+    // them. Writing `current_edit_params` wholesale (as this used to) would
+    // overwrite the categories the user chose NOT to copy.
+    let mut others = 0usize;
+    if let Some(lib) = &editor.library {
+        for &id in &editor.multi_selection {
+            if Some(id) == editor.selected_image_id {
+                continue;
+            }
+            let mut target = lib.load_edit_params(id).unwrap_or_default();
+            crate::core::types::apply_categories(&mut target, &clip.params, clip.categories);
+            if lib.save_edit_params(id, &target).is_ok() {
+                others += 1;
+            }
+        }
+    }
+
+    editor.status = if others > 0 {
+        format!(
+            "Pasted {} to {} images",
+            describe_categories(&clip.categories),
+            others + 1
+        )
+    } else {
+        format!("Pasted {}", describe_categories(&clip.categories))
+    };
+
+    let task = update_pipeline(editor);
+    editor.commit_current_state();
+    task
 }
 
 
@@ -578,8 +727,15 @@ fn dcp_memo_is_valid(
 /// The two dirty-checks are independent and cannot disagree harmfully: both are
 /// functions of the same slider state, so a miss on either side merely repeats
 /// work that produces the same result.
+///
+/// `params` is passed in rather than read from `editor` because the
+/// before/after peek renders a DIFFERENT set of params than the ones the user
+/// is editing. Reading `editor.current_edit_params` here would give the peek
+/// default exposure with slider-derived white balance and tone curve — a
+/// hybrid of neither state.
 pub fn resolve_wb_and_dcp(
     editor: &RawEditor,
+    params: &crate::core::types::EditParams,
 ) -> (Option<std::sync::Arc<crate::raw::dcp::InterpolatedProfile>>, Option<[f32; 4]>) {
     let as_shot = editor.as_shot_wb.unwrap_or((5000.0, 0.0));
     let fallback_matrix = editor
@@ -589,7 +745,7 @@ pub fn resolve_wb_and_dcp(
         .unwrap_or([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
 
     let (kelvin, _tint, wb_override) = crate::color::solve_wb(
-        &editor.current_edit_params,
+        params,
         as_shot,
         editor.current_dcp_profile.as_deref(),
         fallback_matrix,
@@ -598,7 +754,7 @@ pub fn resolve_wb_and_dcp(
     let Some(dcp) = editor.current_dcp_profile.as_ref() else {
         return (None, wb_override);
     };
-    let tone = ToneSettings::from_params(&editor.current_edit_params);
+    let tone = ToneSettings::from_params(params);
 
     if let Ok(memo) = editor.dcp_memo.try_borrow() {
         if let Some((k, t, profile)) = memo.as_ref() {
@@ -618,19 +774,22 @@ pub fn resolve_wb_and_dcp(
     (Some(interpolated), wb_override)
 }
 
-pub(crate) fn update_pipeline(editor: &mut RawEditor) -> Task<Message> {
-    // Deferred, not written here: this runs once per mouse-move during a
-    // slider or mask drag, and a synchronous SQLite write on that path cost
-    // an fsync per event on the UI thread. `flush_edits` at the commit points
-    // (CommitEdit, drag release, image/tab switch, close) does the write.
-    editor.mark_edits_dirty();
+/// Push `params` to the GPU and render with them.
+///
+/// Deliberately does NOT mark edits dirty — the caller decides whether these
+/// params represent the user's real state. The before/after peek renders
+/// params that must never be persisted.
+pub(crate) fn push_uniforms_and_render(
+    editor: &mut RawEditor,
+    params: &crate::core::types::EditParams,
+) -> Task<Message> {
     if let (Some(ctx), Some(resources)) = (&editor.gpu_context, &editor.image_resources) {
         // Phase 140: Interpolate DCP + resolve slider WB
-        let (interpolated, wb_override) = resolve_wb_and_dcp(editor);
-        resources.update_uniforms(ctx, &editor.current_edit_params, interpolated.as_deref(), wb_override);
+        let (interpolated, wb_override) = resolve_wb_and_dcp(editor, params);
+        resources.update_uniforms(ctx, params, interpolated.as_deref(), wb_override);
         editor.canvas_cache.clear();
     }
-    
+
     // Phase 106: Throttling
     if editor.is_rendering {
         editor.pending_render = true;
@@ -640,6 +799,76 @@ pub(crate) fn update_pipeline(editor: &mut RawEditor) -> Task<Message> {
         editor.pending_render = false;
         trigger_async_render(editor)
     }
+}
+
+pub(crate) fn update_pipeline(editor: &mut RawEditor) -> Task<Message> {
+    // Deferred, not written here: this runs once per mouse-move during a
+    // slider or mask drag, and a synchronous SQLite write on that path cost
+    // an fsync per event on the UI thread. `flush_edits` at the commit points
+    // (CommitEdit, drag release, image/tab switch, close) does the write.
+    editor.mark_edits_dirty();
+    // EditParams is Copy, so this sidesteps the borrow conflict for free.
+    let params = editor.current_edit_params;
+    push_uniforms_and_render(editor, &params)
+}
+
+/// Render the params the viewport should currently be showing — the
+/// before-reference while peeking, the user's real edits otherwise.
+///
+/// Every path that needs to *leave* the peek goes through here rather than
+/// poking `before_peek` directly, so the flag and the uploaded uniforms can
+/// never disagree.
+pub(crate) fn refresh_for_peek_state(editor: &mut RawEditor) -> Task<Message> {
+    let params = if editor.before_peek {
+        editor.current_edit_params.before_reference()
+    } else {
+        editor.current_edit_params
+    };
+    push_uniforms_and_render(editor, &params)
+}
+
+/// Leave the before/after peek if it is active, re-rendering the real edit.
+///
+/// Called from anywhere the peek could otherwise get stranded — tab change,
+/// image change, modal open, window focus loss. Returns `Task::none()` when
+/// there was nothing to do, so it is safe to call unconditionally.
+pub fn clear_before_peek(editor: &mut RawEditor) -> Task<Message> {
+    if !editor.before_peek {
+        return Task::none();
+    }
+    editor.before_peek = false;
+    refresh_for_peek_state(editor)
+}
+
+/// Hold-to-peek at the unedited original (Space).
+///
+/// Hold rather than toggle: releasing the key always returns you to your edit,
+/// so you cannot get stranded looking at the original wondering why the
+/// sliders do nothing.
+pub fn handle_set_before_peek(editor: &mut RawEditor, active: bool) -> Task<Message> {
+    // Key auto-repeat delivers KeyPressed continuously while Space is held.
+    // Without this guard every repeat would queue another GPU render.
+    if editor.before_peek == active {
+        return Task::none();
+    }
+
+    if active {
+        // Space is bound globally and the subscription closure has no access
+        // to editor state, so all gating lives here — the same pattern the
+        // Delete modal's Enter/D bindings use.
+        if editor.active_modal != crate::app::state::Modal::None
+            || editor.current_tab != crate::app::message::AppTab::Develop
+            || !matches!(
+                editor.editor_readiness,
+                crate::app::state::EditorReadiness::Ready(_)
+            )
+        {
+            return Task::none();
+        }
+    }
+
+    editor.before_peek = active;
+    refresh_for_peek_state(editor)
 }
 
 #[cfg(test)]

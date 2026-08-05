@@ -349,6 +349,175 @@ impl EditParams {
     pub fn tint_from_anchor(&self, anchor_tint: f32) -> f32 {
         anchor_tint + self.tint * 50.0
     }
+
+    /// The reference state for the before/after peek: every look-affecting
+    /// adjustment reset, but GEOMETRY and SENSOR CALIBRATION preserved.
+    ///
+    /// Resetting `crop`/`rotation` as well would reframe the image the instant
+    /// the key goes down, so you would be comparing two different photographs
+    /// rather than two renderings of the same one — which is useless for
+    /// judging an edit. Black levels are a sensor correction, not a look, for
+    /// the same reason.
+    ///
+    /// Change the preserved list here (and nowhere else) if you would rather
+    /// see the truly untouched frame.
+    pub fn before_reference(&self) -> Self {
+        Self {
+            crop: self.crop,
+            rotation: self.rotation,
+            is_cropping: self.is_cropping,
+            black_offsets: self.black_offsets,
+            black_phase_x: self.black_phase_x,
+            black_phase_y: self.black_phase_y,
+            ..Self::default()
+        }
+    }
+}
+
+/// Which groups of adjustments a copy/paste operation carries.
+///
+/// Stored ALONGSIDE the copied `EditParams` rather than being applied at copy
+/// time — see [`EditClipboard`] for why that distinction matters.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CopyCategories {
+    pub tone: bool,
+    pub color: bool,
+    pub white_balance: bool,
+    pub noise: bool,
+    pub detail: bool,
+    pub geometry: bool,
+    pub profile: bool,
+    pub masks: bool,
+    /// Per-channel black level offsets. Sensor calibration rather than a look,
+    /// and camera-specific — off by default, and only offered in the UI when
+    /// `debug::SHOW_SENSOR_CORRECTION` is on, matching the develop sidebar.
+    pub black_levels: bool,
+}
+
+impl Default for CopyCategories {
+    /// Everything that describes a *look*, which is what "copy settings"
+    /// means to a photographer. Geometry is excluded because a crop is
+    /// composed for one specific frame, and black levels because they are
+    /// sensor calibration.
+    fn default() -> Self {
+        Self {
+            tone: true,
+            color: true,
+            white_balance: true,
+            noise: true,
+            detail: true,
+            geometry: false,
+            profile: true,
+            masks: false,
+            black_levels: false,
+        }
+    }
+}
+
+impl CopyCategories {
+    /// All on — the "copy everything" shortcut (Ctrl+Shift+C).
+    pub fn all() -> Self {
+        Self {
+            tone: true,
+            color: true,
+            white_balance: true,
+            noise: true,
+            detail: true,
+            geometry: true,
+            profile: true,
+            masks: true,
+            black_levels: true,
+        }
+    }
+
+    pub fn none() -> Self {
+        Self {
+            tone: false,
+            color: false,
+            white_balance: false,
+            noise: false,
+            detail: false,
+            geometry: false,
+            profile: false,
+            masks: false,
+            black_levels: false,
+        }
+    }
+
+    /// True when a paste would do nothing — used to grey out the confirm
+    /// button rather than let the user perform a no-op.
+    pub fn is_empty(&self) -> bool {
+        *self == Self::none()
+    }
+}
+
+/// A copied set of edits: the full snapshot PLUS which categories were chosen.
+///
+/// Both halves are required. Filtering at copy time — storing only the
+/// selected fields — would leave everything else sitting at its default, and
+/// paste could not tell "the user chose not to copy exposure" apart from "the
+/// user copied an exposure of 0.0". It would write those defaults over the
+/// target's real values. Keeping the selection lets paste MERGE instead.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EditClipboard {
+    pub params: EditParams,
+    pub categories: CopyCategories,
+}
+
+/// Copy the fields belonging to `cats` from `src` onto `dst`, leaving every
+/// other field of `dst` untouched.
+///
+/// **The single source of truth for the category→field mapping.** A new
+/// `EditParams` field must be added to exactly one category here; the
+/// `apply_categories_covers_every_field` test fails loudly if one is missed.
+///
+/// `is_cropping` is deliberately never copied: it is a transient UI mode flag,
+/// and pasting a `1` would drop the target image into crop-overlay mode.
+pub fn apply_categories(dst: &mut EditParams, src: &EditParams, cats: CopyCategories) {
+    if cats.tone {
+        dst.exposure = src.exposure;
+        dst.contrast = src.contrast;
+        dst.highlights = src.highlights;
+        dst.shadows = src.shadows;
+        dst.whites = src.whites;
+        dst.blacks = src.blacks;
+    }
+    if cats.color {
+        dst.vibrance = src.vibrance;
+        dst.saturation = src.saturation;
+    }
+    if cats.white_balance {
+        dst.temperature = src.temperature;
+        dst.tint = src.tint;
+    }
+    if cats.noise {
+        dst.luma_noise = src.luma_noise;
+        dst.color_noise = src.color_noise;
+    }
+    if cats.detail {
+        dst.sharpening = src.sharpening;
+        dst.sharpen_masking = src.sharpen_masking;
+    }
+    if cats.geometry {
+        dst.rotation = src.rotation;
+        dst.crop = src.crop;
+    }
+    if cats.profile {
+        dst.profile_curve = src.profile_curve;
+        dst.tone_mapper = src.tone_mapper;
+        dst.gt = src.gt;
+    }
+    if cats.masks {
+        // Together, always: `masks` without `mask_count` (or vice versa)
+        // leaves the render evaluating slots the user never placed.
+        dst.masks = src.masks;
+        dst.mask_count = src.mask_count;
+    }
+    if cats.black_levels {
+        dst.black_offsets = src.black_offsets;
+        dst.black_phase_x = src.black_phase_x;
+        dst.black_phase_y = src.black_phase_y;
+    }
 }
 
 #[cfg(test)]
@@ -428,6 +597,191 @@ mod tests {
         params.masks[0] = MaskParams::new_linear(0.1, 0.1, 0.9, 0.9);
         params.mask_count = 1;
         assert!(!params.is_unedited());
+    }
+
+    // ── before/after reference ───────────────────────────────────────────────
+
+    fn fully_edited() -> EditParams {
+        let mut p = EditParams::default();
+        p.exposure = 1.25;
+        p.contrast = 3.5;
+        p.highlights = -0.6;
+        p.shadows = 0.4;
+        p.whites = 1.1;
+        p.blacks = 0.05;
+        p.black_offsets = [1.0, 2.0, 3.0, 4.0];
+        p.black_phase_x = 1;
+        p.black_phase_y = 1;
+        p.vibrance = 0.3;
+        p.saturation = -0.2;
+        p.temperature = 0.5;
+        p.tint = -0.25;
+        p.luma_noise = 0.4;
+        p.color_noise = 0.7;
+        p.sharpening = 0.8;
+        p.sharpen_masking = 0.6;
+        p.rotation = 12.0;
+        p.crop = [0.1, 0.2, 0.5, 0.6];
+        p.profile_curve = 0.9;
+        p.tone_mapper = crate::core::tonemap::ToneMapper::Gt;
+        p.gt = crate::core::tonemap::GtParams { contrast: 1.7, ..Default::default() };
+        p.masks[0] = MaskParams::new_radial(0.4, 0.4, 0.2, 0.15);
+        p.masks[0].exposure = -1.0;
+        p.mask_count = 1;
+        p
+    }
+
+    /// The peek must not reframe the image — otherwise you are comparing two
+    /// different photographs instead of two renderings of one.
+    #[test]
+    fn before_reference_preserves_geometry_and_sensor_calibration() {
+        let p = fully_edited();
+        let b = p.before_reference();
+        assert_eq!(b.crop, p.crop);
+        assert_eq!(b.rotation, p.rotation);
+        assert_eq!(b.is_cropping, p.is_cropping);
+        assert_eq!(b.black_offsets, p.black_offsets);
+        assert_eq!(b.black_phase_x, p.black_phase_x);
+        assert_eq!(b.black_phase_y, p.black_phase_y);
+    }
+
+    #[test]
+    fn before_reference_resets_every_look_adjustment() {
+        let d = EditParams::default();
+        let b = fully_edited().before_reference();
+        assert_eq!(b.exposure, d.exposure);
+        assert_eq!(b.contrast, d.contrast);
+        assert_eq!(b.highlights, d.highlights);
+        assert_eq!(b.shadows, d.shadows);
+        assert_eq!(b.whites, d.whites);
+        assert_eq!(b.blacks, d.blacks);
+        assert_eq!(b.vibrance, d.vibrance);
+        assert_eq!(b.saturation, d.saturation);
+        assert_eq!(b.temperature, d.temperature);
+        assert_eq!(b.tint, d.tint);
+        assert_eq!(b.luma_noise, d.luma_noise);
+        assert_eq!(b.color_noise, d.color_noise);
+        assert_eq!(b.sharpening, d.sharpening);
+        assert_eq!(b.profile_curve, d.profile_curve);
+        assert_eq!(b.tone_mapper, d.tone_mapper);
+        assert_eq!(b.mask_count, 0, "masks must not apply to the before view");
+    }
+
+    // ── copy categories ──────────────────────────────────────────────────────
+
+    /// The guard that keeps this design from rotting: applying EVERY category
+    /// must reproduce the source exactly. If someone adds a field to
+    /// `EditParams` and forgets to assign it a category in `apply_categories`,
+    /// this fails — and the field would otherwise be silently uncopyable
+    /// forever.
+    #[test]
+    fn apply_categories_covers_every_field() {
+        let src = fully_edited();
+        let mut dst = EditParams::default();
+        apply_categories(&mut dst, &src, CopyCategories::all());
+        // is_cropping is the one deliberate exclusion (transient UI state).
+        dst.is_cropping = src.is_cropping;
+        assert_eq!(
+            dst, src,
+            "a field is missing from apply_categories' category mapping"
+        );
+    }
+
+    #[test]
+    fn apply_categories_with_nothing_selected_changes_nothing() {
+        let src = fully_edited();
+        let mut dst = EditParams::default();
+        apply_categories(&mut dst, &src, CopyCategories::none());
+        assert_eq!(dst, EditParams::default());
+    }
+
+    /// Each category must move its OWN fields and nothing else — the property
+    /// that makes selective paste safe.
+    #[test]
+    fn each_category_is_isolated() {
+        let src = fully_edited();
+        let base = EditParams::default();
+
+        let only = |set: fn(&mut CopyCategories)| {
+            let mut c = CopyCategories::none();
+            set(&mut c);
+            let mut dst = base;
+            apply_categories(&mut dst, &src, c);
+            dst
+        };
+
+        let tone = only(|c| c.tone = true);
+        assert_eq!(tone.exposure, src.exposure);
+        assert_eq!(tone.contrast, src.contrast);
+        // ...and nothing from a neighbouring category leaked in.
+        assert_eq!(tone.saturation, base.saturation);
+        assert_eq!(tone.temperature, base.temperature);
+        assert_eq!(tone.crop, base.crop);
+
+        let wb = only(|c| c.white_balance = true);
+        assert_eq!(wb.temperature, src.temperature);
+        assert_eq!(wb.tint, src.tint);
+        assert_eq!(wb.exposure, base.exposure);
+
+        let geo = only(|c| c.geometry = true);
+        assert_eq!(geo.crop, src.crop);
+        assert_eq!(geo.rotation, src.rotation);
+        assert_eq!(geo.exposure, base.exposure);
+
+        let profile = only(|c| c.profile = true);
+        assert_eq!(profile.tone_mapper, src.tone_mapper);
+        assert_eq!(profile.gt, src.gt);
+        assert_eq!(profile.profile_curve, src.profile_curve);
+        assert_eq!(profile.exposure, base.exposure);
+
+        let black = only(|c| c.black_levels = true);
+        assert_eq!(black.black_offsets, src.black_offsets);
+        assert_eq!(black.black_phase_x, src.black_phase_x);
+        assert_eq!(black.exposure, base.exposure);
+    }
+
+    /// `masks` and `mask_count` must travel together, or the shader evaluates
+    /// slots the user never placed.
+    #[test]
+    fn masks_category_copies_array_and_count_together() {
+        let src = fully_edited();
+        let mut dst = EditParams::default();
+        let mut c = CopyCategories::none();
+        c.masks = true;
+        apply_categories(&mut dst, &src, c);
+        assert_eq!(dst.mask_count, src.mask_count);
+        assert_eq!(dst.masks[0], src.masks[0]);
+    }
+
+    /// Pasting must never drop the target into crop-overlay mode.
+    #[test]
+    fn is_cropping_is_never_copied() {
+        let mut src = fully_edited();
+        src.is_cropping = 1;
+        let mut dst = EditParams::default();
+        apply_categories(&mut dst, &src, CopyCategories::all());
+        assert_eq!(dst.is_cropping, 0);
+    }
+
+    #[test]
+    fn copy_categories_default_is_a_look_not_a_frame() {
+        let d = CopyCategories::default();
+        assert!(d.tone && d.color && d.white_balance && d.profile);
+        assert!(!d.geometry, "a crop is composed for one specific frame");
+        assert!(!d.black_levels, "sensor calibration is camera-specific");
+        assert!(!d.is_empty());
+        assert!(CopyCategories::none().is_empty());
+        assert!(!CopyCategories::all().is_empty());
+    }
+
+    #[test]
+    fn copy_categories_round_trips_through_serde() {
+        let mut c = CopyCategories::default();
+        c.masks = true;
+        c.geometry = true;
+        let json = serde_json::to_string(&c).unwrap();
+        let back: CopyCategories = serde_json::from_str(&json).unwrap();
+        assert_eq!(c, back);
     }
 
     #[test]

@@ -100,11 +100,19 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::Redo => handlers::develop::handle_redo(editor),
         Message::ResetEdits => handlers::develop::handle_reset_edits(editor),
         Message::CopySettings => handlers::develop::handle_copy_settings(editor),
+        Message::CopyAllSettings => handlers::develop::handle_copy_all_settings(editor),
+        Message::CopySettingsConfirmed => {
+            handlers::develop::handle_copy_settings_confirmed(editor)
+        }
+        Message::ToggleCopyCategory(c, v) => {
+            handlers::develop::handle_toggle_copy_category(editor, c, v)
+        }
+        Message::SetAllCopyCategories(v) => {
+            handlers::develop::handle_set_all_copy_categories(editor, v)
+        }
         Message::PasteSettings => handlers::develop::handle_paste_settings(editor),
-        Message::ToggleBeforeAfter => {
-            editor.show_before = !editor.show_before;
-            editor.histogram_cache.clear();
-            Task::none()
+        Message::SetBeforePeek(active) => {
+            handlers::develop::handle_set_before_peek(editor, active)
         }
         Message::ModifiersChanged(m) => {
             editor.last_modifiers = m;
@@ -152,6 +160,7 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::CloseModal => handlers::window::handle_close_modal(editor),
         Message::ModalNoOp => Task::none(),
         Message::Escape => handlers::window::handle_escape(editor),
+        Message::ModalConfirm => handlers::window::handle_modal_confirm(editor),
         Message::ToggleInfoHud => handlers::window::handle_toggle_info_hud(editor),
         Message::SetThumbnailSize(s) => handlers::window::handle_set_thumbnail_size(editor, s),
         Message::SetCacheCapacity(c) => handlers::window::handle_set_cache_capacity(editor, c),

@@ -126,9 +126,26 @@ compute it independently and disagreed at any zoom != 1.0.
 
 1. **Wgpu memory alignment (critical):** any struct sent to a wgpu uniform buffer (e.g. `GpuEditParams`) must be strictly 16-byte aligned. Add explicit padding fields (e.g. `_pad: [f32; 3]`) — misalignment causes GPU memory corruption, not just a panic. Field *offsets* are load-bearing too: `write_view_rect` patches `view_rect` by `offset_of!`, and the WGSL `EditParams` struct is duplicated in both the color and debayer shaders (they share one uniform buffer and must stay byte-identical). The size and offset assertions in `gpu/params.rs`'s tests are the guard — keep them passing rather than adjusting them to match a drift.
 2. **Never block the UI thread:** all disk reads, RAW decodes, EXIF parsing, and cubic spline calculations must run inside `tokio::task::spawn_blocking`. The iced `update` function must return immediately; results flow back in as `Message`s. This includes SQLite: never write from a per-mouse-move path (slider or handle drags). Call `mark_edits_dirty()` there and let `flush_edits()` persist at the commit points — `CommitEdit`, drag release, image switch, tab switch, window close. Missing a flush point loses the last gesture's edits.
-3. **Separation of concerns:** keep wgpu logic isolated from iced logic. Iced code should only pass plain Rust primitives/structs/flags down into `SharedContext`/`ImageResources` — no wgpu types leaking into `src/app/`.
-4. **Error handling:** use `tracing::info!`/`tracing::error!` for backend operations. Never `.unwrap()` on file I/O or wgpu buffer mapping — propagate the error to UI state or fall back gracefully.
-5. **Schema changes:** when changing the SQLite schema, update every SQL query and the corresponding struct in `src/database/models.rs` in the same change; stale DBs must be deleted/migrated (no auto-migration tooling exists yet).
+3. **Rendering params that aren't the user's edits:** never assign to
+   `current_edit_params` to preview something (before/after peek, a proposed
+   look, a thumbnail variant). `update_pipeline` marks edits dirty, and any
+   flush point that fires meanwhile — CommitEdit, drag release, image switch,
+   tab switch, window close — persists those temporary values to SQLite over
+   the user's real work. Thread the params through
+   `develop::push_uniforms_and_render(editor, &params)` instead, and note that
+   `resolve_wb_and_dcp` takes `params` for the same reason: reading the
+   editor's own params there would give a hybrid of two states (default
+   exposure with slider-derived WB and tone curve).
+4. **One key, one message:** `subscription()` returns a single
+   `Option<Message>` per event and has no access to editor state, so two
+   features cannot bind the same key. Shared keys route at the handler:
+   `Enter` → `Message::ModalConfirm` → dispatch on `active_modal`
+   (`handlers::window::handle_modal_confirm`). Modal-scoped shortcuts bind
+   globally and guard with `if editor.active_modal != Modal::X { return
+   Task::none(); }` as the handler's first line.
+5. **Separation of concerns:** keep wgpu logic isolated from iced logic. Iced code should only pass plain Rust primitives/structs/flags down into `SharedContext`/`ImageResources` — no wgpu types leaking into `src/app/`.
+6. **Error handling:** use `tracing::info!`/`tracing::error!` for backend operations. Never `.unwrap()` on file I/O or wgpu buffer mapping — propagate the error to UI state or fall back gracefully.
+7. **Schema changes:** when changing the SQLite schema, update every SQL query and the corresponding struct in `src/database/models.rs` in the same change; stale DBs must be deleted/migrated (no auto-migration tooling exists yet).
 
 ## Design Language
 "Premium Creative Pro" meets "Turbo Nerd": deep charcoal/zinc dark mode (`#0A0A0A`–`#111113`), stark white text, electric orange (`#F97316`) accents. "Pure Contact Sheet" aesthetic — images have 0.0 border radius, no intrusive filename overlays. Technical metrics use monospace fonts. Styling lives in `src/ui/styles.rs` / `src/ui/palette.rs`.

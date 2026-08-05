@@ -62,7 +62,7 @@ Blazing fast image ingestion and metadata management.
 ### Installation
 ```bash
 # Clone the repository
-git clone https://github.com/your-repo/raw-editor.git
+git clone https://github.com/HappySlappyFace/RawEditor
 cd raw-editor
 
 # Run in release mode for the best experience
