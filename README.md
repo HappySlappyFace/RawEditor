@@ -24,6 +24,89 @@ services, no account.
 
 ---
 
+## The home screen
+
+The Library is the catalogue: import folders, browse the grid, filter and
+select. Thumbnails stream in as they are generated, so a large import is
+browsable immediately rather than after it finishes. The grid size is
+adjustable, and the folder filter and star-rating filter narrow what you see.
+
+![Alt text](./docs/screenshots/library.png)
+
+Images can be rated (0–5), flagged (pick / reject) or marked for removal.
+Marking for removal hides an image from Develop while leaving it — and the file
+on disk — completely untouched, so you can commit to deleting later. Deleting
+from disk moves files to the system trash rather than unlinking them.
+
+---
+
+## Culling
+
+A full-screen single-image view built for going through a shoot quickly.
+Arrow keys move through the set, ratings and flags are single keypresses, and
+optional auto-advance moves to the next frame as soon as you rate the current
+one.
+
+![Alt text](./docs/screenshots/cull.png)
+
+The filmstrip scrolls with weighted momentum — flick it and it glides, scroll
+against the motion and it stops immediately.
+
+---
+
+## Develop
+
+The editing module. Adjustments are applied by a WGSL pipeline that reads the
+raw Bayer mosaic and produces the displayed image, so what you see is the real
+render rather than a proxy.
+
+![Alt text](./docs/screenshots/develop.png)
+
+**Colour.** Real white balance solved through the camera's own colour matrix:
+the Temperature and Tint sliders pivot around the as-shot values, in Kelvin and
+standard tint units, and an eyedropper sets them from any neutral in the frame.
+Where a camera profile (`.dcp`) is installed for your camera, the full profile
+pipeline is used — dual-illuminant interpolation, the hue/saturation map as a
+3D LUT, and the profile's own tone curve — rather than a naive 3×3 matrix.
+
+**Tone.** Exposure, contrast, highlights, shadows, whites and blacks. Highlight
+recovery works in scene-linear space before the tone curve's shoulder, so
+pulling back a blown sky restores gradation instead of turning it flat grey.
+
+**Selectable tone mapping.** The profile's tone curve is one option among
+several: Camera (the calibrated default), Filmic, Reinhard, Hable, ACES and
+GT (the Gran Turismo curve, with its toe, midsection and shoulder exposed as
+sliders). Switching operators costs no per-pixel work — each is baked into a
+lookup table on the CPU.
+
+![Alt text](./docs/screenshots/tone-mapping.png)
+
+**Local adjustments.** Up to eight linear or radial masks per image, evaluated
+analytically on the GPU. Radial masks rotate for faces and other off-axis
+subjects. Each carries its own exposure, contrast, saturation, warmth, tint,
+highlights and shadows.
+
+![Alt text](./docs/screenshots/masks.png)
+
+**Crop and geometry.** Non-destructive crop with a straighten slider. Crop mode
+reveals the full sensor area with the discarded region dimmed, so you can
+recompose against everything the camera captured.
+
+**Detail.** Luminance and colour noise reduction, and edge-masked unsharp
+sharpening.
+
+**History and copying.** Full undo/redo per image. Settings can be copied
+between images by category — tone, colour, white balance, noise, detail,
+geometry, profile, and local masks — so you can push a white balance across a
+shoot without disturbing anything else.
+
+![Alt text](./docs/screenshots/copy-settings.png)
+
+
+**Export.** JPEG, PNG, or 16-bit TIFF, optionally resized, in batches.
+
+---
+
 ## Performance is the point
 
 Most of the architecture exists to keep the interface responsive while the work
@@ -62,89 +145,7 @@ on every mouse-move.
 graph: CPU, encode and GPU time per frame, the current magnification, the
 render target size, and what fraction of the image the window covers.
 
-> _Screenshot: the performance HUD — `docs/screenshots/performance-hud.png`_
-
----
-
-## The home screen
-
-The Library is the catalogue: import folders, browse the grid, filter and
-select. Thumbnails stream in as they are generated, so a large import is
-browsable immediately rather than after it finishes. The grid size is
-adjustable, and the folder filter and star-rating filter narrow what you see.
-
-> _Screenshot: the library grid — `docs/screenshots/library.png`_
-
-Images can be rated (0–5), flagged (pick / reject) or marked for removal.
-Marking for removal hides an image from Develop while leaving it — and the file
-on disk — completely untouched, so you can commit to deleting later. Deleting
-from disk moves files to the system trash rather than unlinking them.
-
----
-
-## Culling
-
-A full-screen single-image view built for going through a shoot quickly.
-Arrow keys move through the set, ratings and flags are single keypresses, and
-optional auto-advance moves to the next frame as soon as you rate the current
-one.
-
-> _Screenshot: the culling view — `docs/screenshots/cull.png`_
-
-The filmstrip scrolls with weighted momentum — flick it and it glides, scroll
-against the motion and it stops immediately.
-
----
-
-## Develop
-
-The editing module. Adjustments are applied by a WGSL pipeline that reads the
-raw Bayer mosaic and produces the displayed image, so what you see is the real
-render rather than a proxy.
-
-> _Screenshot: the develop module — `docs/screenshots/develop.png`_
-
-**Colour.** Real white balance solved through the camera's own colour matrix:
-the Temperature and Tint sliders pivot around the as-shot values, in Kelvin and
-standard tint units, and an eyedropper sets them from any neutral in the frame.
-Where a camera profile (`.dcp`) is installed for your camera, the full profile
-pipeline is used — dual-illuminant interpolation, the hue/saturation map as a
-3D LUT, and the profile's own tone curve — rather than a naive 3×3 matrix.
-
-**Tone.** Exposure, contrast, highlights, shadows, whites and blacks. Highlight
-recovery works in scene-linear space before the tone curve's shoulder, so
-pulling back a blown sky restores gradation instead of turning it flat grey.
-
-**Selectable tone mapping.** The profile's tone curve is one option among
-several: Camera (the calibrated default), Filmic, Reinhard, Hable, ACES and
-GT (the Gran Turismo curve, with its toe, midsection and shoulder exposed as
-sliders). Switching operators costs no per-pixel work — each is baked into a
-lookup table on the CPU.
-
-> _Screenshot: tone mapping options — `docs/screenshots/tone-mapping.png`_
-
-**Local adjustments.** Up to eight linear or radial masks per image, evaluated
-analytically on the GPU. Radial masks rotate for faces and other off-axis
-subjects. Each carries its own exposure, contrast, saturation, warmth, tint,
-highlights and shadows.
-
-> _Screenshot: a radial mask in use — `docs/screenshots/masks.png`_
-
-**Crop and geometry.** Non-destructive crop with a straighten slider. Crop mode
-reveals the full sensor area with the discarded region dimmed, so you can
-recompose against everything the camera captured.
-
-**Detail.** Luminance and colour noise reduction, and edge-masked unsharp
-sharpening.
-
-**History and copying.** Full undo/redo per image. Settings can be copied
-between images by category — tone, colour, white balance, noise, detail,
-geometry, profile, and local masks — so you can push a white balance across a
-shoot without disturbing anything else.
-
-> _Screenshot: the copy settings picker — `docs/screenshots/copy-settings.png`_
-
-**Export.** JPEG, PNG, or 16-bit TIFF, optionally resized, in batches.
+![Alt text](./docs/screenshots/performance-hud.png)
 
 ---
 
@@ -249,7 +250,7 @@ cargo clippy            # lints
 
 ## Status
 
-Working and in daily use, but young. Known gaps:
+Working and in use, but young. Known gaps:
 
 - Noise reduction and sharpening do not yet match Lightroom's quality.
 - Keyboard shortcuts are not user-configurable.
