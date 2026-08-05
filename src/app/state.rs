@@ -198,7 +198,7 @@ pub struct RawEditor {
     // Phase 140: Currently loaded DCP profile
     pub current_dcp_profile: Option<Arc<crate::raw::dcp::DcpProfile>>,
     /// Memo for `resolve_wb_and_dcp`, keyed on the only two inputs the
-    /// interpolation depends on: `(kelvin, profile_curve)`.
+    /// interpolation depends on: `(kelvin, ToneSettings)`.
     ///
     /// Without it, every slider tick — exposure, contrast, a mask drag —
     /// rebuilt the full HueSatMap LUT and re-baked the 1024-entry tone curve,
@@ -209,7 +209,13 @@ pub struct RawEditor {
     /// `&RawEditor` signature: the crop and mask drag paths call it while
     /// holding an immutable borrow of `gpu_context`/`image_resources`.
     /// Cleared on image load, where `current_dcp_profile` changes.
-    pub dcp_memo: std::cell::RefCell<Option<(f32, f32, Arc<crate::raw::dcp::InterpolatedProfile>)>>,
+    pub dcp_memo: std::cell::RefCell<
+        Option<(
+            f32,
+            crate::core::tonemap::ToneSettings,
+            Arc<crate::raw::dcp::InterpolatedProfile>,
+        )>,
+    >,
     /// As-shot white balance of the current image as (Kelvin, Adobe tint),
     /// solved from the camera's WB multipliers via the color matrix (Robertson
     /// CCT). Anchor for the Temp/Tint sliders; None until a raw is loaded.

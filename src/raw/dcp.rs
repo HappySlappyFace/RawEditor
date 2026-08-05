@@ -1,5 +1,6 @@
 // src/raw/dcp.rs
 
+use crate::core::tonemap::{tone_lut_decode, ToneSettings, TONE_LUT_SIZE};
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -185,9 +186,13 @@ pub struct InterpolatedProfile {
     /// both matrices are constant across a frame, so their product is too.
     ///
     /// Recomputed only when the DCP is re-interpolated, which
-    /// `RawEditor::dcp_memo` already gates on `(kelvin, profile_curve)`.
+    /// `RawEditor::dcp_memo` already gates on `(kelvin, ToneSettings)`.
     pub camera_to_prophoto: [f32; 9],
     pub hue_sat_lut: Vec<[f32; 3]>,
+    /// Tone LUT for the CURRENTLY SELECTED operator — which is the profile's
+    /// own ProfileToneCurve only while `ToneMapper::Camera` is active. Indexed
+    /// by `tonemap::tone_lut_encode`, display-linear output. See
+    /// `bake_tone_curve`.
     pub tone_curve: Vec<f32>,
     pub hue_sat_dims: (u32, u32, u32),
     /// True when the DCP embeds a ProfileToneCurve. "Adobe Standard" profiles
@@ -315,7 +320,7 @@ pub fn interpolate_color_matrix(profile: &DcpProfile, kelvin: f32) -> [f32; 9] {
 pub fn interpolate_at_temperature(
     profile: &DcpProfile,
     kelvin: f32,
-    curve_strength: f32,
+    tone: ToneSettings,
 ) -> InterpolatedProfile {
     let weight = illuminant_weight(profile, kelvin);
 
@@ -357,9 +362,13 @@ pub fn interpolate_at_temperature(
     };
 
     let has_tone_curve = profile.tone_curve.is_some();
-    let baked_curve = profile.tone_curve.as_deref()
-        .map(|pts| bake_tone_curve(pts, curve_strength))
-        .unwrap_or_else(|| (0..1024).map(|i| i as f32 / 1023.0).collect());
+    // `bake_tone_curve` handles the no-points case itself, so a profile with
+    // no embedded curve and a non-Camera operator selected still gets that
+    // operator's table rather than an identity ramp.
+    let baked_curve = bake_tone_curve(
+        profile.tone_curve.as_deref().unwrap_or(&[]),
+        tone,
+    );
 
     InterpolatedProfile {
         camera_to_prophoto,
@@ -388,16 +397,54 @@ fn linear_to_srgb(v: f32) -> f32 {
     }
 }
 
-/// Bake the DCP ProfileToneCurve into a 1024-entry linear-output LUT.
-///
-/// `strength` blends the profile curve against a flat rendering, computed in
-/// display space where the curve is defined: 1.0 = full profile curve,
-/// 0.0 = plain sRGB gamma (no added contrast).
-pub fn bake_tone_curve(points: &[(f32, f32)], strength: f32) -> Vec<f32> {
-    if points.is_empty() {
-        return (0..1024).map(|i| i as f32 / 1023.0).collect();
+/// Piecewise-linear evaluation of a ProfileToneCurve's control points,
+/// holding the end values outside the sampled range.
+fn eval_curve_points(points: &[(f32, f32)], x: f32) -> f32 {
+    if x <= points[0].0 {
+        return points[0].1;
     }
-    let strength = strength.clamp(0.0, 1.0);
+    let last = points.last().expect("caller checked non-empty");
+    if x >= last.0 {
+        return last.1;
+    }
+    points
+        .windows(2)
+        .find(|w| x >= w[0].0 && x <= w[1].0)
+        .map(|w| {
+            let t = (x - w[0].0) / (w[1].0 - w[0].0);
+            w[0].1 * (1.0 - t) + w[1].1 * t
+        })
+        .unwrap_or(x)
+}
+
+/// Bake the selected tone rendering into a display-linear LUT of
+/// `TONE_LUT_SIZE` entries.
+///
+/// Entry `i` holds the curve evaluated at the scene-linear value that LUT
+/// coordinate `i / (N-1)` stands for — the table is indexed by
+/// `tonemap::tone_lut_encode`, NOT uniformly over [0,1], so that one table can
+/// serve operators whose domain runs well past 1.0. See `core::tonemap`.
+///
+/// `points` is the profile's own ProfileToneCurve and is used only when
+/// `tone.mapper` is `Camera`; every other operator replaces this stage
+/// outright and needs no profile at all (which is what lets them work on
+/// images with no DCP).
+pub fn bake_tone_curve(points: &[(f32, f32)], tone: ToneSettings) -> Vec<f32> {
+    if tone.mapper.is_baked_operator() {
+        return crate::core::tonemap::bake(tone.mapper, tone.gt);
+    }
+
+    if points.is_empty() {
+        // No embedded curve: the LUT must be a no-op, and `sample_tone_curve`
+        // looks up by ENCODED coordinate — so the identity table is `decode`,
+        // not a uniform ramp. (The shader's Step 15 filmic block supplies the
+        // rendering curve in this case.)
+        return (0..TONE_LUT_SIZE)
+            .map(|i| tone_lut_decode(i as f32 / (TONE_LUT_SIZE - 1) as f32))
+            .collect();
+    }
+
+    let strength = tone.profile_curve.clamp(0.0, 1.0);
     // Adobe ProfileToneCurve points map LINEAR input → GAMMA-ENCODED (display)
     // output — the curve embeds the ~2.2 display gamma plus the profile's
     // contrast s-curve (e.g. the ACR default maps 0.18 → ≈0.48 ≈ 0.18^(1/2.2)).
@@ -406,25 +453,23 @@ pub fn bake_tone_curve(points: &[(f32, f32)], strength: f32) -> Vec<f32> {
     // output linearised.  At default settings the final encode then reproduces
     // the profile's intended rendering exactly; applying the raw curve values
     // instead double-gammas the image (~+1.3 EV apparent overexposure).
-    (0..1024usize).map(|i| {
-        let x = i as f32 / 1023.0;
-        let y = if x <= points[0].0 {
-            points[0].1
-        } else if x >= points.last().unwrap().0 {
-            points.last().unwrap().1
-        } else {
-            points.windows(2)
-                .find(|w| x >= w[0].0 && x <= w[1].0)
-                .map(|w| {
-                    let t = (x - w[0].0) / (w[1].0 - w[0].0);
-                    w[0].1 * (1.0 - t) + w[1].1 * t
-                })
-                .unwrap_or(x)
-        };
-        // Blend toward "no curve" (= plain sRGB gamma) in display space.
-        let y_blended = strength * y + (1.0 - strength) * linear_to_srgb(x);
-        srgb_to_linear(y_blended)
-    }).collect()
+    //
+    // This is the one operator whose output needs that conversion — everything
+    // in `core::tonemap` is display-LINEAR already.
+    (0..TONE_LUT_SIZE)
+        .map(|i| {
+            let t = i as f32 / (TONE_LUT_SIZE - 1) as f32;
+            // The profile curve is only defined over [0,1]. On the Camera path
+            // the shader's Reinhard knee runs first and is asymptotic to 1.0,
+            // so inputs never actually exceed it; this clamp is defensive and
+            // reproduces the old [0,1]-domain table's behaviour exactly.
+            let x = tone_lut_decode(t).min(1.0);
+            let y = eval_curve_points(points, x);
+            // Blend toward "no curve" (= plain sRGB gamma) in display space.
+            let y_blended = strength * y + (1.0 - strength) * linear_to_srgb(x);
+            srgb_to_linear(y_blended)
+        })
+        .collect()
 }
 
 pub fn find_profile_for_camera(_make: &str, model: &str) -> Option<PathBuf> {

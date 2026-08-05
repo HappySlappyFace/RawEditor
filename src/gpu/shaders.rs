@@ -177,7 +177,10 @@ struct EditParams {
 
     // Local adjustment masks (Step 10.5). Only the first mask_count are active.
     mask_count: u32,
-    pad_masks_1: u32,
+    // Selected tone mapping operator. Only Camera (0) vs non-Camera is read;
+    // the operator's shape arrives baked into the tone curve LUT. Occupies a
+    // formerly-dead pad slot, so no offset moved. See gpu/params.rs.
+    tone_mapper: u32,
     pad_masks_2: u32,
     pad_masks_3: u32,
     masks: array<Mask, 8>,
@@ -283,12 +286,31 @@ fn mask_weight(m: Mask, p: vec2<f32>, aspect: f32) -> f32 {
     return w;
 }
 
-// Sample the DCP ProfileToneCurve at texel centers.
-// The curve texture stores N samples of f(i/(N-1)); naive normalized-coordinate
-// sampling is skewed by half a texel at both ends.
+// Top of the scene-linear domain the tone LUT covers.
+// MIRRORED from core::tonemap::TONE_LUT_MAX — the Rust test
+// `shader_tone_lut_constants_match_rust` asserts these agree.
+const TONE_LUT_MAX: f32 = 16.0;
+
+// Tone mapper ids. Only Camera is distinguished here: every other operator's
+// SHAPE arrives baked into the curve LUT, so the shader needs no per-operator
+// branch and no per-operator cost. See core::tonemap.
+const TONE_CAMERA: u32 = 0u;
+
+// Scene-linear → tone LUT coordinate. Log-encoded so one 4096-entry table can
+// span [0, TONE_LUT_MAX] while still spending ~1000 entries below 1.0, where
+// tone curves are steepest. Must match core::tonemap::tone_lut_encode exactly,
+// or the baked table is read at the wrong positions.
+fn tone_lut_encode(x: f32) -> f32 {
+    return log2(1.0 + max(x, 0.0)) / log2(1.0 + TONE_LUT_MAX);
+}
+
+// Sample the tone curve at texel centers.
+// The curve texture stores N samples of f(decode(i/(N-1))); naive normalized-
+// coordinate sampling is skewed by half a texel at both ends.
 fn sample_tone_curve(x: f32) -> f32 {
     let n = f32(textureDimensions(tone_curve));
-    let c = (clamp(x, 0.0, 1.0) * (n - 1.0) + 0.5) / n;
+    let t = clamp(tone_lut_encode(x), 0.0, 1.0);
+    let c = (t * (n - 1.0) + 0.5) / n;
     return textureSampleLevel(tone_curve, lut_sampler, c, 0.0).r;
 }
 
@@ -655,20 +677,32 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         let hs_level = max(pp.r, max(pp.g, pp.b));
         pp = apply_highlights_shadows(pp, params.highlights, params.shadows, hs_level);
 
-        // Highlight shoulder: WB amplification pushes bright pixels above 1.0
-        // linear (a bright blue puck: raw 0.75 × wb_b 1.45 ≈ 1.09).  Everything
-        // downstream — the HueSatMap value axis and the tone-curve LUT — clamps
-        // input at 1.0, so all values > 1 collapse to one flat output: blown
-        // highlights with zero gradation.  Compress [0.7, ∞) smoothly into
-        // [0.7, 1.0) per channel instead (C1-continuous Reinhard knee).  This
+        // Highlight shoulder — CAMERA OPERATOR ONLY.
+        //
+        // WB amplification pushes bright pixels above 1.0 linear (a bright blue
+        // puck: raw 0.75 × wb_b 1.45 ≈ 1.09). The DCP ProfileToneCurve is
+        // DEFINED only on [0,1], so without this every value > 1 would collapse
+        // to one flat output: blown highlights with zero gradation. Compress
+        // [0.7, ∞) smoothly into [0.7, 1.0) per channel instead (C1-continuous
+        // Reinhard knee). Being per-channel is deliberate, not incidental: it
         // also lets bright pixels sample the profile's top value slices, where
-        // camera-matching profiles deliberately desaturate/darken (this DCP
-        // scales saturated cyan sat ×0.78 and red value ×0.65–0.85 up there).
-        let sh_knee: f32 = 0.7;
-        let sh_head: f32 = 1.0 - sh_knee;
-        if (pp.r > sh_knee) { let o = pp.r - sh_knee; pp.r = sh_knee + sh_head * o / (o + sh_head); }
-        if (pp.g > sh_knee) { let o = pp.g - sh_knee; pp.g = sh_knee + sh_head * o / (o + sh_head); }
-        if (pp.b > sh_knee) { let o = pp.b - sh_knee; pp.b = sh_knee + sh_head * o / (o + sh_head); }
+        // camera-matching profiles desaturate/darken (this DCP scales saturated
+        // cyan sat ×0.78 and red value ×0.65–0.85 up there).
+        //
+        // Every OTHER operator is itself the scene-linear → display mapping,
+        // and its LUT spans [0, TONE_LUT_MAX]. Kneeing first would hand it an
+        // already-compressed signal and it would tone-map a tone-mapped image —
+        // the exact failure that made Highlights recovery return grey instead
+        // of texture. So the knee is skipped and the operator sees the real
+        // scene-linear range. (The HueSatMap's value axis still clamps at 1.0
+        // for its LOOKUP, which is correct: it only selects a value slice.)
+        if (params.tone_mapper == TONE_CAMERA) {
+            let sh_knee: f32 = 0.7;
+            let sh_head: f32 = 1.0 - sh_knee;
+            if (pp.r > sh_knee) { let o = pp.r - sh_knee; pp.r = sh_knee + sh_head * o / (o + sh_head); }
+            if (pp.g > sh_knee) { let o = pp.g - sh_knee; pp.g = sh_knee + sh_head * o / (o + sh_head); }
+            if (pp.b > sh_knee) { let o = pp.b - sh_knee; pp.b = sh_knee + sh_head * o / (o + sh_head); }
+        }
 
         // 3. ProPhoto HSV for HueSatMap lookup
         let v    = max(pp.r, max(pp.g, pp.b));
@@ -999,8 +1033,28 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // "Adobe Standard" DCPs carry NO embedded curve (they expect the host's
     // default curve), so the filmic curve stays on for them and for the
     // no-DCP fallback path.
+    //
+    // Tone rendering is ONE selected stage (params.tone_mapper). Reaching it
+    // splits by path, because the two paths tone-map at different points:
+    //   • DCP path — already handled above, at the ProfileToneCurve slot,
+    //     which is where a tone curve belongs relative to the HueSatMap.
+    //   • Fallback path (no profile) — nothing has curved it yet, so the
+    //     selected operator is applied here.
+    // Getting this gate wrong double-tone-maps, which is what the old
+    // dcp_has_curve condition existed to prevent.
     color = max(color, vec3<f32>(0.0));
-    if (params.has_dcp == 0u || params.dcp_has_curve == 0u) {
+    if (params.tone_mapper != TONE_CAMERA) {
+        if (params.has_dcp == 0u) {
+            // Same baked LUT and same hue-preserving application the DCP path
+            // uses — the operator does not care which colour space fed it, and
+            // RGBTone beats the naive per-channel application these operators
+            // normally get.
+            color = dcp_rgb_tone(color);
+        }
+    } else if (params.has_dcp == 0u || params.dcp_has_curve == 0u) {
+        // Camera operator with no curve to speak of: the built-in filmic
+        // rendering. Mirrored on the CPU as core::tonemap::filmic, so
+        // selecting "Filmic" explicitly produces identical numbers.
         let tone_lift: f32 = 0.08;
         color = color * (vec3<f32>(1.0 + tone_lift) - tone_lift * color);
 
@@ -1141,7 +1195,10 @@ struct EditParams {
     // Local adjustment masks — unused in the debayer pass, but the layout must
     // stay byte-identical to the color shader's EditParams (shared buffer).
     mask_count: u32,
-    pad_masks_1: u32,
+    // Selected tone mapping operator. Only Camera (0) vs non-Camera is read;
+    // the operator's shape arrives baked into the tone curve LUT. Occupies a
+    // formerly-dead pad slot, so no offset moved. See gpu/params.rs.
+    tone_mapper: u32,
     pad_masks_2: u32,
     pad_masks_3: u32,
     masks: array<Mask, 8>,
@@ -1375,5 +1432,29 @@ mod tests {
     #[test]
     fn debayer_shader_is_valid_wgsl() {
         validate_wgsl(DEBAYER_SHADER, "DEBAYER_SHADER");
+    }
+
+    /// The tone LUT's domain is encoded on the CPU (at bake time) and decoded
+    /// in the shader (at sample time). If the two constants drift, every
+    /// lookup lands at the wrong scene-linear value and the whole image
+    /// shifts — silently, with no crash and no validation error.
+    #[test]
+    fn shader_tone_lut_constants_match_rust() {
+        let expected = format!(
+            "const TONE_LUT_MAX: f32 = {:.1};",
+            crate::core::tonemap::TONE_LUT_MAX
+        );
+        assert!(
+            PASSTHROUGH_SHADER.contains(&expected),
+            "shader is missing `{expected}` — CPU/GPU tone LUT domains disagree"
+        );
+    }
+
+    /// The two WGSL `EditParams` structs alias ONE uniform buffer, so a field
+    /// added to only one of them silently misreads every field after it.
+    #[test]
+    fn both_shaders_declare_the_tone_mapper_field() {
+        assert!(PASSTHROUGH_SHADER.contains("tone_mapper: u32,"));
+        assert!(DEBAYER_SHADER.contains("tone_mapper: u32,"));
     }
 }

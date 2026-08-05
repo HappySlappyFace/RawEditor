@@ -157,13 +157,10 @@ fn view_sidebar(editor: &RawEditor) -> iced::widget::Column<'_, Message> {
             0.005,
             Message::BlacksChanged,
         ))
-        .push(slider_row(
-            "Profile Curve",
-            editor.current_edit_params.profile_curve,
-            0.0..=1.0,
-            0.01,
-            Message::ProfileCurveChanged,
-        ))
+        .push(text("Tone Mapping").size(14))
+        .push(tone_mapper_selector(editor))
+        .push(tone_mapper_hint(editor))
+        .push(tone_shape_controls(editor))
         .push(text("Color").size(14))
         .push({
             // Real WB readout: sliders pivot around the camera's as-shot values.
@@ -917,6 +914,99 @@ fn push_mask_section<'a>(
     }
 
     sidebar
+}
+
+/// Operator picker: two rows of small buttons, the active one accented.
+///
+/// Buttons rather than a `pick_list` because the whole sidebar is already
+/// built from this vocabulary (see the WB Picker toggle) and a stock dropdown
+/// would need styling from scratch to not look pasted in. It also keeps every
+/// option visible, which matters when the options are looks to compare.
+fn tone_mapper_selector(editor: &RawEditor) -> Element<'_, Message> {
+    use crate::core::tonemap::ToneMapper;
+    let active = editor.current_edit_params.tone_mapper;
+
+    let make = |m: ToneMapper| -> Element<'_, Message> {
+        button(text(m.label()).size(11))
+            .width(Length::Fill)
+            .style(if m == active {
+                ui::styles::AccentButton::style
+            } else {
+                ui::styles::NeutralButton::style
+            })
+            .on_press(Message::ToneMapperChanged(m))
+            .into()
+    };
+
+    let mut top = row![].spacing(4);
+    let mut bottom = row![].spacing(4);
+    for (i, m) in ToneMapper::ALL.into_iter().enumerate() {
+        if i < 3 {
+            top = top.push(make(m));
+        } else {
+            bottom = bottom.push(make(m));
+        }
+    }
+    column![top, bottom].spacing(4).into()
+}
+
+/// One line of plain language about what the current selection actually does.
+/// These operators are not self-explanatory from a six-letter button, and the
+/// difference between "matches your camera" and "is a look" is the single
+/// most useful thing to know here.
+fn tone_mapper_hint(editor: &RawEditor) -> Element<'_, Message> {
+    use crate::core::tonemap::ToneMapper;
+    let hint = match editor.current_edit_params.tone_mapper {
+        ToneMapper::Camera => "Profile curve — calibrated to the camera's own rendering",
+        ToneMapper::Filmic => "Built-in S-curve: midtone lift + highlight rolloff",
+        ToneMapper::Reinhard => "Reference only — flat midtones by design",
+        ToneMapper::Hable => "Uncharted 2 filmic: deep toe, long shoulder",
+        ToneMapper::AcesFitted => "ACES tone response (Narkowicz fit) — contrasty",
+        ToneMapper::Gt => "Gran Turismo — linear mids, shaped toe and shoulder",
+    };
+    text(hint)
+        .size(10)
+        .style(|_theme| text::Style {
+            color: Some(Color::from_rgb(0.45, 0.45, 0.45)),
+        })
+        .into()
+}
+
+/// The shape controls belonging to the selected operator: the profile-curve
+/// blend for `Camera`, GT's four parameters for `Gt`, nothing for the rest
+/// (they are fixed published curves with no exposed knobs).
+fn tone_shape_controls(editor: &RawEditor) -> Element<'_, Message> {
+    use crate::app::message::GtParam;
+    use crate::core::tonemap::ToneMapper;
+
+    let p = &editor.current_edit_params;
+    match p.tone_mapper {
+        ToneMapper::Camera => column![slider_row(
+            "Profile Curve",
+            p.profile_curve,
+            0.0..=1.0,
+            0.01,
+            Message::ProfileCurveChanged,
+        )]
+        .into(),
+        ToneMapper::Gt => column![
+            slider_row("Contrast", p.gt.contrast, 0.1..=3.0, 0.01, |v| {
+                Message::GtParamChanged(GtParam::Contrast, v)
+            }),
+            slider_row("Linear Start", p.gt.linear_start, 0.01..=0.9, 0.01, |v| {
+                Message::GtParamChanged(GtParam::LinearStart, v)
+            }),
+            slider_row("Linear Length", p.gt.linear_length, 0.0..=1.0, 0.01, |v| {
+                Message::GtParamChanged(GtParam::LinearLength, v)
+            }),
+            slider_row("Black Tight", p.gt.black_tightness, 0.5..=4.0, 0.01, |v| {
+                Message::GtParamChanged(GtParam::BlackTightness, v)
+            }),
+        ]
+        .spacing(6)
+        .into(),
+        _ => column![].into(),
+    }
 }
 
 fn slider_row<'a, F>(

@@ -8,6 +8,7 @@ use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
 use super::params::GpuEditParams;
+use crate::core::tonemap::{ToneSettings, TONE_LUT_SIZE};
 use crate::core::types::EditParams;
 use crate::gpu::shaders;
 
@@ -344,14 +345,63 @@ pub struct ImageResources {
     pub tone_curve_texture: wgpu::Texture,
     pub tone_curve_view: wgpu::TextureView,
     pub has_dcp: bool,
+    /// True when the DCP embeds a ProfileToneCurve. Only consulted while the
+    /// `Camera` tone operator is active; every other operator supplies its own
+    /// curve regardless of what the profile carries.
     pub dcp_has_curve: bool,
     /// Normalised EXIF orientation (1/3/6/8). Sensor textures stay landscape;
     /// the color pass maps display UVs to sensor space, and render targets are
     /// sized to `oriented_*` dims.
     pub orientation: u32,
-    /// Cache key of the last DCP LUT upload: (kelvin, profile_curve strength).
-    /// Skips redundant HSM-3D-LUT / tone-curve texture uploads per render.
-    pub last_uploaded_dcp_kelvin: std::sync::RwLock<Option<(f32, f32)>>,
+    /// Temperature slider value at the last HueSatMap 3D LUT upload.
+    ///
+    /// Kept SEPARATE from the tone key below because the two textures have
+    /// genuinely different dependencies: the HSM is re-interpolated only by
+    /// temperature, while the ~8 KB tone curve also moves with the tone
+    /// operator and its parameters. Sharing one key meant dragging a
+    /// tone-shape slider re-uploaded the ~90 KB 3D LUT every frame for no
+    /// reason.
+    pub last_uploaded_hsm_temp: std::sync::RwLock<Option<f32>>,
+    /// Tone settings at the last curve-LUT upload. Skips redundant uploads on
+    /// every unrelated slider tick.
+    pub last_uploaded_tone: std::sync::RwLock<Option<crate::core::tonemap::ToneSettings>>,
+}
+
+/// Upload a baked tone curve into the 1D curve texture.
+///
+/// Shared by construction and by `update_uniforms` so the two cannot disagree
+/// about format or row pitch. Samples are display-linear and indexed by
+/// `tonemap::tone_lut_encode` — see `core::tonemap`.
+fn write_tone_curve(context: &SharedContext, texture: &wgpu::Texture, curve: &[f32]) {
+    // Pad or truncate to the texture's exact width: a short table would leave
+    // stale samples at the top of the curve, which reads as a highlight shift.
+    let mut samples: Vec<half::f16> = curve
+        .iter()
+        .take(TONE_LUT_SIZE)
+        .map(|&v| half::f16::from_f32(v))
+        .collect();
+    let last = samples.last().copied().unwrap_or(half::f16::ZERO);
+    samples.resize(TONE_LUT_SIZE, last);
+
+    context.queue.write_texture(
+        wgpu::ImageCopyTexture {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        bytemuck::cast_slice(&samples),
+        wgpu::ImageDataLayout {
+            offset: 0,
+            bytes_per_row: Some((TONE_LUT_SIZE * 2) as u32),
+            rows_per_image: None,
+        },
+        wgpu::Extent3d {
+            width: TONE_LUT_SIZE as u32,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+    );
 }
 
 /// Compute stride for Bayer subsampling.
@@ -696,7 +746,7 @@ impl ImageResources {
         
         let tone_curve_texture = context.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Tone Curve 1D Texture"),
-            size: wgpu::Extent3d { width: 1024, height: 1, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d { width: TONE_LUT_SIZE as u32, height: 1, depth_or_array_layers: 1 },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D1,
@@ -714,13 +764,18 @@ impl ImageResources {
                 extent,
             );
 
-            // Write Tone Curve
-            let tc_f16: Vec<half::f16> = dcp.tone_curve.iter().map(|&v| half::f16::from_f32(v)).collect();
-            context.queue.write_texture(
-                wgpu::ImageCopyTexture { texture: &tone_curve_texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-                bytemuck::cast_slice(&tc_f16),
-                wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(1024 * 2), rows_per_image: None },
-                wgpu::Extent3d { width: 1024, height: 1, depth_or_array_layers: 1 },
+            // Already baked for the selected operator — `interpolate_at_temperature`
+            // takes the ToneSettings, so this is not necessarily the profile's
+            // own curve.
+            write_tone_curve(context, &tone_curve_texture, &dcp.tone_curve);
+        } else if params.tone_mapper.is_baked_operator() {
+            // No profile, but the user picked an operator. Nothing about these
+            // operators is profile-dependent, so bake directly — this is what
+            // lets tone mapping work on cameras with no DCP installed.
+            write_tone_curve(
+                context,
+                &tone_curve_texture,
+                &crate::core::tonemap::bake(params.tone_mapper, params.gt),
             );
         }
 
@@ -794,7 +849,8 @@ impl ImageResources {
             orientation,
             // None → the first update_uniforms after load re-uploads the LUTs
             // once with the anchored-kelvin interpolation (cheap, ~90 KB).
-            last_uploaded_dcp_kelvin: std::sync::RwLock::new(None),
+            last_uploaded_hsm_temp: std::sync::RwLock::new(None),
+            last_uploaded_tone: std::sync::RwLock::new(None),
         };
 
         // Phase 128: Run initial debayer pass
@@ -874,23 +930,27 @@ impl ImageResources {
         // DCP at its anchored kelvin whenever `temperature` moves, so the
         // slider value is a faithful proxy for "the LUT content changed".
         let current_temp = params.temperature;
-        let current_strength = params.profile_curve;
-        let mut needs_lut_upload = true;
+        let tone = ToneSettings::from_params(params);
 
-        if let Ok(last_key) = self.last_uploaded_dcp_kelvin.read() {
-            if let Some((t, s)) = *last_key {
-                if (t - current_temp).abs() < 0.0005 && (s - current_strength).abs() < 0.001 {
-                    needs_lut_upload = false;
-                }
-            }
-        }
+        let hsm_dirty = self
+            .last_uploaded_hsm_temp
+            .read()
+            .ok()
+            .and_then(|last| *last)
+            .is_none_or(|t| (t - current_temp).abs() >= 0.0005);
+        let tone_dirty = self
+            .last_uploaded_tone
+            .read()
+            .ok()
+            .and_then(|last| *last)
+            .is_none_or(|prev| prev != tone);
 
         if let Some(dcp) = dcp_profile {
             if let Ok(mut matrix) = self.forward_matrix.write() {
                 *matrix = dcp.camera_to_prophoto;
             }
 
-            if needs_lut_upload {
+            if hsm_dirty {
                 // Re-upload the LUT texture (temperature slider re-interpolated it)
                 let (lut_data, extent, padded_bytes_per_row) = build_hsm_lut_upload(dcp);
                 context.queue.write_texture(
@@ -899,19 +959,31 @@ impl ImageResources {
                     wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(padded_bytes_per_row), rows_per_image: Some(extent.height) },
                     extent,
                 );
-
-                // Re-upload the tone curve (Profile Curve slider re-baked it)
-                let tc_f16: Vec<half::f16> = dcp.tone_curve.iter().map(|&v| half::f16::from_f32(v)).collect();
-                context.queue.write_texture(
-                    wgpu::ImageCopyTexture { texture: &self.tone_curve_texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-                    bytemuck::cast_slice(&tc_f16),
-                    wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(1024 * 2), rows_per_image: None },
-                    wgpu::Extent3d { width: 1024, height: 1, depth_or_array_layers: 1 },
-                );
-
-                if let Ok(mut last) = self.last_uploaded_dcp_kelvin.write() {
-                    *last = Some((current_temp, current_strength));
+                if let Ok(mut last) = self.last_uploaded_hsm_temp.write() {
+                    *last = Some(current_temp);
                 }
+            }
+
+            if tone_dirty {
+                // Already baked for the selected operator by
+                // `interpolate_at_temperature`, which receives the same
+                // ToneSettings this key is built from.
+                write_tone_curve(context, &self.tone_curve_texture, &dcp.tone_curve);
+                if let Ok(mut last) = self.last_uploaded_tone.write() {
+                    *last = Some(tone);
+                }
+            }
+        } else if tone_dirty && tone.mapper.is_baked_operator() {
+            // No profile: bake the operator directly. `Camera` needs nothing
+            // here — with no profile curve to apply, the shader's own filmic
+            // block renders it and never samples this texture.
+            write_tone_curve(
+                context,
+                &self.tone_curve_texture,
+                &crate::core::tonemap::bake(tone.mapper, tone.gt),
+            );
+            if let Ok(mut last) = self.last_uploaded_tone.write() {
+                *last = Some(tone);
             }
         }
 

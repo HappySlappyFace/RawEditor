@@ -52,6 +52,10 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::ProfileCurveChanged(v) => {
             handlers::develop::handle_profile_curve_changed(editor, v)
         }
+        Message::ToneMapperChanged(m) => {
+            handlers::develop::handle_tone_mapper_changed(editor, m)
+        }
+        Message::GtParamChanged(p, v) => handlers::develop::handle_gt_param_changed(editor, p, v),
         Message::ToggleWbPicker => handlers::develop::handle_toggle_wb_picker(editor),
         Message::WbPicked(u, v) => handlers::develop::handle_wb_picked(editor, u, v),
         Message::SaturationChanged(v) => handlers::develop::handle_saturation_changed(editor, v),

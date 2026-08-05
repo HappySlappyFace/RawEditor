@@ -1,5 +1,6 @@
 use crate::app::message::Message;
 use crate::app::state::{DragMode, RawEditor};
+use crate::core::tonemap::ToneSettings;
 use crate::ui::preview_renderer::CropHandle;
 use iced::Task;
 
@@ -58,6 +59,44 @@ pub fn handle_vibrance_changed(editor: &mut RawEditor, v: f32) -> Task<Message> 
 
 pub fn handle_profile_curve_changed(editor: &mut RawEditor, v: f32) -> Task<Message> {
     editor.current_edit_params.profile_curve = v;
+    update_pipeline(editor)
+}
+
+/// Switch the tone rendering operator.
+///
+/// Commits immediately rather than waiting for a `CommitEdit`: this is a
+/// discrete choice from a button, not a drag, so there is no release event to
+/// hang persistence off.
+pub fn handle_tone_mapper_changed(
+    editor: &mut RawEditor,
+    mapper: crate::core::tonemap::ToneMapper,
+) -> Task<Message> {
+    if editor.current_edit_params.tone_mapper == mapper {
+        return Task::none();
+    }
+    editor.current_edit_params.tone_mapper = mapper;
+    let task = update_pipeline(editor);
+    editor.commit_current_state();
+    task
+}
+
+/// Adjust one GT curve shape parameter. Clamped to the same ranges
+/// `GtParams::sanitised` enforces, so the stored value and the baked curve
+/// never disagree about what the slider meant.
+pub fn handle_gt_param_changed(
+    editor: &mut RawEditor,
+    param: crate::app::message::GtParam,
+    v: f32,
+) -> Task<Message> {
+    use crate::app::message::GtParam;
+    let gt = &mut editor.current_edit_params.gt;
+    match param {
+        GtParam::Contrast => gt.contrast = v,
+        GtParam::LinearStart => gt.linear_start = v,
+        GtParam::LinearLength => gt.linear_length = v,
+        GtParam::BlackTightness => gt.black_tightness = v,
+    }
+    *gt = gt.sanitised();
     update_pipeline(editor)
 }
 
@@ -505,24 +544,31 @@ pub fn handle_wb_picked(editor: &mut RawEditor, u: f32, v: f32) -> Task<Message>
     task
 }
 
-/// Tolerances for reusing a memoized DCP interpolation. `kelvin` comes out of
+/// Tolerance for reusing a memoized DCP interpolation. `kelvin` comes out of
 /// `solve_wb`, which is deterministic, so identical slider state reproduces it
 /// bit-for-bit; the epsilon only absorbs noise, it does not coarsen the slider.
 const DCP_MEMO_KELVIN_EPS: f32 = 0.01;
-const DCP_MEMO_CURVE_EPS: f32 = 0.0005;
 
-/// True when a memo recorded at `(memo_kelvin, memo_curve)` is still valid for
-/// `(kelvin, curve)`.
-fn dcp_memo_is_valid(memo_kelvin: f32, memo_curve: f32, kelvin: f32, curve: f32) -> bool {
-    (memo_kelvin - kelvin).abs() < DCP_MEMO_KELVIN_EPS
-        && (memo_curve - curve).abs() < DCP_MEMO_CURVE_EPS
+/// True when a memo recorded at `(memo_kelvin, memo_tone)` is still valid for
+/// `(kelvin, tone)`.
+///
+/// Tone settings compare exactly rather than by epsilon: they come straight
+/// off the UI as the same f32s each time, and an epsilon on a *set* of shape
+/// parameters is a good way to miss a change to one of them.
+fn dcp_memo_is_valid(
+    memo_kelvin: f32,
+    memo_tone: ToneSettings,
+    kelvin: f32,
+    tone: ToneSettings,
+) -> bool {
+    (memo_kelvin - kelvin).abs() < DCP_MEMO_KELVIN_EPS && memo_tone == tone
 }
 
 /// Resolve the DCP interpolation and WB override for the editor's current
 /// slider state. Shared by every path that refreshes uniforms (slider edits,
 /// image-ready, preview upgrades).
 ///
-/// The interpolation depends only on `(kelvin, profile_curve)`, but this is
+/// The interpolation depends only on `(kelvin, ToneSettings)`, but this is
 /// called from `update_pipeline` on every slider tick — including sliders that
 /// cannot affect it. It is memoized in `editor.dcp_memo` because rebuilding the
 /// HueSatMap LUT and re-baking the tone curve is a multi-allocation,
@@ -552,21 +598,21 @@ pub fn resolve_wb_and_dcp(
     let Some(dcp) = editor.current_dcp_profile.as_ref() else {
         return (None, wb_override);
     };
-    let curve = editor.current_edit_params.profile_curve;
+    let tone = ToneSettings::from_params(&editor.current_edit_params);
 
     if let Ok(memo) = editor.dcp_memo.try_borrow() {
-        if let Some((k, c, profile)) = memo.as_ref() {
-            if dcp_memo_is_valid(*k, *c, kelvin, curve) {
+        if let Some((k, t, profile)) = memo.as_ref() {
+            if dcp_memo_is_valid(*k, *t, kelvin, tone) {
                 return (Some(profile.clone()), wb_override);
             }
         }
     }
 
     let interpolated = std::sync::Arc::new(crate::raw::dcp::interpolate_at_temperature(
-        dcp, kelvin, curve,
+        dcp, kelvin, tone,
     ));
     if let Ok(mut memo) = editor.dcp_memo.try_borrow_mut() {
-        *memo = Some((kelvin, curve, interpolated.clone()));
+        *memo = Some((kelvin, tone, interpolated.clone()));
     }
 
     (Some(interpolated), wb_override)
@@ -600,27 +646,54 @@ pub(crate) fn update_pipeline(editor: &mut RawEditor) -> Task<Message> {
 mod tests {
     use super::*;
 
+    use crate::core::tonemap::{GtParams, ToneMapper};
+
+    fn tone(curve: f32) -> ToneSettings {
+        ToneSettings { mapper: ToneMapper::Camera, profile_curve: curve, gt: GtParams::default() }
+    }
+
     #[test]
     fn dcp_memo_hits_on_identical_state() {
-        assert!(dcp_memo_is_valid(5500.0, 0.33, 5500.0, 0.33));
+        assert!(dcp_memo_is_valid(5500.0, tone(0.33), 5500.0, tone(0.33)));
     }
 
     #[test]
     fn dcp_memo_misses_when_temperature_moves() {
         // One Kelvin is far below what any slider step produces, and must
         // still invalidate — the memo must never coarsen the temperature.
-        assert!(!dcp_memo_is_valid(5500.0, 0.33, 5501.0, 0.33));
+        assert!(!dcp_memo_is_valid(5500.0, tone(0.33), 5501.0, tone(0.33)));
     }
 
     #[test]
     fn dcp_memo_misses_when_profile_curve_moves() {
-        assert!(!dcp_memo_is_valid(5500.0, 0.33, 5500.0, 0.34));
+        assert!(!dcp_memo_is_valid(5500.0, tone(0.33), 5500.0, tone(0.34)));
     }
 
     #[test]
-    fn dcp_memo_absorbs_float_noise_only() {
+    fn dcp_memo_absorbs_kelvin_noise_only() {
         // Recomputing solve_wb from identical inputs is deterministic, so the
         // epsilon exists purely to tolerate last-bit drift, not real changes.
-        assert!(dcp_memo_is_valid(5500.0, 0.33, 5500.0 + 1e-4, 0.33 + 1e-6));
+        assert!(dcp_memo_is_valid(5500.0, tone(0.33), 5500.0 + 1e-4, tone(0.33)));
+    }
+
+    /// The memo caches a baked tone LUT, so switching operators MUST miss —
+    /// otherwise the new selection would not reach the GPU until something
+    /// else happened to move the temperature.
+    #[test]
+    fn dcp_memo_misses_when_the_tone_operator_changes() {
+        let mut gt = tone(0.33);
+        gt.mapper = ToneMapper::Gt;
+        assert!(!dcp_memo_is_valid(5500.0, tone(0.33), 5500.0, gt));
+    }
+
+    /// Same for the GT shape sliders — they re-bake the curve, and nothing
+    /// else in the key moves when the user drags one.
+    #[test]
+    fn dcp_memo_misses_when_gt_shape_changes() {
+        let mut a = tone(0.33);
+        a.mapper = ToneMapper::Gt;
+        let mut b = a;
+        b.gt.contrast = 1.4;
+        assert!(!dcp_memo_is_valid(5500.0, a, 5500.0, b));
     }
 }

@@ -466,7 +466,7 @@ mod tests {
         let (kelvin, _tint, wb_override) =
             crate::color::solve_wb(&params, as_shot, raw.dcp_profile.as_deref(), raw.color_matrix);
         let interpolated = raw.dcp_profile.as_ref().map(|d| {
-            crate::raw::dcp::interpolate_at_temperature(d, kelvin, params.profile_curve)
+            crate::raw::dcp::interpolate_at_temperature(d, kelvin, crate::core::tonemap::ToneSettings::from_params(&params))
         });
         res.update_uniforms(ctx, &params, interpolated.as_ref(), wb_override);
         let (bytes, _, _) = render_to_bytes(ctx, res, w, h, FULL_VIEW_RECT).await;
@@ -504,7 +504,7 @@ mod tests {
                 crate::color::solve_wb(&base, as_shot, raw.dcp_profile.as_deref(), raw.color_matrix);
             let (forward_matrix, dcp) = match &raw.dcp_profile {
                 Some(d) => {
-                    let i = crate::raw::dcp::interpolate_at_temperature(d, kelvin, base.profile_curve);
+                    let i = crate::raw::dcp::interpolate_at_temperature(d, kelvin, crate::core::tonemap::ToneSettings::from_params(&base));
                     (i.camera_to_prophoto, Some(i))
                 }
                 None => (
@@ -604,7 +604,7 @@ mod tests {
             let (kelvin, _t, _wb) =
                 crate::color::solve_wb(&base, as_shot, raw.dcp_profile.as_deref(), raw.color_matrix);
             let dcp = raw.dcp_profile.as_ref().map(|d| {
-                crate::raw::dcp::interpolate_at_temperature(d, kelvin, base.profile_curve)
+                crate::raw::dcp::interpolate_at_temperature(d, kelvin, crate::core::tonemap::ToneSettings::from_params(&base))
             });
             let forward_matrix = dcp.as_ref().map(|i| i.camera_to_prophoto).unwrap_or_else(|| {
                 crate::color::calculate_cam_to_srgb(
@@ -628,6 +628,142 @@ mod tests {
         });
     }
 
+
+    /// End-to-end proof that a selected tone operator actually reaches the
+    /// GPU and renders sanely.
+    ///
+    /// This is the part that cannot be checked by reading code or by the CPU
+    /// unit tests in `core::tonemap`: the operator's shape travels as *texture
+    /// contents*, so a missed `write_tone_curve` call would leave the curve
+    /// LUT at its zero-initialised state and the image would render BLACK —
+    /// with no panic, no validation error, and nothing in the logs. The
+    /// all-black assertion below is aimed squarely at that.
+    ///
+    /// Run with
+    /// `cargo test --release tone_mapper_selection -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn tone_mapper_selection_changes_the_render_without_breaking_it() {
+        use crate::core::tonemap::ToneMapper;
+
+        let test_raw = test_raw_path();
+        if !std::path::Path::new(&test_raw).exists() {
+            eprintln!("test RAW missing, skipping");
+            return;
+        }
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .build()
+            .expect("runtime");
+
+        rt.block_on(async {
+            let ctx = SharedContext::new().await.expect("gpu context");
+            let raw = crate::raw::loader::load_raw_data(test_raw.clone())
+                .await
+                .expect("decode raw");
+
+            let base = EditParams::default();
+            let as_shot = crate::color::as_shot_kelvin_tint(&raw);
+            let (kelvin, _t, _wb) =
+                crate::color::solve_wb(&base, as_shot, raw.dcp_profile.as_deref(), raw.color_matrix);
+            let dcp = raw.dcp_profile.as_ref().map(|d| {
+                crate::raw::dcp::interpolate_at_temperature(
+                    d,
+                    kelvin,
+                    crate::core::tonemap::ToneSettings::from_params(&base),
+                )
+            });
+            let fm = dcp.as_ref().map(|i| i.camera_to_prophoto).unwrap_or_else(|| {
+                crate::color::calculate_cam_to_srgb(
+                    raw.color_matrix,
+                    raw.wb_multipliers,
+                    raw.color_matrix_is_d65,
+                )
+            });
+            let res = ImageResources::new(
+                &ctx, 1, &raw.data, raw.width, raw.height, &base,
+                raw.wb_multipliers, fm, raw.cfa_pattern, raw.black_levels,
+                raw.white_level, dcp.as_ref(), Some(1280), raw.orientation,
+            )
+            .expect("image resources");
+            let (w, h) = res.oriented_dims();
+
+            // Render one frame per operator, re-resolving the DCP each time so
+            // the tone LUT is re-baked exactly the way the app does it.
+            let render_with = |mapper: ToneMapper| {
+                let ctx = &ctx;
+                let res = &res;
+                let raw = &raw;
+                async move {
+                    let mut params = EditParams::default();
+                    params.tone_mapper = mapper;
+                    let tone = crate::core::tonemap::ToneSettings::from_params(&params);
+                    let as_shot = crate::color::as_shot_kelvin_tint(raw);
+                    let (kelvin, _t, wb) = crate::color::solve_wb(
+                        &params, as_shot, raw.dcp_profile.as_deref(), raw.color_matrix,
+                    );
+                    let interp = raw.dcp_profile.as_ref().map(|d| {
+                        crate::raw::dcp::interpolate_at_temperature(d, kelvin, tone)
+                    });
+                    res.update_uniforms(ctx, &params, interp.as_ref(), wb);
+                    let (bytes, _, _) =
+                        render_to_bytes(ctx, res, w, h, FULL_VIEW_RECT).await;
+                    bytes
+                }
+            };
+
+            let camera = render_with(ToneMapper::Camera).await;
+            assert!(!camera.is_empty(), "camera render produced nothing");
+
+            for mapper in [
+                ToneMapper::Filmic,
+                ToneMapper::Reinhard,
+                ToneMapper::Hable,
+                ToneMapper::AcesFitted,
+                ToneMapper::Gt,
+            ] {
+                let out = render_with(mapper).await;
+                assert_eq!(out.len(), camera.len(), "{mapper}: size changed");
+
+                let mean = out
+                    .chunks_exact(4)
+                    .map(|p| {
+                        0.2126 * p[0] as f64 + 0.7152 * p[1] as f64 + 0.0722 * p[2] as f64
+                    })
+                    .sum::<f64>()
+                    / (out.len() / 4) as f64;
+
+                // A missing LUT upload renders black; a runaway curve renders
+                // white. Both are silent failures without this.
+                assert!(
+                    mean > 5.0,
+                    "{mapper} rendered essentially black (mean luma {mean:.1}) — \
+                     the tone curve LUT probably was not uploaded"
+                );
+                assert!(
+                    mean < 250.0,
+                    "{mapper} rendered essentially white (mean luma {mean:.1})"
+                );
+
+                // It must actually be a DIFFERENT rendering, or the selection
+                // silently did nothing.
+                let differing = out
+                    .iter()
+                    .zip(camera.iter())
+                    .filter(|(a, b)| a != b)
+                    .count();
+                let frac = differing as f64 / out.len() as f64;
+                assert!(
+                    frac > 0.05,
+                    "{mapper} changed only {:.2}% of channels — selection had no effect",
+                    frac * 100.0
+                );
+
+                eprintln!("{mapper:>9}: mean luma {mean:6.1}   {:.1}% of channels differ from Camera",
+                    frac * 100.0);
+            }
+        });
+    }
 
     /// General-purpose "did I change the render?" harness.
     ///
@@ -657,7 +793,7 @@ mod tests {
             let base = EditParams::default();
             let as_shot = crate::color::as_shot_kelvin_tint(&raw);
             let (kelvin, _t, _wb) = crate::color::solve_wb(&base, as_shot, raw.dcp_profile.as_deref(), raw.color_matrix);
-            let dcp = raw.dcp_profile.as_ref().map(|d| crate::raw::dcp::interpolate_at_temperature(d, kelvin, base.profile_curve));
+            let dcp = raw.dcp_profile.as_ref().map(|d| crate::raw::dcp::interpolate_at_temperature(d, kelvin, crate::core::tonemap::ToneSettings::from_params(&base)));
             assert!(dcp.is_some(), "needs the DCP path");
             let fm = dcp.as_ref().map(|i| i.camera_to_prophoto).unwrap();
             let res = ImageResources::new(&ctx, 1, &raw.data, raw.width, raw.height, &base,

@@ -124,13 +124,33 @@ pub struct EditParams {
     /// DCP profile tone-curve strength (0.0 to 1.0)
     /// - 1.0 = full ProfileToneCurve (profile's intended contrast)
     /// - 0.0 = no curve (flat linear rendering + sRGB gamma)
+    ///
     /// Blended in display space at LUT bake time; the shader is unaffected.
     /// Default 0.33: full Adobe camera-matching curves render notably more
     /// contrasty/saturated than the in-camera JPEG; ~1/3 strength was verified
     /// against the D3300's own rendering.
     /// serde default keeps old saved edits (without this field) loadable.
+    /// Only meaningful while `tone_mapper` is `Camera` — every other operator
+    /// replaces the profile's curve outright rather than blending with it.
     #[serde(default = "default_profile_curve")]
     pub profile_curve: f32,
+
+    // ========== Tone Rendering ==========
+    /// Which tone mapping operator turns scene-linear into display-linear.
+    ///
+    /// `Camera` (the default) is the calibrated path — the DCP's own
+    /// ProfileToneCurve, or the built-in filmic curve for profiles that embed
+    /// none. Selecting anything else replaces that stage; the profile's
+    /// COLOUR rendering (ForwardMatrix + HueSatMap) stays in force either way.
+    /// serde default keeps old saved edits loadable, and keeps them on the
+    /// calibrated path.
+    #[serde(default)]
+    pub tone_mapper: crate::core::tonemap::ToneMapper,
+
+    /// Shape of the GT (Uchimura) curve. Inert unless `tone_mapper == Gt`.
+    /// serde default keeps old saved edits loadable.
+    #[serde(default)]
+    pub gt: crate::core::tonemap::GtParams,
 
     // ========== Local Adjustment Masks ==========
     /// Fixed-size mask slots; only the first `mask_count` are meaningful.
@@ -255,6 +275,8 @@ impl Default for EditParams {
             crop: [0.0, 0.0, 1.0, 1.0], // Phase 66: Full image by default
             is_cropping: 0,             // Phase 135: Not cropping by default
             profile_curve: 0.33,        // 1/3 DCP tone curve (matches in-camera JPEG contrast)
+            tone_mapper: crate::core::tonemap::ToneMapper::Camera, // calibrated path
+            gt: crate::core::tonemap::GtParams::default(),         // inert unless Gt selected
             masks: [MaskParams::default(); MAX_MASKS], // No local masks by default
             mask_count: 0,
         }
@@ -374,6 +396,28 @@ mod tests {
 
         let restored = EditParams::from_json(&legacy).unwrap();
         assert_eq!(restored.mask_count, 0);
+        assert!(restored.is_unedited());
+    }
+
+    /// Saved edits from before tone mapping existed must load onto the
+    /// CALIBRATED path — landing anyone's back catalogue on a different look
+    /// would be a silent, image-wide regression.
+    #[test]
+    fn test_legacy_json_without_tone_mapper_defaults_to_camera() {
+        let params = EditParams::default();
+        let json = params.to_json().unwrap();
+        let legacy = json
+            .replace(",\"tone_mapper\":\"Camera\"", "")
+            .replace(
+                &format!(",\"gt\":{}", serde_json::to_string(&params.gt).unwrap()),
+                "",
+            );
+        assert!(!legacy.contains("tone_mapper"), "legacy JSON still has the field");
+        assert!(!legacy.contains("\"gt\""), "legacy JSON still has the field");
+
+        let restored = EditParams::from_json(&legacy).unwrap();
+        assert_eq!(restored.tone_mapper, crate::core::tonemap::ToneMapper::Camera);
+        assert_eq!(restored.gt, crate::core::tonemap::GtParams::default());
         assert!(restored.is_unedited());
     }
 

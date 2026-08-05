@@ -98,7 +98,7 @@ pub fn prepare_image_resources_from_raw(
             let kelvin = params.kelvin_from_anchor(as_shot.0);
 
             let (forward_matrix, interpolated_dcp) = if let Some(dcp) = &raw.dcp_profile {
-                let interpolated = crate::raw::dcp::interpolate_at_temperature(dcp, kelvin, params.profile_curve);
+                let interpolated = crate::raw::dcp::interpolate_at_temperature(dcp, kelvin, crate::core::tonemap::ToneSettings::from_params(&params));
                 (interpolated.camera_to_prophoto, Some(interpolated))
             } else {
                 let xyz_to_cam = raw.color_matrix;
@@ -209,7 +209,7 @@ pub fn trigger_full_res_upgrade(editor: &mut RawEditor) -> Task<Message> {
             let kelvin = params.kelvin_from_anchor(as_shot.0);
 
             let (forward_matrix, interpolated_dcp) = if let Some(dcp) = &raw.dcp_profile {
-                let interpolated = crate::raw::dcp::interpolate_at_temperature(dcp, kelvin, params.profile_curve);
+                let interpolated = crate::raw::dcp::interpolate_at_temperature(dcp, kelvin, crate::core::tonemap::ToneSettings::from_params(&params));
                 (interpolated.camera_to_prophoto, Some(interpolated))
             } else {
                 let xyz_to_cam = raw.color_matrix;

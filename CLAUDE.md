@@ -62,6 +62,41 @@ Uses the real Adobe DNG Color Pipeline instead of naive 3x3 sRGB matrices:
 - **Highlights/Shadows must run in scene-linear, before the shoulder.** On the DCP path they are applied in ProPhoto immediately after the matrix (`apply_highlights_shadows`), where values still exceed 1.0. Applied later they are a uniform multiply on an already-compressed band — the highlight goes grey and no texture returns. Step 10 is gated `has_dcp == 0` so the fallback path (which has no shoulder until the filmic curve) still gets it there, without double-applying.
 - The weighting scalar differs by space and is passed in by the caller: **peak channel** in ProPhoto (its Y coefficients are ~(0.288, 0.712, 0.0001), so a blown blue sky would score near-zero luma), **Rec.709 luma** on the linear-sRGB fallback.
 
+### B2. Selectable Tone Mapping (`src/core/tonemap.rs`)
+A DCP bundles *colour* rendering (ForwardMatrix + HueSatMap — sensor
+characterization, always in force) and *tone* rendering (ProfileToneCurve —
+an opinion about contrast). Only the second is swappable, and
+`EditParams::tone_mapper` swaps it: `Camera` (default), `Filmic`, `Reinhard`,
+`Hable`, `AcesFitted` (Narkowicz), `Gt` (Uchimura, shape exposed via `GtParams`).
+
+- **Tone rendering is ONE selected stage.** Three things can curve the image —
+  the ProfileToneCurve slot, the Step 15 filmic block, and the pre-HueSatMap
+  knee — and the codebase has been bitten by double-tone-mapping more than
+  once. Any change here must keep exactly one of them active per path.
+- **Operators bake into the existing 1D LUT on the CPU**, so adding one costs a
+  texture upload and *zero* per-pixel work. Only `tone_mapper: u32` reaches the
+  GPU (in a former pad slot — `GpuEditParams` is still 784 bytes), and the
+  shader reads it solely to decide Camera-vs-not. Consequence: operators must
+  be scalar functions of one channel. Anything applying matrices around the
+  curve (Hill's ACES fit, AgX) cannot be baked and is deliberately absent.
+- **The LUT domain is log-encoded over `[0, TONE_LUT_MAX]`, not `[0,1]`** —
+  `tone_lut_encode` on both sides, mirrored constants guarded by
+  `shader_tone_lut_constants_match_rust`. Operators are *defined* as the
+  scene-linear→display mapping, so they must receive uncompressed values.
+- **The 0.7 Reinhard knee runs for `Camera` only.** It exists because the
+  ProfileToneCurve is defined on [0,1], and being per-channel is deliberate
+  (it samples the profile's top value slices). Kneeing before any other
+  operator would tone-map a tone-mapped signal — the same failure that made
+  Highlights return grey instead of texture.
+- **Output space:** everything in `core::tonemap` returns display-**linear**.
+  The ProfileToneCurve is the sole exception (linear in → gamma-encoded out),
+  which `bake_tone_curve` linearises back; getting this wrong is a ~1.3 EV
+  overbright.
+- Because they live on the CPU, the operators are ordinary unit-tested Rust.
+  The GPU-side wiring is covered by the ignored
+  `tone_mapper_selection_changes_the_render_without_breaking_it`, which exists
+  because a missed LUT upload renders **black** with no panic and no log.
+
 ### C. Multi-Tier Caching (`src/database/`, `src/raw/processor.rs`, `src/app/loader.rs`)
 RAW files are never decoded on the main thread. Three async-generated JPEG tiers plus an in-RAM LRU cache:
 - **Tier 1 — Thumbnail (256px):** library grid

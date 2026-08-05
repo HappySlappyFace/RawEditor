@@ -18,6 +18,17 @@ pub enum MaskAdjustment {
     Rotation,
 }
 
+/// Which GT (Uchimura) shape parameter a slider targets. Mirrors the
+/// `MaskAdjustment` pattern: one message for a family of sliders that all
+/// land in the same handler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GtParam {
+    Contrast,
+    LinearStart,
+    LinearLength,
+    BlackTightness,
+}
+
 /// Application tabs/modules
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppTab {
@@ -98,6 +109,10 @@ pub enum Message {
     VibranceChanged(f32),
     /// User changed DCP profile tone-curve strength (0.0..=1.0)
     ProfileCurveChanged(f32),
+    /// Select the tone mapping operator (see `core::tonemap`).
+    ToneMapperChanged(crate::core::tonemap::ToneMapper),
+    /// Adjust one of the GT curve's shape parameters.
+    GtParamChanged(GtParam, f32),
     /// Toggle the WB eyedropper tool
     ToggleWbPicker,
     /// User clicked the preview with the WB picker active.

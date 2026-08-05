@@ -104,7 +104,18 @@ pub struct GpuEditParams {
     pub orientation: u32,
     /// Number of active local adjustment masks (0..=8)
     pub mask_count: u32,
-    _pad_masks_1: u32,
+    /// Selected tone mapping operator (`ToneMapper::shader_id`).
+    ///
+    /// The shader only distinguishes `Camera` (0) from everything else — it
+    /// decides whether the pre-HueSatMap knee runs, and which stage of the
+    /// fallback path curves the image. The operator's actual SHAPE never
+    /// reaches the GPU as parameters; it is baked into the tone curve LUT on
+    /// the CPU (`core::tonemap::bake`), which is why adding five operators
+    /// costs one u32 and zero per-pixel work.
+    ///
+    /// Claims one of three dead pad slots, so nothing moved and the struct is
+    /// still 784 bytes — asserted below.
+    pub tone_mapper: u32,
     _pad_masks_2: u32,
     _pad_masks_3: u32,
     /// Local adjustment masks; only the first `mask_count` are evaluated.
@@ -160,7 +171,7 @@ impl From<&EditParams> for GpuEditParams {
             dcp_has_curve: 0,
             orientation: 1,
             mask_count: params.mask_count.min(MAX_MASKS as u32),
-            _pad_masks_1: 0,
+            tone_mapper: params.tone_mapper.shader_id(),
             _pad_masks_2: 0,
             _pad_masks_3: 0,
             masks: std::array::from_fn(|i| GpuMask::from(&params.masks[i])),
@@ -177,8 +188,35 @@ mod tests {
     #[test]
     fn gpu_struct_sizes_match_wgsl_layout() {
         assert_eq!(std::mem::size_of::<GpuMask>(), 64);
-        // 256 (base) + 16 (mask_count + pad) + 8 × 64 (masks)
+        // 256 (base) + 16 (mask_count + tone_mapper + pad) + 8 × 64 (masks)
         assert_eq!(std::mem::size_of::<GpuEditParams>(), 784);
+    }
+
+    /// `tone_mapper` claimed a dead pad slot specifically so nothing moved.
+    /// If it ever displaces `masks`, every mask reads garbage.
+    #[test]
+    fn tone_mapper_did_not_disturb_the_mask_array() {
+        assert_eq!(
+            std::mem::offset_of!(GpuEditParams, tone_mapper),
+            std::mem::offset_of!(GpuEditParams, mask_count) + 4
+        );
+        // masks is a vec4-aligned array; it must stay on its 16-byte boundary.
+        assert_eq!(std::mem::offset_of!(GpuEditParams, masks) % 16, 0);
+    }
+
+    #[test]
+    fn default_params_select_the_camera_operator() {
+        let g = GpuEditParams::from(&EditParams::default());
+        assert_eq!(g.tone_mapper, 0, "default must be the calibrated path");
+    }
+
+    #[test]
+    fn tone_mapper_reaches_the_uniform() {
+        let mut p = EditParams::default();
+        p.tone_mapper = crate::core::tonemap::ToneMapper::Gt;
+        let g = GpuEditParams::from(&p);
+        assert_eq!(g.tone_mapper, crate::core::tonemap::ToneMapper::Gt.shader_id());
+        assert_ne!(g.tone_mapper, 0);
     }
 
     /// `view_rect` replaced four dead padding floats specifically so that
