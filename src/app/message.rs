@@ -256,6 +256,18 @@ pub enum Message {
     CloseModal,
     ModalNoOp, // Swallows clicks
     Escape,    // Global Escape key
+    /// Ctrl/Cmd+A — select every image the current tab displays.
+    SelectAll,
+    /// Ask to forget a folder (opens the confirmation).
+    RemoveFolderRequested(String),
+    /// Confirm forgetting the pending folder.
+    RemoveFolderConfirmed,
+    /// Result of the async folder picker; `None` = cancelled.
+    ImportFolderPicked(Option<ImportResult>),
+    /// Help > Check for Updates — opens the releases page.
+    CheckForUpdates,
+    /// Open the project page in the default browser.
+    OpenRepository,
     /// Enter pressed — routed to whichever modal is open.
     ///
     /// `subscription()` can only emit ONE message per key event, so Enter

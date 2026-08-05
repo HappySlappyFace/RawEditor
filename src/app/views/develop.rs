@@ -35,14 +35,8 @@ pub fn view_develop(editor: &RawEditor) -> Element<'_, Message> {
         .height(Length::Fill)]
     .width(Length::Fill)
     .height(Length::Fill);
-    let filtered_images: Vec<&ImageData> = editor
-        .images
-        .iter()
-        .filter(|img| editor.min_filter_rating == 0 || img.rating >= editor.min_filter_rating)
-        // Marked-for-removal images never appear in Develop, unlike Library/Cull.
-        .filter(|img| img.rating != crate::database::models::MARKED_FOR_REMOVAL_RATING)
-        .collect();
-    let filmstrip = ui::filmstrip::view(&filtered_images, &editor.multi_selection);
+    let filtered_images: Vec<&ImageData> = editor.displayed_images();
+    let filmstrip = ui::filmstrip::view(&filtered_images, editor);
     let content: Element<_> = column![
         editor_content,
         Container::new(filmstrip)
@@ -54,31 +48,10 @@ pub fn view_develop(editor: &RawEditor) -> Element<'_, Message> {
     .height(Length::Fill)
     .into();
 
-    if editor.show_profiler {
-        stack![
-            content,
-            container(crate::ui::widgets::profiler_graph::view_profiler_overlay(
-                &editor.profiler,
-                &editor.profiler_cache,
-                crate::ui::widgets::profiler_graph::RenderStats {
-                    zoom_percent: editor.zoom_percent(),
-                    target: editor.rendered_preview_dims,
-                    view_extent: (
-                        editor.rendered_view_rect[2],
-                        editor.rendered_view_rect[3],
-                    ),
-                },
-            ))
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .align_x(iced::alignment::Horizontal::Left)
-            .align_y(iced::alignment::Vertical::Top)
-            .padding(10)
-        ]
-        .into()
-    } else {
-        content
-    }
+    // The profiler overlay is NOT stacked here any more — it lives in
+    // `views::layout::view_main` so the Window > Performance HUD toggle works
+    // in every tab, not just this one.
+    content
 }
 
 fn view_sidebar(editor: &RawEditor) -> iced::widget::Column<'_, Message> {
@@ -674,8 +647,60 @@ fn view_main_content<'a>(
 
     let overlay = match editor.info_overlay {
         crate::app::state::InfoOverlayState::Hidden => container(column![]),
-        crate::app::state::InfoOverlayState::Metadata
-        | crate::app::state::InfoOverlayState::CacheDebug => container(
+        // Cache debug: what the loader is actually holding. Previously this
+        // shared an arm with Metadata and rendered identically, so cycling with
+        // `I` appeared to show the same panel twice before hiding.
+        crate::app::state::InfoOverlayState::CacheDebug => {
+            let budget = editor.raw_cache_budget_bytes().max(1);
+            let used_pct = (editor.raw_cache_bytes as f64 / budget as f64 * 100.0).min(999.0);
+            let selected_cached = editor
+                .selected_image_id
+                .map(|id| {
+                    let raw = editor.raw_cache.contains(&id);
+                    let prev = editor.preview_cache.contains(&id);
+                    match (raw, prev) {
+                        (true, true) => "raw + preview",
+                        (true, false) => "raw only",
+                        (false, true) => "preview only",
+                        (false, false) => "not cached",
+                    }
+                })
+                .unwrap_or("no selection");
+
+            info_panel(
+                column![
+                    text("CACHE").size(12).style(|_| text::Style {
+                        color: Some(Color::from_rgb(0.98, 0.45, 0.09))
+                    }),
+                    info_line(format!(
+                        "RAW  {} files  {:.0} / {} MB  ({:.0}%)",
+                        editor.raw_cache.len(),
+                        editor.raw_cache_bytes as f64 / (1024.0 * 1024.0),
+                        editor.raw_preload_budget_mb,
+                        used_pct,
+                    )),
+                    info_line(format!(
+                        "Preview  {} / {} entries",
+                        editor.preview_cache.len(),
+                        editor.cache_capacity,
+                    )),
+                    info_line(format!(
+                        "In flight  {} preview  {} raw",
+                        editor.pending_loads.len(),
+                        editor.pending_raw_loads.len(),
+                    )),
+                    info_line(format!(
+                        "Queued  {} preview  {} raw",
+                        editor.queued_loads.len(),
+                        editor.queued_raw_loads.len(),
+                    )),
+                    info_line(format!("This image  {}", selected_cached)),
+                ]
+                .spacing(2)
+                .into(),
+            )
+        }
+        crate::app::state::InfoOverlayState::Metadata => container(
             column![
                 // 100% = one sensor pixel per screen pixel, not "fitted".
                 text(format!("Zoom {:.0}%", editor.zoom_percent()))
@@ -1052,6 +1077,31 @@ fn tone_shape_controls(editor: &RawEditor) -> Element<'_, Message> {
         .into(),
         _ => column![].into(),
     }
+}
+
+/// Shared chrome for the `I` info overlay panels, so the metadata and cache
+/// states read as siblings rather than two unrelated boxes.
+///
+/// A free function rather than a closure: closure lifetime elision ties the
+/// argument and return lifetimes to different regions and won't compile here.
+fn info_panel<'a>(body: Element<'a, Message>) -> Container<'a, Message> {
+    container(body)
+        .padding(10)
+        .style(|_| container::Style {
+            background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.6))),
+            border: iced::border::Border {
+                radius: 5.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+}
+
+fn info_line<'a>(s: String) -> Element<'a, Message> {
+    text(s)
+        .size(12)
+        .style(|_| text::Style { color: Some(Color::WHITE) })
+        .into()
 }
 
 fn slider_row<'a, F>(

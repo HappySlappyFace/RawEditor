@@ -13,11 +13,32 @@ pub fn handle_image_selected(editor: &mut RawEditor, image_id: i64) -> Task<Mess
     // The peek belongs to the outgoing image; carrying it across would show
     // the new image unedited with no way to notice why.
     editor.before_peek = false;
-    if editor.last_modifiers.command() {
-        if !editor.multi_selection.remove(&image_id) { editor.multi_selection.insert(image_id); }
+    let shift = editor.last_modifiers.shift();
+    let command = editor.last_modifiers.command();
+
+    if shift {
+        // Range select from the anchor. Falls back to a plain click when
+        // there is no anchor yet (first ever click held Shift).
+        if let Some(range) = select_range(editor, image_id) {
+            if !command {
+                // Shift alone replaces the selection; Shift+Ctrl adds to it.
+                editor.multi_selection.clear();
+            }
+            editor.multi_selection.extend(range);
+        } else {
+            editor.multi_selection.clear();
+            editor.multi_selection.insert(image_id);
+            editor.selection_anchor = Some(image_id);
+        }
+    } else if command {
+        if !editor.multi_selection.remove(&image_id) {
+            editor.multi_selection.insert(image_id);
+        }
+        editor.selection_anchor = Some(image_id);
     } else {
         editor.multi_selection.clear();
         editor.multi_selection.insert(image_id);
+        editor.selection_anchor = Some(image_id);
     }
     editor.selected_image_id = Some(image_id);
     editor.canvas_cache.clear();
@@ -70,6 +91,34 @@ pub fn handle_tab_changed(editor: &mut RawEditor, tab: AppTab) -> Task<Message> 
             }
         }
     }
+    Task::none()
+}
+
+/// Ids between the selection anchor and `to_id` inclusive, in display order.
+///
+/// Returns `None` when there is no anchor, or when either endpoint is not
+/// currently displayed — a range spanning images the active filter is hiding
+/// would select things the user cannot see.
+fn select_range(editor: &RawEditor, to_id: i64) -> Option<Vec<i64>> {
+    let anchor = editor.selection_anchor?;
+    let ids = editor.displayed_ids();
+    let a = ids.iter().position(|id| *id == anchor)?;
+    let b = ids.iter().position(|id| *id == to_id)?;
+    let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+    Some(ids[lo..=hi].to_vec())
+}
+
+/// Ctrl+A — select every image the current tab is displaying.
+pub fn handle_select_all(editor: &mut RawEditor) -> Task<Message> {
+    if editor.active_modal != crate::app::state::Modal::None {
+        return Task::none();
+    }
+    let ids = editor.displayed_ids();
+    if ids.is_empty() {
+        return Task::none();
+    }
+    editor.status = format!("{} images selected", ids.len());
+    editor.multi_selection = ids.into_iter().collect();
     Task::none()
 }
 
@@ -128,30 +177,46 @@ pub fn ensure_develop_selection_not_marked(editor: &mut RawEditor) -> Task<Messa
     }
 }
 
+/// Step through the images the current tab is DISPLAYING.
+///
+/// Previously these indexed the unfiltered `editor.images`, so arrow keys
+/// happily navigated to images the active filter was hiding — and in Develop,
+/// to images marked for removal that the tab refuses to show.
+fn step_selection(editor: &RawEditor, forward: bool) -> Option<i64> {
+    let ids = editor.displayed_ids();
+    if ids.is_empty() {
+        return None;
+    }
+    let current = editor.selected_image_id?;
+    let idx = ids.iter().position(|id| *id == current)?;
+    let next = if forward {
+        (idx + 1) % ids.len()
+    } else if idx == 0 {
+        ids.len() - 1
+    } else {
+        idx - 1
+    };
+    Some(ids[next])
+}
+
 pub fn handle_select_next_image(editor: &mut RawEditor) -> Task<Message> {
     if editor.active_modal != crate::app::state::Modal::None {
         return Task::none();
     }
-    if let Some(id) = editor.selected_image_id {
-        if let Some(idx) = editor.images.iter().position(|i| i.id == id) {
-            let next = editor.images[(idx + 1) % editor.images.len()].id;
-            return Task::done(Message::ImageSelected(next));
-        }
+    match step_selection(editor, true) {
+        Some(next) => Task::done(Message::ImageSelected(next)),
+        None => Task::none(),
     }
-    Task::none()
 }
 
 pub fn handle_select_previous_image(editor: &mut RawEditor) -> Task<Message> {
     if editor.active_modal != crate::app::state::Modal::None {
         return Task::none();
     }
-    if let Some(id) = editor.selected_image_id {
-        if let Some(idx) = editor.images.iter().position(|i| i.id == id) {
-            let prev = editor.images[if idx == 0 { editor.images.len() - 1 } else { idx - 1 }].id;
-            return Task::done(Message::ImageSelected(prev));
-        }
+    match step_selection(editor, false) {
+        Some(prev) => Task::done(Message::ImageSelected(prev)),
+        None => Task::none(),
     }
-    Task::none()
 }
 
 pub fn handle_zoom(editor: &mut RawEditor, d: f32, mut p: Point) -> Task<Message> {
@@ -783,5 +848,84 @@ async fn load_image_handle(
             )
         }
         Err(_) => (id, iced::widget::image::Handle::from_path(path), None, (1280, 853)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::message::AppTab;
+    use crate::database::models::Image as ImageData;
+
+    fn img(id: i64, path: &str) -> ImageData {
+        ImageData {
+            id,
+            filename: format!("{id}.NEF"),
+            path: path.to_string(),
+            cache_path_thumb: None,
+            cache_path_instant: None,
+            cache_path_working: None,
+            file_status: "exists".to_string(),
+            rating: 0,
+            flag: 0,
+        }
+    }
+
+    fn editor_with(ids: &[i64]) -> RawEditor {
+        let mut e = RawEditor::new().0;
+        e.current_tab = AppTab::Library;
+        e.images = ids.iter().map(|i| img(*i, "/p/x.NEF")).collect();
+        e
+    }
+
+    #[test]
+    fn range_is_inclusive_of_both_endpoints() {
+        let mut e = editor_with(&[1, 2, 3, 4, 5]);
+        e.selection_anchor = Some(2);
+        assert_eq!(select_range(&e, 4), Some(vec![2, 3, 4]));
+    }
+
+    /// Dragging a range upward must select the same set as dragging downward.
+    #[test]
+    fn range_is_direction_independent() {
+        let mut e = editor_with(&[1, 2, 3, 4, 5]);
+        e.selection_anchor = Some(4);
+        assert_eq!(select_range(&e, 2), Some(vec![2, 3, 4]));
+    }
+
+    #[test]
+    fn range_of_one_is_just_that_image() {
+        let mut e = editor_with(&[1, 2, 3]);
+        e.selection_anchor = Some(2);
+        assert_eq!(select_range(&e, 2), Some(vec![2]));
+    }
+
+    #[test]
+    fn range_needs_an_anchor() {
+        let e = editor_with(&[1, 2, 3]);
+        assert_eq!(select_range(&e, 2), None);
+    }
+
+    /// A range must never reach images the active filter is hiding — the ids
+    /// come from `displayed_ids`, so an endpoint outside it has no position.
+    #[test]
+    fn range_ignores_endpoints_the_filter_hides() {
+        let mut e = editor_with(&[1, 2, 3]);
+        e.images[1].rating = 0;
+        e.min_filter_rating = 5; // hides everything
+        e.selection_anchor = Some(1);
+        assert_eq!(select_range(&e, 3), None);
+    }
+
+    /// Arrow keys used to index the unfiltered catalogue and would happily
+    /// land on images the current tab refuses to show.
+    #[test]
+    fn stepping_stays_inside_the_displayed_set() {
+        let mut e = editor_with(&[1, 2, 3]);
+        e.images[1].rating = crate::database::models::MARKED_FOR_REMOVAL_RATING;
+        e.current_tab = AppTab::Develop; // excludes marked
+        e.selected_image_id = Some(1);
+        assert_eq!(step_selection(&e, true), Some(3));
+        assert_eq!(step_selection(&e, false), Some(3)); // wraps backwards
     }
 }

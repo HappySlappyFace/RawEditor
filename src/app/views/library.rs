@@ -43,8 +43,10 @@ fn thumbnail_state(img: &ImageData) -> ThumbnailState {
     }
 }
 
+/// Delegates to the shared predicate so the grid and the filmstrip can never
+/// disagree about what looks selected.
 fn is_image_selected(editor: &RawEditor, image_id: i64) -> bool {
-    editor.selected_image_id == Some(image_id) || editor.multi_selection.contains(&image_id)
+    editor.is_selected(image_id)
 }
 
 fn metric_pill<'a>(label: &'a str, value: impl ToString, color: Color) -> Element<'a, Message> {
@@ -264,8 +266,11 @@ fn collect_folder_stats(editor: &RawEditor) -> Vec<(String, usize)> {
     }
 
     let mut folders: Vec<(String, usize)> = counts.into_iter().collect();
-    folders.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    folders.truncate(16);
+    // Alphabetical, not by count: the list is scrollable now, so a stable
+    // order the user can predict beats surfacing the biggest folders. It used
+    // to sort by count and truncate to 16, which made smaller folders
+    // invisible — and, now that folders can be removed from here, unremovable.
+    folders.sort_by(|a, b| a.0.cmp(&b.0));
     folders
 }
 
@@ -622,18 +627,27 @@ fn view_library_sidebar<'a>(
             .map(|active| active == folder)
             .unwrap_or(false);
         folders_column = folders_column.push(
-            button(
-                row![
-                    text(compact_path(folder)).size(11),
-                    Space::with_width(Length::Fill),
-                    text(count.to_string()).size(10)
-                ]
-                .align_y(Alignment::Center),
-            )
-            .on_press(Message::SetLibraryFolderFilter(Some(folder.clone())))
-            .padding([6, 8])
-            .width(Length::Fill)
-            .style(style_sidebar_button(is_active)),
+            row![
+                button(
+                    row![
+                        text(compact_path(folder)).size(11),
+                        Space::with_width(Length::Fill),
+                        text(count.to_string()).size(10)
+                    ]
+                    .align_y(Alignment::Center),
+                )
+                .on_press(Message::SetLibraryFolderFilter(Some(folder.clone())))
+                .padding([6, 8])
+                .width(Length::Fill)
+                .style(style_sidebar_button(is_active)),
+                // Forget this folder — catalogue only, files untouched.
+                button(text(ui::icons::TIMES).font(ICON_FONT).size(10))
+                    .on_press(Message::RemoveFolderRequested(folder.clone()))
+                    .padding([6, 8])
+                    .style(style_sidebar_button(false)),
+            ]
+            .spacing(2)
+            .align_y(Alignment::Center),
         );
     }
 

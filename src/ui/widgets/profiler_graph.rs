@@ -16,10 +16,15 @@ pub struct RenderStats {
     pub view_extent: (f32, f32),
 }
 
+/// `stats` is `None` outside the Develop tab: zoom, render-target size and
+/// window extent all describe the develop render specifically, and reporting
+/// the last develop frame's numbers while the user is looking at the Library
+/// would be worse than reporting nothing. The timing graph itself is
+/// tab-agnostic and always shown.
 pub fn view_profiler_overlay<'a>(
     profiler: &'a Profiler,
     cache: &'a iced::widget::canvas::Cache,
-    stats: RenderStats,
+    stats: Option<RenderStats>,
 ) -> Element<'a, Message> {
     let avg_total = if profiler.history.is_empty() {
         0.0
@@ -59,16 +64,21 @@ pub fn view_profiler_overlay<'a>(
             })
     };
 
-    let megapixels = (stats.target.0 as f64 * stats.target.1 as f64) / 1.0e6;
-    let render_stats = text(format!(
-        "Zoom {:.0}%  |  Render {}×{} ({:.2} MP)  |  Window {:.0}%×{:.0}%",
-        stats.zoom_percent,
-        stats.target.0,
-        stats.target.1,
-        megapixels,
-        stats.view_extent.0 * 100.0,
-        stats.view_extent.1 * 100.0,
-    ))
+    let render_stats = match &stats {
+        Some(s) => {
+            let megapixels = (s.target.0 as f64 * s.target.1 as f64) / 1.0e6;
+            text(format!(
+                "Zoom {:.0}%  |  Render {}×{} ({:.2} MP)  |  Window {:.0}%×{:.0}%",
+                s.zoom_percent,
+                s.target.0,
+                s.target.1,
+                megapixels,
+                s.view_extent.0 * 100.0,
+                s.view_extent.1 * 100.0,
+            ))
+        }
+        None => text("Render stats available in Develop"),
+    }
     .size(11)
     .style(|_| iced::widget::text::Style {
         color: Some(Color::from_rgba(0.98, 0.45, 0.09, 0.95)),

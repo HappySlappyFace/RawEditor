@@ -67,6 +67,11 @@ pub enum Modal {
     /// `RawEditor::copy_categories`, mirroring how Export pairs with
     /// `export_settings` and Delete with `pending_delete_ids`.
     CopySettings,
+    /// Version / author / links, from Help > About.
+    About,
+    /// Confirm forgetting a folder. Its target lives in
+    /// `RawEditor::pending_remove_folder`.
+    RemoveFolder,
 }
 
 /// Phase 89: Export Format
@@ -309,12 +314,19 @@ pub struct RawEditor {
     pub multi_selection: HashSet<i64>,
     /// Phase 55: Track modifier keys for Ctrl/Cmd+Click
     pub last_modifiers: iced::keyboard::Modifiers,
+    /// Pivot for Shift+click range selection: the last image picked WITHOUT
+    /// shift. Held separately from `selected_image_id` because a range drag
+    /// moves the current selection while the pivot must stay put.
+    pub selection_anchor: Option<i64>,
     /// Phase 83: Auto-advance to next image after rating/flagging
     pub auto_advance: bool,
     /// Phase 59: Minimum rating filter (0 = show all, 1-5 = show rating or higher)
     pub min_filter_rating: u8,
     /// Library folder filter (path prefix)
     pub library_folder_filter: Option<String>,
+    /// Folder the open RemoveFolder dialog acts on — a snapshot taken when the
+    /// dialog opens, mirroring `pending_delete_ids`.
+    pub pending_remove_folder: Option<String>,
     /// Phase 79: Modular Info Overlay state
     pub info_overlay: InfoOverlayState,
     /// Phase 65: Undo/Redo History Map<ImageID, (HistoryStack, CurrentIndex)>
@@ -492,10 +504,16 @@ impl RawEditor {
                 copy_categories: settings.copy_categories,
                 multi_selection: HashSet::new(),
                 last_modifiers: iced::keyboard::Modifiers::default(),
+                selection_anchor: None,
                 auto_advance: settings.auto_advance,
                 min_filter_rating: 0,
                 library_folder_filter: None,
-                info_overlay: crate::app::state::InfoOverlayState::Metadata,
+                pending_remove_folder: None,
+                // Must be the enum's own default (Hidden). Starting at
+                // Metadata booted the app with the overlay already on, at
+                // phase 2 of 3, so the first `I` press advanced the cycle
+                // instead of opening it.
+                info_overlay: crate::app::state::InfoOverlayState::default(),
                 // Phase 84
                 active_modal: Modal::None,
                 pending_delete_ids: Vec::new(),
@@ -610,6 +628,59 @@ impl RawEditor {
         } else {
             (1280, 853)
         }
+    }
+
+    /// The images the CURRENT TAB is showing, in display order.
+    ///
+    /// The one place the per-tab filter predicates live. They differ, and the
+    /// differences are deliberate:
+    ///
+    /// | Tab | rating filter | folder filter | marked for removal |
+    /// |-----|---------------|---------------|--------------------|
+    /// | Library | yes | yes | visible |
+    /// | Cull | yes | no | visible |
+    /// | Develop | yes | no | **excluded** |
+    ///
+    /// `MARKED_FOR_REMOVAL_RATING` is 255, which satisfies `>=` against any
+    /// real 0-5 threshold, so marked images survive the rating filter — that
+    /// is intentional, and why Develop needs its own explicit exclusion.
+    ///
+    /// Anything that reasons about "the images on screen" must come through
+    /// here: the three views that render lists, range selection, select-all,
+    /// and arrow-key navigation. Re-inlining the predicate is how the four
+    /// drift apart.
+    pub fn displayed_images(&self) -> Vec<&ImageData> {
+        let marked = crate::database::models::MARKED_FOR_REMOVAL_RATING;
+        self.images
+            .iter()
+            .filter(|img| self.min_filter_rating == 0 || img.rating >= self.min_filter_rating)
+            .filter(|img| {
+                if self.current_tab != AppTab::Library {
+                    return true;
+                }
+                self.library_folder_filter
+                    .as_ref()
+                    .map(|folder| img.path.starts_with(folder))
+                    .unwrap_or(true)
+            })
+            .filter(|img| self.current_tab != AppTab::Develop || img.rating != marked)
+            .collect()
+    }
+
+    /// Ids of [`Self::displayed_images`], in the same order.
+    pub fn displayed_ids(&self) -> Vec<i64> {
+        self.displayed_images().iter().map(|i| i.id).collect()
+    }
+
+    /// True when this image should render as selected.
+    ///
+    /// The single predicate for both the library grid and the filmstrip. They
+    /// used to disagree — the grid ORed `selected_image_id` with
+    /// `multi_selection`, the filmstrip read only `multi_selection` — which
+    /// happened to look consistent only because a plain click kept the two in
+    /// sync. Range selection breaks that assumption.
+    pub fn is_selected(&self, image_id: i64) -> bool {
+        self.selected_image_id == Some(image_id) || self.multi_selection.contains(&image_id)
     }
 
     /// Display-space (EXIF-oriented) dimensions of what is actually ON SCREEN.
@@ -925,12 +996,26 @@ impl RawEditor {
                         keyboard::Key::Character(c) if c == "v" || c == "V" => {
                             return Some(Message::PasteSettings);
                         }
+                        // Must live in the command block with an early return:
+                        // the fall-through match below would make a bare `a`
+                        // select everything.
+                        keyboard::Key::Character(c) if c == "a" || c == "A" => {
+                            return Some(Message::SelectAll);
+                        }
                         _ => {}
                     }
                 }
 
                 match key {
                     keyboard::Key::Named(Named::F3) => Some(Message::ToggleProfiler),
+                    // Nothing opened the shortcut list from the keyboard,
+                    // which is a poor joke for a shortcut list.
+                    keyboard::Key::Named(Named::F1) => {
+                        Some(Message::OpenModal(Modal::Help))
+                    }
+                    keyboard::Key::Character(c) if c == "?" || c == "/" && modifiers.shift() => {
+                        Some(Message::OpenModal(Modal::Help))
+                    }
                     keyboard::Key::Named(Named::Escape) => Some(Message::Escape),
                     // Hold to peek at the original; the KeyReleased arm above
                     // ends it. The handler ignores repeats and gates on tab /
@@ -1071,6 +1156,87 @@ mod tests {
         e.current_edit_params.crop = [0.0, 0.0, 0.0001, 0.0001];
         let (w, h) = e.image_display_dims();
         assert!(w >= 1 && h >= 1, "got {w}x{h}");
+    }
+
+    // ── displayed_images / selection ─────────────────────────────────────────
+
+    fn img(id: i64, path: &str, rating: u8) -> ImageData {
+        ImageData {
+            id,
+            filename: format!("{id}.NEF"),
+            path: path.to_string(),
+            cache_path_thumb: None,
+            cache_path_instant: None,
+            cache_path_working: None,
+            file_status: "exists".to_string(),
+            rating,
+            flag: 0,
+        }
+    }
+
+    fn catalog() -> RawEditor {
+        let mut e = editor();
+        let marked = crate::database::models::MARKED_FOR_REMOVAL_RATING;
+        e.images = vec![
+            img(1, "/photos/2024/a.NEF", 0),
+            img(2, "/photos/2024/b.NEF", 3),
+            img(3, "/photos/2024-old/c.NEF", 5),
+            img(4, "/photos/2025/d.NEF", 0),
+            img(5, "/photos/2024/e.NEF", marked),
+        ];
+        e
+    }
+
+    #[test]
+    fn displayed_images_library_shows_marked_and_honours_the_folder_filter() {
+        let mut e = catalog();
+        e.current_tab = AppTab::Library;
+        assert_eq!(e.displayed_ids(), vec![1, 2, 3, 4, 5]);
+
+        e.library_folder_filter = Some("/photos/2024".to_string());
+        // Prefix match, so 2024-old is included — this mirrors the existing
+        // filter behaviour, which the sidebar's remove button deliberately
+        // does NOT share.
+        assert_eq!(e.displayed_ids(), vec![1, 2, 3, 5]);
+    }
+
+    #[test]
+    fn displayed_images_develop_excludes_marked_for_removal() {
+        let mut e = catalog();
+        e.current_tab = AppTab::Develop;
+        assert_eq!(e.displayed_ids(), vec![1, 2, 3, 4]);
+    }
+
+    /// The folder filter is Library-only; applying it in Cull or Develop would
+    /// silently shrink the filmstrip.
+    #[test]
+    fn displayed_images_ignores_the_folder_filter_outside_library() {
+        let mut e = catalog();
+        e.library_folder_filter = Some("/photos/2025".to_string());
+        e.current_tab = AppTab::Cull;
+        assert_eq!(e.displayed_ids(), vec![1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn displayed_images_applies_the_rating_filter_in_every_tab() {
+        let mut e = catalog();
+        e.min_filter_rating = 3;
+        e.current_tab = AppTab::Cull;
+        // 2 (3 stars), 3 (5 stars), and 5 — marked, whose sentinel 255 clears
+        // any real threshold. That is intentional; Develop is where it's cut.
+        assert_eq!(e.displayed_ids(), vec![2, 3, 5]);
+        e.current_tab = AppTab::Develop;
+        assert_eq!(e.displayed_ids(), vec![2, 3]);
+    }
+
+    #[test]
+    fn is_selected_covers_both_the_current_image_and_the_multi_selection() {
+        let mut e = catalog();
+        e.selected_image_id = Some(2);
+        e.multi_selection.insert(4);
+        assert!(e.is_selected(2));
+        assert!(e.is_selected(4));
+        assert!(!e.is_selected(1));
     }
 
     /// The peek must not change the framing — that is the whole reason

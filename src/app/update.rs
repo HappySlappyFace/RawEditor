@@ -161,6 +161,16 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::ModalNoOp => Task::none(),
         Message::Escape => handlers::window::handle_escape(editor),
         Message::ModalConfirm => handlers::window::handle_modal_confirm(editor),
+        Message::SelectAll => handlers::navigation::handle_select_all(editor),
+        Message::RemoveFolderRequested(f) => {
+            handlers::library::handle_remove_folder_requested(editor, f)
+        }
+        Message::RemoveFolderConfirmed => {
+            handlers::library::handle_remove_folder_confirmed(editor)
+        }
+        Message::ImportFolderPicked(r) => handlers::library::handle_import_folder_picked(editor, r),
+        Message::CheckForUpdates => handlers::window::handle_check_for_updates(editor),
+        Message::OpenRepository => handlers::window::handle_open_repository(editor),
         Message::ToggleInfoHud => handlers::window::handle_toggle_info_hud(editor),
         Message::SetThumbnailSize(s) => handlers::window::handle_set_thumbnail_size(editor, s),
         Message::SetCacheCapacity(c) => handlers::window::handle_set_cache_capacity(editor, c),

@@ -1,7 +1,6 @@
 use iced::Task;
 use rusqlite::{Connection, OptionalExtension};
 use std::path::PathBuf;
-use rfd::FileDialog;
 use walkdir::WalkDir;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -43,15 +42,40 @@ pub fn handle_database_loaded(editor: &mut RawEditor, result: Result<Vec<crate::
 }
 
 pub fn handle_import_folder(editor: &mut RawEditor) -> Task<Message> {
-    if let Some(library) = &editor.library {
-        let folder = FileDialog::new().set_title("Select Folder").pick_folder();
-        if let Some(folder_path) = folder {
-            editor.status = format!("Importing from {}...", folder_path.display());
-            let db_path = library.path().clone();
-            return Task::perform(import_folder_async(folder_path, db_path), Message::ImportComplete);
-        }
+    let Some(library) = &editor.library else {
+        return Task::none();
+    };
+    // AsyncFileDialog, not the blocking FileDialog: the blocking one runs the
+    // native picker's event loop inside `update`, freezing the whole window
+    // for as long as the dialog is open. The export path already does it this
+    // way (handlers::export::handle_pick_export_base_path).
+    let db_path = library.path().clone();
+    Task::perform(
+        async move {
+            let folder = rfd::AsyncFileDialog::new()
+                .set_title("Select Folder")
+                .pick_folder()
+                .await
+                .map(|handle| handle.path().to_path_buf());
+
+            match folder {
+                Some(folder_path) => Some(import_folder_async(folder_path, db_path).await),
+                None => None,
+            }
+        },
+        Message::ImportFolderPicked,
+    )
+}
+
+/// Landing point for the async folder picker. `None` means the user cancelled.
+pub fn handle_import_folder_picked(
+    editor: &mut RawEditor,
+    result: Option<ImportResult>,
+) -> Task<Message> {
+    match result {
+        Some(import) => handle_import_complete(editor, import),
+        None => Task::none(),
     }
-    Task::none()
 }
 
 pub fn handle_import_from_camera(editor: &mut RawEditor) -> Task<Message> {
@@ -180,6 +204,139 @@ pub fn handle_set_library_folder_filter(
     folder_filter: Option<String>,
 ) -> Task<Message> {
     editor.library_folder_filter = folder_filter;
+    // Drop anything the new filter hides. Otherwise a selection made under a
+    // previous filter stays live but invisible, and Export or a bulk rating
+    // would silently act on images the user can no longer see.
+    let visible: std::collections::HashSet<i64> = editor.displayed_ids().into_iter().collect();
+    editor.multi_selection.retain(|id| visible.contains(id));
+    if editor.selection_anchor.is_some_and(|a| !visible.contains(&a)) {
+        editor.selection_anchor = None;
+    }
+    Task::none()
+}
+
+/// Images whose immediate parent directory is `folder`.
+///
+/// Matches `views::library::collect_folder_stats`, which keys the sidebar on
+/// `Path::parent()`. Deliberately NOT the filter's `starts_with` prefix test:
+/// removing "the folder you clicked" must not also sweep up its subfolders,
+/// which appear as their own sidebar rows and are removable on their own.
+fn images_in_folder(editor: &RawEditor, folder: &str) -> Vec<i64> {
+    editor
+        .images
+        .iter()
+        .filter(|img| {
+            std::path::Path::new(&img.path)
+                .parent()
+                .map(|p| p.to_string_lossy() == folder)
+                .unwrap_or(false)
+        })
+        .map(|img| img.id)
+        .collect()
+}
+
+/// Count for the confirmation dialog.
+pub fn folder_image_count(editor: &RawEditor, folder: &str) -> usize {
+    images_in_folder(editor, folder).len()
+}
+
+/// Open the "forget this folder" confirmation.
+pub fn handle_remove_folder_requested(editor: &mut RawEditor, folder: String) -> Task<Message> {
+    if editor.active_modal != crate::app::state::Modal::None {
+        return Task::none();
+    }
+    if images_in_folder(editor, &folder).is_empty() {
+        return Task::none();
+    }
+    editor.pending_remove_folder = Some(folder);
+    editor.active_modal = crate::app::state::Modal::RemoveFolder;
+    Task::none()
+}
+
+/// Forget the folder: drop its catalogue rows and edits, delete its generated
+/// cache files, and leave every RAW file exactly where it is.
+pub fn handle_remove_folder_confirmed(editor: &mut RawEditor) -> Task<Message> {
+    if editor.active_modal != crate::app::state::Modal::RemoveFolder {
+        return Task::none();
+    }
+    let Some(folder) = editor.pending_remove_folder.take() else {
+        editor.active_modal = crate::app::state::Modal::None;
+        return Task::none();
+    };
+    editor.active_modal = crate::app::state::Modal::None;
+
+    let ids = images_in_folder(editor, &folder);
+    if ids.is_empty() {
+        return Task::none();
+    }
+
+    // Collect cache paths before the rows go away.
+    let cache_files: Vec<String> = editor
+        .images
+        .iter()
+        .filter(|img| ids.contains(&img.id))
+        .flat_map(|img| {
+            [
+                img.cache_path_thumb.clone(),
+                img.cache_path_instant.clone(),
+                img.cache_path_working.clone(),
+            ]
+        })
+        .flatten()
+        .collect();
+
+    let removed = match &mut editor.library {
+        Some(lib) => match lib.forget_images(&ids) {
+            Ok(n) => n,
+            Err(e) => {
+                tracing::error!("Failed to forget folder {folder}: {e}");
+                editor.status = format!("Could not remove {folder}: {e}");
+                return Task::none();
+            }
+        },
+        None => return Task::none(),
+    };
+
+    // Regenerable, so plain removal rather than the trash — unlike RAW files,
+    // which this operation never touches.
+    for path in cache_files {
+        if let Err(e) = std::fs::remove_file(&path) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!("Could not delete cache file {path}: {e}");
+            }
+        }
+    }
+
+    // Same in-memory cleanup the hard-delete path does.
+    let gone: std::collections::HashSet<i64> = ids.iter().copied().collect();
+    editor.images.retain(|img| !gone.contains(&img.id));
+    editor.multi_selection.retain(|id| !gone.contains(id));
+    editor.history_map.retain(|id, _| !gone.contains(id));
+    editor.pending_loads.retain(|id| !gone.contains(id));
+    editor.queued_loads.retain(|(id, _)| !gone.contains(id));
+    editor.pending_raw_loads.retain(|id| !gone.contains(id));
+    editor.queued_raw_loads.retain(|(id, _)| !gone.contains(id));
+    for id in &ids {
+        editor.preview_cache.pop(id);
+        editor.remove_from_raw_cache(*id);
+    }
+    if editor.selection_anchor.is_some_and(|a| gone.contains(&a)) {
+        editor.selection_anchor = None;
+    }
+    if editor.selected_image_id.is_some_and(|id| gone.contains(&id)) {
+        editor.selected_image_id = None;
+        editor.editor_readiness = crate::app::state::EditorReadiness::NoSelection;
+        editor.working_preview = None;
+        editor.working_preview_bytes = None;
+        editor.rendered_preview_bytes = None;
+        editor.image_resources = None;
+    }
+    // The filter would otherwise point at a folder that no longer exists.
+    if editor.library_folder_filter.as_deref() == Some(folder.as_str()) {
+        editor.library_folder_filter = None;
+    }
+
+    editor.status = format!("Removed {removed} images from the catalogue (files kept)");
     Task::none()
 }
 
@@ -334,5 +491,59 @@ mod tests {
         images[0].cache_path_thumb = Some("old".into());
         apply_cache_paths(&mut images, 1, "new".into(), "i".into(), "w".into());
         assert_eq!(images[0].cache_path_thumb.as_deref(), Some("new"));
+    }
+
+    // ── folder removal targeting ─────────────────────────────────────────────
+
+    fn folder_img(id: i64, path: &str) -> crate::database::models::Image {
+        crate::database::models::Image {
+            id,
+            filename: format!("{id}.NEF"),
+            path: path.to_string(),
+            cache_path_thumb: None,
+            cache_path_instant: None,
+            cache_path_working: None,
+            file_status: "exists".to_string(),
+            rating: 0,
+            flag: 0,
+        }
+    }
+
+    fn folder_editor() -> RawEditor {
+        let mut e = RawEditor::new().0;
+        e.images = vec![
+            folder_img(1, "/photos/2024/a.NEF"),
+            folder_img(2, "/photos/2024/b.NEF"),
+            folder_img(3, "/photos/2024-old/c.NEF"),
+            folder_img(4, "/photos/2024/nested/d.NEF"),
+            folder_img(5, "/photos/2025/e.NEF"),
+        ];
+        e
+    }
+
+    /// The trap: a bare `starts_with` prefix test would sweep up
+    /// `/photos/2024-old` when removing `/photos/2024`. Matching on the exact
+    /// parent directory is what the sidebar rows actually represent.
+    #[test]
+    fn removing_a_folder_does_not_catch_similarly_named_siblings() {
+        let e = folder_editor();
+        assert_eq!(images_in_folder(&e, "/photos/2024"), vec![1, 2]);
+        assert_eq!(images_in_folder(&e, "/photos/2024-old"), vec![3]);
+    }
+
+    /// Subfolders are their own sidebar rows, so removing the parent must not
+    /// silently take them too.
+    #[test]
+    fn removing_a_folder_leaves_its_subfolders_alone() {
+        let e = folder_editor();
+        assert!(!images_in_folder(&e, "/photos/2024").contains(&4));
+        assert_eq!(images_in_folder(&e, "/photos/2024/nested"), vec![4]);
+    }
+
+    #[test]
+    fn unknown_folder_matches_nothing() {
+        let e = folder_editor();
+        assert!(images_in_folder(&e, "/photos/nope").is_empty());
+        assert_eq!(folder_image_count(&e, "/photos/2024"), 2);
     }
 }

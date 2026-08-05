@@ -1,4 +1,4 @@
-use iced::{Alignment, Background, Color, Element, Length, Theme};
+use iced::{Alignment, Background, Border, Color, Element, Length, Theme};
 use iced::widget::{button, column, container, row, stack, text, Image, Space};
 use iced::widget::image::Handle;
 
@@ -11,9 +11,13 @@ use super::library::view_library;
 use super::cull::view_cull;
 use super::develop::view_develop;
 use super::modals::{
-    view_copy_settings_modal, view_delete_modal, view_export_modal, view_help_modal,
-    view_preferences_modal,
+    modal_overlay, view_about_modal, view_copy_settings_modal, view_delete_modal,
+    view_export_modal, view_help_modal, view_preferences_modal, view_remove_folder_modal,
 };
+
+/// Height of the custom title bar. Module-level because the menu bar has to be
+/// given this height explicitly — see `view_title_bar`.
+const TITLE_BAR_HEIGHT: f32 = 35.0;
 
 // Phase 69: Brand Identity
 const LOGO_BYTES: &[u8] = include_bytes!("../../../assets/logo.png");
@@ -26,20 +30,29 @@ pub fn view(editor: &RawEditor) -> Element<'_, Message> {
         Some(_) => view_main(editor),
     };
     
-    // Phase 84: Generic Modal System
-    let modal = match editor.active_modal {
-        Modal::None => container(text("")).height(0).width(0),
-        Modal::Help => container(view_help_modal()).style(ui::styles::modal_container_style).padding(20),
-        Modal::Preferences => container(view_preferences_modal(editor)).style(ui::styles::modal_container_style).padding(20),
-        Modal::Export => container(view_export_modal(editor)).style(ui::styles::modal_container_style).padding(20),
-        Modal::Delete => container(view_delete_modal(editor)).style(ui::styles::modal_container_style).padding(20),
-        Modal::CopySettings => container(view_copy_settings_modal(editor)).style(ui::styles::modal_container_style).padding(20),
+    // Phase 84: Generic Modal System.
+    //
+    // Everything goes through `modal_overlay`, which supplies the dimmed
+    // backdrop, click-outside-to-close, and — the part that was missing —
+    // screen centering. `stack` places non-base layers at their own intrinsic
+    // size at the origin with no alignment step, so the old bare shrink-wrapped
+    // container pinned every modal to the top-left corner.
+    let modal_body: Option<Element<'_, Message>> = match editor.active_modal {
+        Modal::None => None,
+        Modal::Help => Some(view_help_modal()),
+        Modal::Preferences => Some(view_preferences_modal(editor)),
+        Modal::Export => Some(view_export_modal(editor)),
+        Modal::Delete => Some(view_delete_modal(editor)),
+        Modal::CopySettings => Some(view_copy_settings_modal(editor)),
+        Modal::About => Some(view_about_modal()),
+        Modal::RemoveFolder => Some(view_remove_folder_modal(editor)),
     };
-    
-    stack![
-        content,
-        modal
-    ].into()
+
+    // push_maybe rather than a zero-sized placeholder layer: Modal::None is the
+    // common case and shouldn't allocate a widget tree every frame.
+    stack![content]
+        .push_maybe(modal_body.map(modal_overlay))
+        .into()
 }
 
 /// Phase 23: Splash screen shown during database loading
@@ -148,15 +161,40 @@ fn view_main(editor: &RawEditor) -> Element<'_, Message> {
     // Image thumbnails) don't respect ancestor clip/scissor bounds and would
     // otherwise bleed over the bar. The Space reserves its 35px in the normal
     // layout flow so `content` is sized identically to before.
-    const TITLE_BAR_HEIGHT: f32 = 35.0;
-    container(stack![
-        column![Space::with_height(Length::Fixed(TITLE_BAR_HEIGHT)), content]
-            .width(Length::Fill)
-            .height(Length::Fill),
-        container(title_bar)
-            .width(Length::Fill)
-            .align_y(iced::alignment::Vertical::Top),
-    ])
+    // Profiler HUD lives here rather than inside view_develop so Window >
+    // Performance HUD does something in every tab. Render stats are
+    // develop-specific, hence None elsewhere.
+    let profiler = editor.show_profiler.then(|| {
+        let stats = (editor.current_tab == AppTab::Develop).then(|| {
+            crate::ui::widgets::profiler_graph::RenderStats {
+                zoom_percent: editor.zoom_percent(),
+                target: editor.rendered_preview_dims,
+                view_extent: (editor.rendered_view_rect[2], editor.rendered_view_rect[3]),
+            }
+        });
+        container(crate::ui::widgets::profiler_graph::view_profiler_overlay(
+            &editor.profiler,
+            &editor.profiler_cache,
+            stats,
+        ))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_x(iced::alignment::Horizontal::Left)
+        .align_y(iced::alignment::Vertical::Top)
+        .padding([TITLE_BAR_HEIGHT + 10.0, 10.0])
+    });
+
+    container(
+        stack![
+            column![Space::with_height(Length::Fixed(TITLE_BAR_HEIGHT)), content]
+                .width(Length::Fill)
+                .height(Length::Fill),
+            container(title_bar)
+                .width(Length::Fill)
+                .align_y(iced::alignment::Vertical::Top),
+        ]
+        .push_maybe(profiler),
+    )
     .width(Length::Fill)
     .height(Length::Fill)
     .style(|_theme| container::Style {
@@ -168,13 +206,159 @@ fn view_main(editor: &RawEditor) -> Element<'_, Message> {
 }
 
 /// Build the custom window title bar
+/// One row inside a dropdown: full-width, left-aligned, with an optional
+/// check mark column so toggles and plain actions line up.
+fn menu_entry<'a>(label: &'a str, checked: Option<bool>, msg: Message) -> Element<'a, Message> {
+    let mark = match checked {
+        Some(true) => text(ui::icons::CHECK).font(ICON_FONT).size(11),
+        Some(false) | None => text(" ").size(11),
+    };
+    button(
+        row![
+            container(mark).width(Length::Fixed(16.0)),
+            text(label).size(13),
+        ]
+        .spacing(4)
+        .align_y(Alignment::Center),
+    )
+    .width(Length::Fill)
+    .padding([6, 10])
+    .style(ui::styles::WindowControlButton::style)
+    .on_press(msg)
+    .into()
+}
+
+/// A thin rule used to group menu entries.
+fn menu_separator<'a>() -> Element<'a, Message> {
+    container(iced::widget::horizontal_rule(1.0).style(|_| iced::widget::rule::Style {
+        color: Color::from_rgb(0.25, 0.25, 0.25),
+        width: 1,
+        radius: 0.0.into(),
+        fill_mode: iced::widget::rule::FillMode::Full,
+    }))
+    .padding([4, 6])
+    .into()
+}
+
 fn view_title_bar(editor: &RawEditor) -> Element<'_, Message> {
-    let menus = row![
-        button(container(text("File").size(13)).height(Length::Fill).align_x(iced::alignment::Horizontal::Center).align_y(iced::alignment::Vertical::Center)).style(ui::styles::WindowControlButton::style).height(Length::Fill).padding([0, 10]).on_press(Message::ImportFolder),
-        button(container(text("Edit").size(13)).height(Length::Fill).align_x(iced::alignment::Horizontal::Center).align_y(iced::alignment::Vertical::Center)).style(ui::styles::WindowControlButton::style).height(Length::Fill).padding([0, 10]).on_press(Message::OpenModal(crate::app::state::Modal::Preferences)),
-        button(container(text("Window").size(13)).height(Length::Fill).align_x(iced::alignment::Horizontal::Center).align_y(iced::alignment::Vertical::Center)).style(ui::styles::WindowControlButton::style).height(Length::Fill).padding([0, 10]).on_press(Message::ToggleProfiler),
-        button(container(text("Help").size(13)).height(Length::Fill).align_x(iced::alignment::Horizontal::Center).align_y(iced::alignment::Vertical::Center)).style(ui::styles::WindowControlButton::style).height(Length::Fill).padding([0, 10]).on_press(Message::OpenModal(crate::app::state::Modal::Help)),
-    ].spacing(0).align_y(Alignment::Center);
+    use iced_aw::menu::{Item, Menu};
+
+    // Top-level labels keep the old button styling so the bar looks unchanged
+    // until something is clicked.
+    let label = |name: &'static str| {
+        button(
+            container(text(name).size(13))
+                .height(Length::Fill)
+                .align_x(iced::alignment::Horizontal::Center)
+                .align_y(iced::alignment::Vertical::Center),
+        )
+        .style(ui::styles::WindowControlButton::style)
+        .height(Length::Fill)
+        .padding([0, 10])
+        // A menu root still needs an on_press or iced treats it as disabled
+        // and greys the label; ModalNoOp is the established no-op message.
+        .on_press(Message::ModalNoOp)
+    };
+
+    // Free function, not a closure: closure lifetime elision binds the argument
+    // and return lifetimes to different regions and won't compile.
+    fn dropdown<'a>(
+        items: Vec<Item<'a, Message, Theme, iced::Renderer>>,
+    ) -> Menu<'a, Message, Theme, iced::Renderer> {
+        Menu::new(items).max_width(220.0).offset(2.0).spacing(0.0)
+    }
+
+    let menus = iced_aw::menu::MenuBar::new(vec![
+        Item::with_menu(
+            label("File"),
+            dropdown(vec![
+                Item::new(menu_entry("Import Folder…", None, Message::ImportFolder)),
+                Item::new(menu_separator()),
+                Item::new(menu_entry("Quit", None, Message::CloseWindow)),
+            ]),
+        ),
+        Item::with_menu(
+            label("Edit"),
+            dropdown(vec![Item::new(menu_entry(
+                "Preferences…",
+                None,
+                Message::OpenModal(crate::app::state::Modal::Preferences),
+            ))]),
+        ),
+        Item::with_menu(
+            label("Window"),
+            dropdown(vec![
+                Item::new(menu_entry(
+                    "Performance HUD",
+                    Some(editor.show_profiler),
+                    Message::ToggleProfiler,
+                )),
+                Item::new(menu_entry(
+                    "Info Overlay",
+                    Some(editor.info_overlay != crate::app::state::InfoOverlayState::Hidden),
+                    Message::ToggleInfoHud,
+                )),
+            ]),
+        ),
+        Item::with_menu(
+            label("Help"),
+            dropdown(vec![
+                Item::new(menu_entry(
+                    "Keyboard Shortcuts…",
+                    None,
+                    Message::OpenModal(crate::app::state::Modal::Help),
+                )),
+                Item::new(menu_entry(
+                    "Check for Updates",
+                    None,
+                    Message::CheckForUpdates,
+                )),
+                Item::new(menu_separator()),
+                Item::new(menu_entry(
+                    "About",
+                    None,
+                    Message::OpenModal(crate::app::state::Modal::About),
+                )),
+            ]),
+        ),
+    ])
+    .draw_path(iced_aw::menu::DrawPath::Backdrop)
+    .padding(0)
+    // MUST be explicit. `MenuBar::new` defaults to `height: Shrink`, and the
+    // root labels are `height: Fill` — a Fill child inside a Shrink flex
+    // container collapses to nothing, so the bar's bounds ended up ~0px tall.
+    // `on_event` gates opening on `cursor.is_over(bar_bounds)`, so the menu
+    // could never open, `overlay()` always returned None, and the dropdowns
+    // silently did not exist. No error, no warning — just no menu.
+    .height(Length::Fixed(TITLE_BAR_HEIGHT))
+    .style(|_theme, _status| iced_aw::style::menu_bar::Style {
+        // The title bar paints its own background; the bar itself must not
+        // add a second one over it.
+        bar_background: Background::Color(Color::TRANSPARENT),
+        bar_border: Border::default(),
+        bar_shadow: iced::Shadow::default(),
+        bar_background_expand: 0.into(),
+
+        // Dropdown panels match the modal card so the app has one surface look.
+        menu_background: Background::Color(Color::from_rgb(0.12, 0.12, 0.12)),
+        menu_border: Border {
+            radius: 6.0.into(),
+            width: 1.0,
+            color: Color::from_rgb(0.28, 0.28, 0.28),
+        },
+        menu_shadow: iced::Shadow {
+            color: Color::from_rgba(0.0, 0.0, 0.0, 0.5),
+            offset: iced::Vector::new(0.0, 2.0),
+            blur_radius: 12.0,
+        },
+        menu_background_expand: 4.into(),
+
+        path: Background::Color(Color::from_rgb(0.22, 0.22, 0.22)),
+        path_border: Border {
+            radius: 4.0.into(),
+            ..Default::default()
+        },
+    });
 
     let navigation = container(
         row![

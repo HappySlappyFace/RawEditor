@@ -3,6 +3,45 @@ use crate::app::state::{RawEditor, Modal};
 use crate::app::message::Message;
 use iced::window;
 
+/// Canonical project URL, shown in About and opened by both Help actions.
+pub const REPO_URL: &str = "https://github.com/HappySlappyFace/RawEditor";
+/// Where "Check for Updates" goes. Deliberately just a page: querying the
+/// GitHub API would mean an HTTP client, TLS, and a release-parsing format to
+/// keep in sync, for something the user can read in a second.
+pub const RELEASES_URL: &str = "https://github.com/HappySlappyFace/RawEditor/releases";
+
+/// Hand a URL to the platform's default browser.
+///
+/// Spawned rather than waited on: `xdg-open` can block for a noticeable moment
+/// while it resolves a handler, and this runs on the update thread. Failure is
+/// logged, never fatal — the URL is also displayed in the About dialog so the
+/// user can copy it by hand.
+fn open_url(url: &str) {
+    let result = if cfg!(target_os = "windows") {
+        std::process::Command::new("cmd").args(["/c", "start", "", url]).spawn()
+    } else if cfg!(target_os = "macos") {
+        std::process::Command::new("open").arg(url).spawn()
+    } else {
+        std::process::Command::new("xdg-open").arg(url).spawn()
+    };
+
+    if let Err(e) = result {
+        tracing::error!("Failed to open {url}: {e}");
+    }
+}
+
+pub fn handle_open_repository(editor: &mut RawEditor) -> Task<Message> {
+    open_url(REPO_URL);
+    editor.status = format!("Opened {REPO_URL}");
+    Task::none()
+}
+
+pub fn handle_check_for_updates(editor: &mut RawEditor) -> Task<Message> {
+    open_url(RELEASES_URL);
+    editor.status = format!("Current version {}", env!("CARGO_PKG_VERSION"));
+    Task::none()
+}
+
 pub fn handle_minimize_window() -> Task<Message> {
     window::get_latest().and_then(|id| window::minimize(id, true))
 }
@@ -52,9 +91,12 @@ pub fn handle_modal_confirm(editor: &mut RawEditor) -> Task<Message> {
             crate::app::handlers::develop::handle_copy_settings_confirmed(editor)
         }
         Modal::Export => crate::app::handlers::export::handle_export_confirmed(editor),
-        // Help and Preferences have nothing to confirm; Enter closes them,
-        // which is the least surprising thing a dialog can do.
-        Modal::Help | Modal::Preferences => handle_close_modal(editor),
+        Modal::RemoveFolder => {
+            crate::app::handlers::library::handle_remove_folder_confirmed(editor)
+        }
+        // Help, Preferences and About have nothing to confirm; Enter closes
+        // them, which is the least surprising thing a dialog can do.
+        Modal::Help | Modal::Preferences | Modal::About => handle_close_modal(editor),
         Modal::None => Task::none(),
     }
 }
@@ -62,6 +104,7 @@ pub fn handle_modal_confirm(editor: &mut RawEditor) -> Task<Message> {
 pub fn handle_close_modal(editor: &mut RawEditor) -> Task<Message> {
     editor.active_modal = Modal::None;
     editor.pending_delete_ids.clear();
+    editor.pending_remove_folder = None;
     Task::none()
 }
 
@@ -69,6 +112,7 @@ pub fn handle_escape(editor: &mut RawEditor) -> Task<Message> {
     if editor.active_modal != Modal::None {
         editor.active_modal = Modal::None;
         editor.pending_delete_ids.clear();
+        editor.pending_remove_folder = None;
     } else if editor.is_wb_picking {
         editor.is_wb_picking = false;
         editor.status.clear();
@@ -78,11 +122,28 @@ pub fn handle_escape(editor: &mut RawEditor) -> Task<Message> {
     } else if editor.selected_mask.is_some() {
         editor.selected_mask = None;
         editor.canvas_cache.clear();
+    } else if editor.multi_selection.len() > 1 {
+        // Last in the chain: collapse a multi-selection back to just the
+        // current image. Only fires when there is a real multi-selection, so
+        // Escape never clears an ordinary single selection out from under the
+        // user.
+        editor.multi_selection.clear();
+        if let Some(id) = editor.selected_image_id {
+            editor.multi_selection.insert(id);
+        }
+        editor.selection_anchor = editor.selected_image_id;
+        editor.status.clear();
     }
     Task::none()
 }
 
 pub fn handle_toggle_info_hud(editor: &mut RawEditor) -> Task<Message> {
+    // Every other key handler carries this guard; this one was the lone
+    // exception, so typing an "i" into a modal's text field silently advanced
+    // the overlay behind it.
+    if editor.active_modal != Modal::None {
+        return Task::none();
+    }
     editor.info_overlay = editor.info_overlay.next();
     Task::none()
 }

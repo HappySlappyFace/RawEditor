@@ -1,7 +1,6 @@
 use iced::widget::{button, container, image, mouse_area, row, scrollable, text, stack, Space};
 use iced::{Background, Border, Color, Element, Length, Theme};
 use std::path::PathBuf;
-use std::collections::HashSet;  // Phase 55: Multi-selection
 
 use crate::database::models::{Image, MARKED_FOR_REMOVAL_RATING};
 use crate::app::message::Message;
@@ -13,12 +12,15 @@ pub fn scroll_id() -> scrollable::Id {
     scrollable::Id::new("filmstrip")
 }
 
-/// Render the filmstrip timeline at the bottom of the Develop tab
-/// Phase 55: Now accepts HashSet for multi-selection
-/// Phase 59: Accepts &[&Image] for filtered view
+/// Render the filmstrip timeline at the bottom of the Develop and Cull tabs.
+///
+/// Takes the whole editor rather than a selection set so it can use
+/// `RawEditor::is_selected` — the same predicate the library grid uses. It
+/// previously read `multi_selection` alone, which disagreed with the grid
+/// whenever `selected_image_id` was not also in the set.
 pub fn view<'a>(
     images: &[&'a Image],
-    selection: &HashSet<i64>,
+    editor: &crate::app::state::RawEditor,
 ) -> Element<'a, Message> {
     // Build row with thumbnails
     let mut thumbnails = Vec::new();
@@ -31,8 +33,7 @@ pub fn view<'a>(
             None => continue, // Skip this image
         };
         
-        // Phase 55: Check if image is in selection set
-        let is_selected = selection.contains(&img.id);
+        let is_selected = editor.is_selected(img.id);
         
         // Get thumbnail path (256px cache)
         let thumb_path = PathBuf::from(thumb_path_str);

@@ -489,6 +489,45 @@ impl Library {
         Ok(())
     }
 
+    /// Forget a batch of images: remove their catalogue rows and edit history.
+    /// Does NOT touch anything on disk — the RAW files and the generated cache
+    /// files are the caller's business.
+    ///
+    /// Takes an explicit id list rather than matching on a path prefix. The
+    /// caller derives the ids from the same in-memory predicate the sidebar
+    /// filter displays, so "remove this folder" removes exactly the images the
+    /// grid was showing. A `path LIKE ?||'/%'` query would quietly disagree
+    /// with that (the filter uses a bare prefix match, so `/photos/2024` also
+    /// matches `/photos/2024-old/`) and would need `%` and `_` escaped out of
+    /// real directory names.
+    ///
+    /// The `edits` rows are deleted EXPLICITLY. `edits` declares
+    /// `ON DELETE CASCADE`, but `PRAGMA foreign_keys` is never enabled (see
+    /// `apply_pragmas`), so the cascade does not fire — relying on it would
+    /// orphan a row per image, which is what the existing hard-delete path has
+    /// been doing.
+    ///
+    /// Transactional, unlike the row-at-a-time hard delete: a folder can be
+    /// thousands of images, and a partial removal would leave the catalogue
+    /// disagreeing with what the user was shown.
+    pub fn forget_images(&mut self, ids: &[i64]) -> SqlResult<usize> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let tx = self.conn.transaction()?;
+        let mut removed = 0usize;
+        {
+            let mut del_edits = tx.prepare("DELETE FROM edits WHERE image_id = ?1")?;
+            let mut del_image = tx.prepare("DELETE FROM images WHERE id = ?1")?;
+            for id in ids {
+                del_edits.execute([id])?;
+                removed += del_image.execute([id])?;
+            }
+        }
+        tx.commit()?;
+        Ok(removed)
+    }
+
     /// Phase 28: Set all 3 cache tier paths for an image
     /// Updates cache_status to 'cached' and stores paths for thumb, instant, and working tiers
     pub fn set_image_cache_paths(

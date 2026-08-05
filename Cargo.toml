@@ -1,9 +1,9 @@
 [package]
 name = "raw-editor"
-version = "0.9.1"
+version = "0.9.8"
 edition = "2021"
-authors = ["Ayman REBAI <ayman.rebai@gmail.com>"]
-description = "A blazing-fast, native RAW photo editor"
+authors = ["Ayman REBAI"]
+description = "A native RAW photo editor"
 license = "MIT"
 
 [dependencies]
@@ -11,8 +11,10 @@ license = "MIT"
 iced = { version = "0.13", features = ["wgpu", "tokio", "image", "advanced", "canvas"] }
 iced_wgpu = "0.13"  # Direct access to wgpu types from iced
 
-# Additional widgets for iced (Wrap for grid layout)
-iced_aw = { version = "0.10", default-features = false, features = ["wrap"] }
+# Additional widgets for iced: Wrap for the library grid, menu for the title
+# bar's dropdowns. Both features are dependency-free (`menu = []`), so this
+# costs compile time only.
+iced_aw = { version = "0.10", default-features = false, features = ["wrap", "menu"] }
 
 # Async runtime for background tasks
 tokio = { version = "1", features = ["rt", "fs", "sync"] }

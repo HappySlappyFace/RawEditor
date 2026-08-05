@@ -15,13 +15,8 @@ pub fn view_cull(editor: &RawEditor) -> Element<'_, Message> {
         view_empty_state()
     };
 
-    // MARKED_FOR_REMOVAL_RATING (255) always satisfies `>=` against any real
-    // threshold 0-5, so marked images stay visible here regardless of the
-    // rating filter — intentional, not an oversight.
-    let filtered_images: Vec<&ImageData> = editor.images.iter()
-        .filter(|img| editor.min_filter_rating == 0 || img.rating >= editor.min_filter_rating)
-        .collect();
-    let filmstrip = ui::filmstrip::view(&filtered_images, &editor.multi_selection);
+    let filtered_images: Vec<&ImageData> = editor.displayed_images();
+    let filmstrip = ui::filmstrip::view(&filtered_images, editor);
     
     column![
         main_content, 

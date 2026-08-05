@@ -148,7 +148,13 @@ pub fn handle_set_crop(editor: &mut RawEditor, crop: [f32; 4]) -> Task<Message> 
 }
 
 pub fn handle_toggle_crop(editor: &mut RawEditor) -> Task<Message> {
-    if editor.active_modal != crate::app::state::Modal::None {
+    // Develop-only. Without the tab check, pressing C in Library flipped
+    // is_cropping / drag_mode and ran a full update_pipeline with nothing on
+    // screen to show for it — the user only met the consequences on their next
+    // visit to Develop.
+    if editor.active_modal != crate::app::state::Modal::None
+        || editor.current_tab != crate::app::message::AppTab::Develop
+    {
         return Task::none();
     }
     editor.is_wb_picking = false; // tools are mutually exclusive
@@ -583,7 +589,10 @@ pub fn trigger_async_render(editor: &mut RawEditor) -> Task<Message> {
 }
 
 pub fn handle_toggle_wb_picker(editor: &mut RawEditor) -> Task<Message> {
-    if editor.active_modal != crate::app::state::Modal::None {
+    // Develop-only, same reasoning as handle_toggle_crop.
+    if editor.active_modal != crate::app::state::Modal::None
+        || editor.current_tab != crate::app::message::AppTab::Develop
+    {
         return Task::none();
     }
     editor.is_wb_picking = !editor.is_wb_picking;

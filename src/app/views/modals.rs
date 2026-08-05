@@ -1,6 +1,7 @@
 use iced::font::{Font, Weight};
 use iced::widget::{
-    button, checkbox, column, container, mouse_area, radio, row, slider, stack, text, text_input,
+    button, checkbox, column, container, mouse_area, radio, row, scrollable, slider, stack, text,
+    text_input,
 };
 use iced::{Alignment, Background, Border, Color, Element, Length, Theme};
 
@@ -8,6 +9,18 @@ use crate::app::message::Message;
 use crate::app::state::RawEditor;
 use crate::ui;
 
+/// Wrap a modal's body in a dimmed, click-to-dismiss, screen-centred overlay.
+///
+/// The two-container split is load-bearing. `iced::widget::stack` resolves its
+/// size from child 0 only and then places every later layer at that layer's own
+/// intrinsic size, at the origin — there is no alignment step. A shrink-wrapped
+/// card therefore pins to the top-left corner of the window, which is exactly
+/// how every modal used to render.
+///
+/// So the fill + centering must live on an OUTER container, and the card style
+/// on an inner one. Putting `center_x(Fill)` on the styled container instead
+/// stretches its background over the whole window: a full-screen grey slab with
+/// a border at the screen edge.
 pub fn modal_overlay<'a>(content: Element<'a, Message>) -> Element<'a, Message> {
     // The backdrop: semi-transparent black, fills screen, closes on click
     let backdrop = mouse_area(
@@ -21,16 +34,11 @@ pub fn modal_overlay<'a>(content: Element<'a, Message>) -> Element<'a, Message> 
     )
     .on_press(Message::CloseModal);
 
-    // The card: centered content
-    let card = container(content).padding(20).style(|_| container::Style {
-        background: Some(Background::Color(Color::from_rgb(0.10, 0.10, 0.10))),
-        border: Border {
-            radius: 8.0.into(),
-            width: 1.0,
-            color: Color::from_rgb(0.25, 0.25, 0.25),
-        },
-        ..Default::default()
-    });
+    // The card. Uses the shared style rather than its own colours so there is
+    // one modal look in the app, not two that drift apart.
+    let card = container(content)
+        .padding(20)
+        .style(ui::styles::modal_container_style);
 
     stack![
         backdrop,
@@ -82,7 +90,7 @@ pub fn view_help_modal<'a>() -> Element<'a, Message> {
             radius: 0.0.into(),
             fill_mode: iced::widget::rule::FillMode::Full
         }),
-        column![
+        scrollable(column![
             text("Navigation")
                 .size(12)
                 .font(Font {
@@ -93,7 +101,20 @@ pub fn view_help_modal<'a>() -> Element<'a, Message> {
                     color: Some(Color::from_rgb(0.5, 0.5, 0.5))
                 }),
             shortcut("Arrow Keys", "Previous / Next Image"),
-            shortcut("Space (hold)", "Compare with the unedited original"),
+            shortcut("Space (hold)", "Compare with the original — Develop only"),
+            shortcut("Esc", "Close dialog, or cancel the active tool"),
+            text("Selection")
+                .size(12)
+                .font(Font {
+                    weight: Weight::Bold,
+                    ..Default::default()
+                })
+                .style(|_| text::Style {
+                    color: Some(Color::from_rgb(0.5, 0.5, 0.5))
+                }),
+            shortcut("Ctrl + Click", "Add / remove one image"),
+            shortcut("Shift + Click", "Select a range"),
+            shortcut("Ctrl + A", "Select everything visible"),
             text("Rating & Culling")
                 .size(12)
                 .font(Font {
@@ -122,12 +143,40 @@ pub fn view_help_modal<'a>() -> Element<'a, Message> {
             shortcut("R", "Reset Edits"),
             shortcut("Ctrl + Z", "Undo"),
             shortcut("Ctrl + Shift + Z", "Redo"),
+            shortcut("Ctrl + Y", "Redo (alternative)"),
             shortcut("Ctrl + C", "Copy Settings (choose what)"),
             shortcut("Ctrl + Shift + C", "Copy All Settings"),
             shortcut("Ctrl + V", "Paste Settings"),
-            shortcut("Double Click", "Reset Zoom"),
+            text("View & Tools")
+                .size(12)
+                .font(Font {
+                    weight: Weight::Bold,
+                    ..Default::default()
+                })
+                .style(|_| text::Style {
+                    color: Some(Color::from_rgb(0.5, 0.5, 0.5))
+                }),
+            shortcut("C", "Crop mode — Develop only"),
+            shortcut("W", "White balance eyedropper — Develop only"),
+            shortcut("I", "Cycle the info overlay"),
+            shortcut("F3", "Performance HUD"),
+            shortcut("F1 / ?", "This dialog"),
+            text("Mouse")
+                .size(12)
+                .font(Font {
+                    weight: Weight::Bold,
+                    ..Default::default()
+                })
+                .style(|_| text::Style {
+                    color: Some(Color::from_rgb(0.5, 0.5, 0.5))
+                }),
+            shortcut("Double Click", "Reset zoom and pan"),
+            shortcut("Scroll", "Zoom in Develop, scroll elsewhere"),
         ]
-        .spacing(6),
+        .spacing(6))
+        // The list outgrew a short window once View & Tools and Selection were
+        // added; cap it so the Close button stays reachable.
+        .height(Length::Fixed(420.0)),
         button("Close")
             .on_press(Message::CloseModal)
             .padding(8)
@@ -588,6 +637,114 @@ pub fn view_export_modal<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
     ]
     .spacing(15)
     .width(400)
+    .into()
+}
+
+/// Confirmation for forgetting a folder.
+///
+/// The wording is deliberately explicit that files survive — this is the only
+/// removal in the app that does NOT touch the disk, and confusing it with
+/// "Delete from Disk" would be expensive for the user.
+pub fn view_remove_folder_modal(editor: &RawEditor) -> Element<'_, Message> {
+    let folder = editor.pending_remove_folder.clone().unwrap_or_default();
+    let count = crate::app::handlers::library::folder_image_count(editor, &folder);
+
+    column![
+        text("Remove Folder from Library").size(18).font(Font {
+            weight: Weight::Bold,
+            ..Default::default()
+        }).style(|_| text::Style {
+            color: Some(Color::from_rgb(0.85, 0.85, 0.85))
+        }),
+        iced::widget::horizontal_rule(1.0).style(|_| iced::widget::rule::Style {
+            color: Color::from_rgb(0.3, 0.3, 0.3),
+            width: 1,
+            radius: 0.0.into(),
+            fill_mode: iced::widget::rule::FillMode::Full
+        }),
+        text(folder.clone()).size(12).style(|_theme: &Theme| text::Style {
+            color: Some(Color::from_rgb(0.7, 0.7, 0.7))
+        }),
+        text(format!(
+            "{count} image{} will be removed from the catalogue, along with any edits made to them.",
+            if count == 1 { "" } else { "s" }
+        ))
+        .size(13)
+        .style(|_theme: &Theme| text::Style {
+            color: Some(Color::from_rgb(0.75, 0.75, 0.75))
+        }),
+        text("Your RAW files are NOT deleted — they stay exactly where they are on disk, and the folder can be imported again at any time. Only cached previews are cleared.")
+            .size(11)
+            .style(|_theme: &Theme| text::Style {
+                color: Some(Color::from_rgb(0.5, 0.5, 0.5))
+            }),
+        iced::widget::vertical_space().height(10),
+        row![
+            button(text("Cancel").align_x(iced::alignment::Horizontal::Center))
+                .on_press(Message::CloseModal)
+                .padding(10)
+                .width(Length::Fill)
+                .style(ui::styles::NeutralButton::style),
+            button(text("Remove from Library").align_x(iced::alignment::Horizontal::Center))
+                .on_press(Message::RemoveFolderConfirmed)
+                .padding(10)
+                .width(Length::Fill)
+                .style(ui::styles::AccentButton::style),
+        ]
+        .spacing(10)
+    ]
+    .spacing(12)
+    .width(460)
+    .into()
+}
+
+/// Help > About. Version comes from Cargo so it can't drift.
+pub fn view_about_modal<'a>() -> Element<'a, Message> {
+    let line = |s: String| {
+        text(s).size(13).style(|_theme: &Theme| text::Style {
+            color: Some(Color::from_rgb(0.75, 0.75, 0.75)),
+        })
+    };
+
+    column![
+        text("RAW Editor").size(18).font(Font {
+            weight: Weight::Bold,
+            ..Default::default()
+        }).style(|_| text::Style {
+            color: Some(Color::from_rgb(0.85, 0.85, 0.85))
+        }),
+        iced::widget::horizontal_rule(1.0).style(|_| iced::widget::rule::Style {
+            color: Color::from_rgb(0.3, 0.3, 0.3),
+            width: 1,
+            radius: 0.0.into(),
+            fill_mode: iced::widget::rule::FillMode::Full
+        }),
+        line(format!("Version {}", env!("CARGO_PKG_VERSION"))),
+        line("A native RAW photo editor written in Rust.".to_string()),
+        line(format!("By {}", env!("CARGO_PKG_AUTHORS"))),
+        line("MIT licensed.".to_string()),
+        text(crate::app::handlers::window::REPO_URL)
+            .size(11)
+            .style(|_theme: &Theme| text::Style {
+                color: Some(Color::from_rgb(0.5, 0.5, 0.5))
+            }),
+        iced::widget::vertical_space().height(10),
+        row![
+            button(text("Open Repository").align_x(iced::alignment::Horizontal::Center))
+                .on_press(Message::OpenRepository)
+                .padding(10)
+                .width(Length::Fill)
+                .style(ui::styles::NeutralButton::style),
+            button(text("Close").align_x(iced::alignment::Horizontal::Center))
+                .on_press(Message::CloseModal)
+                .padding(10)
+                .width(Length::Fill)
+                .style(ui::styles::AccentButton::style),
+        ]
+        .spacing(10)
+    ]
+    .spacing(10)
+    .width(380)
     .into()
 }
 
