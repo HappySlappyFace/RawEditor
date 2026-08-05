@@ -105,11 +105,11 @@ render rather than a proxy.
 > _Screenshot: the develop module — `docs/screenshots/develop.png`_
 
 **Colour.** Real white balance solved through the camera's own colour matrix:
-the Temperature and Tint sliders pivot around the as-shot values in Kelvin and
-Adobe tint units, and an eyedropper sets them from any neutral in the frame.
-Where an Adobe DCP profile is installed for your camera, the full DNG colour
-pipeline is used — dual-illuminant interpolation, the HueSatMap as a 3D LUT,
-and the profile's own tone curve — rather than a naive 3×3 matrix.
+the Temperature and Tint sliders pivot around the as-shot values, in Kelvin and
+standard tint units, and an eyedropper sets them from any neutral in the frame.
+Where a camera profile (`.dcp`) is installed for your camera, the full profile
+pipeline is used — dual-illuminant interpolation, the hue/saturation map as a
+3D LUT, and the profile's own tone curve — rather than a naive 3×3 matrix.
 
 **Tone.** Exposure, contrast, highlights, shadows, whites and blacks. Highlight
 recovery works in scene-linear space before the tone curve's shoulder, so
@@ -168,7 +168,7 @@ time; it will be rebuilt on demand.
 |---|---|
 | `raw_editor.db` | The catalogue: images, ratings, flags, and all edits |
 | `settings.json` | Preferences (cache sizes, preload windows, UI options) |
-| `profiles/` | Adobe DCP colour profiles — drop `.dcp` files here |
+| `profiles/` | Camera colour profiles — drop `.dcp` files here |
 | `logs/` | Daily rolling logs |
 
 Your RAW files are never modified and are never moved into these directories.
@@ -178,6 +178,13 @@ Your RAW files are never modified and are never moved into these directories.
 Place a `.dcp` file in `~/.local/share/raw-editor/profiles/`. It is matched
 against the camera model from the file's EXIF and picked up on the next image
 load. Without one, a matrix-based fallback is used.
+
+Profiles are not interchangeable and not uniform. Some carry a forward matrix,
+some only a colour matrix; some embed a tone curve, some deliberately do not;
+some are dual-illuminant, some single. The parser handles each of these, but
+two profiles for the same camera can still render noticeably differently — that
+is the profile's intent, not a bug. No profiles are bundled with the app; bring
+your own, and check the licence of any you did not create.
 
 ---
 
@@ -246,6 +253,11 @@ Working and in daily use, but young. Known gaps:
 
 - Noise reduction and sharpening do not yet match Lightroom's quality.
 - Keyboard shortcuts are not user-configurable.
+- Camera profiles are read for their colour matrices, hue/saturation map and
+  tone curve, but the optional look table is not applied. Profiles that put
+  most of their character in that table — typically the "Landscape", "Portrait"
+  and similar creative variants — will render flatter here than in software
+  that does apply it.
 - The catalogue has no migration tooling; a schema change means rebuilding it.
 - Colour calibration has been verified in depth against Nikon NEF files.
   Decoding covers the formats [rawler](https://github.com/dnglab/dnglab)
