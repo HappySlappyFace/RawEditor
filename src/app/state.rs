@@ -92,6 +92,25 @@ impl std::fmt::Display for ExportFormat {
     }
 }
 
+/// Per-image progress within a batch, for the Export tab's queue list.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExportJobState {
+    Pending,
+    Working,
+    Done(std::path::PathBuf),
+    Failed(String),
+}
+
+/// One entry in the export batch. Held in DISPLAY order, separately from
+/// `export_queue` (which is the remaining work and is consumed from the back),
+/// so the UI can show a stable list while the queue drains.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExportJob {
+    pub id: i64,
+    pub filename: String,
+    pub state: ExportJobState,
+}
+
 /// Phase 89: Export Settings
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExportSettings {
@@ -166,7 +185,12 @@ pub struct RawEditor {
 
     // Phase 89: Export Studio
     pub export_settings: ExportSettings,
+    /// Remaining work, consumed with `pop()`. Stored REVERSED relative to
+    /// display order so popping yields images front-to-back.
     pub export_queue: Vec<i64>,
+    /// The whole batch in display order, with per-image progress. Survives the
+    /// run so the Export tab can show results afterwards.
+    pub export_jobs: Vec<ExportJob>,
     pub is_exporting: bool,
 
     /// The catalog database (Phase 23: Optional during startup)
@@ -525,6 +549,7 @@ impl RawEditor {
                 // Phase 89
                 export_settings: ExportSettings::default(),
                 export_queue: Vec::new(),
+                export_jobs: Vec::new(),
                 is_exporting: false,
 
                 // Phase 104/105: Profiler
@@ -663,7 +688,13 @@ impl RawEditor {
                     .map(|folder| img.path.starts_with(folder))
                     .unwrap_or(true)
             })
-            .filter(|img| self.current_tab != AppTab::Develop || img.rating != marked)
+            // Marked-for-removal is hidden where acting on it would be wrong:
+            // Develop refuses to edit them, and Export refuses to write out
+            // images the user has flagged for deletion.
+            .filter(|img| {
+                !matches!(self.current_tab, AppTab::Develop | AppTab::Export)
+                    || img.rating != marked
+            })
             .collect()
     }
 

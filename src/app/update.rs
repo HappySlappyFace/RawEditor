@@ -139,6 +139,7 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::PickExportBasePath => handlers::export::handle_pick_export_base_path(editor),
         Message::SetExportBasePath(p) => handlers::export::handle_set_export_base_path(editor, p),
         Message::OpenExportModal => handlers::export::handle_open_export_modal(editor),
+        Message::CancelExport => handlers::export::handle_cancel_export(editor),
         Message::ExportConfirmed => handlers::export::handle_export_confirmed(editor),
         Message::ProcessNextExport => handlers::export::handle_process_next_export(editor),
         Message::ExportRawLoaded(id, params, res) => {

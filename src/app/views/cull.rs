@@ -17,9 +17,34 @@ pub fn view_cull(editor: &RawEditor) -> Element<'_, Message> {
 
     let filtered_images: Vec<&ImageData> = editor.displayed_images();
     let filmstrip = ui::filmstrip::view(&filtered_images, editor);
+
+    // Cull was the one tab with no export entry point, despite the export
+    // handler explicitly optimising for the cull-then-export-the-selects flow
+    // by reusing the already-decoded RAW cache.
+    let selected = editor.multi_selection.len().max(1);
+    let export_bar = container(
+        iced::widget::row![
+            iced::widget::Space::with_width(Length::Fill),
+            iced::widget::button(
+                iced::widget::row![
+                    text(ui::icons::SAVE).font(crate::ui::icons::ICON_FONT).size(12),
+                    text(format!("Export {selected}")).size(12)
+                ]
+                .spacing(6)
+                .align_y(iced::Alignment::Center)
+            )
+            .on_press(Message::OpenExportModal)
+            .padding([6, 12])
+            .style(crate::ui::styles::NeutralButton::style),
+        ]
+        .align_y(iced::Alignment::Center),
+    )
+    .width(Length::Fill)
+    .padding([6, 10]);
     
     column![
-        main_content, 
+        main_content,
+        export_bar,
         Container::new(filmstrip).width(Length::Fill).height(Length::Fixed(115.0)).clip(true)
     ].width(Length::Fill).height(Length::Fill).into()
 }

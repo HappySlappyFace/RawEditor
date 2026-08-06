@@ -10,6 +10,7 @@ use crate::ui::icons::ICON_FONT;
 use super::library::view_library;
 use super::cull::view_cull;
 use super::develop::view_develop;
+use super::export::view_export;
 use super::modals::{
     modal_overlay, view_about_modal, view_copy_settings_modal, view_delete_modal,
     view_export_modal, view_help_modal, view_preferences_modal, view_remove_folder_modal,
@@ -152,6 +153,7 @@ fn view_main(editor: &RawEditor) -> Element<'_, Message> {
         AppTab::Library => view_library(editor),
         AppTab::Cull => view_cull(editor),
         AppTab::Develop => view_develop(editor),
+        AppTab::Export => view_export(editor),
     };
     
     // Phase 116: Root layout container with sleek dark polish
@@ -376,6 +378,11 @@ fn view_title_bar(editor: &RawEditor) -> Element<'_, Message> {
                 .height(Length::Fill).padding([0, 15])
                 .style(|t, s| ui::styles::TabButton { is_active: editor.current_tab == AppTab::Develop }.style(t, s))
                 .on_press(Message::TabChanged(AppTab::Develop)),
+
+            button(container(row![text(ui::icons::SAVE).font(ICON_FONT).size(14), text(" Export").size(14)].spacing(5).align_y(Alignment::Center)).height(Length::Fill).align_x(iced::alignment::Horizontal::Center).align_y(iced::alignment::Vertical::Center))
+                .height(Length::Fill).padding([0, 15])
+                .style(|t, s| ui::styles::TabButton { is_active: editor.current_tab == AppTab::Export }.style(t, s))
+                .on_press(Message::TabChanged(AppTab::Export)),
         ].spacing(0).height(Length::Fill)
     ).width(Length::Fill).height(Length::Fill).align_x(iced::alignment::Horizontal::Center).align_y(iced::alignment::Vertical::Center);
 

@@ -75,30 +75,107 @@ pub fn handle_open_export_modal(editor: &mut RawEditor) -> Task<Message> {
     Task::none()
 }
 
+/// Images the current selection would export, in display order.
+///
+/// `multi_selection` is a `HashSet`, so iterating it directly gave an
+/// arbitrary order — and the queue is drained with `pop()`, so batches ran
+/// back-to-front in a different order every time. Ordering through
+/// `displayed_ids` makes a run reproducible and the progress list readable.
+pub fn export_target_ids(editor: &RawEditor) -> Vec<i64> {
+    if editor.multi_selection.is_empty() {
+        return editor.selected_image_id.into_iter().collect();
+    }
+    let mut ids: Vec<i64> = editor
+        .displayed_ids()
+        .into_iter()
+        .filter(|id| editor.multi_selection.contains(id))
+        .collect();
+    // Anything selected but not currently displayed still belongs in the
+    // batch; append it rather than silently dropping it.
+    let mut extra: Vec<i64> = editor
+        .multi_selection
+        .iter()
+        .copied()
+        .filter(|id| !ids.contains(id))
+        .collect();
+    extra.sort_unstable();
+    ids.append(&mut extra);
+    ids
+}
+
 pub fn handle_export_confirmed(editor: &mut RawEditor) -> Task<Message> {
     editor.active_modal = Modal::None;
 
-    if editor.multi_selection.is_empty() {
-        if let Some(id) = editor.selected_image_id {
-            editor.export_queue = vec![id];
-        }
-    } else {
-        editor.export_queue = editor.multi_selection.iter().cloned().collect();
+    // Re-entrancy guard, matching handle_delete_from_disk_confirmed's
+    // `is_deleting` check. Without it, confirming again mid-run overwrote
+    // export_queue and started a second interleaved ProcessNextExport chain.
+    if editor.is_exporting {
+        editor.status = "An export is already running.".to_string();
+        return Task::none();
     }
 
-    if editor.export_queue.is_empty() {
+    let ids = export_target_ids(editor);
+    if ids.is_empty() {
         editor.status = "Nothing to export.".to_string();
         return Task::none();
     }
 
+    editor.export_jobs = ids
+        .iter()
+        .map(|id| crate::app::state::ExportJob {
+            id: *id,
+            filename: editor
+                .images
+                .iter()
+                .find(|i| i.id == *id)
+                .map(|i| i.filename.clone())
+                .unwrap_or_else(|| format!("image {id}")),
+            state: crate::app::state::ExportJobState::Pending,
+        })
+        .collect();
+    // Reversed: the queue is drained with `pop()`, so this yields display order.
+    editor.export_queue = ids.into_iter().rev().collect();
+
     editor.is_exporting = true;
-    editor.status = format!("Starting export of {} images...", editor.export_queue.len());
+    editor.status = format!("Starting export of {} images...", editor.export_jobs.len());
     Task::perform(async {}, |_| Message::ProcessNextExport)
+}
+
+/// Cancel after the in-flight image finishes. The running GPU render is not
+/// interruptible, so this drains the pending work rather than killing a task
+/// mid-readback.
+pub fn handle_cancel_export(editor: &mut RawEditor) -> Task<Message> {
+    if !editor.is_exporting {
+        return Task::none();
+    }
+    let dropped = editor.export_queue.len();
+    editor.export_queue.clear();
+    for job in editor.export_jobs.iter_mut() {
+        if job.state == crate::app::state::ExportJobState::Pending {
+            job.state = crate::app::state::ExportJobState::Failed("cancelled".to_string());
+        }
+    }
+    editor.status = format!("Export cancelled — {dropped} images skipped");
+    Task::none()
+}
+
+/// Update one job's progress. Silently ignores unknown ids so a stale message
+/// from a cancelled batch can't panic.
+fn set_job_state(editor: &mut RawEditor, id: i64, state: crate::app::state::ExportJobState) {
+    if let Some(job) = editor.export_jobs.iter_mut().find(|j| j.id == id) {
+        job.state = state;
+    }
 }
 
 pub fn handle_process_next_export(editor: &mut RawEditor) -> Task<Message> {
     if let Some(image_id) = editor.export_queue.pop() {
-        editor.status = format!("Exporting image {}...", image_id);
+        let done = editor
+            .export_jobs
+            .iter()
+            .filter(|j| !matches!(j.state, crate::app::state::ExportJobState::Pending))
+            .count();
+        editor.status = format!("Exporting {} of {}...", done + 1, editor.export_jobs.len());
+        set_job_state(editor, image_id, crate::app::state::ExportJobState::Working);
         if let Some(img) = editor.images.iter().find(|i| i.id == image_id) {
             let path = img.path.clone();
             // Each image's own saved edits. For the image currently open in
@@ -238,10 +315,14 @@ pub fn handle_export_pipeline_ready(
             // Use original (full-sensor) dimensions in DISPLAY orientation —
             // portrait shots must export portrait (crop is display-space too).
             let (full_w, full_h) = resources.oriented_original_dims();
-            let target_width = ((full_w as f32 * crop_w) as u32).max(1);
-            let target_height = ((full_h as f32 * crop_h) as u32).max(1);
+            let cropped_w = ((full_w as f32 * crop_w) as u32).max(1);
+            let cropped_h = ((full_h as f32 * crop_h) as u32).max(1);
 
             let settings = editor.export_settings.clone();
+            // Honour "Resize Long Edge". This was previously computed but the
+            // setting was never read, so the checkbox and the size field did
+            // nothing at all.
+            let (target_width, target_height) = resized_dims(cropped_w, cropped_h, &settings);
             let filename = if let Some(img) = editor.images.iter().find(|i| i.id == image_id) {
                 Path::new(&img.path)
                     .file_stem()
@@ -290,23 +371,69 @@ pub fn handle_export_pipeline_ready(
 
 pub fn handle_export_save_complete(
     editor: &mut RawEditor,
-    _id: i64,
+    id: i64,
     result: Result<PathBuf, String>,
 ) -> Task<Message> {
     match result {
         Ok(path) => {
             tracing::info!("Export saved successfully: {}", path.display());
             editor.status = format!("Saved: {}", path.display());
+            set_job_state(editor, id, crate::app::state::ExportJobState::Done(path));
         }
         Err(e) => {
             tracing::error!("Export save failed: {}", e);
             editor.status = format!("Save failed: {}", e);
+            set_job_state(editor, id, crate::app::state::ExportJobState::Failed(e));
         }
     }
     Task::perform(async {}, |_| Message::ProcessNextExport)
 }
 
 // Helpers
+
+/// Apply the "Resize Long Edge" setting, preserving aspect ratio.
+///
+/// The setting is a cap on the LONGER edge, so portrait and landscape frames
+/// come out the same size on their long side — which is what "long edge"
+/// means and what the checkbox has always said. (The width field said "Max
+/// Width"; the two disagreed, and neither was implemented.)
+///
+/// Only ever shrinks: asking for a 4000px long edge on a 3000px crop returns
+/// the crop untouched rather than upscaling it into softness.
+fn resized_dims(width: u32, height: u32, settings: &ExportSettings) -> (u32, u32) {
+    if !settings.resize || settings.max_width == 0 {
+        return (width, height);
+    }
+    let long_edge = width.max(height);
+    if long_edge <= settings.max_width {
+        return (width, height);
+    }
+    let scale = settings.max_width as f64 / long_edge as f64;
+    (
+        ((width as f64 * scale).round() as u32).max(1),
+        ((height as f64 * scale).round() as u32).max(1),
+    )
+}
+
+/// Pick a destination path, adding ` (2)`, ` (3)`… rather than overwriting.
+///
+/// Two source folders commonly hold the same stems (DSC_0001 from two cards,
+/// or a re-export into the same folder). `File::create` truncates, so the
+/// previous behaviour silently destroyed the earlier export.
+fn unique_output_path(dir: &Path, stem: &str, extension: &str) -> PathBuf {
+    let candidate = dir.join(format!("{stem}.{extension}"));
+    if !candidate.exists() {
+        return candidate;
+    }
+    for n in 2..10_000u32 {
+        let candidate = dir.join(format!("{stem} ({n}).{extension}"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    // Pathological: fall back to overwriting rather than looping forever.
+    dir.join(format!("{stem}.{extension}"))
+}
 
 /// Carries either an 8-bit RGBA (JPEG/PNG) or 16-bit RGB (TIFF) sample
 /// buffer through the async save step, so `save_export_async` can't be
@@ -338,7 +465,7 @@ async fn save_export_async(
             ExportFormat::Tiff => "tiff",
         };
 
-        let output_path = output_dir.join(format!("{}.{}", filename, extension));
+        let output_path = unique_output_path(&output_dir, &filename, extension);
         let file = File::create(&output_path).map_err(|e| e.to_string())?;
         let writer = BufWriter::new(file);
 
@@ -390,4 +517,80 @@ async fn save_export_async(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::state::ExportSettings;
+
+    fn settings(resize: bool, max_width: u32) -> ExportSettings {
+        ExportSettings { resize, max_width, ..ExportSettings::default() }
+    }
+
+    #[test]
+    fn resize_off_leaves_dimensions_alone() {
+        assert_eq!(resized_dims(6000, 4000, &settings(false, 1000)), (6000, 4000));
+    }
+
+    /// The setting caps the LONG edge, so a portrait and a landscape frame come
+    /// out matched on their long side. Capping width instead would make
+    /// portraits much larger, which is what the mismatched label implied.
+    #[test]
+    fn resize_caps_the_long_edge_in_either_orientation() {
+        assert_eq!(resized_dims(6000, 4000, &settings(true, 3000)), (3000, 2000));
+        assert_eq!(resized_dims(4000, 6000, &settings(true, 3000)), (2000, 3000));
+    }
+
+    #[test]
+    fn resize_preserves_aspect_ratio() {
+        let (w, h) = resized_dims(6000, 4000, &settings(true, 1999));
+        let before = 6000.0 / 4000.0;
+        let after = w as f64 / h as f64;
+        assert!((before - after).abs() < 0.01, "{w}x{h}");
+    }
+
+    /// Never upscale: asking for a long edge bigger than the source would only
+    /// add softness and file size.
+    #[test]
+    fn resize_never_enlarges() {
+        assert_eq!(resized_dims(1200, 800, &settings(true, 4000)), (1200, 800));
+        assert_eq!(resized_dims(1200, 800, &settings(true, 1200)), (1200, 800));
+    }
+
+    #[test]
+    fn resize_ignores_a_zero_limit_rather_than_collapsing() {
+        assert_eq!(resized_dims(6000, 4000, &settings(true, 0)), (6000, 4000));
+    }
+
+    #[test]
+    fn resize_never_returns_a_zero_dimension() {
+        let (w, h) = resized_dims(6000, 10, &settings(true, 1));
+        assert!(w >= 1 && h >= 1, "{w}x{h}");
+    }
+
+    /// `File::create` truncates, so without uniquifying, two source folders
+    /// holding the same stem meant the second export destroyed the first.
+    #[test]
+    fn output_path_avoids_clobbering_an_existing_file() {
+        let dir = std::env::temp_dir().join(format!("raw-editor-export-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+
+        let first = unique_output_path(&dir, "DSC_0001", "jpg");
+        assert_eq!(first.file_name().unwrap(), "DSC_0001.jpg");
+        std::fs::write(&first, b"x").expect("write");
+
+        let second = unique_output_path(&dir, "DSC_0001", "jpg");
+        assert_eq!(second.file_name().unwrap(), "DSC_0001 (2).jpg");
+        std::fs::write(&second, b"x").expect("write");
+
+        let third = unique_output_path(&dir, "DSC_0001", "jpg");
+        assert_eq!(third.file_name().unwrap(), "DSC_0001 (3).jpg");
+
+        // A different extension is a different file and must not be renamed.
+        let png = unique_output_path(&dir, "DSC_0001", "png");
+        assert_eq!(png.file_name().unwrap(), "DSC_0001.png");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

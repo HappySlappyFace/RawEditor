@@ -16,6 +16,7 @@ README resolve automatically. Once a file exists, replace the corresponding
 | `tone-mapping.png` | The develop sidebar scrolled to the Tone Mapping section with GT selected, so its four shape sliders are showing. |
 | `masks.png` | A radial mask placed on a face or subject, rotated off-axis, with its handles and the sidebar's mask adjustments visible. |
 | `copy-settings.png` | The Copy Settings dialog open with a partial selection ticked. |
+| `export.png` | The Export tab mid-run, so the queue shows a mix of done / rendering / pending rather than a flat list. |
 | `performance-hud.png` | <kbd>F3</kbd> HUD while dragging a slider, so the frame graph has activity in it rather than sitting flat. |
 
 ## Notes

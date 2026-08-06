@@ -31,7 +31,7 @@ There is no separate frontend build — this is a single native Rust binary (no 
 - `src/app/` — application state and update loop, split Elm-style:
   - `state.rs` / `message.rs` — `RawEditor` state struct and `Message` enum
   - `update.rs` + `handlers/{delete,develop,export,library,loading,masks,navigation,scroll,window}.rs` — message handlers grouped by feature area
-  - `views/{develop,library,cull,layout,modals}.rs` — iced view builders per tab/screen
+  - `views/{develop,library,cull,export,layout,modals}.rs` — iced view builders per tab/screen
   - `loader.rs` — async multi-tier image loading orchestration
 - `src/gpu/` — the wgpu rendering pipeline (see dual-pass system below):
   `shaders.rs` (WGSL source), `shared.rs` (`SharedContext` + `ImageResources`:

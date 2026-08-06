@@ -49,6 +49,7 @@ pub enum AppTab {
     Library, // Browse, import, organize images
     Cull,
     Develop, // Edit selected image with full preview
+    Export,  // Batch export queue and settings
 }
 
 /// Result of a folder import operation
@@ -162,6 +163,8 @@ pub enum Message {
     PickExportBasePath,
     OpenExportModal,
     ExportConfirmed,
+    /// Stop after the image currently rendering finishes.
+    CancelExport,
     ProcessNextExport,
     /// Carries the exported image's OWN saved edit params alongside its RAW
     /// data. They must travel with the job rather than be read from

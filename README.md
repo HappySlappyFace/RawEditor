@@ -103,7 +103,21 @@ shoot without disturbing anything else.
 ![Alt text](./docs/screenshots/copy-settings.png)
 
 
-**Export.** JPEG, PNG, or 16-bit TIFF, optionally resized, in batches.
+---
+
+## Export
+
+Select images anywhere — <kbd>Ctrl</kbd>+<kbd>A</kbd> for everything visible,
+<kbd>Shift</kbd>+click for a range — then open the Export tab to see exactly
+what will be written, where, and how it is going.
+
+![Alt text](./docs/screenshots/export.png)
+
+JPEG, PNG, or 16-bit TIFF, with an optional long-edge limit that only ever
+shrinks. Images are rendered one at a time at full sensor resolution, so memory
+use stays flat whether the batch is five images or five hundred. Each image
+uses its own saved edits, a failure never stalls the rest of the queue, and
+existing files are never overwritten — a numbered suffix is added instead.
 
 ---
 
