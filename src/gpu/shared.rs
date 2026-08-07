@@ -304,6 +304,25 @@ impl SharedContext {
     }
 }
 
+impl SharedContext {
+    /// Let wgpu actually reclaim textures and buffers whose Rust handles have
+    /// already been dropped.
+    ///
+    /// Dropping a `Texture` or `Buffer` only queues it into the device's life
+    /// tracker; the allocation survives until the next `poll`/`maintain`. Every
+    /// `poll` in this crate sits *inside* a render function, before that
+    /// function's own resources go out of scope — so during a batch export each
+    /// image's ~336 MB of textures and readback buffers was carried until the
+    /// NEXT image polled, and the final image's was never released at all.
+    ///
+    /// `Maintain::Poll` is non-blocking, so this is safe to call from the
+    /// update thread; it processes what is already finished rather than waiting
+    /// on the GPU.
+    pub fn reclaim(&self) {
+        self.device.poll(wgpu::Maintain::Poll);
+    }
+}
+
 /// Per-image GPU resources (created for each image)
 /// Contains all the image-specific data that changes when switching images
 #[derive(Debug)]

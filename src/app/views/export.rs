@@ -180,7 +180,9 @@ fn view_queue(editor: &RawEditor) -> Element<'_, Message> {
             .filter(|j| matches!(j.state, ExportJobState::Failed(_)))
             .count();
         let total = editor.export_jobs.len();
-        if editor.is_exporting {
+        if editor.export_paused_for_memory {
+            format!("Paused for memory — {done} of {total} done")
+        } else if editor.is_exporting {
             format!("Exporting — {done} of {total} done")
         } else if failed > 0 {
             format!("Finished — {done} exported, {failed} failed")

@@ -17,7 +17,10 @@ iced_wgpu = "0.13"  # Direct access to wgpu types from iced
 iced_aw = { version = "0.10", default-features = false, features = ["wrap", "menu"] }
 
 # Async runtime for background tasks
-tokio = { version = "1", features = ["rt", "fs", "sync"] }
+# "time" powers the export memory-pressure retry. It currently arrives
+# transitively via iced_futures, but relying on that would make an iced update
+# able to turn `tokio::time::sleep` into a runtime panic.
+tokio = { version = "1", features = ["rt", "fs", "sync", "time"] }
 
 # Database for catalog management (bundled = includes SQLite, no system dependency)
 rusqlite = { version = "0.32", features = ["bundled"] }

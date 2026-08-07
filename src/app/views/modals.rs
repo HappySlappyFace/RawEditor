@@ -246,6 +246,58 @@ pub fn view_preferences_modal<'a>(editor: &'a RawEditor) -> Element<'a, Message>
                     color: Some(Color::from_rgb(0.55, 0.75, 0.55))
                 })
             },
+            text("Memory Safety")
+                .size(12)
+                .font(Font {
+                    weight: Weight::Bold,
+                    ..Default::default()
+                })
+                .style(|_| text::Style {
+                    color: Some(Color::from_rgb(0.5, 0.5, 0.5))
+                }),
+            row![
+                text("Keep RAM Free:").size(13).style(|_| text::Style {
+                    color: Some(Color::from_rgb(0.7, 0.7, 0.7))
+                }),
+                text(if editor.min_free_ram_mb == 0 {
+                    "Off".to_string()
+                } else {
+                    format!("{} MB", editor.min_free_ram_mb)
+                })
+                .size(13)
+                .style(|_| text::Style {
+                    color: Some(Color::from_rgb(0.9, 0.9, 0.9))
+                }),
+            ]
+            .spacing(10),
+            slider(
+                0.0..=crate::app::state::MIN_FREE_RAM_MB_MAX as f32,
+                editor.min_free_ram_mb as f32,
+                Message::SetMinFreeRam
+            )
+            .step(256.0_f32)
+            .style(ui::styles::ProSlider::style),
+            {
+                // Live readout, mirroring the RAW cache usage line above. On a
+                // platform where available memory can't be read, say so rather
+                // than showing a number that isn't there.
+                let text_value = match crate::core::memory::available_bytes() {
+                    Some(b) => format!(
+                        "System memory available: {} MB",
+                        crate::core::memory::as_mb(b)
+                    ),
+                    None => "System memory unavailable on this platform — check disabled"
+                        .to_string(),
+                };
+                text(text_value).size(11).style(|_| text::Style {
+                    color: Some(Color::from_rgb(0.55, 0.75, 0.55))
+                })
+            },
+            text("Batch export pauses if free memory drops below this, after first dropping its own caches. 0 disables the check.")
+                .size(11)
+                .style(|_| text::Style {
+                    color: Some(Color::from_rgb(0.45, 0.45, 0.45))
+                }),
             text("Performance")
                 .size(12)
                 .font(Font {

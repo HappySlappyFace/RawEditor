@@ -212,6 +212,13 @@ pub struct RawEditor {
     pub preview_cache: LruCache<i64, CachedPreview>,
     /// RAW preload RAM budget in MB (0 = disabled)
     pub raw_preload_budget_mb: u32,
+    /// Physical RAM to keep free during batch export, in MB (0 = disabled).
+    /// Unlike `raw_preload_budget_mb`, which caps the app's OWN cache, this is
+    /// a check against the whole system — see `core::memory`.
+    pub min_free_ram_mb: u32,
+    /// True while a batch is paused waiting for memory, so the UI can say so
+    /// and the log can fire once per transition instead of once per check.
+    pub export_paused_for_memory: bool,
     /// Decoded RAW cache for fast develop navigation
     pub raw_cache: LruCache<i64, Arc<raw::loader::RawDataResult>>,
     /// Approximate memory usage of raw_cache in bytes
@@ -445,6 +452,9 @@ pub const PREVIEW_PRELOAD_BEHIND_MAX: usize = 30;
 pub const PREVIEW_PRELOAD_AHEAD_MAX: usize = 100;
 pub const RAW_PRELOAD_BEHIND_MAX: usize = 10;
 pub const RAW_PRELOAD_AHEAD_MAX: usize = 20;
+/// Upper bound for the free-RAM headroom slider. Above this the setting would
+/// pause exports permanently on any ordinary machine.
+pub const MIN_FREE_RAM_MB_MAX: u32 = 16384;
 
 impl RawEditor {
     pub fn title(&self) -> String {
@@ -484,6 +494,8 @@ impl RawEditor {
                 preview_cache_dir,
                 preview_cache: LruCache::new(NonZeroUsize::new(cache_capacity).unwrap()),
                 raw_preload_budget_mb,
+                min_free_ram_mb: settings.min_free_ram_mb.min(MIN_FREE_RAM_MB_MAX),
+                export_paused_for_memory: false,
                 raw_cache: LruCache::new(NonZeroUsize::new(RAW_CACHE_ENTRY_CAPACITY).unwrap()),
                 raw_cache_bytes: 0,
                 preview_preload_behind,
@@ -912,6 +924,27 @@ impl RawEditor {
         (self.raw_preload_budget_mb as usize).saturating_mul(1024 * 1024)
     }
 
+    /// Headroom to keep free system-wide, in bytes. `0` = check disabled.
+    /// Mirrors `raw_cache_budget_bytes`'s shape deliberately.
+    pub fn min_free_bytes(&self) -> u64 {
+        (self.min_free_ram_mb as u64).saturating_mul(1024 * 1024)
+    }
+
+    /// Drop everything regenerable the app is holding, and let wgpu hand back
+    /// what has already been released.
+    ///
+    /// Called under memory pressure. These caches exist purely to make
+    /// navigation fast; rebuilding them costs time, whereas running the machine
+    /// out of RAM costs the user their session.
+    pub fn release_discretionary_memory(&mut self) {
+        self.preview_cache.clear();
+        self.raw_cache.clear();
+        self.raw_cache_bytes = 0;
+        if let Some(ctx) = &self.gpu_context {
+            ctx.reclaim();
+        }
+    }
+
     pub fn evict_raw_cache_to_budget(&mut self) {
         let budget = self.raw_cache_budget_bytes();
         while self.raw_cache_bytes > budget {
@@ -966,6 +999,7 @@ impl RawEditor {
             raw_preload_behind: self.raw_preload_behind,
             raw_preload_ahead: self.raw_preload_ahead,
             copy_categories: self.copy_categories,
+            min_free_ram_mb: self.min_free_ram_mb,
         };
 
         if let Err(e) = settings.save() {

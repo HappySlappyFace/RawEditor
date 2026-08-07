@@ -188,6 +188,7 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::SetRawPreloadAhead(v) => {
             handlers::window::handle_set_raw_preload_ahead(editor, v)
         }
+        Message::SetMinFreeRam(v) => handlers::window::handle_set_min_free_ram(editor, v),
         Message::ResetPreferences => handlers::window::handle_reset_preferences(editor),
         Message::HistogramToggled(b) => handlers::window::handle_histogram_toggled(editor, b),
         Message::ToggleProfiler => {

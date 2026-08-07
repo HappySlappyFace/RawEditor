@@ -143,9 +143,20 @@ compute it independently and disagreed at any zoom != 1.0.
    (`handlers::window::handle_modal_confirm`). Modal-scoped shortcuts bind
    globally and guard with `if editor.active_modal != Modal::X { return
    Task::none(); }` as the handler's first line.
-5. **Separation of concerns:** keep wgpu logic isolated from iced logic. Iced code should only pass plain Rust primitives/structs/flags down into `SharedContext`/`ImageResources` — no wgpu types leaking into `src/app/`.
-6. **Error handling:** use `tracing::info!`/`tracing::error!` for backend operations. Never `.unwrap()` on file I/O or wgpu buffer mapping — propagate the error to UI state or fall back gracefully.
-7. **Schema changes:** when changing the SQLite schema, update every SQL query and the corresponding struct in `src/database/models.rs` in the same change; stale DBs must be deleted/migrated (no auto-migration tooling exists yet).
+5. **GPU memory is freed lazily, and `SharedContext` is created once.** Dropping
+   a wgpu `Texture`/`Buffer` only queues it for reclamation — the allocation
+   survives until the next `poll`. Every `poll` in this crate is *inside* a
+   render function, before that function's own resources go out of scope, so
+   long-running loops must call `SharedContext::reclaim()` between iterations
+   and once at the end, or they run a full working set behind (and never free
+   the last one). Separately, `editor.gpu_context` must be populated by whoever
+   first creates a context: it was only ever assigned on the Develop load path,
+   so exporting without opening Develop built a whole new `Instance`/`Device`/
+   pipeline set **per image**. Any new path that calls `SharedContext::new()`
+   has to store the result back.
+6. **Separation of concerns:** keep wgpu logic isolated from iced logic. Iced code should only pass plain Rust primitives/structs/flags down into `SharedContext`/`ImageResources` — no wgpu types leaking into `src/app/`.
+7. **Error handling:** use `tracing::info!`/`tracing::error!` for backend operations. Never `.unwrap()` on file I/O or wgpu buffer mapping — propagate the error to UI state or fall back gracefully.
+8. **Schema changes:** when changing the SQLite schema, update every SQL query and the corresponding struct in `src/database/models.rs` in the same change; stale DBs must be deleted/migrated (no auto-migration tooling exists yet).
 
 ## Design Language
 "Premium Creative Pro" meets "Turbo Nerd": deep charcoal/zinc dark mode (`#0A0A0A`–`#111113`), stark white text, electric orange (`#F97316`) accents. "Pure Contact Sheet" aesthetic — images have 0.0 border radius, no intrusive filename overlays. Technical metrics use monospace fonts. Styling lives in `src/ui/styles.rs` / `src/ui/palette.rs`.

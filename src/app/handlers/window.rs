@@ -209,6 +209,13 @@ pub fn handle_set_raw_preload_ahead(editor: &mut RawEditor, val: f32) -> Task<Me
     Task::none()
 }
 
+pub fn handle_set_min_free_ram(editor: &mut RawEditor, val: f32) -> Task<Message> {
+    editor.min_free_ram_mb =
+        (val.max(0.0) as u32).min(crate::app::state::MIN_FREE_RAM_MB_MAX);
+    editor.save_preferences();
+    Task::none()
+}
+
 pub fn handle_reset_preferences(editor: &mut RawEditor) -> Task<Message> {
     let defaults = crate::core::settings::AppSettings::default();
 
@@ -225,6 +232,7 @@ pub fn handle_reset_preferences(editor: &mut RawEditor) -> Task<Message> {
     editor.preview_preload_ahead = defaults.preview_preload_ahead;
     editor.raw_preload_behind = defaults.raw_preload_behind;
     editor.raw_preload_ahead = defaults.raw_preload_ahead;
+    editor.min_free_ram_mb = defaults.min_free_ram_mb;
 
     editor.evict_raw_cache_to_budget();
     editor.save_preferences();

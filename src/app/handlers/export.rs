@@ -167,7 +167,88 @@ fn set_job_state(editor: &mut RawEditor, id: i64, state: crate::app::state::Expo
     }
 }
 
+/// How long to wait before re-checking memory when a batch is paused.
+const MEMORY_RETRY_SECS: u64 = 2;
+
+/// Outcome of the pre-image memory check.
+enum MemoryGate {
+    /// Enough headroom (or the check is disabled / unavailable).
+    Proceed,
+    /// Below the threshold even after releasing our own caches.
+    Wait { available_mb: u64, needed_mb: u64 },
+}
+
+/// Decide whether there is room to render another full-resolution frame.
+///
+/// A single 24 MP export peaks at several hundred MB across CPU and VRAM, so
+/// starting one with almost nothing free is how the machine ends up thrashing.
+///
+/// Note this does NOT reduce concurrency: export is already strictly
+/// sequential, one image chained to the next. The lever that actually exists is
+/// releasing the app's own regenerable caches, and failing that, waiting.
+fn check_memory_gate(editor: &mut RawEditor) -> MemoryGate {
+    let needed = editor.min_free_bytes();
+    if needed == 0 {
+        return MemoryGate::Proceed;
+    }
+    // `None` means "could not determine" — proceed rather than block forever
+    // on a platform with no implementation.
+    let Some(available) = crate::core::memory::available_bytes() else {
+        return MemoryGate::Proceed;
+    };
+    if available >= needed {
+        return MemoryGate::Proceed;
+    }
+
+    // Give back what we can before asking the user to wait: the preview and
+    // RAW caches are hundreds of MB of pure convenience.
+    editor.release_discretionary_memory();
+
+    let after = crate::core::memory::available_bytes().unwrap_or(available);
+    if after >= needed {
+        tracing::warn!(
+            "Export: freed caches to stay above the {} MB headroom ({} MB -> {} MB available)",
+            crate::core::memory::as_mb(needed),
+            crate::core::memory::as_mb(available),
+            crate::core::memory::as_mb(after),
+        );
+        return MemoryGate::Proceed;
+    }
+
+    MemoryGate::Wait {
+        available_mb: crate::core::memory::as_mb(after),
+        needed_mb: crate::core::memory::as_mb(needed),
+    }
+}
+
 pub fn handle_process_next_export(editor: &mut RawEditor) -> Task<Message> {
+    // Nothing queued means the batch is over (or was cancelled) — skip the
+    // memory check so cancellation can't be held up by low memory.
+    if !editor.export_queue.is_empty() {
+        if let MemoryGate::Wait { available_mb, needed_mb } = check_memory_gate(editor) {
+            // Log once per transition into the paused state. This runs once
+            // per image, and release builds log at info/warn to a daily file —
+            // an unguarded warn! here would flood it.
+            if !editor.export_paused_for_memory {
+                tracing::warn!(
+                    "Export paused: {available_mb} MB available, {needed_mb} MB required"
+                );
+            }
+            editor.export_paused_for_memory = true;
+            editor.status = format!(
+                "Export paused — {available_mb} MB free, waiting for {needed_mb} MB"
+            );
+            return Task::perform(
+                tokio::time::sleep(std::time::Duration::from_secs(MEMORY_RETRY_SECS)),
+                |_| Message::ProcessNextExport,
+            );
+        }
+        if editor.export_paused_for_memory {
+            editor.export_paused_for_memory = false;
+            tracing::warn!("Export resumed: memory headroom recovered");
+        }
+    }
+
     if let Some(image_id) = editor.export_queue.pop() {
         let done = editor
             .export_jobs
@@ -202,10 +283,32 @@ pub fn handle_process_next_export(editor: &mut RawEditor) -> Task<Message> {
                 Message::ExportRawLoaded(image_id, params, res.map(std::sync::Arc::new))
             });
         }
+        // Image id not found in the catalogue (removed mid-batch).
+        set_job_state(
+            editor,
+            image_id,
+            crate::app::state::ExportJobState::Failed("image no longer in catalogue".to_string()),
+        );
         Task::perform(async {}, |_| Message::ProcessNextExport)
     } else {
         editor.is_exporting = false;
-        editor.status = "Export Complete!".to_string();
+        editor.export_paused_for_memory = false;
+        let failed = editor
+            .export_jobs
+            .iter()
+            .filter(|j| matches!(j.state, crate::app::state::ExportJobState::Failed(_)))
+            .count();
+        editor.status = if failed > 0 {
+            format!("Export finished — {failed} failed")
+        } else {
+            "Export Complete!".to_string()
+        };
+        // Release the LAST image's resources. Every other image is reclaimed by
+        // the next one's save; without this the final ~336 MB sat allocated
+        // until something else in the app happened to render.
+        if let Some(ctx) = &editor.gpu_context {
+            ctx.reclaim();
+        }
         Task::none()
     }
 }
@@ -288,6 +391,10 @@ pub fn handle_export_raw_loaded(
         }
         Err(e) => {
             editor.status = format!("Failed to load RAW: {}", e);
+            // Without this the job stays `Working` forever and the queue view
+            // shows an ever-growing pile of "rendering" rows — which is what
+            // made a memory failure look like runaway concurrency.
+            set_job_state(editor, image_id, crate::app::state::ExportJobState::Failed(e));
             Task::perform(async {}, |_| Message::ProcessNextExport)
         }
     }
@@ -307,6 +414,18 @@ pub fn handle_export_pipeline_ready(
 ) -> Task<Message> {
     match result {
         Ok((context, resources)) => {
+            // THE leak fix. `gpu_context` is otherwise only ever assigned on
+            // the Develop image-load path (loading.rs), so exporting without
+            // having opened Develop left it None and the per-image fallback
+            // below built a COMPLETE new wgpu stack — instance, adapter
+            // enumeration, device, queue, 2 shader modules, 2 bind-group
+            // layouts, 3 render pipelines — for every single image in the
+            // batch, then dropped it with no poll. Storing it here means the
+            // first export creates one context and the rest reuse it.
+            if editor.gpu_context.is_none() {
+                editor.gpu_context = Some(context.clone());
+            }
+
             // This image's own crop, not the one open in Develop — otherwise
             // the output is sized from the wrong image's crop rectangle.
             let crop = params.crop;
@@ -345,7 +464,7 @@ pub fn handle_export_pipeline_ready(
                         .await;
                         ExportPixels::Rgb16(samples)
                     } else {
-                        let (bytes, _, _) = crate::gpu::render_functions::render_to_bytes(
+                        let (bytes, _, _) = crate::gpu::render_functions::render_to_vec(
                             &context,
                             &resources,
                             target_width,
@@ -364,6 +483,12 @@ pub fn handle_export_pipeline_ready(
         }
         Err(e) => {
             editor.status = format!("Export failed: {}", e);
+            // See handle_export_raw_loaded: an unmarked failure leaves a stuck
+            // "rendering" row behind.
+            set_job_state(editor, image_id, crate::app::state::ExportJobState::Failed(e));
+            if let Some(ctx) = &editor.gpu_context {
+                ctx.reclaim();
+            }
             Task::perform(async {}, |_| Message::ProcessNextExport)
         }
     }
@@ -385,6 +510,13 @@ pub fn handle_export_save_complete(
             editor.status = format!("Save failed: {}", e);
             set_job_state(editor, id, crate::app::state::ExportJobState::Failed(e));
         }
+    }
+    // The future holding this image's ImageResources has already resolved, so
+    // its textures are dropped by now — but wgpu will not hand the memory back
+    // until it is polled. Without this the batch runs a full image behind on
+    // reclamation.
+    if let Some(ctx) = &editor.gpu_context {
+        ctx.reclaim();
     }
     Task::perform(async {}, |_| Message::ProcessNextExport)
 }
@@ -439,9 +571,10 @@ fn unique_output_path(dir: &Path, stem: &str, extension: &str) -> PathBuf {
 /// buffer through the async save step, so `save_export_async` can't be
 /// called with a format/pixel-type mismatch.
 enum ExportPixels {
-    /// Shared rather than owned because `render_to_bytes` returns the buffer
-    /// already wrapped; the encoders only ever read it as a slice.
-    Rgba8(std::sync::Arc<[u8]>),
+    /// Owned, not `Arc`: export hands the buffer straight to an encoder and
+    /// never shares it, so wrapping it would mean an extra full-frame copy
+    /// (96 MB at 24 MP) alive alongside the mapped readback buffer.
+    Rgba8(Vec<u8>),
     Rgb16(Vec<u16>),
 }
 
@@ -526,6 +659,55 @@ mod tests {
 
     fn settings(resize: bool, max_width: u32) -> ExportSettings {
         ExportSettings { resize, max_width, ..ExportSettings::default() }
+    }
+
+    /// `0` must mean "disabled", and the byte conversion must be MB not kB —
+    /// a factor-1024 slip here would either never gate or always gate.
+    #[test]
+    fn min_free_bytes_converts_mb_and_treats_zero_as_disabled() {
+        let mut e = RawEditor::new().0;
+        e.min_free_ram_mb = 2048;
+        assert_eq!(e.min_free_bytes(), 2048 * 1024 * 1024);
+        e.min_free_ram_mb = 0;
+        assert_eq!(e.min_free_bytes(), 0);
+    }
+
+    /// With the check disabled the gate must not even consult the system, and
+    /// must never touch the caches.
+    #[test]
+    fn gate_proceeds_and_keeps_caches_when_disabled() {
+        let mut e = RawEditor::new().0;
+        e.min_free_ram_mb = 0;
+        assert!(matches!(check_memory_gate(&mut e), MemoryGate::Proceed));
+    }
+
+    /// A threshold no machine can satisfy must end in Wait — and, critically,
+    /// only AFTER the caches have been released, since that is the app's one
+    /// real lever.
+    #[test]
+    fn gate_waits_only_after_releasing_caches() {
+        let mut e = RawEditor::new().0;
+        if crate::core::memory::available_bytes().is_none() {
+            // Platform has no implementation; the gate is inert by design.
+            return;
+        }
+        e.min_free_ram_mb = crate::app::state::MIN_FREE_RAM_MB_MAX;
+        e.raw_cache_bytes = 999;
+        match check_memory_gate(&mut e) {
+            MemoryGate::Wait { needed_mb, .. } => {
+                assert_eq!(needed_mb, crate::app::state::MIN_FREE_RAM_MB_MAX as u64);
+                assert_eq!(e.raw_cache_bytes, 0, "caches should have been released");
+            }
+            MemoryGate::Proceed => panic!("16 GB of headroom should not be satisfiable"),
+        }
+    }
+
+    /// A trivially small threshold must pass on any machine that can run this.
+    #[test]
+    fn gate_proceeds_when_there_is_plenty_of_headroom() {
+        let mut e = RawEditor::new().0;
+        e.min_free_ram_mb = 1;
+        assert!(matches!(check_memory_gate(&mut e), MemoryGate::Proceed));
     }
 
     #[test]

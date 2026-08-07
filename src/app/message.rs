@@ -285,6 +285,7 @@ pub enum Message {
     SetPreviewPreloadAhead(f32),
     SetRawPreloadBehind(f32),
     SetRawPreloadAhead(f32),
+    SetMinFreeRam(f32),
     ResetPreferences,
 
     /// User selected an image from the grid

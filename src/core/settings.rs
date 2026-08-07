@@ -22,6 +22,15 @@ pub struct AppSettings {
     /// thumbnail size). Any field added here from now on needs the same.
     #[serde(default)]
     pub copy_categories: crate::core::types::CopyCategories,
+    /// Physical RAM to keep free during memory-heavy work, in MB. `0` disables
+    /// the check. See `core::memory` — inert on platforms where available
+    /// memory cannot be determined.
+    #[serde(default = "default_min_free_ram_mb")]
+    pub min_free_ram_mb: u32,
+}
+
+fn default_min_free_ram_mb() -> u32 {
+    2048
 }
 
 impl Default for AppSettings {
@@ -37,6 +46,7 @@ impl Default for AppSettings {
             raw_preload_behind: 1,
             raw_preload_ahead: 4,
             copy_categories: crate::core::types::CopyCategories::default(),
+            min_free_ram_mb: default_min_free_ram_mb(),
         }
     }
 }
@@ -130,6 +140,10 @@ mod tests {
             parsed.copy_categories,
             crate::core::types::CopyCategories::default()
         );
+        // A defaulted numeric field must land on its real default, not 0 —
+        // 0 means "disabled" for this setting, so `#[serde(default)]` alone
+        // would silently turn the guard off for every existing install.
+        assert_eq!(parsed.min_free_ram_mb, 2048);
     }
 
     #[test]

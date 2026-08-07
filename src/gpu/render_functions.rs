@@ -140,6 +140,46 @@ fn encode_color_pass(
     )
 }
 
+/// Like [`render_to_bytes`] but hands back the `Vec` directly.
+///
+/// Export writes the buffer straight into an encoder and never shares it, so
+/// the `Arc::from` conversion below would be a pure extra full-frame copy —
+/// 96 MB for a 24 MP frame, live at the same moment as the mapped readback
+/// buffer and `unpad`'s Vec. Skipping it takes the readback peak from three
+/// copies to two.
+pub async fn render_to_vec(
+    context: &SharedContext,
+    resources: &ImageResources,
+    width: u32,
+    height: u32,
+    view_rect: [f32; 4],
+) -> (Vec<u8>, f32, f32) {
+    let t_upload_start = std::time::Instant::now();
+    write_view_rect(context, resources, view_rect);
+    let (cb, readback) = encode_color_pass(context, resources, width, height);
+    let upload_ms = t_upload_start.elapsed().as_secs_f32() * 1000.0;
+
+    let t_render_start = std::time::Instant::now();
+    context.queue.submit(Some(cb));
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    readback.buffer.slice(..).map_async(wgpu::MapMode::Read, move |res| {
+        let _ = tx.send(res);
+    });
+
+    tokio::task::block_in_place(|| {
+        context.device.poll(wgpu::Maintain::Wait);
+    });
+
+    if let Ok(Ok(())) = rx.await {
+        let result = readback.unpad();
+        let render_ms = t_render_start.elapsed().as_secs_f32() * 1000.0;
+        (result, upload_ms, render_ms)
+    } else {
+        (Vec::new(), upload_ms, 0.0)
+    }
+}
+
 pub async fn render_to_bytes(
     context: &SharedContext,
     resources: &ImageResources,
