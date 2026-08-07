@@ -12,17 +12,29 @@
 //! development machine the two read 4.9 GB and 3.4 GB at the same instant —
 //! gating on `MemFree` would pause an export that had plenty of room.
 //!
-//! ## Unsupported platforms return `None`
+//! ## Platform support
+//!
+//! | Platform | Source | Status |
+//! |---|---|---|
+//! | Linux | `/proc/meminfo` → `MemAvailable` | tested on hardware |
+//! | Windows | `GlobalMemoryStatusEx` → `ullAvailPhys` | type-checked, **never linked or run** |
+//! | macOS | — | returns `None`, check inert |
 //!
 //! `None` means "could not determine", NOT "no memory available". Callers must
 //! treat it as permission to proceed, or the feature would silently block all
 //! work on any platform without an implementation.
 //!
-//! macOS needs `host_statistics64` over Mach FFI (and there is real
-//! disagreement about which page counters constitute "available"); Windows
-//! needs `GlobalMemoryStatusEx`. Both are a single function to fill in here,
-//! or a reason to take a `sysinfo` dependency — which would be this project's
-//! first platform crate, so it is a deliberate decision rather than a detail.
+//! macOS would need `host_statistics64` over Mach FFI, where there is genuine
+//! disagreement about which page counters constitute "available" — that is a
+//! judgement call best made by someone who can measure it on the machine.
+//!
+//! The Windows path was authored on a Linux-only toolchain. It has been
+//! type-checked (by temporarily compiling the module for the host), so the
+//! struct, the `extern` signature and the call all compile — but it has never
+//! been linked against kernel32 or executed. Two things contain that risk:
+//! `MEMORYSTATUSEX_LAYOUT_CHECK` turns a layout mistake into a build error
+//! rather than a buffer overrun, and any runtime failure returns `None`, which
+//! leaves the guard inert instead of wrong.
 
 /// Physical memory available for allocation, in bytes.
 ///
@@ -34,9 +46,111 @@ pub fn available_bytes() -> Option<u64> {
         let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
         parse_mem_available(&meminfo)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "windows")]
+    {
+        windows_impl::available_bytes()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
         None
+    }
+}
+
+/// `GlobalMemoryStatusEx` from kernel32.
+///
+/// Declared by hand rather than pulling in `windows-sys`. The tradeoff was
+/// decided by what could actually be checked: `windows-sys`' module paths and
+/// feature names move between versions and its source is not vendored here, so
+/// depending on it would mean guessing at names that fail to compile on the
+/// user's machine. A hand-written declaration has exactly one risk — struct
+/// layout — and that risk is eliminated by the size assertion below.
+#[cfg(target_os = "windows")]
+#[allow(non_snake_case)]
+mod windows_impl {
+    /// Mirrors the Win32 `MEMORYSTATUSEX`. Field order and widths are fixed by
+    /// the ABI and have been stable since Windows 2000:
+    ///
+    /// ```c
+    /// typedef struct _MEMORYSTATUSEX {
+    ///   DWORD     dwLength;                 // u32
+    ///   DWORD     dwMemoryLoad;             // u32
+    ///   DWORDLONG ullTotalPhys;             // u64
+    ///   DWORDLONG ullAvailPhys;             // u64
+    ///   DWORDLONG ullTotalPageFile;         // u64
+    ///   DWORDLONG ullAvailPageFile;         // u64
+    ///   DWORDLONG ullTotalVirtual;          // u64
+    ///   DWORDLONG ullAvailVirtual;          // u64
+    ///   DWORDLONG ullAvailExtendedVirtual;  // u64
+    /// } MEMORYSTATUSEX;
+    /// ```
+    // Only `ull_avail_phys` is read, but every field must exist for the layout
+    // to match what the API writes — dead_code would otherwise flag seven of
+    // them on the Windows build.
+    #[repr(C)]
+    #[allow(dead_code)]
+    struct MemoryStatusEx {
+        dw_length: u32,
+        dw_memory_load: u32,
+        ull_total_phys: u64,
+        ull_avail_phys: u64,
+        ull_total_page_file: u64,
+        ull_avail_page_file: u64,
+        ull_total_virtual: u64,
+        ull_avail_virtual: u64,
+        ull_avail_extended_virtual: u64,
+    }
+
+    /// 2 × u32 then 7 × u64, with the u64s naturally aligned at offset 8 —
+    /// 8 + 56 = 64 bytes and no tail padding.
+    ///
+    /// This is the whole safety argument for hand-declaring the struct: if the
+    /// layout is wrong, `GlobalMemoryStatusEx` would write past the end of our
+    /// allocation. Asserting the size turns that into a compile error on the
+    /// Windows build instead.
+    const MEMORYSTATUSEX_LAYOUT_CHECK: () = {
+        assert!(std::mem::size_of::<MemoryStatusEx>() == 64);
+        assert!(std::mem::align_of::<MemoryStatusEx>() == 8);
+    };
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        /// Returns nonzero on success; zero means call `GetLastError`.
+        fn GlobalMemoryStatusEx(buffer: *mut MemoryStatusEx) -> i32;
+    }
+
+    pub fn available_bytes() -> Option<u64> {
+        // Force the layout assertion to be evaluated.
+        let () = MEMORYSTATUSEX_LAYOUT_CHECK;
+
+        let mut status = MemoryStatusEx {
+            // MUST be set before the call — the API uses it to tell struct
+            // versions apart, and leaving it zero makes the call fail. This is
+            // the classic mistake with this function.
+            dw_length: std::mem::size_of::<MemoryStatusEx>() as u32,
+            dw_memory_load: 0,
+            ull_total_phys: 0,
+            ull_avail_phys: 0,
+            ull_total_page_file: 0,
+            ull_avail_page_file: 0,
+            ull_total_virtual: 0,
+            ull_avail_virtual: 0,
+            ull_avail_extended_virtual: 0,
+        };
+
+        // SAFETY: `status` is a live, correctly sized and aligned
+        // `MEMORYSTATUSEX` (see the layout assertion), `dw_length` is
+        // initialised as the API requires, and the callee only writes within
+        // that struct.
+        let ok = unsafe { GlobalMemoryStatusEx(&mut status) };
+        if ok == 0 {
+            return None;
+        }
+
+        // `ullAvailPhys` is physical memory available for allocation — the
+        // closest analogue to Linux's MemAvailable. Deliberately NOT
+        // `ullAvailPageFile` or `ullAvailVirtual`, which include swap and
+        // address space and would badly overstate real headroom.
+        Some(status.ull_avail_phys)
     }
 }
 
