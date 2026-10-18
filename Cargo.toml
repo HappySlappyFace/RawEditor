@@ -85,6 +85,10 @@ bzip2-rs = "0.1.2"
 tar = { version = "0.4.46", default-features = false }
 
 
+[target.'cfg(windows)'.build-dependencies]
+# Embeds assets/icon.ico so the .exe itself has an icon in Explorer.
+winresource = "0.1"
+
 [dev-dependencies]
 # Shader compile-time validation in unit tests (same version wgpu 0.19 uses)
 naga = { version = "0.19", features = ["wgsl-in"] }

@@ -2,6 +2,8 @@
 // which reads better than one giant literal. Production code is still held to
 // the lint by the non-test build.
 #![cfg_attr(test, allow(clippy::field_reassign_with_default))]
+// No console window behind the app in release builds (debug keeps it for logs).
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app;
 pub mod color;
