@@ -173,6 +173,88 @@ pub fn handle_rotation_changed(editor: &mut RawEditor, v: f32) -> Task<Message> 
     update_pipeline(editor)
 }
 
+/// ⟲ / ⟳: a quarter turn of the whole frame. The crop, masks and brush
+/// strokes turn with it (`EditParams::turn_quarter`) and so does the detail
+/// loupe's target, which is a point in the same (cropped) view; the view
+/// returns to fit, since a pan offset is a fraction of the old shape.
+pub fn handle_turn_image(editor: &mut RawEditor, clockwise: bool) -> Task<Message> {
+    // The turn needs the open image's own shape; resources left over from
+    // another image (Library with a different selection) would scale its
+    // brush strokes by the wrong aspect.
+    let Some(res) = editor
+        .image_resources
+        .as_ref()
+        .filter(|r| Some(r.image_id) == editor.selected_image_id)
+    else {
+        return Task::none();
+    };
+    let (w, h) = res.oriented_dims(editor.current_edit_params.quarter_turns);
+    editor.current_edit_params.turn_quarter(clockwise, w as f32 / h.max(1) as f32);
+    // The crop turned rigidly with the frame, so a point in crop-local UV
+    // turns the same way inside it.
+    let [u, v] = editor.loupe.center;
+    editor.loupe.center = if clockwise { [1.0 - v, u] } else { [v, 1.0 - u] };
+    editor.zoom = 1.0;
+    editor.pan_offset = cgmath::Vector2::new(0.0, 0.0);
+    let task = update_pipeline(editor);
+    editor.commit_current_state();
+    task
+}
+
+/// A click on a slider's value: a text field takes its place, focused with
+/// the value selected, so typing replaces it.
+pub fn handle_slider_entry_start(editor: &mut RawEditor, key: String, text: String) -> Task<Message> {
+    editor.slider_entry = Some(crate::app::state::SliderEntry { key, text });
+    let id = crate::app::views::develop::slider_entry_id();
+    Task::batch([
+        iced::widget::text_input::focus(id.clone()),
+        iced::widget::text_input::select_all(id),
+    ])
+}
+
+/// Arm/disarm the level tool. Develop-only and exclusive with every other
+/// tool, like the WB picker: a drag on the image can only mean one thing.
+pub fn handle_toggle_level_tool(editor: &mut RawEditor) -> Task<Message> {
+    if editor.active_modal != crate::app::state::Modal::None
+        || editor.current_tab != crate::app::message::AppTab::Develop
+    {
+        return Task::none();
+    }
+    editor.is_leveling = !editor.is_leveling;
+    if editor.is_leveling {
+        if editor.is_cropping {
+            editor.is_cropping = false;
+            editor.drag_mode = DragMode::None;
+        }
+        editor.is_wb_picking = false;
+        editor.mask_tool = crate::app::state::MaskTool::Inactive;
+        editor.selected_mask = None;
+        editor.brush_armed = false;
+        editor.color_picking_mask = None;
+        editor.loupe.targeting = false;
+        editor.status = "Level: drag along a line that should be level or upright".to_string();
+    } else {
+        editor.status.clear();
+    }
+    update_pipeline(editor)
+}
+
+/// The level line was drawn: straighten so it shows level (or upright). A
+/// line too short to aim with keeps the tool armed for another try.
+pub fn handle_level_line(editor: &mut RawEditor, dx: f32, dy: f32) -> Task<Message> {
+    let current = editor.current_edit_params.rotation;
+    let Some(angle) = crate::core::viewport::straighten_from_line(current, dx, dy) else {
+        editor.status = "Level: drag a longer line along the horizon or an upright".to_string();
+        return Task::none();
+    };
+    editor.is_leveling = false;
+    editor.status = format!("Straightened by {:+.1}°", angle - current);
+    editor.current_edit_params.rotation = angle;
+    let task = update_pipeline(editor);
+    editor.commit_current_state();
+    task
+}
+
 pub fn handle_set_crop(editor: &mut RawEditor, crop: [f32; 4]) -> Task<Message> {
     editor.current_edit_params.crop = crop;
     let task = update_pipeline(editor);
@@ -191,6 +273,7 @@ pub fn handle_toggle_crop(editor: &mut RawEditor) -> Task<Message> {
         return Task::none();
     }
     editor.is_wb_picking = false; // tools are mutually exclusive
+    editor.is_leveling = false;
     editor.mask_tool = crate::app::state::MaskTool::Inactive;
     editor.selected_mask = None;
     editor.brush_armed = false;
@@ -730,6 +813,7 @@ pub fn handle_toggle_wb_picker(editor: &mut RawEditor) -> Task<Message> {
         editor.brush_armed = false;
         editor.color_picking_mask = None;
         editor.loupe.targeting = false;
+        editor.is_leveling = false;
         editor.status = "WB picker: click a neutral grey/white area".to_string();
     } else {
         editor.status.clear();
@@ -765,12 +849,15 @@ pub(crate) fn sample_raw_rgb(
     }
 
     // Display UV → sensor UV: undo the crop remap (the vertex shader shows the
-    // crop sub-rect when not in crop mode), then the EXIF orientation mapping —
-    // the same transform the fragment shader applies.
+    // crop sub-rect when not in crop mode), then the orientation mapping —
+    // EXIF's plus the user's quarter turns, the same transform the fragment
+    // shader applies.
     let crop = editor.current_edit_params.crop;
     let cu = crop[0] + u.clamp(0.0, 1.0) * crop[2];
     let cv = crop[1] + v.clamp(0.0, 1.0) * crop[3];
-    let (su, sv) = crate::color::display_to_sensor_uv(cu, cv, raw.orientation);
+    let orientation =
+        crate::color::compose_orientation(raw.orientation, editor.current_edit_params.quarter_turns);
+    let (su, sv) = crate::color::display_to_sensor_uv(cu, cv, orientation);
 
     // Sample a 16×16 sensor window centred on the pick, per CFA channel.
     let w = raw.width as i64;

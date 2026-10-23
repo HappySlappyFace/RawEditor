@@ -105,6 +105,15 @@ pub struct LoupeView {
     pub size: u32,
 }
 
+/// A Develop slider's value being typed: a click on the number swaps it for
+/// a text field (`views::develop::slider_field`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SliderEntry {
+    /// Which slider — `views::develop::slider_key` of its change message.
+    pub key: String,
+    pub text: String,
+}
+
 /// The Develop sidebar's 1:1 detail loupe (`handlers::loupe`, `gpu::loupe`).
 #[derive(Debug)]
 pub struct LoupeState {
@@ -621,6 +630,12 @@ pub struct RawEditor {
     /// WB eyedropper tool active: next click on the preview samples a neutral.
     /// Mutually exclusive with `is_cropping`.
     pub is_wb_picking: bool,
+    /// Level tool armed: the next drag on the preview draws a line that
+    /// should be level (or upright), and sets Straighten from it. Mutually
+    /// exclusive with every other tool.
+    pub is_leveling: bool,
+    /// The Develop slider whose value is being typed, if any.
+    pub slider_entry: Option<SliderEntry>,
     /// Local adjustment mask tool (placement mode). Mutually exclusive with
     /// crop and WB picker.
     pub mask_tool: MaskTool,
@@ -927,6 +942,8 @@ impl RawEditor {
                 history_map: HashMap::new(),
                 is_cropping: false,
                 is_wb_picking: false,
+                is_leveling: false,
+                slider_entry: None,
                 mask_tool: MaskTool::Inactive,
                 selected_mask: None,
                 curve_channel: crate::core::curves::CurveChannel::Master,
@@ -1254,7 +1271,7 @@ impl RawEditor {
                 (1280, 853)
             };
         };
-        let (w, h) = res.oriented_dims();
+        let (w, h) = res.oriented_dims(self.current_edit_params.quarter_turns);
         if self.is_cropping {
             return (w, h);
         }
@@ -1276,7 +1293,7 @@ impl RawEditor {
         let full_w = self
             .image_resources
             .as_ref()
-            .map(|r| r.oriented_original_dims().0)
+            .map(|r| r.oriented_original_dims(self.current_edit_params.quarter_turns).0)
             .unwrap_or(dw)
             .max(1) as f32;
         // `fw` spans the CROPPED region (image_display_dims is crop-aware), so
@@ -1479,10 +1496,16 @@ impl RawEditor {
             // export subfolder field, or a hovered slider's arrow keys. Without
             // this, Backspace in a text field opened the Delete dialog, `r`
             // reset the open image's edits and digits re-rated the selection.
-            if status == iced::event::Status::Captured
-                && matches!(event, iced::Event::Keyboard(keyboard::Event::KeyPressed { .. }))
-            {
-                return None;
+            if status == iced::event::Status::Captured {
+                if let iced::Event::Keyboard(keyboard::Event::KeyPressed { key, .. }) = &event {
+                    // A text field swallows Escape (it just unfocuses), but in a
+                    // slider's typed value it should also give the number back.
+                    // A no-op when no slider is being typed into.
+                    if matches!(key, keyboard::Key::Named(Named::Escape)) {
+                        return Some(Message::SliderEntryCancel);
+                    }
+                    return None;
+                }
             }
 
             // Scroll boost + filmstrip momentum: routed by cursor region in

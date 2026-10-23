@@ -161,7 +161,7 @@ pub async fn render(
     )
     .expect("image resources");
     res.update_uniforms(ctx, params, None, None);
-    let (rw, rh) = res.oriented_dims();
+    let (rw, rh) = res.oriented_dims(params.quarter_turns);
     let (bytes, _, _) = render_to_bytes(ctx, &res, rw, rh, FULL_VIEW_RECT).await;
     ctx.reclaim();
     (bytes.to_vec(), rw, rh)

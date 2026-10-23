@@ -3,6 +3,7 @@
 
 pub mod button;
 pub mod collapse;
+pub mod double_click;
 pub mod fade_image;
 pub mod indicator;
 pub mod modal;

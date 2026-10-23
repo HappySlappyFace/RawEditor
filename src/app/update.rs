@@ -9,6 +9,11 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
     // gesture ends with never arrives — commit it here instead. Holding the
     // modifier can't mean anything else: there is no Ctrl+drag on a slider.
     let slider_reset = editor.last_modifiers.command() && is_slider_change(&message);
+    // iced's text field has no blur event, so a typed slider value is
+    // abandoned as soon as the user does something else instead.
+    if editor.slider_entry.is_some() && ends_slider_entry(&message) {
+        editor.slider_entry = None;
+    }
     let modal_before = editor.active_modal;
     let task = dispatch(editor, message);
     let task = if slider_reset {
@@ -48,6 +53,28 @@ fn track_modal_exit(editor: &mut RawEditor, before: Modal) -> Option<Task<Messag
         async move { tokio::time::sleep(wait).await },
         move |_| Message::ModalExitFinished(token),
     ))
+}
+
+/// The user moved on from a slider's typed value: another slider, the image,
+/// a tool, or another photo or tab.
+fn ends_slider_entry(message: &Message) -> bool {
+    is_slider_change(message)
+        || matches!(
+            message,
+            Message::CommitEdit
+                | Message::MousePressed
+                | Message::ImageSelected(_)
+                | Message::TabChanged(_)
+                | Message::ResetEdits
+                | Message::Undo
+                | Message::Redo
+                | Message::TurnImage { .. }
+                | Message::ToggleCrop
+                | Message::ToggleWbPicker
+                | Message::ToggleLevelTool
+                | Message::SelectMask(_)
+                | Message::ToggleMaskPlacement(_)
+        )
 }
 
 /// Messages emitted by the Develop sidebar's sliders.
@@ -183,6 +210,9 @@ fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
             handlers::develop::handle_sharpen_masking_changed(editor, v)
         }
         Message::RotationChanged(v) => handlers::develop::handle_rotation_changed(editor, v),
+        Message::TurnImage { clockwise } => handlers::develop::handle_turn_image(editor, clockwise),
+        Message::ToggleLevelTool => handlers::develop::handle_toggle_level_tool(editor),
+        Message::LevelLineDrawn(dx, dy) => handlers::develop::handle_level_line(editor, dx, dy),
         Message::SetCrop(crop) => handlers::develop::handle_set_crop(editor, crop),
         Message::ToggleCrop => handlers::develop::handle_toggle_crop(editor),
         Message::CropHandleGrabbed(h, b) => {
@@ -236,6 +266,29 @@ fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
         }
         Message::MaskColorPicked(u, v) => handlers::masks::handle_mask_color_picked(editor, u, v),
         Message::CommitEdit => handlers::develop::handle_commit_edit(editor),
+        Message::SliderEntryStart { key, text } => {
+            handlers::develop::handle_slider_entry_start(editor, key, text)
+        }
+        Message::SliderEntryChanged(text) => {
+            if let Some(entry) = &mut editor.slider_entry {
+                entry.text = text;
+            }
+            Task::none()
+        }
+        Message::SliderEntryCancel => {
+            editor.slider_entry = None;
+            Task::none()
+        }
+        Message::SliderSet { change, commit } => {
+            editor.slider_entry = None;
+            let task = dispatch(editor, *change);
+            if commit {
+                // What the release of a drag would have done.
+                Task::batch([task, handlers::develop::handle_commit_edit(editor)])
+            } else {
+                task
+            }
+        }
         Message::Undo => handlers::develop::handle_undo(editor),
         Message::Redo => handlers::develop::handle_redo(editor),
         Message::ResetEdits => handlers::develop::handle_reset_edits(editor),
@@ -442,6 +495,108 @@ mod tests {
 
     fn editor() -> RawEditor {
         RawEditor::new().0
+    }
+
+    fn history_len(e: &mut RawEditor) -> usize {
+        e.get_current_history().map(|(stack, _)| stack.len()).unwrap_or(0)
+    }
+
+    fn type_into(e: &mut RawEditor, key: &str) {
+        let _ = update(e, Message::SliderEntryStart { key: key.into(), text: "0.00".into() });
+        assert!(e.slider_entry.is_some());
+    }
+
+    /// Enter on a typed value sets the slider and records ONE undo step, the
+    /// way a drag and its release would.
+    #[test]
+    fn a_typed_slider_value_is_applied_as_one_undo_step() {
+        let mut e = editor();
+        e.selected_image_id = Some(1);
+        let base = history_len(&mut e);
+        type_into(&mut e, "ExposureChanged(0.0)");
+        let _ = update(&mut e, Message::SliderSet { change: Box::new(Message::ExposureChanged(1.5)), commit: true });
+        assert_eq!(e.current_edit_params.exposure, 1.5);
+        assert!(e.slider_entry.is_none(), "the field closes");
+        assert_eq!(history_len(&mut e), base + 1);
+        let _ = update(&mut e, Message::Undo);
+        assert_eq!(e.current_edit_params.exposure, 0.0);
+    }
+
+    /// A tool setting (brush size) is set, but is not an edit to undo.
+    #[test]
+    fn a_typed_tool_setting_adds_no_undo_step() {
+        let mut e = editor();
+        e.selected_image_id = Some(1);
+        let base = history_len(&mut e);
+        let size = crate::app::message::BrushSetting::Size;
+        let _ = update(&mut e, Message::SliderSet { change: Box::new(Message::BrushSettingChanged(size, 0.1)), commit: false });
+        assert_eq!(e.brush_settings.size, 0.1);
+        assert_eq!(history_len(&mut e), base);
+    }
+
+    /// Escape gives the number back — whether the field still has focus
+    /// (it swallows the key, and the subscription sends SliderEntryCancel)
+    /// or not (a plain Escape) — and does nothing else on the way.
+    #[test]
+    fn escape_leaves_a_typed_value_without_applying_it() {
+        let mut e = editor();
+        type_into(&mut e, "ContrastChanged(0.0)");
+        let _ = update(&mut e, Message::SliderEntryCancel);
+        assert!(e.slider_entry.is_none());
+
+        type_into(&mut e, "ContrastChanged(0.0)");
+        e.is_wb_picking = true;
+        let _ = update(&mut e, Message::Escape);
+        assert!(e.slider_entry.is_none());
+        assert!(e.is_wb_picking, "the first Escape only closes the field");
+        assert_eq!(e.current_edit_params.contrast, 0.0);
+    }
+
+    /// iced's text field has no blur event: moving on to anything else
+    /// abandons the typed value.
+    #[test]
+    fn moving_on_abandons_a_typed_value() {
+        let mut e = editor();
+        type_into(&mut e, "ContrastChanged(0.0)");
+        let _ = update(&mut e, Message::ExposureChanged(0.3));
+        assert!(e.slider_entry.is_none());
+        type_into(&mut e, "ContrastChanged(0.0)");
+        let _ = update(&mut e, Message::SliderEntryChanged("1.2".into()));
+        assert_eq!(e.slider_entry.as_ref().map(|s| s.text.as_str()), Some("1.2"), "typing keeps it");
+    }
+
+    /// The level tool is exclusive with the other click tools, and Escape
+    /// disarms it.
+    #[test]
+    fn the_level_tool_takes_turns_with_the_other_tools() {
+        let mut e = editor();
+        e.current_tab = crate::app::message::AppTab::Develop;
+        let _ = update(&mut e, Message::ToggleWbPicker);
+        let _ = update(&mut e, Message::ToggleLevelTool);
+        assert!(e.is_leveling && !e.is_wb_picking);
+        let _ = update(&mut e, Message::ToggleCrop);
+        assert!(e.is_cropping && !e.is_leveling);
+        let _ = update(&mut e, Message::ToggleLevelTool);
+        assert!(e.is_leveling && !e.is_cropping);
+        let _ = update(&mut e, Message::Escape);
+        assert!(!e.is_leveling);
+    }
+
+    /// A drawn line straightens and disarms the tool; a click that is not a
+    /// line keeps it armed and changes nothing.
+    #[test]
+    fn a_level_line_sets_straighten_once() {
+        let mut e = editor();
+        e.selected_image_id = Some(1);
+        e.current_tab = crate::app::message::AppTab::Develop;
+        let _ = update(&mut e, Message::ToggleLevelTool);
+        let _ = update(&mut e, Message::LevelLineDrawn(2.0, 1.0));
+        assert!(e.is_leveling);
+        assert_eq!(e.current_edit_params.rotation, 0.0);
+        let _ = update(&mut e, Message::LevelLineDrawn(400.0, 20.0));
+        assert!(!e.is_leveling);
+        let want = (20.0f32 / 400.0).atan().to_degrees();
+        assert!((e.current_edit_params.rotation - want).abs() < 1e-4);
     }
 
     #[test]

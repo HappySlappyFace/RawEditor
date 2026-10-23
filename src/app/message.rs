@@ -241,6 +241,13 @@ pub enum Message {
     SharpenMaskingChanged(f32),
     /// User changed rotation slider (Phase 52)
     RotationChanged(f32),
+    /// ⟲ / ⟳: a quarter turn of the frame, crop and masks with it.
+    TurnImage { clockwise: bool },
+    /// Arm/disarm the level tool (drag along a horizon to straighten).
+    ToggleLevelTool,
+    /// A level line was drawn on the preview: its direction in screen
+    /// pixels, start to end.
+    LevelLineDrawn(f32, f32),
     /// User changed crop rectangle (Phase 66)
     SetCrop([f32; 4]),
     /// User clicked Reset button to clear all edits
@@ -341,6 +348,19 @@ pub enum Message {
     Redo,
     /// Phase 65: Commit current edit state to history
     CommitEdit,
+    /// A click on a Develop slider's value: type a number into it instead.
+    /// `key` identifies the slider (`views::develop::slider_key`), `text` is
+    /// the value as shown.
+    SliderEntryStart { key: String, text: String },
+    SliderEntryChanged(String),
+    /// Leave the typed value without applying it (Escape, or the user moved
+    /// on to something else).
+    SliderEntryCancel,
+    /// Set a slider in one step — a typed value (Enter) or a double-click
+    /// reset. `change` is the slider's own change message; `commit` makes it
+    /// an undo step as a drag's release would (false for tool settings like
+    /// brush size, which are not edits).
+    SliderSet { change: Box<Message>, commit: bool },
 
     // ========== Phase 54: Settings Clipboard ==========
     /// Open the category picker (Ctrl/Cmd+C)

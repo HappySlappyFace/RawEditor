@@ -445,7 +445,7 @@ pub fn handle_export_pipeline_ready(
             let crop_h = crop[3].clamp(0.001, 1.0);
             // Use original (full-sensor) dimensions in DISPLAY orientation —
             // portrait shots must export portrait (crop is display-space too).
-            let (full_w, full_h) = resources.oriented_original_dims();
+            let (full_w, full_h) = resources.oriented_original_dims(params.quarter_turns);
             let cropped_w = ((full_w as f32 * crop_w) as u32).max(1);
             let cropped_h = ((full_h as f32 * crop_h) as u32).max(1);
 

@@ -41,6 +41,7 @@ pub fn handle_toggle_mask_placement(editor: &mut RawEditor, mask_type: u32) -> T
 
 fn leave_other_tools(editor: &mut RawEditor) {
     editor.is_wb_picking = false;
+    editor.is_leveling = false;
     editor.color_picking_mask = None;
     if editor.is_cropping {
         // update_pipeline clears the shader's crop flag to match.
@@ -118,6 +119,10 @@ pub fn handle_select_mask(editor: &mut RawEditor, index: Option<usize>) -> Task<
     // Selecting from the list shouldn't leave a stale placement mode active.
     editor.mask_tool = MaskTool::Inactive;
     editor.color_picking_mask = None;
+    if editor.selected_mask.is_some() {
+        // Its handles take the clicks now.
+        editor.is_leveling = false;
+    }
     // A brush mask is only ever edited by painting; other masks paint only
     // when explicitly armed.
     editor.brush_armed = editor
@@ -231,7 +236,7 @@ fn display_aspect(editor: &RawEditor) -> f32 {
         .image_resources
         .as_ref()
         .map(|r| {
-            let (w, h) = r.oriented_dims();
+            let (w, h) = r.oriented_dims(editor.current_edit_params.quarter_turns);
             w as f32 / h.max(1) as f32
         })
         .unwrap_or(1.5)

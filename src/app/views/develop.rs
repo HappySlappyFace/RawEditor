@@ -1,6 +1,7 @@
 use iced::font::{Font, Weight};
 use iced::widget::{
-    checkbox, column, container, row, scrollable, slider, stack, text, Container,
+    checkbox, column, container, mouse_area, row, scrollable, slider, stack, text, text_input,
+    Container,
 };
 use crate::ui::widgets::button;
 use iced::{Alignment, Background, Border, Color, Element, Length, Theme};
@@ -95,42 +96,42 @@ fn view_sidebar(editor: &RawEditor) -> iced::widget::Column<'_, Message> {
 
     sidebar = sidebar
         .push(text("Tone").size(14))
-        .push(slider_row(
+        .push(slider_row(editor, 
             "Exposure",
             editor.current_edit_params.exposure, d.exposure,
             -5.0..=5.0,
             0.1,
             Message::ExposureChanged,
         ))
-        .push(slider_row(
+        .push(slider_row(editor, 
             "Contrast",
             editor.current_edit_params.contrast, d.contrast,
             -10.0..=10.0,
             0.005,
             Message::ContrastChanged,
         ))
-        .push(slider_row(
+        .push(slider_row(editor, 
             "Highlights",
             editor.current_edit_params.highlights, d.highlights,
             -1.0..=1.0,
             0.01,
             Message::HighlightsChanged,
         ))
-        .push(slider_row(
+        .push(slider_row(editor, 
             "Shadows",
             editor.current_edit_params.shadows, d.shadows,
             -1.0..=1.0,
             0.01,
             Message::ShadowsChanged,
         ))
-        .push(slider_row(
+        .push(slider_row(editor, 
             "Whites",
             editor.current_edit_params.whites, d.whites,
             0.8..=1.2,
             0.01,
             Message::WhitesChanged,
         ))
-        .push(slider_row(
+        .push(slider_row(editor, 
             "Blacks",
             editor.current_edit_params.blacks, d.blacks,
             0.0..=0.2,
@@ -169,35 +170,38 @@ fn view_sidebar(editor: &RawEditor) -> iced::widget::Column<'_, Message> {
         .push({
             let (as_k, _) = editor.as_shot_wb.unwrap_or((5000.0, 0.0));
             let kelvin = editor.current_edit_params.kelvin_from_anchor(as_k);
-            slider_row_display(
+            slider_row_display(editor, 
                 "Temp",
                 editor.current_edit_params.temperature, d.temperature,
                 -1.0..=1.0,
                 0.01,
                 format!("{:.0}K", kelvin),
+                // Inverse of `kelvin_from_anchor`, as the WB picker solves it.
+                move |k| (1.0e6 / as_k.clamp(1500.0, 50000.0) - 1.0e6 / k.max(1.0)) / 120.0,
                 Message::TemperatureChanged,
             )
         })
         .push({
             let (_, as_t) = editor.as_shot_wb.unwrap_or((5000.0, 0.0));
             let tint = editor.current_edit_params.tint_from_anchor(as_t);
-            slider_row_display(
+            slider_row_display(editor, 
                 "Tint",
                 editor.current_edit_params.tint, d.tint,
                 -1.0..=1.0,
                 0.01,
                 format!("{:+.0}", tint),
+                move |t| (t - as_t) / 50.0,
                 Message::TintChanged,
             )
         })
-        .push(slider_row(
+        .push(slider_row(editor, 
             "Vibrance",
             editor.current_edit_params.vibrance, d.vibrance,
             -1.0..=1.0,
             0.01,
             Message::VibranceChanged,
         ))
-        .push(slider_row(
+        .push(slider_row(editor, 
             "Saturation",
             editor.current_edit_params.saturation, d.saturation,
             -100.0..=100.0,
@@ -205,21 +209,21 @@ fn view_sidebar(editor: &RawEditor) -> iced::widget::Column<'_, Message> {
             Message::SaturationChanged,
         ))
         .push(text("Presence").size(14))
-        .push(slider_row(
+        .push(slider_row(editor, 
             "Texture",
             editor.current_edit_params.texture, d.texture,
             -1.0..=1.0,
             0.01,
             Message::TextureChanged,
         ))
-        .push(slider_row(
+        .push(slider_row(editor, 
             "Clarity",
             editor.current_edit_params.clarity, d.clarity,
             -1.0..=1.0,
             0.01,
             Message::ClarityChanged,
         ))
-        .push(slider_row(
+        .push(slider_row(editor, 
             "Dehaze",
             editor.current_edit_params.dehaze, d.dehaze,
             -1.0..=1.0,
@@ -233,21 +237,21 @@ fn view_sidebar(editor: &RawEditor) -> iced::widget::Column<'_, Message> {
             loupe_section(editor),
         ))
         .push(text("Noise Reduction").size(14))
-        .push(slider_row(
+        .push(slider_row(editor, 
             "Luminance",
             editor.current_edit_params.luma_noise, d.luma_noise,
             0.0..=1.0,
             0.01,
             Message::LumaNoiseChanged,
         ))
-        .push(slider_row(
+        .push(slider_row(editor, 
             "Detail",
             editor.current_edit_params.luma_detail, d.luma_detail,
             0.0..=1.0,
             0.01,
             Message::LumaDetailChanged,
         ))
-        .push(slider_row(
+        .push(slider_row(editor, 
             "Color",
             editor.current_edit_params.color_noise, d.color_noise,
             0.0..=1.0,
@@ -255,14 +259,14 @@ fn view_sidebar(editor: &RawEditor) -> iced::widget::Column<'_, Message> {
             Message::ColorNoiseChanged,
         ))
         .push(text("Detail").size(14))
-        .push(slider_row(
+        .push(slider_row(editor, 
             "Sharpen",
             editor.current_edit_params.sharpening, d.sharpening,
             0.0..=2.0,
             0.01,
             Message::SharpeningChanged,
         ))
-        .push(slider_row(
+        .push(slider_row(editor, 
             "Masking",
             editor.current_edit_params.sharpen_masking, d.sharpen_masking,
             0.0..=1.0,
@@ -270,11 +274,15 @@ fn view_sidebar(editor: &RawEditor) -> iced::widget::Column<'_, Message> {
             Message::SharpenMaskingChanged,
         ))
         .push(text("Geometry").size(14))
-        .push(slider_row(
-            "Rotate",
+        .push(geometry_tools(editor))
+        .push(slider_row_display(
+            editor,
+            "Straighten",
             editor.current_edit_params.rotation, d.rotation,
             -45.0..=45.0,
-            0.1,
+            0.05,
+            format!("{:.1}°", editor.current_edit_params.rotation),
+            |v| v,
             Message::RotationChanged,
         ))
         .push(
@@ -451,6 +459,50 @@ fn view_sidebar(editor: &RawEditor) -> iced::widget::Column<'_, Message> {
         .padding(15)
 }
 
+/// Quarter turns and the level tool, above the Straighten slider. Both need
+/// the open image's GPU resources (a turn reads its shape).
+fn geometry_tools(editor: &RawEditor) -> Element<'_, Message> {
+    let ready = editor
+        .image_resources
+        .as_ref()
+        .is_some_and(|r| Some(r.image_id) == editor.selected_image_id);
+    let turn = |icon: &'static str, clockwise: bool| {
+        button(text(icon).font(ICON_FONT).size(15))
+            .style(ui::styles::NeutralButton::style)
+            .on_press_maybe(ready.then_some(Message::TurnImage { clockwise }))
+            .padding([5, 10])
+    };
+    let level = button(
+        row![
+            text(ui::icons::LEVEL).font(ICON_FONT).size(13),
+            // Armed shows as the accent style; the status line says what to do.
+            text("Level").size(12),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center),
+    )
+    .style(if editor.is_leveling {
+        ui::styles::AccentButton::style
+    } else {
+        ui::styles::NeutralButton::style
+    })
+    .on_press_maybe(ready.then_some(Message::ToggleLevelTool))
+    .padding([6, 10]);
+    row![
+        text("Rotate")
+            .width(Length::Fixed(90.0))
+            .size(13)
+            .style(|_| text::Style { color: Some(Color::from_rgb(0.7, 0.7, 0.7)) }),
+        turn(ui::icons::ROTATE_LEFT, false),
+        turn(ui::icons::ROTATE_RIGHT, true),
+        iced::widget::Space::with_width(Length::Fill),
+        level,
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center)
+    .into()
+}
+
 /// A centred crop preset. The crop rectangle lives in display (EXIF-oriented)
 /// space, so the ratio must be solved against the oriented dimensions — the
 /// raw sensor dims are landscape even for a portrait shot, which turned
@@ -459,7 +511,7 @@ fn aspect_crop_button<'a>(editor: &RawEditor, label: &'a str, ratio: f32) -> Ele
     button(text(label).size(12))
         .style(ui::styles::NeutralButton::style)
         .on_press_maybe(editor.image_resources.as_ref().map(|res| {
-            let (w, h) = res.oriented_dims();
+            let (w, h) = res.oriented_dims(editor.current_edit_params.quarter_turns);
             Message::SetCrop(RawEditor::calculate_center_crop(ratio, w, h))
         }))
         .into()
@@ -640,6 +692,7 @@ fn view_main_content<'a>(
                         .then_some((editor.brush_settings.size, editor.brush_settings.feather)),
                     is_color_picking: !peeking && editor.color_picking_mask.is_some(),
                     is_loupe_targeting: !peeking && editor.loupe.targeting,
+                    is_leveling: !peeking && editor.is_leveling,
                 })
                 .width(Length::Fill)
                 .height(Length::Fill)
@@ -983,13 +1036,13 @@ fn push_mask_section<'a>(
     sidebar = sidebar.push(brush_row);
     if editor.brush_armed {
         sidebar = sidebar
-            .push(slider_row_plain("Size", b.size, 0.002..=0.3, 0.001, format!("{:.1}%", b.size * 100.0), |v| {
+            .push(slider_row_plain(editor, "Size", b.size, 0.002..=0.3, 0.001, format!("{:.1}%", b.size * 100.0), |p| p / 100.0, |v| {
                 Message::BrushSettingChanged(BrushSetting::Size, v)
             }))
-            .push(slider_row_plain("Feather", b.feather, 0.0..=1.0, 0.01, format!("{:.2}", b.feather), |v| {
+            .push(slider_row_plain(editor, "Feather", b.feather, 0.0..=1.0, 0.01, format!("{:.2}", b.feather), |v| v, |v| {
                 Message::BrushSettingChanged(BrushSetting::Feather, v)
             }))
-            .push(slider_row_plain("Flow", b.flow, 0.01..=1.0, 0.01, format!("{:.2}", b.flow), |v| {
+            .push(slider_row_plain(editor, "Flow", b.flow, 0.01..=1.0, 0.01, format!("{:.2}", b.flow), |v| v, |v| {
                 Message::BrushSettingChanged(BrushSetting::Flow, v)
             }))
             .push(hint("Alt while painting swaps paint / erase".to_string()));
@@ -999,13 +1052,13 @@ fn push_mask_section<'a>(
     sidebar = sidebar.push(small("Luminance range", m.luma_range != 0).on_toggle(Message::ToggleMaskLumaRange));
     if m.luma_range != 0 {
         sidebar = sidebar
-            .push(slider_row("Low", m.luma_lo, 0.0, 0.0..=1.0, 0.01, |v| {
+            .push(slider_row(editor, "Low", m.luma_lo, 0.0, 0.0..=1.0, 0.01, |v| {
                 Message::MaskAdjustmentChanged(MaskAdjustment::LumaLo, v)
             }))
-            .push(slider_row("High", m.luma_hi, 1.0, 0.0..=1.0, 0.01, |v| {
+            .push(slider_row(editor, "High", m.luma_hi, 1.0, 0.0..=1.0, 0.01, |v| {
                 Message::MaskAdjustmentChanged(MaskAdjustment::LumaHi, v)
             }))
-            .push(slider_row("Smooth", m.luma_smooth, 0.1, 0.0..=0.5, 0.01, |v| {
+            .push(slider_row(editor, "Smooth", m.luma_smooth, 0.1, 0.0..=0.5, 0.01, |v| {
                 Message::MaskAdjustmentChanged(MaskAdjustment::LumaSmooth, v)
             }));
     }
@@ -1021,7 +1074,7 @@ fn push_mask_section<'a>(
         .align_y(Alignment::Center),
     );
     if m.color_range != 0 {
-        sidebar = sidebar.push(slider_row("Tolerance", m.color_tolerance, 0.3, 0.0..=1.0, 0.01, |v| {
+        sidebar = sidebar.push(slider_row(editor, "Tolerance", m.color_tolerance, 0.3, 0.0..=1.0, 0.01, |v| {
             Message::MaskAdjustmentChanged(MaskAdjustment::ColorTolerance, v)
         }));
     }
@@ -1029,46 +1082,48 @@ fn push_mask_section<'a>(
     // Adjustments.
     sidebar = sidebar
         .push(text("Adjustments").size(12))
-        .push(slider_row("Exposure", m.exposure, 0.0, -4.0..=4.0, 0.05, |v| {
+        .push(slider_row(editor, "Exposure", m.exposure, 0.0, -4.0..=4.0, 0.05, |v| {
             Message::MaskAdjustmentChanged(MaskAdjustment::Exposure, v)
         }))
-        .push(slider_row("Contrast", m.contrast, 0.0, -1.0..=1.0, 0.01, |v| {
+        .push(slider_row(editor, "Contrast", m.contrast, 0.0, -1.0..=1.0, 0.01, |v| {
             Message::MaskAdjustmentChanged(MaskAdjustment::Contrast, v)
         }))
-        .push(slider_row("Highlights", m.highlights, 0.0, -1.0..=1.0, 0.01, |v| {
+        .push(slider_row(editor, "Highlights", m.highlights, 0.0, -1.0..=1.0, 0.01, |v| {
             Message::MaskAdjustmentChanged(MaskAdjustment::Highlights, v)
         }))
-        .push(slider_row("Shadows", m.shadows, 0.0, -1.0..=1.0, 0.01, |v| {
+        .push(slider_row(editor, "Shadows", m.shadows, 0.0, -1.0..=1.0, 0.01, |v| {
             Message::MaskAdjustmentChanged(MaskAdjustment::Shadows, v)
         }))
-        .push(slider_row("Saturation", m.saturation, 0.0, -1.0..=1.0, 0.01, |v| {
+        .push(slider_row(editor, "Saturation", m.saturation, 0.0, -1.0..=1.0, 0.01, |v| {
             Message::MaskAdjustmentChanged(MaskAdjustment::Saturation, v)
         }))
-        .push(slider_row_display(
+        .push(slider_row_display(editor, 
             "Hue",
             m.hue, 0.0,
             -1.0..=1.0,
             0.01,
             format!("{:+.0}°", m.hue * crate::gpu::params::MASK_HUE_RANGE_DEG),
+            |deg| deg / crate::gpu::params::MASK_HUE_RANGE_DEG,
             |v| Message::MaskAdjustmentChanged(MaskAdjustment::Hue, v),
         ))
-        .push(slider_row("Warmth", m.warmth, 0.0, -1.0..=1.0, 0.01, |v| {
+        .push(slider_row(editor, "Warmth", m.warmth, 0.0, -1.0..=1.0, 0.01, |v| {
             Message::MaskAdjustmentChanged(MaskAdjustment::Warmth, v)
         }))
-        .push(slider_row("Tint", m.tint, 0.0, -1.0..=1.0, 0.01, |v| {
+        .push(slider_row(editor, "Tint", m.tint, 0.0, -1.0..=1.0, 0.01, |v| {
             Message::MaskAdjustmentChanged(MaskAdjustment::Tint, v)
         }));
     if m.mask_type == MASK_RADIAL {
         sidebar = sidebar
-            .push(slider_row("Feather", m.feather, 0.5, 0.0..=1.0, 0.01, |v| {
+            .push(slider_row(editor, "Feather", m.feather, 0.5, 0.0..=1.0, 0.01, |v| {
                 Message::MaskAdjustmentChanged(MaskAdjustment::Feather, v)
             }))
-            .push(slider_row_display(
+            .push(slider_row_display(editor, 
                 "Rotation",
                 m.rotation, 0.0,
                 -180.0..=180.0,
                 1.0,
                 format!("{:.0}°", m.rotation),
+                |v| v,
                 |v| Message::MaskAdjustmentChanged(MaskAdjustment::Rotation, v),
             ));
     }
@@ -1378,34 +1433,36 @@ fn lens_section(editor: &RawEditor) -> Element<'_, Message> {
     .spacing(6);
     if l.profile && has_profile {
         col = col
-            .push(slider_row_display(
+            .push(slider_row_display(editor, 
                 "Distortion",
                 l.profile_distortion, d.profile_distortion,
                 0.0..=2.0,
                 0.01,
                 format!("{:.0}%", l.profile_distortion * 100.0),
+                |p| p / 100.0,
                 |v| Message::LensParamChanged(LensParam::ProfileDistortion, v),
             ))
-            .push(slider_row_display(
+            .push(slider_row_display(editor, 
                 "Vignetting",
                 l.profile_vignetting, d.profile_vignetting,
                 0.0..=2.0,
                 0.01,
                 format!("{:.0}%", l.profile_vignetting * 100.0),
+                |p| p / 100.0,
                 |v| Message::LensParamChanged(LensParam::ProfileVignetting, v),
             ));
     }
     col.push(text("Manual").size(12))
-        .push(slider_row("Distortion", l.distortion, d.distortion, -1.0..=1.0, 0.01, |v| {
+        .push(slider_row(editor, "Distortion", l.distortion, d.distortion, -1.0..=1.0, 0.01, |v| {
             Message::LensParamChanged(LensParam::Distortion, v)
         }))
-        .push(slider_row("Vignetting", l.vignetting, d.vignetting, -1.0..=1.0, 0.01, |v| {
+        .push(slider_row(editor, "Vignetting", l.vignetting, d.vignetting, -1.0..=1.0, 0.01, |v| {
             Message::LensParamChanged(LensParam::Vignetting, v)
         }))
-        .push(slider_row("Red / Cyan", l.ca_red, d.ca_red, -1.0..=1.0, 0.01, |v| {
+        .push(slider_row(editor, "Red / Cyan", l.ca_red, d.ca_red, -1.0..=1.0, 0.01, |v| {
             Message::LensParamChanged(LensParam::CaRed, v)
         }))
-        .push(slider_row("Blue / Yellow", l.ca_blue, d.ca_blue, -1.0..=1.0, 0.01, |v| {
+        .push(slider_row(editor, "Blue / Yellow", l.ca_blue, d.ca_blue, -1.0..=1.0, 0.01, |v| {
             Message::LensParamChanged(LensParam::CaBlue, v)
         }))
         .push(
@@ -1421,16 +1478,16 @@ fn defringe_section(editor: &RawEditor) -> Element<'_, Message> {
     let f = editor.current_edit_params.defringe;
     let d = crate::core::lens::DefringeParams::default();
     column![
-        slider_row("Purple", f.purple_amount, d.purple_amount, 0.0..=1.0, 0.01, |v| {
+        slider_row(editor, "Purple", f.purple_amount, d.purple_amount, 0.0..=1.0, 0.01, |v| {
             Message::DefringeChanged(DefringeParam::PurpleAmount, v)
         }),
-        slider_row_display("Purple Hue", f.purple_hue, d.purple_hue, 200.0..=360.0, 1.0, format!("{:.0}°", f.purple_hue), |v| {
+        slider_row_display(editor, "Purple Hue", f.purple_hue, d.purple_hue, 200.0..=360.0, 1.0, format!("{:.0}°", f.purple_hue), |v| v, |v| {
             Message::DefringeChanged(DefringeParam::PurpleHue, v)
         }),
-        slider_row("Green", f.green_amount, d.green_amount, 0.0..=1.0, 0.01, |v| {
+        slider_row(editor, "Green", f.green_amount, d.green_amount, 0.0..=1.0, 0.01, |v| {
             Message::DefringeChanged(DefringeParam::GreenAmount, v)
         }),
-        slider_row_display("Green Hue", f.green_hue, d.green_hue, 40.0..=180.0, 1.0, format!("{:.0}°", f.green_hue), |v| {
+        slider_row_display(editor, "Green Hue", f.green_hue, d.green_hue, 40.0..=180.0, 1.0, format!("{:.0}°", f.green_hue), |v| v, |v| {
             Message::DefringeChanged(DefringeParam::GreenHue, v)
         }),
     ]
@@ -1537,7 +1594,7 @@ fn tone_shape_controls(editor: &RawEditor) -> Element<'_, Message> {
     let p = &editor.current_edit_params;
     let d = crate::core::types::EditParams::default();
     match p.tone_mapper {
-        ToneMapper::Camera => column![slider_row(
+        ToneMapper::Camera => column![slider_row(editor, 
             "Profile Curve",
             p.profile_curve, d.profile_curve,
             0.0..=1.0,
@@ -1546,16 +1603,16 @@ fn tone_shape_controls(editor: &RawEditor) -> Element<'_, Message> {
         )]
         .into(),
         ToneMapper::Gt => column![
-            slider_row("Contrast", p.gt.contrast, d.gt.contrast, 0.1..=3.0, 0.01, |v| {
+            slider_row(editor, "Contrast", p.gt.contrast, d.gt.contrast, 0.1..=3.0, 0.01, |v| {
                 Message::GtParamChanged(GtParam::Contrast, v)
             }),
-            slider_row("Linear Start", p.gt.linear_start, d.gt.linear_start, 0.01..=0.9, 0.01, |v| {
+            slider_row(editor, "Linear Start", p.gt.linear_start, d.gt.linear_start, 0.01..=0.9, 0.01, |v| {
                 Message::GtParamChanged(GtParam::LinearStart, v)
             }),
-            slider_row("Linear Length", p.gt.linear_length, d.gt.linear_length, 0.0..=1.0, 0.01, |v| {
+            slider_row(editor, "Linear Length", p.gt.linear_length, d.gt.linear_length, 0.0..=1.0, 0.01, |v| {
                 Message::GtParamChanged(GtParam::LinearLength, v)
             }),
-            slider_row("Black Tight", p.gt.black_tightness, d.gt.black_tightness, 0.5..=4.0, 0.01, |v| {
+            slider_row(editor, "Black Tight", p.gt.black_tightness, d.gt.black_tightness, 0.5..=4.0, 0.01, |v| {
                 Message::GtParamChanged(GtParam::BlackTightness, v)
             }),
         ]
@@ -1609,6 +1666,7 @@ fn info_line<'a>(s: String) -> Element<'a, Message> {
 }
 
 fn slider_row<'a, F>(
+    editor: &'a RawEditor,
     label: &'a str,
     value: f32,
     default: f32,
@@ -1619,84 +1677,149 @@ fn slider_row<'a, F>(
 where
     F: Fn(f32) -> Message + 'a,
 {
-    slider_row_display(label, value, default, range, step, format!("{:.2}", value), on_change)
+    slider_field(editor, label, value, Some(default), range, step, format!("{:.2}", value), |v| v, on_change)
 }
 
 /// A slider for UI state rather than an edit (brush settings): no default
 /// reset and no undo commit on release.
+#[allow(clippy::too_many_arguments)]
 fn slider_row_plain<'a, F>(
+    editor: &'a RawEditor,
     label: &'a str,
     value: f32,
     range: std::ops::RangeInclusive<f32>,
     step: f32,
     display: String,
+    from_display: impl Fn(f32) -> f32 + 'a,
     on_change: F,
 ) -> Element<'a, Message>
 where
     F: Fn(f32) -> Message + 'a,
 {
-    row![
-        text(label)
-            .width(Length::Fixed(90.0))
-            .size(13)
-            .style(|_theme| text::Style { color: Some(Color::from_rgb(0.7, 0.7, 0.7)) }),
-        slider(range, value, on_change)
-            .step(step)
-            .width(Length::Fill)
-            .style(crate::ui::styles::ProSlider::style),
-        text(display)
-            .width(Length::Fixed(48.0))
-            .size(13)
-            .align_x(iced::alignment::Horizontal::Right)
-            .style(|_theme| text::Style { color: Some(Color::from_rgb(0.7, 0.7, 0.7)) }),
-    ]
-    .spacing(10)
-    .align_y(iced::Alignment::Center)
-    .into()
+    slider_field(editor, label, value, None, range, step, display, from_display, on_change)
 }
 
 /// Like `slider_row` but with an explicit value display string — used by the
 /// WB sliders to show real Kelvin / Adobe-tint units while the underlying
 /// slider stays a normalized offset around the as-shot anchor.
-///
-/// Ctrl/Cmd+click resets the slider to `default` (iced's built-in reset);
-/// `update` commits that click as an undo step of its own.
+/// `from_display` reads a typed value in those units back into the slider's.
+#[allow(clippy::too_many_arguments)]
 fn slider_row_display<'a, F>(
+    editor: &'a RawEditor,
     label: &'a str,
     value: f32,
     default: f32,
     range: std::ops::RangeInclusive<f32>,
     step: f32,
     display: String,
+    from_display: impl Fn(f32) -> f32 + 'a,
     on_change: F,
 ) -> Element<'a, Message>
 where
     F: Fn(f32) -> Message + 'a,
 {
-    row![
-        text(label)
-            .width(Length::Fixed(90.0))
-            .size(13)
-            .style(|_theme| text::Style {
-                color: Some(Color::from_rgb(0.7, 0.7, 0.7))
-            }),
-        slider(range, value, on_change)
-            .default(default)
-            .step(step)
-            .width(Length::Fill)
-            .style(crate::ui::styles::ProSlider::style)
-            .on_release(Message::CommitEdit),
-        text(display)
-            .width(Length::Fixed(48.0))
-            .size(13)
-            .align_x(iced::alignment::Horizontal::Right)
-            .style(|_theme| text::Style {
-                color: Some(Color::from_rgb(0.7, 0.7, 0.7))
-            }),
-    ]
-    .spacing(10)
-    .align_y(iced::Alignment::Center)
-    .into()
+    slider_field(editor, label, value, Some(default), range, step, display, from_display, on_change)
+}
+
+/// The text field a slider's value turns into while it is typed into. One
+/// at a time, so one id.
+pub fn slider_entry_id() -> text_input::Id {
+    text_input::Id::new("develop-slider-entry")
+}
+
+/// Which slider a message comes from: its change message for a fixed value,
+/// e.g. `MaskAdjustmentChanged(Contrast, 0.0)`. Unique where labels are not
+/// ("Contrast", "Tint" and "Distortion" each appear twice in the sidebar).
+fn slider_key(on_change: &impl Fn(f32) -> Message) -> String {
+    format!("{:?}", on_change(0.0))
+}
+
+/// What the text field starts with: the value as shown, minus its unit.
+fn entry_text(display: &str) -> String {
+    display.trim_end_matches(|c: char| !c.is_ascii_digit()).to_string()
+}
+
+/// A typed slider value: a plain number, in the units the slider shows. A
+/// decimal comma, a typographic minus and a trailing unit are all accepted.
+fn parse_slider_entry(text: &str) -> Option<f32> {
+    let cleaned = text.trim().replace(',', ".").replace('\u{2212}', "-");
+    let number = cleaned.trim_end_matches(|c: char| c.is_alphabetic() || c == '°' || c == '%' || c.is_whitespace());
+    number.parse::<f32>().ok().filter(|v| v.is_finite())
+}
+
+/// One Develop slider: label, track and value. Click the value to type a
+/// number (in the units it shows; Enter applies, Escape cancels).
+/// Double-click the label or the track to reset it to `default`, as
+/// Ctrl/Cmd+click on the track always has. `default: None` marks a tool
+/// setting rather than an edit (brush size): no reset, and no undo step.
+#[allow(clippy::too_many_arguments)]
+fn slider_field<'a>(
+    editor: &'a RawEditor,
+    label: &'a str,
+    value: f32,
+    default: Option<f32>,
+    range: std::ops::RangeInclusive<f32>,
+    step: f32,
+    display: String,
+    from_display: impl Fn(f32) -> f32 + 'a,
+    on_change: impl Fn(f32) -> Message + 'a,
+) -> Element<'a, Message> {
+    let grey = |_: &Theme| text::Style { color: Some(Color::from_rgb(0.7, 0.7, 0.7)) };
+    let key = slider_key(&on_change);
+    let commit = default.is_some();
+    let (lo, hi) = (*range.start(), *range.end());
+
+    let value_cell: Element<'a, Message> = match editor.slider_entry.as_ref().filter(|e| e.key == key) {
+        Some(entry) => {
+            let submit = match parse_slider_entry(&entry.text).map(&from_display) {
+                Some(v) if v.is_finite() => {
+                    Message::SliderSet { change: Box::new(on_change(v.clamp(lo, hi))), commit }
+                }
+                _ => Message::SliderEntryCancel,
+            };
+            text_input("", &entry.text)
+                .id(slider_entry_id())
+                .on_input(Message::SliderEntryChanged)
+                .on_submit(submit)
+                .size(13)
+                .padding([1, 4])
+                .width(Length::Fixed(52.0))
+                .align_x(iced::alignment::Horizontal::Right)
+                .style(ui::styles::text_input_style)
+                .into()
+        }
+        None => mouse_area(
+            text(display.clone())
+                .width(Length::Fixed(52.0))
+                .size(13)
+                .align_x(iced::alignment::Horizontal::Right)
+                .style(grey),
+        )
+        .on_press(Message::SliderEntryStart { key, text: entry_text(&display) })
+        .interaction(iced::mouse::Interaction::Text)
+        .into(),
+    };
+
+    let reset = default.map(|d| Message::SliderSet { change: Box::new(on_change(d)), commit: true });
+    let mut track = slider(range, value, on_change)
+        .step(step)
+        .width(Length::Fill)
+        .style(crate::ui::styles::ProSlider::style);
+    if let Some(d) = default {
+        track = track.default(d).on_release(Message::CommitEdit);
+    }
+    let label_and_track = row![text(label).width(Length::Fixed(90.0)).size(13).style(grey), track]
+        .spacing(10)
+        .align_y(iced::Alignment::Center);
+    let label_and_track: Element<'a, Message> = match reset {
+        Some(reset) => ui::widgets::double_click::double_click(label_and_track, reset).into(),
+        None => label_and_track.into(),
+    };
+
+    row![label_and_track, value_cell]
+        .spacing(10)
+        .align_y(iced::Alignment::Center)
+        .into()
 }
 
 #[cfg(test)]
@@ -1704,6 +1827,45 @@ mod tests {
     use super::*;
     use crate::app::update::update;
     use crate::core::types::{MASK_BRUSH, MASK_RANGE};
+
+    #[test]
+    fn typed_values_accept_what_people_type() {
+        assert_eq!(parse_slider_entry("1.5"), Some(1.5));
+        assert_eq!(parse_slider_entry(" +0,25 "), Some(0.25), "decimal comma");
+        assert_eq!(parse_slider_entry("\u{2212}12°"), Some(-12.0), "typographic minus, unit");
+        assert_eq!(parse_slider_entry("5600K"), Some(5600.0));
+        assert_eq!(parse_slider_entry("40 %"), Some(40.0));
+        assert_eq!(parse_slider_entry(""), None);
+        assert_eq!(parse_slider_entry("abc"), None);
+        assert_eq!(parse_slider_entry("inf"), None);
+        assert_eq!(entry_text("5092K"), "5092");
+        assert_eq!(entry_text("+12°"), "+12");
+        assert_eq!(entry_text("0.33"), "0.33");
+    }
+
+    /// Labels repeat across the sidebar; the keys that tell sliders apart
+    /// must not.
+    #[test]
+    fn slider_keys_tell_same_named_sliders_apart() {
+        let global = slider_key(&Message::ContrastChanged);
+        let mask = slider_key(&|v| Message::MaskAdjustmentChanged(crate::app::message::MaskAdjustment::Contrast, v));
+        let lens = slider_key(&|v| Message::LensParamChanged(LensParam::Distortion, v));
+        let profile = slider_key(&|v| Message::LensParamChanged(LensParam::ProfileDistortion, v));
+        assert_ne!(global, mask);
+        assert_ne!(lens, profile);
+    }
+
+    /// The WB sliders read typed Kelvin and tint back through the exact
+    /// inverse of what they display.
+    #[test]
+    fn typed_kelvin_round_trips_through_the_display() {
+        let as_k = 5092.0f32;
+        let from_k = |k: f32| (1.0e6 / as_k.clamp(1500.0, 50000.0) - 1.0e6 / k.max(1.0)) / 120.0;
+        for k in [3200.0f32, 5092.0, 6500.0] {
+            let p = crate::core::types::EditParams { temperature: from_k(k), ..Default::default() };
+            assert!((p.kelvin_from_anchor(as_k) - k).abs() < 0.5, "{k}");
+        }
+    }
 
     /// Building the sidebar in every new state must not panic (iced asserts
     /// on some widget arguments, e.g. slider ranges).
@@ -1728,6 +1890,9 @@ mod tests {
         }
         e.current_edit_params.lens.profile = true;
         e.current_edit_params.curves.master.insert(0.3, 0.2);
+        let _ = view_develop(&e);
+        e.is_leveling = true;
+        e.slider_entry = Some(crate::app::state::SliderEntry { key: slider_key(&Message::ExposureChanged), text: "1".into() });
         let _ = view_develop(&e);
     }
 }

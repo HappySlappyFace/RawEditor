@@ -625,7 +625,7 @@ mod tests {
                 // pixels away, leaving too few to measure.
                 None, raw.orientation, raw.lens_context.clone()).expect("image resources");
 
-            let (w, h) = res.oriented_dims();
+            let (w, h) = res.oriented_dims(0);
 
             let flat = render_at(&ctx, &res, &raw, 0.0, w, h).await;
             let recovered = render_at(&ctx, &res, &raw, -1.0, w, h).await;
@@ -713,7 +713,7 @@ mod tests {
                 raw.wb_multipliers, forward_matrix, raw.cfa_pattern,
                 raw.black_levels, raw.white_level, dcp.as_ref(),
                 Some(1280), raw.orientation, raw.lens_context.clone()).expect("image resources");
-            let (w, h) = res.oriented_dims();
+            let (w, h) = res.oriented_dims(0);
 
             let a = render_at(&ctx, &res, &raw, 0.0, w, h).await;
             let b = render_at(&ctx, &res, &raw, 0.0, w, h).await;
@@ -778,7 +778,7 @@ mod tests {
                 &ctx, 1, &raw.data, raw.width, raw.height, &base,
                 raw.wb_multipliers, fm, raw.cfa_pattern, raw.black_levels,
                 raw.white_level, dcp.as_ref(), Some(1280), raw.orientation, raw.lens_context.clone()).expect("image resources");
-            let (w, h) = res.oriented_dims();
+            let (w, h) = res.oriented_dims(0);
 
             // Render one frame per operator, re-resolving the DCP each time so
             // the tone LUT is re-baked exactly the way the app does it.
@@ -895,7 +895,7 @@ mod tests {
             let res = ImageResources::new(&ctx, 1, &raw.data, raw.width, raw.height, &base,
                 raw.wb_multipliers, fm, raw.cfa_pattern, raw.black_levels, raw.white_level,
                 dcp.as_ref(), Some(1280), raw.orientation, raw.lens_context.clone()).unwrap();
-            let (w, h) = res.oriented_dims();
+            let (w, h) = res.oriented_dims(0);
             let bytes = render_at(&ctx, &res, &raw, 0.0, w, h).await;
 
             if writing {
@@ -971,7 +971,7 @@ mod tests {
                     .sum::<f64>() / n
             };
 
-            let (w, h) = res.oriented_dims();
+            let (w, h) = res.oriented_dims(0);
             let dims = crate::core::viewport::overview_dims(w, h);
             let mut means = Vec::new();
             for exposure in [0.0, -2.0] {
@@ -1049,7 +1049,7 @@ mod tests {
                 raw.wb_multipliers, fm, raw.cfa_pattern, raw.black_levels, raw.white_level,
                 dcp.as_ref(), preview, raw.orientation, raw.lens_context.clone()).unwrap();
             res.update_uniforms(&ctx, &params, dcp.as_ref(), wb);
-            let (w, h) = res.oriented_dims();
+            let (w, h) = res.oriented_dims(params.quarter_turns);
             let t = std::time::Instant::now();
             let (bytes, _, ms) = render_to_bytes(&ctx, &res, w, h, FULL_VIEW_RECT).await;
             eprintln!("rendered {w}x{h} in {ms:.1} ms (wall {:.1} ms)", t.elapsed().as_secs_f32() * 1000.0);
@@ -1086,7 +1086,7 @@ mod tests {
             raw.wb_multipliers, fm, raw.cfa_pattern, raw.black_levels, raw.white_level,
             dcp.as_ref(), Some(1280), raw.orientation, raw.lens_context.clone()).expect("image resources");
         res.update_uniforms(ctx, params, dcp.as_ref(), wb);
-        let (w, h) = res.oriented_dims();
+        let (w, h) = res.oriented_dims(params.quarter_turns);
         let (bytes, _, _) = render_to_bytes(ctx, &res, w, h, FULL_VIEW_RECT).await;
         (bytes.to_vec(), w, h)
     }

@@ -445,7 +445,7 @@ pub fn handle_mouse_pressed(editor: &mut RawEditor) -> Task<Message> {
     let double = editor.last_click_time.map(|t| now.duration_since(t).as_millis() < 300).unwrap_or(false);
     editor.last_click_time = Some(now);
     if double { return Task::done(Message::ResetView); }
-    if !editor.is_cropping && !editor.is_wb_picking && !editor.mask_overlay_active() {
+    if !editor.is_cropping && !editor.is_wb_picking && !editor.is_leveling && !editor.mask_overlay_active() {
         editor.is_dragging = true;
         editor.drag_mode = DragMode::Pan;
     }

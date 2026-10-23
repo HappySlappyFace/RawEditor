@@ -110,9 +110,11 @@ from [lensfun](https://lensfun.github.io/) profiles, matched automatically
 (including lenses identified only in maker notes), with manual controls that
 work without a profile and an automatic zoom that keeps empty borders out of
 the frame. Purple and green fringe removal handles the axial aberration no
-profile can. Profiles are read from an installed lensfun database (the
-`lensfun` package, or XML files in `~/.local/share/raw-editor/lensfun/`) —
-none is bundled.
+profile can. The lensfun database is not bundled: download it from
+**Preferences › Lens Profiles** (about 0.4 MB, fetched only when you click),
+or use an installed copy — your own XML files in
+`~/.local/share/raw-editor/lensfun/` take priority, then the downloaded
+database, then a system `lensfun` package.
 
 **History and copying.** Full undo/redo per image. Settings can be copied
 between images by category — tone, colour, white balance, noise, detail,
@@ -211,18 +213,31 @@ time; it will be rebuilt on demand.
 
 Your RAW files are never modified and are never moved into these directories.
 
-### Installing a colour profile
+### Camera colour profiles
 
-Place a `.dcp` file in `~/.local/share/raw-editor/profiles/`. It is matched
-against the camera model from the file's EXIF and picked up on the next image
-load. Without one, a matrix-based fallback is used.
+Without a profile for your camera, a matrix-based fallback is used. There are
+two ways to get one:
+
+- **Download one.** The RawTherapee project publishes free profiles for about
+  160 cameras. When an image's camera has none, Develop offers to download it;
+  **Preferences › Camera Profiles** updates the downloaded ones. The app goes
+  online only when you click.
+- **Bring your own.** Place a `.dcp` file in
+  `~/.local/share/raw-editor/profiles/` and press Rescan in
+  **Preferences › Camera Profiles**. It is matched against the camera model
+  from the file's EXIF, and your own profiles are offered before downloaded
+  ones.
+
+Each image can pick its profile in Develop; otherwise the camera's default
+from Preferences is used, or the best match.
 
 Profiles are not interchangeable and not uniform. Some carry a forward matrix,
 some only a colour matrix; some embed a tone curve, some deliberately do not;
 some are dual-illuminant, some single. The parser handles each of these, but
 two profiles for the same camera can still render noticeably differently — that
-is the profile's intent, not a bug. No profiles are bundled with the app; bring
-your own, and check the licence of any you did not create.
+is the profile's intent, not a bug. None are bundled with the app. Downloaded
+profiles are RawTherapee's (GPL or public domain); check the licence of any
+other profile you did not create.
 
 ---
 
@@ -294,11 +309,11 @@ Working and in use, but young. Known gaps:
   tuned on Nikon files only, and at 100% zoom on a large sensor each move of a
   noise slider costs a few hundred milliseconds.
 - Keyboard shortcuts are not user-configurable.
-- Camera profiles are read for their colour matrices, hue/saturation map and
-  tone curve, but the optional look table is not applied. Profiles that put
-  most of their character in that table — typically the "Landscape", "Portrait"
-  and similar creative variants — will render flatter here than in software
-  that does apply it.
+- A camera profile can carry two colour tables, a hue/saturation map and a
+  look table. One is applied: the look table when the profile has one (what
+  camera-matching profiles such as Nikon's "Camera Standard" rely on), else
+  the hue/saturation map (what RawTherapee's profiles carry). A profile with
+  both renders without its hue/saturation map.
 - The catalogue has no migration tooling; a schema change means rebuilding it.
 - Colour calibration has been verified in depth against Nikon NEF files.
   Import accepts Bayer-sensor RAWs that [rawler](https://github.com/dnglab/dnglab)

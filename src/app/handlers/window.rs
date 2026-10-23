@@ -218,7 +218,9 @@ pub fn handle_close_modal(editor: &mut RawEditor) -> Task<Message> {
 }
 
 pub fn handle_escape(editor: &mut RawEditor) -> Task<Message> {
-    if editor.active_modal != Modal::None {
+    if editor.slider_entry.take().is_some() {
+        // Leaving a typed slider value is all this press means.
+    } else if editor.active_modal != Modal::None {
         editor.active_modal = Modal::None;
         editor.pending_delete_ids.clear();
         editor.pending_remove_folder = None;
@@ -227,6 +229,9 @@ pub fn handle_escape(editor: &mut RawEditor) -> Task<Message> {
         editor.status.clear();
     } else if editor.loupe.targeting {
         editor.loupe.targeting = false;
+        editor.status.clear();
+    } else if editor.is_leveling {
+        editor.is_leveling = false;
         editor.status.clear();
     } else if editor.mask_tool != crate::app::state::MaskTool::Inactive {
         editor.mask_tool = crate::app::state::MaskTool::Inactive;

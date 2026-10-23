@@ -215,6 +215,21 @@ impl BrushData {
         }
     }
 
+    /// Follow the frame through a quarter turn (`EditParams::turn_quarter`):
+    /// points turn rigidly, and radii — fractions of the image HEIGHT, which
+    /// the turn swaps with the width — are rescaled to keep their size in
+    /// pixels. `aspect` = width / height before the turn.
+    pub fn turn_quarter(&mut self, clockwise: bool, aspect: f32) {
+        let n = (self.point_count as usize).min(MAX_POINTS);
+        for p in &mut self.points[..n] {
+            *p = if clockwise { [1.0 - p[1], p[0]] } else { [p[1], 1.0 - p[0]] };
+        }
+        let n = (self.stroke_count as usize).min(MAX_STROKES);
+        for s in &mut self.strokes[..n] {
+            s.radius = (s.radius / aspect.max(1e-6)).clamp(0.001, 1.0);
+        }
+    }
+
     /// Remove every stroke of `mask` (the panel's "Clear brush"), keeping
     /// mask numbering.
     pub fn clear_mask(&mut self, mask: usize) {

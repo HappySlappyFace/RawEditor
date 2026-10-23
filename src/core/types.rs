@@ -130,11 +130,22 @@ pub struct EditParams {
     pub sharpen_masking: f32,
 
     // ========== Geometry ==========
-    /// Rotation angle in degrees (-45.0 to +45.0)
-    /// - Negative = counter-clockwise
-    /// - Positive = clockwise
+    /// Straighten angle in degrees (-45.0 to +45.0). Positive turns the
+    /// picture counter-clockwise: the colour pass samples at `R(θ)·out`
+    /// (`core::viewport::straighten_from_line` relies on this).
     /// - Phase 52: Straighten horizons
     pub rotation: f32,
+
+    /// Quarter turns clockwise on top of the EXIF orientation (0–3): for
+    /// portraits the camera never tagged (auto-rotate off — a D3400 file
+    /// can carry Orientation = 1 for a vertical frame) and for turning any
+    /// frame by hand. Composed into the one orientation the colour pass
+    /// already applies (`raw::loader::compose_orientation`), so the crop,
+    /// mask shapes and brush strokes all live in the TURNED display space
+    /// — `turn_quarter` carries them along when it changes.
+    /// serde default keeps edits saved before this field existed loadable.
+    #[serde(default)]
+    pub quarter_turns: u32,
 
     // Phase 66: Crop
     /// Crop rectangle [x, y, width, height]
@@ -420,6 +431,7 @@ impl Default for EditParams {
             sharpening: 0.0,            // Phase 50: No sharpening by default
             sharpen_masking: 0.0,       // Phase 51: No masking by default
             rotation: 0.0,              // Phase 52: No rotation by default
+            quarter_turns: 0,           // as the camera recorded it
             crop: [0.0, 0.0, 1.0, 1.0], // Phase 66: Full image by default
             is_cropping: 0,             // Phase 135: Not cropping by default
             mask_overlay: 0,
@@ -513,6 +525,46 @@ impl EditParams {
         anchor_tint + self.tint * 50.0
     }
 
+    /// Turn the frame a quarter turn, carrying its display-space geometry
+    /// along: the crop, mask shapes and brush strokes are all in the oriented
+    /// frame, so without this they would stay put on screen over different
+    /// content.
+    ///
+    /// `aspect` is the full frame's display width / height BEFORE the turn
+    /// (`core::viewport::mask_uv_aspect`'s convention). A UV point turns
+    /// rigidly — clockwise, the top-left corner goes to the top-right — and
+    /// a radial mask's radii trade axes, since what spanned u now spans v;
+    /// its angle needs nothing, because both are measured in the isotropic
+    /// space the turn rotates rigidly. The straighten angle is a rotation
+    /// about the same centre, so it commutes with the turn.
+    pub fn turn_quarter(&mut self, clockwise: bool, aspect: f32) {
+        let turn = |u: f32, v: f32| if clockwise { (1.0 - v, u) } else { (v, 1.0 - u) };
+        self.quarter_turns = (self.quarter_turns + if clockwise { 1 } else { 3 }) % 4;
+
+        let [x, y, w, h] = self.crop;
+        self.crop = if clockwise {
+            [1.0 - (y + h), x, h, w]
+        } else {
+            [y, 1.0 - (x + w), h, w]
+        };
+
+        for m in self.masks.iter_mut().take(self.mask_count as usize) {
+            match m.mask_type {
+                MASK_LINEAR => {
+                    (m.ax, m.ay) = turn(m.ax, m.ay);
+                    (m.bx, m.by) = turn(m.bx, m.by);
+                }
+                MASK_RADIAL => {
+                    (m.ax, m.ay) = turn(m.ax, m.ay);
+                    (m.bx, m.by) = (m.by, m.bx);
+                }
+                // Brush and range masks have no shape of their own.
+                _ => {}
+            }
+        }
+        self.brush.turn_quarter(clockwise, aspect);
+    }
+
     /// The reference state for the before/after peek: every look-affecting
     /// adjustment reset, but GEOMETRY and SENSOR CALIBRATION preserved.
     ///
@@ -537,6 +589,7 @@ impl EditParams {
             color_noise: self.color_noise,
             crop: self.crop,
             rotation: self.rotation,
+            quarter_turns: self.quarter_turns,
             // Lens corrections reframe the image (distortion, constrain zoom),
             // so they are geometry for this purpose.
             lens: self.lens,
@@ -699,6 +752,7 @@ pub fn apply_categories(dst: &mut EditParams, src: &EditParams, cats: CopyCatego
     }
     if cats.geometry {
         dst.rotation = src.rotation;
+        dst.quarter_turns = src.quarter_turns;
         dst.crop = src.crop;
     }
     if cats.profile {
@@ -845,6 +899,7 @@ mod tests {
         p.sharpening = 0.8;
         p.sharpen_masking = 0.6;
         p.rotation = 12.0;
+        p.quarter_turns = 3;
         p.crop = [0.1, 0.2, 0.5, 0.6];
         p.profile_curve = 0.9;
         p.tone_mapper = crate::core::tonemap::ToneMapper::Gt;
@@ -871,6 +926,7 @@ mod tests {
         let b = p.before_reference();
         assert_eq!(b.crop, p.crop);
         assert_eq!(b.rotation, p.rotation);
+        assert_eq!(b.quarter_turns, p.quarter_turns, "a turned frame stays turned");
         assert_eq!(b.lens, p.lens, "lens corrections reframe the image");
         assert_eq!(b.is_cropping, p.is_cropping);
         assert_eq!(b.black_offsets, p.black_offsets);
@@ -916,6 +972,81 @@ mod tests {
         assert_eq!(b.mask_count, 0, "masks must not apply to the before view");
         assert_eq!(b.curves, d.curves);
         assert_eq!(b.defringe, d.defringe);
+    }
+
+    // ── quarter turns ────────────────────────────────────────────────────────
+
+    fn close(a: &EditParams, b: &EditParams) -> bool {
+        let near = |x: f32, y: f32| (x - y).abs() < 1e-5;
+        let crop = a.crop.iter().zip(&b.crop).all(|(x, y)| near(*x, *y));
+        let masks = a.masks.iter().zip(&b.masks).all(|(m, n)| {
+            near(m.ax, n.ax) && near(m.ay, n.ay) && near(m.bx, n.bx) && near(m.by, n.by) && near(m.rotation, n.rotation)
+        });
+        let points = a.brush.points.iter().zip(&b.brush.points).all(|(p, q)| near(p[0], q[0]) && near(p[1], q[1]));
+        let radii = a.brush.strokes.iter().zip(&b.brush.strokes).all(|(s, t)| near(s.radius, t.radius));
+        a.quarter_turns == b.quarter_turns && crop && masks && points && radii
+    }
+
+    /// Turning back, or all the way round, must give back exactly the frame
+    /// the user had — crop, masks and strokes included.
+    #[test]
+    fn quarter_turns_round_trip() {
+        let mut p = fully_edited();
+        p.quarter_turns = 0;
+        p.masks[1] = MaskParams::new_linear(0.1, 0.2, 0.7, 0.9);
+        p.mask_count = 2;
+        let aspect = 1.5;
+
+        let mut back = p;
+        back.turn_quarter(true, aspect);
+        back.turn_quarter(false, 1.0 / aspect);
+        assert!(close(&back, &p), "cw then ccw");
+
+        let mut round = p;
+        for i in 0..4 {
+            let a = if i % 2 == 0 { aspect } else { 1.0 / aspect };
+            round.turn_quarter(true, a);
+        }
+        assert!(close(&round, &p), "four turns");
+    }
+
+    /// The geometry lands on the same content: the left half of the frame,
+    /// turned clockwise, is the top half; a point near the top-left goes
+    /// near the top-right; radial radii trade axes.
+    #[test]
+    fn a_clockwise_turn_carries_the_geometry_with_the_content() {
+        let mut p = EditParams { crop: [0.0, 0.0, 0.5, 1.0], ..Default::default() };
+        p.masks[0] = MaskParams::new_radial(0.1, 0.2, 0.3, 0.05);
+        p.mask_count = 1;
+        p.turn_quarter(true, 1.5);
+        assert_eq!(p.quarter_turns, 1);
+        assert_eq!(p.crop, [0.0, 0.0, 1.0, 0.5]);
+        let m = p.masks[0];
+        assert!((m.ax - 0.8).abs() < 1e-6 && (m.ay - 0.1).abs() < 1e-6, "centre {:?}", (m.ax, m.ay));
+        assert_eq!((m.bx, m.by), (0.05, 0.3));
+    }
+
+    /// A brush radius is a fraction of the image height, and the turn makes
+    /// the old width the new height: the dab must keep its size in pixels.
+    #[test]
+    fn a_turn_keeps_brush_dabs_the_same_size_on_screen() {
+        let mut p = EditParams::default();
+        p.brush.begin(0, false, 0.06, 0.5, 1.0);
+        p.brush.extend([0.25, 0.5], 1.5);
+        let (w, h) = (3000.0f32, 2000.0f32);
+        let before_px = p.brush.strokes[0].radius * h;
+        p.turn_quarter(true, w / h);
+        // Now 2000 wide and 3000 tall.
+        let after_px = p.brush.strokes[0].radius * w;
+        assert!((before_px - after_px).abs() < 1e-3, "{before_px} px became {after_px} px");
+        assert_eq!(p.brush.points[0], [0.5, 0.25]);
+    }
+
+    #[test]
+    fn edits_saved_before_quarter_turns_load_upright() {
+        let json = EditParams::default().to_json().unwrap().replace(",\"quarter_turns\":0", "");
+        assert!(!json.contains("quarter_turns"));
+        assert_eq!(EditParams::from_json(&json).unwrap().quarter_turns, 0);
     }
 
     // ── copy categories ──────────────────────────────────────────────────────
@@ -978,6 +1109,7 @@ mod tests {
         let geo = only(|c| c.geometry = true);
         assert_eq!(geo.crop, src.crop);
         assert_eq!(geo.rotation, src.rotation);
+        assert_eq!(geo.quarter_turns, src.quarter_turns);
         assert_eq!(geo.exposure, base.exposure);
 
         let profile = only(|c| c.profile = true);

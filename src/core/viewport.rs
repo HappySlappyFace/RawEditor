@@ -188,6 +188,28 @@ pub fn mask_uv_aspect(display_w: u32, display_h: u32, crop: [f32; 4]) -> f32 {
     on_screen_aspect * (crop[3].max(1e-6) / crop[2].max(1e-6))
 }
 
+/// Shortest level line, in screen pixels, worth aiming with; anything less is
+/// a click, not a line.
+pub const LEVEL_MIN_LENGTH: f32 = 12.0;
+
+/// The Straighten angle that makes a line drawn on the displayed image level
+/// — or upright, whichever it is closer to.
+///
+/// `(dx, dy)` is the line's direction in screen pixels (y down). The view is
+/// scaled uniformly (crop and fit alike), so screen angles are image angles.
+/// `current` is the straighten already on screen: the colour pass samples at
+/// `R(θ)·out`, so content shows turned by −θ and the line's own angle is its
+/// screen angle + `current`. `None` for a line too short to aim with; the
+/// result is clamped to the slider's ±45°.
+pub fn straighten_from_line(current: f32, dx: f32, dy: f32) -> Option<f32> {
+    if dx.hypot(dy) < LEVEL_MIN_LENGTH {
+        return None;
+    }
+    let shown = dy.atan2(dx).to_degrees();
+    let off_level = shown - (shown / 90.0).round() * 90.0;
+    Some((current + off_level).clamp(-45.0, 45.0))
+}
+
 /// Normalize an angle in degrees into [-180, 180).
 ///
 /// Rotation is cyclic: `atan2` deltas jump by ~360° across the ±180° branch
@@ -409,6 +431,48 @@ mod tests {
         assert!((with_cropped - 1.5).abs() < 1e-4);
         assert!((with_full - 3.0).abs() < 1e-4);
         assert!((with_full - with_cropped).abs() > 1.0);
+    }
+
+    /// Where a source line shows on screen under straighten `theta`, as the
+    /// colour pass maps it (`sample = R(θ)·out` about the centre, isotropic
+    /// space): the screen points that sample `a` and `b`.
+    fn shown(theta: f32, a: (f32, f32), b: (f32, f32)) -> (f32, f32) {
+        let r = -theta.to_radians();
+        let inv = |(x, y): (f32, f32)| (x * r.cos() - y * r.sin(), x * r.sin() + y * r.cos());
+        let (pa, pb) = (inv(a), inv(b));
+        (pb.0 - pa.0, pb.1 - pa.1)
+    }
+
+    /// Drawing along a tilted horizon (or a leaning wall) — on a frame that is
+    /// already straightened by some amount — must give the angle under which
+    /// the shader shows that line exactly level (or upright).
+    #[test]
+    fn a_level_line_lands_level_through_the_shader_mapping() {
+        for current in [0.0f32, 3.0, -7.5] {
+            for tilt in [-20.0f32, -4.0, 2.5, 30.0] {
+                for upright in [false, true] {
+                    let base = if upright { 90.0 } else { 0.0 };
+                    let t = (base + tilt).to_radians();
+                    let (a, b) = ((-0.3 * t.cos(), -0.3 * t.sin()), (0.3 * t.cos(), 0.3 * t.sin()));
+                    let (dx, dy) = shown(current, a, b);
+                    let theta = straighten_from_line(current, dx * 1000.0, dy * 1000.0).unwrap();
+                    let (ex, ey) = shown(theta, a, b);
+                    let residual = if upright { ex / ey } else { ey / ex };
+                    assert!(residual.abs() < 1e-4, "tilt {tilt} from {current}: residual {residual}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_click_is_not_a_level_line() {
+        assert_eq!(straighten_from_line(2.0, 3.0, 4.0), None);
+        assert_eq!(straighten_from_line(0.0, 100.0, 0.0), Some(0.0));
+        // Drawn either way along the same line, the answer is the same.
+        let a = straighten_from_line(0.0, 100.0, 10.0).unwrap();
+        let b = straighten_from_line(0.0, -100.0, -10.0).unwrap();
+        assert!((a - b).abs() < 1e-4);
+        assert_eq!(straighten_from_line(40.0, 100.0, 20.0), Some(45.0), "clamped to the slider");
     }
 
     #[test]

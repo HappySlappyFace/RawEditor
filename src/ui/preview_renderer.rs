@@ -491,6 +491,9 @@ pub struct CropOverlay {
     pub is_color_picking: bool,
     /// Placing the detail loupe: a click emits `LoupeTargetPicked`.
     pub is_loupe_targeting: bool,
+    /// Level tool armed: a drag draws a line, and its release emits
+    /// `LevelLineDrawn` with the line's screen direction.
+    pub is_leveling: bool,
 }
 
 /// Canvas state: last seen size (for resize sensing) and an in-progress
@@ -499,6 +502,8 @@ pub struct CropOverlay {
 pub struct OverlayState {
     size: (f32, f32),
     painting: bool,
+    /// A level line being drawn: start and current end, canvas-local.
+    level: Option<(iced::Point, iced::Point)>,
 }
 
 impl CropOverlay {
@@ -711,6 +716,16 @@ impl CropOverlay {
 }
 
 impl CropOverlay {
+    /// The level line under the pointer, haloed so it reads on any photo.
+    fn draw_level_line(&self, frame: &mut canvas::Frame, from: iced::Point, to: iced::Point) {
+        let line = canvas::Path::line(from, to);
+        frame.stroke(&line, canvas::Stroke::default().with_color(Color::from_rgba(0.0, 0.0, 0.0, 0.6)).with_width(4.0));
+        frame.stroke(&line, canvas::Stroke::default().with_color(Color::WHITE).with_width(1.5));
+        for p in [from, to] {
+            frame.fill(&canvas::Path::circle(p, 3.5), Color::WHITE);
+        }
+    }
+
     /// Brush cursor: outer radius and feather start, around the pointer.
     fn draw_brush_cursor(&self, frame: &mut canvas::Frame, bounds: Rectangle, cursor: Cursor) {
         let (Some((radius, feather)), Some(p)) = (self.brush, cursor.position_in(bounds)) else {
@@ -736,7 +751,7 @@ impl canvas::Program<Message> for CropOverlay {
 
     fn draw(
         &self,
-        _state: &Self::State,
+        state: &Self::State,
         renderer: &iced::Renderer,
         _theme: &iced::Theme,
         bounds: Rectangle,
@@ -747,6 +762,11 @@ impl canvas::Program<Message> for CropOverlay {
             if self.brush.is_some() {
                 let mut frame = canvas::Frame::new(renderer, bounds.size());
                 self.draw_brush_cursor(&mut frame, bounds, cursor);
+                layers.push(frame.into_geometry());
+            }
+            if let (true, Some((from, to))) = (self.is_leveling, state.level) {
+                let mut frame = canvas::Frame::new(renderer, bounds.size());
+                self.draw_level_line(&mut frame, from, to);
                 layers.push(frame.into_geometry());
             }
             return layers;
@@ -841,8 +861,30 @@ impl canvas::Program<Message> for CropOverlay {
             return (canvas::event::Status::Captured, None);
         }
 
+        // A level line likewise owns the mouse until release. Released off
+        // the canvas, it ends where the pointer last was on it.
+        if let Some((from, last)) = state.level {
+            let local = cursor.position().map(|p| iced::Point::new(p.x - bounds.x, p.y - bounds.y));
+            match event {
+                canvas::Event::Mouse(iced::mouse::Event::CursorMoved { .. }) => {
+                    state.level = Some((from, local.unwrap_or(last)));
+                }
+                canvas::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {
+                    state.level = None;
+                    let to = local.unwrap_or(last);
+                    return (
+                        canvas::event::Status::Captured,
+                        Some(Message::LevelLineDrawn(to.x - from.x, to.y - from.y)),
+                    );
+                }
+                _ => {}
+            }
+            return (canvas::event::Status::Captured, None);
+        }
+
         if !self.is_cropping
             && !self.is_wb_picking
+            && !self.is_leveling
             && !self.is_mask_placing
             && !self.is_color_picking
             && !self.is_loupe_targeting
@@ -855,6 +897,18 @@ impl canvas::Program<Message> for CropOverlay {
             Some(p) => p,
             None => return (canvas::event::Status::Ignored, None),
         };
+
+        // Level tool: a press on the image starts the line.
+        if self.is_leveling {
+            if let canvas::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left)) = event {
+                let image_bounds = self.image_bounds(bounds.width, bounds.height);
+                if image_bounds.contains(cursor_position) {
+                    state.level = Some((cursor_position, cursor_position));
+                    return (canvas::event::Status::Captured, None);
+                }
+            }
+            return (canvas::event::Status::Ignored, None);
+        }
 
         // WB eyedropper: emit the display-space UV of a left click.
         if self.is_wb_picking {
@@ -985,7 +1039,12 @@ impl canvas::Program<Message> for CropOverlay {
         bounds: Rectangle,
         cursor: Cursor,
     ) -> iced::mouse::Interaction {
-        if self.is_wb_picking || self.is_mask_placing || self.is_color_picking || self.is_loupe_targeting {
+        if self.is_wb_picking
+            || self.is_mask_placing
+            || self.is_color_picking
+            || self.is_loupe_targeting
+            || self.is_leveling
+        {
             return iced::mouse::Interaction::Crosshair;
         }
         if self.brush.is_some() && cursor.position_in(bounds).is_some() {

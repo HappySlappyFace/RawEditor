@@ -50,3 +50,10 @@ pub const TIMES: &str = "\u{f00d}";
 
 /// Crop icon
 pub const CROP: &str = "\u{f125}";
+
+/// Quarter turns (Develop › Geometry)
+pub const ROTATE_LEFT: &str = "\u{f2ea}";
+pub const ROTATE_RIGHT: &str = "\u{f2f9}";
+
+/// Level tool: draw along a horizon to straighten
+pub const LEVEL: &str = "\u{f07e}";

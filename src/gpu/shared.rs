@@ -460,7 +460,9 @@ pub struct ImageResources {
     pub profile_use: Option<crate::core::camera_profiles::ProfileUse>,
     /// Normalised EXIF orientation (1/3/6/8). Sensor textures stay landscape;
     /// the color pass maps display UVs to sensor space, and render targets are
-    /// sized to `oriented_*` dims.
+    /// sized to `oriented_*` dims. The edit's quarter turns compose on top
+    /// (`display_orientation`) — what the shader receives is never this
+    /// field alone.
     pub orientation: u32,
     /// Temperature slider value at the last HueSatMap 3D LUT upload.
     ///
@@ -903,7 +905,7 @@ impl ImageResources {
         gpu_params.white_level = white_level;
         gpu_params.has_dcp = if dcp_profile.is_some() { 1 } else { 0 };
         gpu_params.dcp_has_curve = if dcp_profile.is_some_and(|p| p.has_tone_curve) { 1 } else { 0 };
-        gpu_params.orientation = orientation;
+        gpu_params.orientation = crate::color::compose_orientation(orientation, params.quarter_turns);
         gpu_params.set_lens(&crate::core::lens::gpu_params(
             &lens,
             &params.lens,
@@ -1192,9 +1194,13 @@ impl ImageResources {
         // the layers keep what `brush_key` describes: the before/after peek
         // has no strokes, and releasing it must not re-rasterise them.
         if !params.brush.is_empty() && st.brush_key != Some(params.brush) {
-            if st.brush.is_none() {
-                let (dw, dh) = self.oriented_dims();
-                let (lw, lh) = super::brush::layer_size(dw, dh);
+            // Layers are display-space and the rasteriser takes its aspect
+            // from their size, so a quarter turn (which re-keys the strokes)
+            // needs layers of the turned shape, or every dab draws as an
+            // ellipse.
+            let (dw, dh) = self.oriented_dims(params.quarter_turns);
+            let (lw, lh) = super::brush::layer_size(dw, dh);
+            if st.brush.as_ref().is_none_or(|l| (l.width, l.height) != (lw, lh)) {
                 let layers = context.brush.layers(&context.device, lw, lh);
                 st.masks = Arc::new(make_mask_bind_group(context, &layers.array_view, &self.mask_buffer));
                 st.brush = Some(layers);
@@ -1334,18 +1340,26 @@ impl ImageResources {
         *self.stage_params.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// The orientation the colour pass renders: the EXIF one these resources
+    /// were built with, turned by the edit's `quarter_turns`. Taken from the
+    /// params rather than stored, so a turn costs a uniform upload — never a
+    /// rebuild.
+    pub fn display_orientation(&self, quarter_turns: u32) -> u32 {
+        crate::color::compose_orientation(self.orientation, quarter_turns)
+    }
+
     /// Display-space dimensions of the working (possibly subsampled) texture:
-    /// swapped for 90°/270° EXIF orientations.
-    pub fn oriented_dims(&self) -> (u32, u32) {
-        match self.orientation {
+    /// swapped for 90°/270° orientations (EXIF and the user's turns together).
+    pub fn oriented_dims(&self, quarter_turns: u32) -> (u32, u32) {
+        match self.display_orientation(quarter_turns) {
             6 | 8 => (self.height, self.width),
             _ => (self.width, self.height),
         }
     }
 
     /// Display-space dimensions of the full-resolution sensor area.
-    pub fn oriented_original_dims(&self) -> (u32, u32) {
-        match self.orientation {
+    pub fn oriented_original_dims(&self, quarter_turns: u32) -> (u32, u32) {
+        match self.display_orientation(quarter_turns) {
             6 | 8 => (self.original_height, self.original_width),
             _ => (self.original_width, self.original_height),
         }
@@ -1443,7 +1457,7 @@ impl ImageResources {
         gpu_params.white_level = self.white_level;
         gpu_params.has_dcp = if self.has_dcp { 1 } else { 0 };
         gpu_params.dcp_has_curve = if self.dcp_has_curve { 1 } else { 0 };
-        gpu_params.orientation = self.orientation;
+        gpu_params.orientation = self.display_orientation(params.quarter_turns);
         gpu_params.set_lens(&crate::core::lens::gpu_params(
             &self.lens,
             &params.lens,

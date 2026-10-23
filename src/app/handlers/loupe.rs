@@ -195,6 +195,7 @@ pub fn handle_toggle_target(editor: &mut RawEditor) -> Task<Message> {
     if editor.loupe.targeting {
         // Tools are mutually exclusive: a click can only mean one thing.
         editor.is_wb_picking = false;
+        editor.is_leveling = false;
         editor.mask_tool = crate::app::state::MaskTool::Inactive;
         editor.brush_armed = false;
         editor.color_picking_mask = None;

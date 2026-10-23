@@ -162,6 +162,8 @@ pub fn view_help_modal<'a>() -> Element<'a, Message> {
                     color: Some(Color::from_rgb(0.5, 0.5, 0.5))
                 }),
             shortcut("Double Click", "Reset zoom and pan"),
+            shortcut("Click slider value", "Type a number — Enter applies, Esc cancels"),
+            shortcut("Dbl click slider", "Reset it (or Ctrl + click)"),
             shortcut("Scroll", "Zoom in Develop, scroll elsewhere"),
         ]
         .spacing(6))

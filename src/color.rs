@@ -474,6 +474,16 @@ pub fn display_to_sensor_uv(u: f32, v: f32, orientation: u32) -> (f32, f32) {
     }
 }
 
+/// The orientation the colour pass renders: the normalised EXIF one (1/3/6/8)
+/// turned a further `quarter_turns` clockwise (`EditParams::quarter_turns`).
+/// One composed value, so the shader, the overlay and every UV mapping keep
+/// handling exactly the four orientations they always have.
+pub fn compose_orientation(exif: u32, quarter_turns: u32) -> u32 {
+    const BY_TURNS: [u32; 4] = [1, 6, 3, 8];
+    let exif_turns = BY_TURNS.iter().position(|&o| o == exif).unwrap_or(0) as u32;
+    BY_TURNS[((exif_turns + quarter_turns) % 4) as usize]
+}
+
 /// As-shot (Kelvin, tint) for a loaded raw: solve the camera's WB multipliers
 /// through the best available XYZ→camera matrix (DCP dual-illuminant when
 /// present, otherwise the raw file's single matrix).
@@ -544,6 +554,33 @@ mod tests {
         // Concrete corner: display top-left of a 90°-CW-rotated image is the
         // sensor's bottom-left (sensor u=0, v=1).
         assert_eq!(display_to_sensor_uv(0.0, 0.0, 6), (0.0, 1.0));
+    }
+
+    /// A user quarter turn must move content exactly where
+    /// `EditParams::turn_quarter` moves the geometry drawn over it: the sensor
+    /// point under display `d` before a clockwise turn is under `turn(d)`
+    /// after it — from every EXIF orientation. Otherwise a crop or mask
+    /// would land on different pixels after turning.
+    #[test]
+    fn quarter_turns_move_content_with_the_geometry() {
+        let probes = [(0.0f32, 0.0f32), (1.0, 0.0), (0.25, 0.75), (0.9, 0.3)];
+        for exif in [1u32, 3, 6, 8] {
+            for turns in 0..4u32 {
+                let before = compose_orientation(exif, turns);
+                let cw = compose_orientation(exif, turns + 1);
+                let ccw = compose_orientation(exif, turns + 3);
+                for &(u, v) in &probes {
+                    let s = display_to_sensor_uv(u, v, before);
+                    let a = display_to_sensor_uv(1.0 - v, u, cw);
+                    let b = display_to_sensor_uv(v, 1.0 - u, ccw);
+                    assert!((a.0 - s.0).abs() < 1e-6 && (a.1 - s.1).abs() < 1e-6, "cw from {exif}+{turns}");
+                    assert!((b.0 - s.0).abs() < 1e-6 && (b.1 - s.1).abs() < 1e-6, "ccw from {exif}+{turns}");
+                }
+            }
+        }
+        assert_eq!(compose_orientation(1, 0), 1);
+        assert_eq!(compose_orientation(6, 3), 1, "a turn back undoes the camera's");
+        assert_eq!(compose_orientation(8, 2), 6);
     }
 
     /// The eyedropper's slider-offset inversion must round-trip through
