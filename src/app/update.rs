@@ -336,10 +336,10 @@ fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::ExportConfirmed => handlers::export::handle_export_confirmed(editor),
         Message::ProcessNextExport => handlers::export::handle_process_next_export(editor),
         Message::ExportRawLoaded(id, params, res) => {
-            handlers::export::handle_export_raw_loaded(editor, id, params, res)
+            handlers::export::handle_export_raw_loaded(editor, id, *params, res)
         }
         Message::ExportPipelineReady(id, params, res) => {
-            handlers::export::handle_export_pipeline_ready(editor, id, params, res)
+            handlers::export::handle_export_pipeline_ready(editor, id, *params, res)
         }
         Message::ExportSaveComplete(id, res) => {
             handlers::export::handle_export_save_complete(editor, id, res)
@@ -495,6 +495,16 @@ mod tests {
 
     fn editor() -> RawEditor {
         RawEditor::new().0
+    }
+
+    /// Every message is as big as the largest variant, and debug builds give
+    /// each temporary its own stack slot: with an `EditParams` (~20 KB)
+    /// inline, the Develop view overflowed the 2 MB test-thread stack. Big
+    /// payloads go in a `Box`.
+    #[test]
+    fn message_stays_small() {
+        let size = std::mem::size_of::<Message>();
+        assert!(size <= 512, "Message is {size} bytes — box the large variant");
     }
 
     fn history_len(e: &mut RawEditor) -> usize {

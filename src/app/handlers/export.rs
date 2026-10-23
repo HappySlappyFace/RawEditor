@@ -280,10 +280,10 @@ pub fn handle_process_next_export(editor: &mut RawEditor) -> Task<Message> {
             // cache is already byte-budgeted and the entry is shared, not
             // copied.
             if let Some(cached) = editor.raw_cache.get(&image_id).cloned() {
-                return Task::done(Message::ExportRawLoaded(image_id, params, Ok(cached)));
+                return Task::done(Message::ExportRawLoaded(image_id, Box::new(params), Ok(cached)));
             }
             return Task::perform(raw::loader::load_raw_data(path), move |res| {
-                Message::ExportRawLoaded(image_id, params, res.map(std::sync::Arc::new))
+                Message::ExportRawLoaded(image_id, Box::new(params), res.map(std::sync::Arc::new))
             });
         }
         // Image id not found in the catalogue (removed mid-batch).
@@ -398,7 +398,7 @@ pub fn handle_export_raw_loaded(
                     )
                     .map(|res| (context, Arc::new(res)))
                 },
-                move |res| Message::ExportPipelineReady(image_id, params, res),
+                move |res| Message::ExportPipelineReady(image_id, Box::new(params), res),
             )
         }
         Err(e) => {

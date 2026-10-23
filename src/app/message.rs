@@ -271,14 +271,20 @@ pub enum Message {
     /// `editor.current_edit_params`, which is whatever image happens to be open
     /// in Develop — a batch export previously applied that one image's edits to
     /// every image in the queue.
+    ///
+    /// Boxed, like every `EditParams` a message carries: it is ~20 KB (the
+    /// brush arrays), and an enum is as big as its largest variant — so an
+    /// inline one made EVERY message that size. Debug builds give each
+    /// temporary its own stack slot, and the Develop view's ~50 sliders
+    /// overflowed the stack (see `message_stays_small`).
     ExportRawLoaded(
         i64,
-        crate::core::types::EditParams,
+        Box<crate::core::types::EditParams>,
         Result<std::sync::Arc<raw::loader::RawDataResult>, String>,
     ),
     ExportPipelineReady(
         i64,
-        crate::core::types::EditParams,
+        Box<crate::core::types::EditParams>,
         Result<
             (
                 std::sync::Arc<crate::gpu::shared::SharedContext>,
