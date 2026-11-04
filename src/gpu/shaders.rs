@@ -440,12 +440,214 @@ fn mask_weight(m: Mask, idx: u32, p: vec2<f32>, aspect: f32, color0: vec3<f32>, 
     return w;
 }
 
-// Rotate a colour about the grey axis (Rodrigues): changes hue, keeps the
-// channel mean.
-fn hue_rotate(c: vec3<f32>, a: f32) -> vec3<f32> {
-    let k = vec3<f32>(0.57735027);
-    let ca = cos(a);
-    return c * ca + cross(k, c) * sin(a) + k * dot(k, c) * (1.0 - ca);
+// ── Perceptual colour controls (Oklab) ───────────────────────────────────────
+// MIRRORED from core::perceptual — that module explains the choices and its
+// unit tests check them; `shader_perceptual_constants_match_rust` asserts
+// the constants agree. Contrast, Whites/Blacks, Saturation, Vibrance and the
+// mask Hue run here; everything that models light stays linear RGB.
+const CONTRAST_PIVOT_L: f32 = 0.5646216;
+const SAT_KNEE: f32 = 0.8;
+const HK_STRENGTH: f32 = 3.0;
+const SKIN_DIR: vec2<f32> = vec2<f32>(0.5, 0.8660254);
+const SKIN_COS_LO: f32 = 0.7660444;
+const SKIN_COS_HI: f32 = 0.9659258;
+const SKIN_PROTECT: f32 = 0.6;
+
+// Linear sRGB → cube-rooted LMS (Ottosson's M1, then a signed cube root).
+fn ok_lms_(c: vec3<f32>) -> vec3<f32> {
+    let lms = vec3<f32>(
+        dot(c, vec3<f32>(0.41222146, 0.53633255, 0.051445995)),
+        dot(c, vec3<f32>(0.2119035, 0.6806995, 0.10739696)),
+        dot(c, vec3<f32>(0.08830246, 0.28171885, 0.6299787)),
+    );
+    return sign(lms) * pow(max(abs(lms), vec3<f32>(1e-20)), vec3<f32>(1.0 / 3.0));
+}
+
+fn ok_from_rgb(c: vec3<f32>) -> vec3<f32> {
+    let q = ok_lms_(c);
+    return vec3<f32>(
+        dot(q, vec3<f32>(0.21045426, 0.7936178, -0.004072047)),
+        dot(q, vec3<f32>(1.9779985, -2.4285922, 0.4505937)),
+        dot(q, vec3<f32>(0.025904037, 0.78277177, -0.80867577)),
+    );
+}
+
+fn ok_to_rgb(lab: vec3<f32>) -> vec3<f32> {
+    let q = vec3<f32>(
+        dot(lab, vec3<f32>(1.0, 0.39633778, 0.21580376)),
+        dot(lab, vec3<f32>(1.0, -0.105561346, -0.06385417)),
+        dot(lab, vec3<f32>(1.0, -0.08948418, -1.2914855)),
+    );
+    let lms = q * q * q;
+    return vec3<f32>(
+        dot(lms, vec3<f32>(4.0767417, -3.3077116, 0.23096994)),
+        dot(lms, vec3<f32>(-1.268438, 2.6097574, -0.34131938)),
+        dot(lms, vec3<f32>(-0.0041960863, -0.7034186, 1.7076147)),
+    );
+}
+
+fn ok_l(c: vec3<f32>) -> f32 {
+    return dot(ok_lms_(c), vec3<f32>(0.21045426, 0.7936178, -0.004072047));
+}
+
+// Largest Oklab saturation C/L that linear sRGB holds along the unit hue
+// direction (a, b) — Ottosson's compute_max_saturation (polynomial per
+// limiting channel + one Halley step). `rgb >= 0` is a cone through black,
+// so this holds at every L.
+fn ok_max_saturation(a: f32, b: f32) -> f32 {
+    var k0: f32; var k1: f32; var k2: f32; var k3: f32; var k4: f32;
+    var wl: f32; var wm: f32; var ws: f32;
+    if (-1.8817033 * a - 0.8093649 * b > 1.0) {
+        k0 = 1.1908628; k1 = 1.7657673; k2 = 0.5966264; k3 = 0.755152; k4 = 0.5677124;
+        wl = 4.0767417; wm = -3.3077116; ws = 0.23096994;
+    } else if (1.8144411 * a - 1.1944528 * b > 1.0) {
+        k0 = 0.73956515; k1 = -0.45954404; k2 = 0.08285427; k3 = 0.1254107; k4 = 0.14503204;
+        wl = -1.268438; wm = 2.6097574; ws = -0.34131938;
+    } else {
+        k0 = 1.3573365; k1 = -0.00915799; k2 = -1.1513021; k3 = -0.50559606; k4 = 0.00692167;
+        wl = -0.0041960863; wm = -0.7034186; ws = 1.7076147;
+    }
+    var s = k0 + k1 * a + k2 * b + k3 * a * a + k4 * a * b;
+    let k_l = 0.39633778 * a + 0.21580376 * b;
+    let k_m = -0.105561346 * a - 0.06385417 * b;
+    let k_s = -0.08948418 * a - 1.2914855 * b;
+    let l_ = 1.0 + s * k_l;
+    let m_ = 1.0 + s * k_m;
+    let s_ = 1.0 + s * k_s;
+    let f = wl * l_ * l_ * l_ + wm * m_ * m_ * m_ + ws * s_ * s_ * s_;
+    let f1 = 3.0 * (wl * k_l * l_ * l_ + wm * k_m * m_ * m_ + ws * k_s * s_ * s_);
+    let f2 = 6.0 * (wl * k_l * k_l * l_ + wm * k_m * k_m * m_ + ws * k_s * k_s * s_);
+    s = s - f * f1 / (f1 * f1 - 0.5 * f * f2);
+    return s;
+}
+
+// A boosted saturation rolled off into the gamut limit instead of across
+// it; never below `s`, the saturation before the boost.
+fn ok_soft_limit(boosted: f32, s: f32, s_max: f32) -> f32 {
+    let knee = SAT_KNEE * s_max;
+    if (boosted <= knee) {
+        return boosted;
+    }
+    let room = s_max - knee;
+    return max(knee + room * (1.0 - exp(-(boosted - knee) / room)), s);
+}
+
+// Saturation (chroma factor `sat`, 1 = unchanged) and Vibrance (`vib`, 0 =
+// unchanged): hue held exactly, boosts kept inside the gamut cone, lightness
+// compensated for the Helmholtz–Kohlrausch effect, skin spared some of a
+// vibrance boost.
+fn perceptual_saturation(c: vec3<f32>, sat: f32, vib: f32) -> vec3<f32> {
+    if (sat == 1.0 && vib == 0.0) {
+        return c;
+    }
+    let lab = ok_from_rgb(c);
+    let l = lab.x;
+    let ch = length(lab.yz);
+    if (l <= 1e-6 || ch <= 1e-7) {
+        return c;
+    }
+    let d = lab.yz / ch;
+    let s = ch / l;
+    let s_max = max(ok_max_saturation(d.x, d.y), 1e-4);
+    var s1 = s * sat;
+    if (sat > 1.0) {
+        s1 = ok_soft_limit(s1, s, s_max);
+    }
+    var s2 = s1;
+    if (vib != 0.0) {
+        var w = 1.0 - clamp(s1 / s_max, 0.0, 1.0);
+        if (vib > 0.0) {
+            w = w * (1.0 - SKIN_PROTECT * smoothstep(SKIN_COS_LO, SKIN_COS_HI, dot(d, SKIN_DIR)));
+        }
+        let f = 1.0 + vib * w;
+        s2 = s1 * f;
+        if (f > 1.0) {
+            s2 = ok_soft_limit(s2, s1, s_max);
+        }
+    }
+    let c2 = s2 * l;
+    let hk = HK_STRENGTH * (0.116 * sqrt(max((1.0 - d.y) * 0.5, 0.0)) + 0.085) * clamp(1.0 - l, 0.0, 1.0);
+    // Scaling all of (L, a, b) keeps saturation and hue: still in the cone.
+    let r = clamp((l - hk * (c2 - ch)) / l, 0.5, 1.5);
+    return ok_to_rgb(vec3<f32>(l, d * c2) * r);
+}
+
+// Rotate the Oklab hue at constant L and chroma; a colour the new hue
+// cannot hold comes in to its gamut limit along that hue.
+fn perceptual_hue_shift(c: vec3<f32>, angle: f32) -> vec3<f32> {
+    if (angle == 0.0) {
+        return c;
+    }
+    let lab = ok_from_rgb(c);
+    let ch = length(lab.yz);
+    if (lab.x <= 1e-6 || ch <= 1e-7) {
+        return c;
+    }
+    let ca = cos(angle);
+    let sa = sin(angle);
+    let d = vec2<f32>(lab.y * ca - lab.z * sa, lab.y * sa + lab.z * ca) / ch;
+    let c2 = min(ch, ok_max_saturation(d.x, d.y) * lab.x);
+    return ok_to_rgb(vec3<f32>(lab.x, d * c2));
+}
+
+// S-curve on Oklab L with slope k at the pivot; black and white held,
+// overbrights (profile-less path, still scene-linear) carried through.
+fn contrast_curve(l: f32, k: f32) -> f32 {
+    let p = CONTRAST_PIVOT_L;
+    if (l <= p) {
+        return p * pow(max(l, 0.0) / p, k);
+    } else if (l < 1.0) {
+        return 1.0 - (1.0 - p) * pow((1.0 - l) / (1.0 - p), k);
+    }
+    return l;
+}
+
+// Contrast on L, carried to the colour as a scale by (L'/L)³ — Oklab is
+// homogeneous, so hue and saturation are untouched.
+fn perceptual_contrast(c: vec3<f32>, k: f32) -> vec3<f32> {
+    if (k == 1.0) {
+        return c;
+    }
+    let l = ok_l(c);
+    if (l <= 1e-6) {
+        return c;
+    }
+    let r = contrast_curve(l, max(k, 0.05)) / l;
+    return c * (r * r * r);
+}
+
+// Whites/Blacks: linear levels on Y = L³ (exactly the value of a grey, so
+// neutrals map as they always did), carried to colours by scaling.
+fn perceptual_levels(c: vec3<f32>, blacks: f32, whites: f32) -> vec3<f32> {
+    if (blacks == 0.0 && whites == 1.0) {
+        return c;
+    }
+    let l = ok_l(c);
+    let y = l * l * l;
+    if (y <= 1e-9) {
+        return vec3<f32>(0.0);
+    }
+    return c * (max((y - blacks) / (whites - blacks + 0.0001), 0.0) / y);
+}
+
+// Interleaved gradient noise (Jimenez 2014): ALU-only, high-frequency.
+fn ign(p: vec2<f32>) -> f32 {
+    return fract(52.9829189 * fract(dot(p, vec2<f32>(0.06711056, 0.00583715))));
+}
+
+// TPDF dither before 8-bit quantisation. Smooth gradients (skies) otherwise
+// band: 256 levels in display encoding is fewer than the eye resolves over
+// a wide, slow ramp. Triangular noise of ±1 LSB decorrelates the rounding
+// error from the signal — its mean is zero, so brightness does not move,
+// and its power does not depend on the value, so it adds no visible
+// modulation. Uniform → triangular by Gjøl's remap. It fades out within
+// one LSB of either end, so pure black and white (clipping, letterboxing)
+// stay pure. One noise for all channels: luminance grain, not colour speckle.
+fn dither_8bit(c: vec3<f32>, p: vec2<f32>) -> vec3<f32> {
+    let u = ign(p) * 2.0 - 1.0;
+    let t = sign(u) * (1.0 - sqrt(1.0 - abs(u)));
+    let room = clamp(min(c, vec3<f32>(1.0) - c) * 255.0, vec3<f32>(0.0), vec3<f32>(1.0));
+    return c + t * room / 255.0;
 }
 
 // Top of the scene-linear domain the tone LUT covers.
@@ -582,8 +784,21 @@ fn linear_to_srgb(x: f32) -> f32 {
     return 1.055 * pow(x, 1.0 / 2.4) - 0.055;
 }
 
+// The two colour-pass entry points: one per output format (a wgpu pipeline
+// bakes its target format in, see SharedContext). Only the 8-bit one
+// dithers — the 16-bit export has precision to spare.
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    let c = color_pass(input);
+    return vec4<f32>(dither_8bit(c.rgb, input.clip_position.xy), c.a);
+}
+
+@fragment
+fn fs_main_16(input: VertexOutput) -> @location(0) vec4<f32> {
+    return color_pass(input);
+}
+
+fn color_pass(input: VertexOutput) -> vec4<f32> {
     // Discard fragments outside texture bounds (letterboxing when zoomed out)
     if input.tex_coords.x < 0.0 || input.tex_coords.x > 1.0 ||
        input.tex_coords.y < 0.0 || input.tex_coords.y > 1.0 {
@@ -1200,9 +1415,10 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             continue;
         }
 
-        // Hue: rotate about the grey axis (±30° at ±1).
+        // Hue: rotate the Oklab hue (±30° at ±1), scaled by coverage —
+        // turning by less, rather than mixing two hues, which desaturates.
         if (m.adj2.x != 0.0) {
-            color = mix(color, hue_rotate(color, m.adj2.x), w);
+            color = perceptual_hue_shift(color, m.adj2.x * w);
         }
 
         // Adjustment ranges: exposure ±4 EV; all others −1..1 (same units as
@@ -1246,33 +1462,28 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             color = color + vec3<f32>(sh_w * m_sh * 0.15);
         }
 
-        // Contrast: pivoted at middle grey, matching Step 11's form
-        color = (color - 0.18) * max(1.0 + m.adj0.y * w, 0.0) + 0.18;
-
-        // Saturation: luma-preserving mix, matching Step 13's form
-        let luma_msat = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
-        color = mix(vec3<f32>(luma_msat), color, 1.0 + m.adj0.z * w);
+        // Contrast and Saturation: the global controls' functions (Steps
+        // 11 and 13), so a mask behaves exactly like the slider it mirrors.
+        color = perceptual_contrast(color, max(1.0 + m.adj0.y * w, 0.0));
+        color = perceptual_saturation(color, max(1.0 + m.adj0.z * w, 0.0), 0.0);
 
         color = max(color, vec3<f32>(0.0));
     }
 
     // ── Step 11: Contrast ─────────────────────────────────────────────────────
-    let contrast_factor = 1.0 + (params.contrast / 100.0);
-    color = (color - 0.18) * contrast_factor + 0.18;
+    // An S-curve on Oklab L about middle grey, applied as a scale of the
+    // colour: hue and saturation stay put, black and white stay pinned. (A
+    // per-channel linear stretch here shifted saturation with contrast and
+    // cut everything below ~1.6% linear to black at +10.)
+    color = perceptual_contrast(color, 1.0 + (params.contrast / 100.0));
 
     // ── Step 12: Levels (Whites & Blacks) ────────────────────────────────────
-    color = (color - vec3<f32>(params.blacks)) / vec3<f32>(params.whites - params.blacks + 0.0001);
+    color = perceptual_levels(color, params.blacks, params.whites);
 
-    // ── Step 13: Saturation ───────────────────────────────────────────────────
-    var luma = dot(color.rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
-    let sat_factor = 1.0 + (params.saturation / 100.0);
-    color = mix(vec3<f32>(luma), color, sat_factor);
-
-    // ── Step 14: Vibrance ─────────────────────────────────────────────────────
-    let chroma = max(color.r, max(color.g, color.b)) - min(color.r, min(color.g, color.b));
-    let vibrance_amount = params.vibrance * (1.0 - chroma);
-    luma = dot(color.rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
-    color = mix(vec3<f32>(luma), color, 1.0 + vibrance_amount);
+    // ── Steps 13–14: Saturation & Vibrance (Oklab chroma) ────────────────────
+    // A Rec.709-luma mix in linear RGB drifted blues to purple and drove
+    // channels negative, which the clamp below turned into neon.
+    color = perceptual_saturation(color, 1.0 + (params.saturation / 100.0), params.vibrance);
 
     // ── Step 15: Filmic Tone Curve (S-curve with highlight protection) ──────────
     // Approximates the camera picture-style curve visible in the embedded JPEG:
@@ -1435,6 +1646,27 @@ mod tests {
             PASSTHROUGH_SHADER.contains(&expected),
             "shader is missing `{expected}` — CPU/GPU tone LUT domains disagree"
         );
+    }
+
+    /// `core::perceptual` is what the unit tests check; the shader is what
+    /// renders. They only agree while these do.
+    #[test]
+    fn shader_perceptual_constants_match_rust() {
+        use crate::core::perceptual::*;
+        for expected in [
+            format!("const CONTRAST_PIVOT_L: f32 = {CONTRAST_PIVOT_L:?};"),
+            format!("const SAT_KNEE: f32 = {SAT_KNEE:?};"),
+            format!("const HK_STRENGTH: f32 = {HK_STRENGTH:?};"),
+            format!(
+                "const SKIN_DIR: vec2<f32> = vec2<f32>({:?}, {:?});",
+                SKIN_DIR[0], SKIN_DIR[1]
+            ),
+            format!("const SKIN_COS_LO: f32 = {SKIN_COS_LO:?};"),
+            format!("const SKIN_COS_HI: f32 = {SKIN_COS_HI:?};"),
+            format!("const SKIN_PROTECT: f32 = {SKIN_PROTECT:?};"),
+        ] {
+            assert!(PASSTHROUGH_SHADER.contains(&expected), "missing `{expected}`");
+        }
     }
 
     /// Highlight analysis samples only what Step 3 trusts (below its clip

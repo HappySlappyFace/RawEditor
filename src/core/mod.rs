@@ -12,6 +12,9 @@ pub mod logging;
 pub mod memory;
 pub mod noise;
 pub mod paths;
+// CPU mirror of the colour pass's Oklab controls, for its unit tests only.
+#[cfg(test)]
+pub mod perceptual;
 pub mod profiler;
 pub mod settings;
 pub mod tonemap;

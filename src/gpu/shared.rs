@@ -282,7 +282,8 @@ impl SharedContext {
         });
 
         // Same pipeline as above, targeting Rgba16Float instead of
-        // Rgba8Unorm — used only for 16-bit TIFF export.
+        // Rgba8Unorm — used only for 16-bit TIFF export. Its own entry
+        // point, because the 8-bit one dithers.
         let pipeline_16 = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Color Render Pipeline 16-bit (Export)"),
             layout: Some(&pipeline_layout),
@@ -293,7 +294,7 @@ impl SharedContext {
             },
             fragment: Some(wgpu::FragmentState {
                 module: &color_shader,
-                entry_point: "fs_main",
+                entry_point: "fs_main_16",
                 targets: &[Some(wgpu::ColorTargetState {
                     format: wgpu::TextureFormat::Rgba16Float,
                     blend: Some(wgpu::BlendState::REPLACE),

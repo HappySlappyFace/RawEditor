@@ -42,7 +42,7 @@ There is no separate frontend build — this is a single native Rust binary (no 
   `eval_tests.rs` (ignored GPU quality tests against synthetic ground truth — see §G)
 - `src/raw/` — RAW decoding (`loader`), DCP profiles (`dcp`), embedded-JPEG extraction + cache tiers (`jpeg`, `processor`), EXIF carried into exports (`exif`). kamadak-exif only opens standard TIFF containers — RW2 (`IIU`) and ORF (`IIRO`) come back empty — so the loader fills every gap from rawler's own metadata parse (`ExifInfo::fill_from`), and thumbnail orientation falls back the same way; without it those files had no focal length (so no lens profile), no exposure info and no rotation. `RAW_EXTENSIONS` is the importable set — Bayer formats only, since the debayer pass assumes a 2×2 CFA (the loader rejects anything else with a reason)
 - `src/database/` — SQLite schema, queries, models (the image catalog)
-- `src/core/` — cross-cutting types, histogram computation, logging/tracing setup, profiler, user settings, `paths` (the data and cache folders — every on-disk path derives from it), `viewport.rs` (see §D), and the CPU halves of the editing features: `noise` (per-image noise model), `haze` (dehaze airlight + transmission map), `highlights` (clipped-highlight colour correction), `curves` (point curves → LUT), `lens` (lensfun DB, lens/defringe params → shader block), `lensfun` (downloading/updating that DB), `camera_profiles` (installed DCPs, the per-image choice, RawTherapee downloads — see §B), `brush` (mask strokes) — see §G — and, Linux only, `desktop` (the desktop entry that gives a Wayland window its taskbar icon: Wayland windows carry none, so the app keeps `~/.local/share/applications/raw-editor.desktop` pointing at the running binary; the window's app id must stay equal to its file name)
+- `src/core/` — cross-cutting types, histogram computation, logging/tracing setup, profiler, user settings, `paths` (the data and cache folders — every on-disk path derives from it), `viewport.rs` (see §D), and the CPU halves of the editing features: `noise` (per-image noise model), `haze` (dehaze airlight + transmission map), `highlights` (clipped-highlight colour correction), `curves` (point curves → LUT), `perceptual` (Oklab colour controls, §B3), `lens` (lensfun DB, lens/defringe params → shader block), `lensfun` (downloading/updating that DB), `camera_profiles` (installed DCPs, the per-image choice, RawTherapee downloads — see §B), `brush` (mask strokes) — see §G — and, Linux only, `desktop` (the desktop entry that gives a Wayland window its taskbar icon: Wayland windows carry none, so the app keeps `~/.local/share/applications/raw-editor.desktop` pointing at the running binary; the window's app id must stay equal to its file name)
 - `src/ui/` — reusable iced widgets (filmstrip, histogram view, icons, palette/styles, profiler graph), plus `preview_renderer.rs` + `viewport.wgsl` (the develop viewport shader widget and its crop/mask canvas overlay), and `motion.rs` + `widgets/` (animation — see §H)
 - `src/color.rs` — color space math (matrices, conversions) shared by CPU and GPU paths
 
@@ -103,6 +103,24 @@ an opinion about contrast). Only the second is swappable, and
   The GPU-side wiring is covered by the ignored
   `tone_mapper_selection_changes_the_render_without_breaking_it`, which exists
   because a missed LUT upload renders **black** with no panic and no log.
+
+### B3. Perceptual Colour Controls (`src/core/perceptual.rs`)
+Contrast, Whites/Blacks, Saturation, Vibrance and the mask Hue/Contrast/Saturation
+run in **Oklab** (Ottosson); `core::perceptual` is the unit-tested CPU mirror of the
+shader's `ok_*`/`perceptual_*` functions, constants guarded by
+`shader_perceptual_constants_match_rust`.
+- **Only judged-by-eye controls go here.** WB, highlight reconstruction, dehaze,
+  exposure, the DCP matrix and NR model light and stay linear RGB.
+- **Tone controls never leave RGB.** Oklab is homogeneous (`rgb·t³ ↔ Lab·t`), so a
+  lightness change that keeps hue and Oklab saturation is a multiply by `(L'/L)³`.
+  Levels act on `Y = L³`, which equals a grey's value, so neutrals map as before.
+- **Chroma respects the gamut cone.** `rgb ≥ 0` is a cone through black, so the most
+  saturated colour per hue is a fixed `C/L = s_max(h)` (`max_saturation`); boosts roll
+  off into it (`soft_limit`) instead of going negative and being clamped to neon.
+- Every control is gated to an exact identity at its default — keep it that way.
+- The 8-bit entry point `fs_main` TPDF-dithers (±1 LSB, interleaved gradient noise);
+  `fs_main_16` (16-bit TIFF) does not. Any new readback test comparing 8-bit renders
+  pixel-for-pixel must allow ±1 LSB, or render through `pipeline_16`.
 
 ### C. Multi-Tier Caching (`src/database/`, `src/raw/processor.rs`, `src/app/loader.rs`)
 RAW files are never decoded on the main thread. Three async-generated JPEG tiers plus an in-RAM LRU cache:
