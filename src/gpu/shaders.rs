@@ -630,6 +630,94 @@ fn perceptual_levels(c: vec3<f32>, blacks: f32, whites: f32) -> vec3<f32> {
     return c * (max((y - blacks) / (whites - blacks + 0.0001), 0.0) / y);
 }
 
+// ── Gamut mapping (Oklab, constant hue) ─────────────────────────────────────
+// MIRRORED from core::perceptual::gamut_map, which explains it.
+const GAMUT_THRESHOLD: f32 = 0.9;
+const GAMUT_LIMIT: f32 = 1.5;
+const GAMUT_POWER: f32 = 1.2;
+const GAMUT_L0_ALPHA: f32 = 0.05;
+// core::perceptual::gamut_compress_scale(), precomputed.
+const GAMUT_SCALE: f32 = 0.11087054;
+
+// The ACES RGC power curve: identity to the threshold, 1 at the limit.
+fn gamut_compress(d: f32) -> f32 {
+    if (d <= GAMUT_THRESHOLD) {
+        return d;
+    }
+    let x = (d - GAMUT_THRESHOLD) / GAMUT_SCALE;
+    return GAMUT_THRESHOLD + GAMUT_SCALE * x / pow(1.0 + pow(x, GAMUT_POWER), 1.0 / GAMUT_POWER);
+}
+
+// Lightness and chroma of the gamut's cusp at hue (a, b) — Ottosson's find_cusp.
+fn ok_find_cusp(a: f32, b: f32) -> vec2<f32> {
+    let s_cusp = ok_max_saturation(a, b);
+    let rgb = ok_to_rgb(vec3<f32>(1.0, s_cusp * a, s_cusp * b));
+    let l_cusp = pow(1.0 / max(rgb.r, max(rgb.g, rgb.b)), 1.0 / 3.0);
+    return vec2<f32>(l_cusp, l_cusp * s_cusp);
+}
+
+// Boundary crossing of the line (l0, 0) → (l1, c1) at hue (a, b), as the
+// line parameter t (< 1: the point is outside). Ottosson's
+// find_gamut_intersection: exact below the cusp, a triangle estimate plus
+// one Halley step above it.
+fn ok_gamut_intersection(a: f32, b: f32, l1: f32, c1: f32, l0: f32) -> f32 {
+    let cusp = ok_find_cusp(a, b);
+    if ((l1 - l0) * cusp.y - (cusp.x - l0) * c1 <= 0.0) {
+        return cusp.y * l0 / (c1 * cusp.x + cusp.y * (l0 - l1));
+    }
+    let t = cusp.y * (l0 - 1.0) / (c1 * (cusp.x - 1.0) + cusp.y * (l0 - l1));
+
+    let k = vec3<f32>(
+        0.39633778 * a + 0.21580376 * b,
+        -0.105561346 * a - 0.06385417 * b,
+        -0.08948418 * a - 1.2914855 * b,
+    );
+    let dt = vec3<f32>(l1 - l0) + c1 * k;
+    let q = vec3<f32>(l0 * (1.0 - t) + t * l1) + (t * c1) * k;
+    let lms = q * q * q;
+    let d1 = 3.0 * dt * q * q;
+    let d2 = 6.0 * dt * dt * q;
+    let wr = vec3<f32>(4.0767417, -3.3077116, 0.23096994);
+    let wg = vec3<f32>(-1.268438, 2.6097574, -0.34131938);
+    let wb = vec3<f32>(-0.0041960863, -0.7034186, 1.7076147);
+    let f = vec3<f32>(dot(wr, lms), dot(wg, lms), dot(wb, lms)) - vec3<f32>(1.0);
+    let f1 = vec3<f32>(dot(wr, d1), dot(wg, d1), dot(wb, d1));
+    let f2 = vec3<f32>(dot(wr, d2), dot(wg, d2), dot(wb, d2));
+    let u = f1 / (f1 * f1 - 0.5 * f * f2);
+    let steps = select(vec3<f32>(3.0e38), -f * u, u >= vec3<f32>(0.0));
+    let step = min(steps.x, min(steps.y, steps.z));
+    return select(t, t + step, step < 3.0e38);
+}
+
+// Fit extended-range linear sRGB into [0,1]³ at constant Oklab hue: the
+// pipeline's one gamut stage. Near-neutral colours pass untouched; the rest
+// are compressed towards Ottosson's adaptive L0 — the colour's own L for
+// near-greys, white for overbrights (the path to white).
+fn gamut_map(c: vec3<f32>) -> vec3<f32> {
+    let lab = ok_from_rgb(c);
+    let l = lab.x;
+    if (l <= 0.0) {
+        return vec3<f32>(0.0);
+    }
+    let ch = length(lab.yz);
+    if (ch <= 1e-6) {
+        return select(vec3<f32>(1.0), clamp(c, vec3<f32>(0.0), vec3<f32>(1.0)), l <= 1.0);
+    }
+    let dir = lab.yz / ch;
+    let ld = l - 0.5;
+    let e1 = 0.5 + abs(ld) + GAMUT_L0_ALPHA * ch;
+    let l0 = 0.5 * (1.0 + sign(ld) * (e1 - sqrt(max(e1 * e1 - 2.0 * abs(ld), 0.0))));
+    let t = ok_gamut_intersection(dir.x, dir.y, l, ch, l0);
+    let d = 1.0 / max(t, 1e-6);
+    if (d <= GAMUT_THRESHOLD) {
+        return c;
+    }
+    let f = min(gamut_compress(d), 1.0) / d;
+    let c2 = f * ch;
+    let mapped = ok_to_rgb(vec3<f32>(l0 + f * (l - l0), dir * c2));
+    return clamp(mapped, vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
 // Interleaved gradient noise (Jimenez 2014): ALU-only, high-frequency.
 fn ign(p: vec2<f32>) -> f32 {
     return fract(52.9829189 * fract(dot(p, vec2<f32>(0.06711056, 0.00583715))));
@@ -772,6 +860,21 @@ fn dcp_rgb_tone(c: vec3<f32>) -> vec3<f32> {
         }
     }
     return vec3<f32>(rr, gg, bb);
+}
+
+// RGBTone for extended-range input (the profile-less path, whose colours
+// outside sRGB carry a negative channel). The curve is only defined from
+// 0, so the non-negative part is toned and a negative channel follows the
+// brightest one's gain — continuous at 0, and the colour stays outside the
+// gamut for Step 15b to map instead of being clipped onto it here.
+fn rgb_tone_signed(c: vec3<f32>) -> vec3<f32> {
+    let toned = dcp_rgb_tone(max(c, vec3<f32>(0.0)));
+    let hi = max(c.r, max(c.g, c.b));
+    if (hi <= 0.0) {
+        return toned;
+    }
+    let gain = max(toned.r, max(toned.g, toned.b)) / hi;
+    return select(toned, c * gain, c < vec3<f32>(0.0));
 }
 
 // IEC 61966-2-1 sRGB transfer function.
@@ -943,7 +1046,7 @@ fn color_pass(input: VertexOutput) -> vec4<f32> {
     // (STAGE 1 clip detection removed — any per-Bayer-site approach creates a
     // 2-pixel-period checkerboard on bright fabric/sky because adjacent R/G/B Bayer
     // sites have structurally different raw values for any non-neutral scene.
-    // STAGE 2 gamut compression handles overbrights post-matrix without artifacts.)
+    // Step 15b's gamut map handles overbrights post-matrix without artifacts.)
 
     // ── Step 2: White Balance ─────────────────────────────────────────────────
     color = color * params.wb_multipliers.rgb;
@@ -1187,20 +1290,11 @@ fn color_pass(input: VertexOutput) -> vec4<f32> {
         color = matrix_from_params * color;
     }
 
-    // ── Step 6: Gamut-map negative channels (luma-preserving) ────────────────
-    // Colours outside sRGB (deep cyans, magentas) come out of the matrix with a
-    // negative channel.  Hard-clamping that channel to 0 shifts the colour to the
-    // gamut boundary at MAXIMUM saturation — the "neon cone" artifact.  Instead
-    // desaturate toward luma just enough to lift the most-negative channel to 0:
-    // hue and luminance survive, only excess chroma is given up.
-    let neg_luma = dot(max(color, vec3<f32>(0.0)), vec3<f32>(0.2126, 0.7152, 0.0722));
-    let neg_min = min(color.r, min(color.g, color.b));
-    if (neg_min < 0.0 && neg_luma > 0.0) {
-        let t_neg = neg_luma / (neg_luma - neg_min);
-        color = vec3<f32>(neg_luma) + (color - vec3<f32>(neg_luma)) * t_neg;
-    }
-    // Safety net for degenerate cases (all channels negative).
-    color = max(color, vec3<f32>(0.0));
+    // From here to Step 15b `color` is EXTENDED-RANGE linear sRGB: colours
+    // outside sRGB (deep cyans, magentas, flowers, LEDs) keep their negative
+    // channel, so every edit below sees the real colour and Saturation −50
+    // can bring one back into gamut instead of desaturating a clipped one.
+    // Nothing here may clamp to [0, 1]; Step 15b is the one gamut stage.
 
     // ── Step 6b: Defringe (axial CA) ─────────────────────────────────────────
     // Purple/green fringes sit beside high-contrast edges and are a property of
@@ -1348,22 +1442,9 @@ fn color_pass(input: VertexOutput) -> vec4<f32> {
         color = apply_highlights_shadows(color, params.highlights, params.shadows, luma_hl);
     }
 
-    // ── STAGE 2: Gamut Compression (True Path-to-White) ──────────────────────
-    // Mix toward the peak channel value (neutral at that brightness).  This fixes
-    // the magenta/colour cast that appears in partially-clipped sensor highlights:
-    // when the blue raw channel clips before red and green, the wrong channel ratios
-    // pass through the forward matrix and appear pink/magenta in sRGB.  Correcting
-    // here (post-matrix) means the blend operates on spatially-smooth sRGB values
-    // rather than per-Bayer-site camera values, so there is no checkerboard.
-    //
-    // Step 3 (camera space, pre-exposure) now handles sensor-clipping colour casts.
-    // STAGE 2 remains as a gentle safety net for any post-matrix overbrights that
-    // survive (e.g. extreme exposure boosts) — range (0, 2.0) is intentionally light
-    // so legitimate saturated colours that are slightly over 1.0 are not desaturated.
-    let max_c_gc = max(color.r, max(color.g, color.b));
-    let overbright = max(0.0, max_c_gc - 1.0);
-    let path_to_white = smoothstep(0.0, 2.0, overbright);
-    color = mix(color, vec3<f32>(max_c_gc), path_to_white);
+    // (STAGE 2, a mix towards the peak channel for overbrights, is gone: Step 3
+    // handles sensor-clipping casts, and Step 15b's gamut map is the path to
+    // white for display overbrights.)
 
     // (Step 9 removed — Temperature & Tint are now REAL white balance: the CPU
     // solves the slider Kelvin/tint to camera WB multipliers via the colour
@@ -1371,8 +1452,8 @@ fn color_pass(input: VertexOutput) -> vec4<f32> {
     // uniform. Post-matrix sRGB channel scaling twisted hues at extremes.)
 
     // ── Step 10.5: Local Adjustment Masks ────────────────────────────────────
-    // Applied in sRGB-linear space, after global highlights/shadows + gamut
-    // compression and before global contrast/saturation, so local adjustments
+    // Applied in (extended-range) sRGB-linear space, after global
+    // highlights/shadows and before global contrast/saturation, so local adjustments
     // compose consistently with their global counterparts. Mask geometry is
     // evaluated against input.tex_coords (full-image display UV, pre-rotation)
     // — the same convention as the crop rectangle.
@@ -1466,8 +1547,6 @@ fn color_pass(input: VertexOutput) -> vec4<f32> {
         // 11 and 13), so a mask behaves exactly like the slider it mirrors.
         color = perceptual_contrast(color, max(1.0 + m.adj0.y * w, 0.0));
         color = perceptual_saturation(color, max(1.0 + m.adj0.z * w, 0.0), 0.0);
-
-        color = max(color, vec3<f32>(0.0));
     }
 
     // ── Step 11: Contrast ─────────────────────────────────────────────────────
@@ -1512,14 +1591,13 @@ fn color_pass(input: VertexOutput) -> vec4<f32> {
     //     selected operator is applied here.
     // Getting this gate wrong double-tone-maps, which is what the old
     // dcp_has_curve condition existed to prevent.
-    color = max(color, vec3<f32>(0.0));
     if (params.tone_mapper != TONE_CAMERA) {
         if (params.has_dcp == 0u) {
             // Same baked LUT and same hue-preserving application the DCP path
             // uses — the operator does not care which colour space fed it, and
             // RGBTone beats the naive per-channel application these operators
             // normally get.
-            color = dcp_rgb_tone(color);
+            color = rgb_tone_signed(color);
         }
     } else if (params.has_dcp == 0u || params.dcp_has_curve == 0u) {
         // Camera operator with no curve to speak of: the built-in filmic
@@ -1543,33 +1621,16 @@ fn color_pass(input: VertexOutput) -> vec4<f32> {
         }
     }
 
-    // ── Step 15b: Fit out-of-gamut overbrights (luma-preserving) ────────────
-    // Saturated colours can exceed 1.0 in one channel after the DCP pipeline
-    // (e.g. a bright red: sRGB (1.3, 0.2, 0.15)).  The final clamp would crush
-    // that to the gamut boundary at max saturation — neon red.  Compress chroma
-    // toward luma just enough to bring the peak channel to 1.0 instead.
-    // Runs after the filmic shoulder so the fallback path's rolloff still sees
-    // >1.0 input; for near-white pixels (luma ≥ 1) scale uniformly.
-    // Two candidate mappings, blended by the pixel's own saturation:
-    //  • scale-by-max  — keeps hue AND saturation, gives up brightness.
-    //    Right for saturated colours (a bright red must stay red, darker).
-    //  • luma-preserving desat — keeps brightness, gives up chroma.
-    //    Right for near-neutral overbrights (blown sky should go white).
-    let fit_max = max(color.r, max(color.g, color.b));
-    if (fit_max > 1.0) {
-        let fit_min  = min(color.r, min(color.g, color.b));
-        let fit_luma = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
-        let fit_sat  = clamp((fit_max - fit_min) / fit_max, 0.0, 1.0);
-        let scaled = color / fit_max;
-        var desat: vec3<f32>;
-        if (fit_luma < 1.0) {
-            let t_fit = (1.0 - fit_luma) / (fit_max - fit_luma);
-            desat = vec3<f32>(fit_luma) + (color - vec3<f32>(fit_luma)) * t_fit;
-        } else {
-            desat = scaled;
-        }
-        color = mix(desat, scaled, fit_sat);
-    }
+    // ── Step 15b: Gamut map — the pipeline's ONE gamut stage ───────────────
+    // Display-linear, extended-range sRGB in; [0,1]³ out, at constant Oklab
+    // hue. Colours near the boundary roll off (ACES RGC curve) instead of
+    // piling up on it as flat neon; overbrights head to white. This replaced
+    // three stages with three different rules (a luma desaturation of
+    // negatives straight after the matrix — which threw wide-gamut colour
+    // away before any edit — a peak-channel mix, and a luma/scale-by-max
+    // fit here), none of which held perceived hue. Runs after the tone
+    // curve, so the fallback path's shoulder still sees > 1.0 input.
+    color = gamut_map(color);
 
     // ── Step 15: sRGB Transfer Function (IEC 61966-2-1) ──────────────────────
     color = vec3<f32>(
@@ -1664,6 +1725,11 @@ mod tests {
             format!("const SKIN_COS_LO: f32 = {SKIN_COS_LO:?};"),
             format!("const SKIN_COS_HI: f32 = {SKIN_COS_HI:?};"),
             format!("const SKIN_PROTECT: f32 = {SKIN_PROTECT:?};"),
+            format!("const GAMUT_THRESHOLD: f32 = {GAMUT_THRESHOLD:?};"),
+            format!("const GAMUT_LIMIT: f32 = {GAMUT_LIMIT:?};"),
+            format!("const GAMUT_POWER: f32 = {GAMUT_POWER:?};"),
+            format!("const GAMUT_L0_ALPHA: f32 = {GAMUT_L0_ALPHA:?};"),
+            format!("const GAMUT_SCALE: f32 = {:?};", gamut_compress_scale()),
         ] {
             assert!(PASSTHROUGH_SHADER.contains(&expected), "missing `{expected}`");
         }

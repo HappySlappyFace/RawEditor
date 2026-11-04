@@ -995,6 +995,7 @@ mod tests {
     /// ```text
     /// DUMP_DIR=/tmp/out DUMP_TAG=rcd DUMP_CROPS="2900,1900,600,400;100,100,600,400" \
     ///   [DUMP_PARAMS='{"luma_noise":0.5,...}'] [DUMP_PREVIEW=1280] \
+    ///   [DUMP_PROFILE='/path/to/profile.dcp'] \
     ///   cargo test --release dump_render_crops -- --ignored --nocapture
     /// ```
     /// Crops are in oriented full-resolution pixels. Also writes a ~1600px
@@ -1023,8 +1024,19 @@ mod tests {
         let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).build().unwrap();
         rt.block_on(async {
             let ctx = SharedContext::new().await.unwrap();
-            let raw = crate::raw::loader::load_raw_data(test_raw.clone()).await.unwrap();
+            let mut raw = crate::raw::loader::load_raw_data(test_raw.clone()).await.unwrap();
             eprintln!("lens: {:?}", raw.lens_context);
+            // The decode's automatic pick otherwise; the app's per-camera
+            // default can differ, so a look can be pinned explicitly
+            // ("none" renders the profile-less fallback path).
+            match std::env::var("DUMP_PROFILE").as_deref() {
+                Ok("none") => raw.dcp_profile = None,
+                Ok(path) => {
+                    raw.dcp_profile = crate::raw::dcp::load_profile(std::path::Path::new(path));
+                    assert!(raw.dcp_profile.is_some(), "could not load {path}");
+                }
+                Err(_) => {}
+            }
             let params: EditParams = std::env::var("DUMP_PARAMS")
                 .ok()
                 .map(|j| {

@@ -304,6 +304,144 @@ pub fn levels(rgb: [f32; 3], blacks: f32, whites: f32) -> [f32; 3] {
     [rgb[0] * g, rgb[1] * g, rgb[2] * g]
 }
 
+// ── Gamut mapping ───────────────────────────────────────────────────────────
+// The colour pass carries extended-range linear sRGB (negative channels for
+// colours outside sRGB, channels past 1 for overbrights) from the camera
+// matrix to the end, so every edit sees the real colour, and fits it into
+// the display gamut ONCE, here, just before encoding.
+
+/// Relative boundary distance (see `gamut_map`) where compression starts;
+/// colours nearer the grey axis than this are returned untouched.
+///
+/// **Mirrored as `GAMUT_THRESHOLD`.**
+pub const GAMUT_THRESHOLD: f32 = 0.9;
+
+/// Relative distance that lands exactly on the boundary; anything further
+/// out is clipped onto it. **Mirrored as `GAMUT_LIMIT`.**
+pub const GAMUT_LIMIT: f32 = 1.5;
+
+/// Shape of the compression curve (the ACES Reference Gamut Compression
+/// uses 1.2). **Mirrored as `GAMUT_POWER`.**
+pub const GAMUT_POWER: f32 = 1.2;
+
+/// Ottosson's "adaptive L0" α: how far towards L = 0.5 a chromatic
+/// colour's projection point moves. **Mirrored as `GAMUT_L0_ALPHA`.**
+pub const GAMUT_L0_ALPHA: f32 = 0.05;
+
+/// The scale that makes `gamut_compress(GAMUT_LIMIT) == 1` (the RGC's
+/// parameterisation). **Mirrored, precomputed, as `GAMUT_SCALE`.**
+pub fn gamut_compress_scale() -> f32 {
+    let (t, l, p) = (GAMUT_THRESHOLD, GAMUT_LIMIT, GAMUT_POWER);
+    (l - t) / (((1.0 - t) / (l - t)).powf(-p) - 1.0).powf(1.0 / p)
+}
+
+/// The ACES RGC power curve: identity below `GAMUT_THRESHOLD`, then a
+/// slope-continuous roll-off that reaches 1 at `GAMUT_LIMIT`.
+pub fn gamut_compress(d: f32) -> f32 {
+    if d <= GAMUT_THRESHOLD {
+        return d;
+    }
+    let s = gamut_compress_scale();
+    let x = (d - GAMUT_THRESHOLD) / s;
+    GAMUT_THRESHOLD + s * x / (1.0 + x.powf(GAMUT_POWER)).powf(1.0 / GAMUT_POWER)
+}
+
+/// Lightness and chroma of the most saturated colour sRGB holds at hue
+/// direction `(a, b)` — the cusp of the gamut's L–C cross-section.
+/// Ottosson's `find_cusp`.
+pub fn find_cusp(a: f32, b: f32) -> (f32, f32) {
+    let s_cusp = max_saturation(a, b);
+    let rgb = oklab_to_linear_srgb([1.0, s_cusp * a, s_cusp * b]);
+    let l_cusp = (1.0 / rgb[0].max(rgb[1]).max(rgb[2])).cbrt();
+    (l_cusp, l_cusp * s_cusp)
+}
+
+/// Where the line from `(l0, 0)` through `(l1, c1)` meets the sRGB gamut
+/// boundary, at hue direction `(a, b)`, as the parameter `t` with the
+/// boundary at `(l0 + t·(l1 − l0), t·c1)`: `t < 1` means `(l1, c1)` is
+/// outside. Ottosson's `find_gamut_intersection`: below the cusp the
+/// boundary is the straight edge from black (the cone again); above it a
+/// triangle estimate polished by one Halley step on whichever channel
+/// reaches 1 first.
+pub fn gamut_intersection(a: f32, b: f32, l1: f32, c1: f32, l0: f32) -> f32 {
+    let (cusp_l, cusp_c) = find_cusp(a, b);
+    if (l1 - l0) * cusp_c - (cusp_l - l0) * c1 <= 0.0 {
+        return cusp_c * l0 / (c1 * cusp_l + cusp_c * (l0 - l1));
+    }
+    let mut t = cusp_c * (l0 - 1.0) / (c1 * (cusp_l - 1.0) + cusp_c * (l0 - l1));
+
+    let dl = l1 - l0;
+    let k_l = 0.396_337_78 * a + 0.215_803_76 * b;
+    let k_m = -0.105_561_346 * a - 0.063_854_17 * b;
+    let k_s = -0.089_484_18 * a - 1.291_485_5 * b;
+    let l_dt = dl + c1 * k_l;
+    let m_dt = dl + c1 * k_m;
+    let s_dt = dl + c1 * k_s;
+
+    let l = l0 * (1.0 - t) + t * l1;
+    let c = t * c1;
+    let l_ = l + c * k_l;
+    let m_ = l + c * k_m;
+    let s_ = l + c * k_s;
+    let lms = [l_ * l_ * l_, m_ * m_ * m_, s_ * s_ * s_];
+    let d1 = [3.0 * l_dt * l_ * l_, 3.0 * m_dt * m_ * m_, 3.0 * s_dt * s_ * s_];
+    let d2 = [6.0 * l_dt * l_dt * l_, 6.0 * m_dt * m_dt * m_, 6.0 * s_dt * s_dt * s_];
+    let mut step = f32::MAX;
+    for row in 0..3 {
+        let w = &OK_M1_INV[row * 3..row * 3 + 3];
+        let f = w[0] * lms[0] + w[1] * lms[1] + w[2] * lms[2] - 1.0;
+        let f1 = w[0] * d1[0] + w[1] * d1[1] + w[2] * d1[2];
+        let f2 = w[0] * d2[0] + w[1] * d2[1] + w[2] * d2[2];
+        let u = f1 / (f1 * f1 - 0.5 * f * f2);
+        if u >= 0.0 {
+            step = step.min(-f * u);
+        }
+    }
+    if step < f32::MAX {
+        t += step;
+    }
+    t
+}
+
+/// Fit extended-range linear sRGB into `[0, 1]³` at constant Oklab hue.
+///
+/// Each colour is measured by its relative distance `d` to the gamut
+/// boundary along the line from a point `L0` on the grey axis (`d = 1` on
+/// the boundary). Below `GAMUT_THRESHOLD` it is returned untouched; above,
+/// `d` is compressed along that line (`gamut_compress`, the ACES RGC curve)
+/// so colours near and past the edge keep their gradations instead of
+/// piling up on it, and anything past `GAMUT_LIMIT` is clipped onto it.
+///
+/// `L0` is Ottosson's adaptive point: it tends to the colour's own L as its
+/// chroma vanishes — so near-greys only ever lose chroma, never lightness,
+/// and a dark neutral is never lifted — and to white for overbrights, which
+/// is the path to white: a light too bright for its hue fades to white
+/// rather than flattening into a neon primary.
+pub fn gamut_map(rgb: [f32; 3]) -> [f32; 3] {
+    let lab = linear_srgb_to_oklab(rgb);
+    let l = lab[0];
+    if l <= 0.0 {
+        return [0.0; 3];
+    }
+    let c = lab[1].hypot(lab[2]);
+    if c <= 1e-6 {
+        // A grey: in gamut unless brighter than white.
+        return if l <= 1.0 { rgb.map(|v| v.clamp(0.0, 1.0)) } else { [1.0; 3] };
+    }
+    let (da, db) = (lab[1] / c, lab[2] / c);
+    let ld = l - 0.5;
+    let e1 = 0.5 + ld.abs() + GAMUT_L0_ALPHA * c;
+    let l0 = 0.5 * (1.0 + ld.signum() * (e1 - (e1 * e1 - 2.0 * ld.abs()).max(0.0).sqrt()));
+    let t = gamut_intersection(da, db, l, c, l0);
+    let d = 1.0 / t.max(1e-6);
+    if d <= GAMUT_THRESHOLD {
+        return rgb;
+    }
+    let f = gamut_compress(d).min(1.0) / d;
+    let (l2, c2) = (l0 + f * (l - l0), f * c);
+    oklab_to_linear_srgb([l2, da * c2, db * c2]).map(|v| v.clamp(0.0, 1.0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -505,6 +643,142 @@ mod tests {
             let old = (g - 0.05) / (0.95 - 0.05 + 0.0001);
             let new = levels([g, g, g], 0.05, 0.95)[0];
             assert!((old.max(0.0) - new).abs() < 1e-4, "{g}: {old} vs {new}");
+        }
+    }
+
+    fn in_unit_cube(rgb: [f32; 3]) -> bool {
+        rgb.iter().all(|&v| (0.0..=1.0).contains(&v))
+    }
+
+    #[test]
+    fn gamut_compress_is_continuous_and_lands_on_the_boundary_at_the_limit() {
+        assert_eq!(gamut_compress(GAMUT_THRESHOLD), GAMUT_THRESHOLD);
+        assert!((gamut_compress(GAMUT_LIMIT) - 1.0).abs() < 1e-5);
+        // Slope 1 at the threshold (no kink), monotone, and it never passes 1
+        // before the limit.
+        let e = 1e-3;
+        assert!(((gamut_compress(GAMUT_THRESHOLD + e) - GAMUT_THRESHOLD) / e - 1.0).abs() < 0.05);
+        let mut prev = 0.0;
+        for i in 0..200 {
+            let d = i as f32 * 0.01;
+            let v = gamut_compress(d);
+            assert!(v >= prev, "not monotone at {d}");
+            assert!(d > GAMUT_LIMIT || v <= 1.0 + 1e-6);
+            prev = v;
+        }
+    }
+
+    /// The cusp is the corner of the gamut's L–C slice: on the boundary,
+    /// with a channel at 1 and one at 0.
+    #[test]
+    fn the_cusp_sits_on_the_gamut_corner() {
+        for i in 0..72 {
+            let h = (i as f32 * 5.0).to_radians();
+            let (l, c) = find_cusp(h.cos(), h.sin());
+            let rgb = oklab_to_linear_srgb([l, c * h.cos(), c * h.sin()]);
+            let hi = rgb[0].max(rgb[1]).max(rgb[2]);
+            let lo = rgb[0].min(rgb[1]).min(rgb[2]);
+            assert!((hi - 1.0).abs() < 2e-3 && lo.abs() < 2e-3, "{}°: {rgb:?}", i * 5);
+        }
+    }
+
+    #[test]
+    fn gamut_intersection_finds_the_boundary_along_the_line() {
+        for i in 0..72 {
+            let h = (i as f32 * 5.0).to_radians();
+            let (a, b) = (h.cos(), h.sin());
+            for &(l1, c1, l0) in &[(0.3, 0.4, 0.3), (0.9, 0.3, 0.7), (0.6, 0.5, 0.5), (1.2, 0.2, 0.95)] {
+                let t = gamut_intersection(a, b, l1, c1, l0);
+                let (l, c) = (l0 + t * (l1 - l0), t * c1);
+                let rgb = oklab_to_linear_srgb([l, c * a, c * b]);
+                let lo = rgb[0].min(rgb[1]).min(rgb[2]);
+                let hi = rgb[0].max(rgb[1]).max(rgb[2]);
+                // On the boundary: one channel at 0 or at 1, none past either.
+                let edge = lo.abs().min((hi - 1.0).abs());
+                assert!(edge < 5e-3 && lo > -5e-3 && hi < 1.0 + 5e-3, "{}° {l1},{c1}: {rgb:?}", i * 5);
+            }
+        }
+    }
+
+    /// Everything — far outside sRGB, negative, overbright — comes out
+    /// displayable, at its own Oklab hue.
+    #[test]
+    fn gamut_map_fits_anything_into_srgb_at_constant_hue() {
+        let mut inputs = samples();
+        for i in 0..72 {
+            let h = (i as f32 * 5.0).to_radians();
+            for &(l, s) in &[(0.4, 0.9), (0.6, 0.6), (0.8, 0.35), (0.95, 0.2), (1.1, 0.15), (0.5, 1.5)] {
+                inputs.push(oklab_to_linear_srgb([l, h.cos() * s * l, h.sin() * s * l]));
+            }
+        }
+        inputs.extend([[1.3, 0.2, 0.15], [-0.2, 0.5, 0.9], [2.0, 2.0, 1.8], [0.4, -0.05, 0.1]]);
+        for rgb in inputs {
+            let out = gamut_map(rgb);
+            assert!(in_unit_cube(out), "{rgb:?} → {out:?}");
+            let lab = linear_srgb_to_oklab(out);
+            // Hue only means something where some chroma survives.
+            if lab[1].hypot(lab[2]) > 0.02 {
+                assert!(hue_diff(hue(out), hue(rgb)) < 1.0, "{rgb:?}: {} → {}", hue(rgb), hue(out));
+            }
+        }
+    }
+
+    #[test]
+    fn gamut_map_leaves_ordinary_colours_exactly_alone() {
+        for rgb in [[0.18, 0.18, 0.18], [0.5, 0.4, 0.3], [0.02, 0.03, 0.05], [0.9, 0.85, 0.7], [0.0; 3], [1.0; 3]] {
+            assert_eq!(gamut_map(rgb), rgb);
+        }
+        // Moderate chroma at every hue: well inside the threshold.
+        for i in 0..36 {
+            let h = (i as f32 * 10.0).to_radians();
+            let s = max_saturation(h.cos(), h.sin()) * 0.4;
+            let rgb = oklab_to_linear_srgb([0.55, h.cos() * s * 0.55, h.sin() * s * 0.55]);
+            assert_eq!(gamut_map(rgb), rgb);
+        }
+    }
+
+    /// Overbright: a grey goes to white, and a colour too bright for its hue
+    /// heads to white rather than to the primary.
+    #[test]
+    fn gamut_map_takes_overbrights_towards_white() {
+        assert_eq!(gamut_map([1.5, 1.5, 1.5]), [1.0; 3]);
+        let red = gamut_map([2.5, 0.6, 0.5]);
+        let clipped = [1.0, 0.6, 0.5];
+        let chroma = |v: [f32; 3]| {
+            let l = linear_srgb_to_oklab(v);
+            l[1].hypot(l[2])
+        };
+        assert!(chroma(red) < chroma(clipped), "{red:?}");
+        assert!(oklab_l(red) > oklab_l(clipped) - 0.05);
+    }
+
+    /// Continuity: walking a colour from inside the gamut to far outside
+    /// changes the output smoothly — no jump at the threshold or boundary.
+    #[test]
+    fn gamut_map_has_no_jumps() {
+        for i in 0..12 {
+            let h = (i as f32 * 30.0).to_radians();
+            let s_max = max_saturation(h.cos(), h.sin());
+            let mut prev: Option<[f32; 3]> = None;
+            for k in 0..400 {
+                let s = s_max * k as f32 / 200.0;
+                let out = gamut_map(oklab_to_linear_srgb([0.6, h.cos() * s * 0.6, h.sin() * s * 0.6]));
+                if let Some(p) = prev {
+                    let step = (0..3).map(|j| (out[j] - p[j]).abs()).fold(0.0, f32::max);
+                    assert!(step < 0.02, "{}°: jump of {step} at s = {s}", i * 30);
+                }
+                prev = Some(out);
+            }
+        }
+    }
+
+    /// Dark colours keep their lightness: compression moves them towards
+    /// a point at their own L, not towards mid grey.
+    #[test]
+    fn gamut_map_never_lifts_shadows() {
+        for rgb in [[0.01, -0.002, 0.03], [0.03, 0.0, 0.0], [0.002, 0.004, 0.0]] {
+            let out = gamut_map(rgb);
+            assert!((oklab_l(out) - oklab_l(rgb)).abs() < 0.01, "{rgb:?} → {out:?}");
         }
     }
 

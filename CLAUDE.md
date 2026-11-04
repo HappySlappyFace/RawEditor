@@ -61,7 +61,7 @@ Dual-pass rendering to avoid wasting GPU cycles:
 Uses the real Adobe DNG Color Pipeline instead of naive 3x3 sRGB matrices:
 1. CPU parses `.dcp` files and performs inverse-temperature dual-illuminant interpolation (blending Illuminant A and D65 by the Kelvin slider).
 2. CPU bakes the interpolated `HueSatMap` into a 3D wgpu texture (`TextureDimension::D3`) and `ProfileToneCurve` into a 1D spline texture.
-3. WGSL shader path: Camera RGB → ProPhoto RGB → highlights/shadows → shoulder → 3D LUT (hue/sat twists) → 1D tone curve (Adobe RGBTone, hue-preserving) → gamut mapping → monitor sRGB.
+3. WGSL shader path: Camera RGB → ProPhoto RGB → highlights/shadows → shoulder → 3D LUT (hue/sat twists) → 1D tone curve (Adobe RGBTone, hue-preserving) → extended-range linear sRGB → edits → the one gamut map at Step 15b (§B3) → monitor sRGB.
 - **Which profile** (`core::camera_profiles`): the user's own `.dcp` files in `paths::profiles_dir()`, plus RawTherapee's (GPL / public domain), downloaded per camera on request into `profiles/downloaded/`. An image's choice is `EditParams::camera_profile` (`Auto` / `Builtin` / a file name — fixed-capacity so `EditParams` stays `Copy`); `Auto` takes the per-camera default (`AppSettings::camera_profile_defaults`, keyed by a profile's camera name and looked up with the same word/alias matching as the profiles), else the best match. It is resolved where GPU resources are BUILT (`ProfileUse::resolve`, recorded on `ImageResources::profile_use`) — never per render, because the table sizes a texture — and `push_uniforms_and_render` rebuilds (from `raw_cache`) when the choice or default has moved (`handlers::camera_profiles::resources_stale`). Export resolves it the same way per image. `RawDataResult::dcp_profile` is only the automatic pick at decode; app paths must not use it for rendering.
 - **One table slot.** A DCP may carry a HueSatMap (50937–50939, dual-illuminant) and/or a LookTable (50981–50982). The pipeline applies one: the LookTable if present (what the D3300 "Camera Standard" calibration uses), else the HueSatMap (RawTherapee's profiles). A profile with neither becomes a 1×1×1 identity table — a zero-sized 3D texture renders **black** with only a log line. An identity ProfileToneCurve ((0,0)–(1,1), RawTherapee's) is treated as none: under this pipeline's linear→display reading of the curve it would darken by a whole gamma.
 - **One matrix, not two.** `InterpolatedProfile.camera_to_prophoto` is the DCP ForwardMatrix (camera → XYZ D50) with `color::XYZ_D50_TO_PROPHOTO` already folded in on the CPU, so the shader never traverses XYZ per pixel. `GpuEditParams.forward_matrix_*` is therefore polymorphic on `has_dcp`: camera → ProPhoto with a profile, camera → linear sRGB (`calculate_cam_to_srgb`) without. Both cost exactly one multiply per pixel.
@@ -117,6 +117,17 @@ shader's `ok_*`/`perceptual_*` functions, constants guarded by
 - **Chroma respects the gamut cone.** `rgb ≥ 0` is a cone through black, so the most
   saturated colour per hue is a fixed `C/L = s_max(h)` (`max_saturation`); boosts roll
   off into it (`soft_limit`) instead of going negative and being clamped to neon.
+  A colour already past it (wide gamut, below) is held, not boosted or pulled in.
+- **One gamut stage, at the end.** From the camera matrix to Step 15b, `color` is
+  *extended-range* linear sRGB — a colour outside sRGB keeps its negative channel, so
+  edits see the real colour (Saturation −50 brings a neon sign back instead of
+  desaturating a clipped one). Nothing in between may clamp to `[0, 1]` (the
+  profile-less path tones through `rgb_tone_signed` for that reason). Step 15b
+  `gamut_map` is the only fit: constant Oklab hue, ACES-RGC-curve compression of
+  the relative boundary distance from `GAMUT_THRESHOLD` (untouched below), along a
+  line to Ottosson's adaptive `L0` — the colour's own L for near-greys (so shadows
+  are never lifted), white for overbrights (the path to white). It replaced three
+  stages with three different rules; don't add a fourth.
 - Every control is gated to an exact identity at its default — keep it that way.
 - The 8-bit entry point `fs_main` TPDF-dithers (±1 LSB, interleaved gradient noise);
   `fs_main_16` (16-bit TIFF) does not. Any new readback test comparing 8-bit renders
