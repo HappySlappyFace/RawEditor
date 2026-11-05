@@ -18,6 +18,9 @@ pub mod paths;
 pub mod perceptual;
 pub mod profiler;
 pub mod settings;
+// CPU mirror of the colour pass's Highlights/Shadows, for its unit tests only.
+#[cfg(test)]
+pub mod tone_regions;
 pub mod tonemap;
 pub mod types;
 pub mod viewport;

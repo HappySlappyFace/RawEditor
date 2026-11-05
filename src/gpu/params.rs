@@ -48,6 +48,18 @@ impl GpuMask {
     }
 }
 
+/// Whether Highlights/Shadows — the global sliders or any live mask's — are
+/// set, so the colour pass needs each pixel's surroundings from the
+/// local-contrast bands (`presence.w`, and the gate on building them).
+pub fn wants_surround(p: &EditParams) -> bool {
+    p.highlights != 0.0
+        || p.shadows != 0.0
+        || p.masks
+            .iter()
+            .take(p.mask_count as usize)
+            .any(|m| m.enabled != 0 && (m.highlights != 0.0 || m.shadows != 0.0))
+}
+
 /// The mask uniform buffer (colour pass, group 1).
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -290,7 +302,7 @@ impl From<&EditParams> for GpuEditParams {
                 params.texture.clamp(-1.0, 1.0),
                 params.clarity.clamp(-1.0, 1.0),
                 params.dehaze.clamp(-1.0, 1.0),
-                0.0,
+                if wants_surround(params) { 1.0 } else { 0.0 },
             ],
             // Filled per image by `set_haze`.
             haze: [1.0, 1.0, 1.0, 0.0],
@@ -322,6 +334,26 @@ mod tests {
         let g = GpuEditParams::from(&p);
         assert_eq!(g.presence, [0.4, -1.0, 0.7, 0.0]);
         assert_eq!(GpuEditParams::from(&EditParams::default()).presence, [0.0; 4]);
+    }
+
+    /// Highlights/Shadows read the bands' surround, so `presence.w` must be
+    /// set by the global sliders or a live mask's — and not by a disabled
+    /// mask, or one past `mask_count`, which the shader never applies.
+    #[test]
+    fn highlights_or_shadows_anywhere_ask_for_the_surround() {
+        assert!(!wants_surround(&EditParams::default()));
+        assert!(wants_surround(&EditParams { shadows: 0.3, ..EditParams::default() }));
+        assert!(wants_surround(&EditParams { highlights: -0.2, ..EditParams::default() }));
+
+        let mut p = EditParams::default();
+        p.masks[0].highlights = -0.5;
+        p.masks[0].enabled = 1;
+        assert!(!wants_surround(&p), "past mask_count");
+        p.mask_count = 1;
+        assert!(wants_surround(&p));
+        assert_eq!(GpuEditParams::from(&p).presence[3], 1.0);
+        p.masks[0].enabled = 0;
+        assert!(!wants_surround(&p), "disabled mask");
     }
 
     /// The airlight is measured white-balanced but the shader re-applies the

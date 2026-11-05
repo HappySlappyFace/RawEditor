@@ -629,3 +629,97 @@ fn clipped_sky_matches_the_unclipped_truth() {
         assert!(got[1] > got[0] + 2.0, "green not above red — the purple cast: {got:.1?}");
     });
 }
+
+/// Shadows must lift a dark region the way exposure would — the whole region
+/// by one gain, so its texture keeps its contrast in stops — and leave a
+/// bright region beside it alone, right up to the edge (no halo). The old
+/// Shadows added a grey lift, which flattened exactly that texture (fog).
+///
+/// Run with `cargo test --release shadows_lift_a_region -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn shadows_lift_a_region_like_exposure_keeping_its_detail() {
+    const DARK: f32 = 0.02;
+    const BRIGHT: f32 = 0.3;
+    let (w, h) = (1200usize, 900usize);
+    let edge = w / 2;
+    // Grey, textured at 7–12 px periods: well below the surround's scale, so
+    // the surround sees the region's level, not its texture.
+    let lin = (0..w * h)
+        .map(|i| {
+            let (x, y) = ((i % w) as f32, (i / w) as f32);
+            let t = (x * 0.52).sin() * (y * 0.47).sin() * 0.25 + (x * 0.9 + y * 0.3).sin() * 0.15;
+            let v = if (i % w) < edge { DARK } else { BRIGHT } * (1.0 + t);
+            [v; 3]
+        })
+        .collect();
+    let scene = Scene { w, h, lin };
+    let data = mosaic(&scene, 0.0, 0.0, 1);
+    // Display-linear log2 luma of a render.
+    let log_luma = |img: &[u8]| -> Vec<f32> {
+        img.as_chunks::<4>()
+            .0
+            .iter()
+            .map(|p| {
+                let l = 0.2126 * srgb_to_linear(p[0] as f32 / 255.0)
+                    + 0.7152 * srgb_to_linear(p[1] as f32 / 255.0)
+                    + 0.0722 * srgb_to_linear(p[2] as f32 / 255.0);
+                l.max(1e-5).log2()
+            })
+            .collect()
+    };
+    let margin = 40usize;
+    let mean = |l: &[f32], xs: std::ops::Range<usize>| {
+        let mut s = 0.0f64;
+        let mut n = 0.0f64;
+        for y in margin..h - margin {
+            for x in xs.clone() {
+                s += l[y * w + x] as f64;
+                n += 1.0;
+            }
+        }
+        s / n
+    };
+    // Fine detail: the log image minus its local mean, as an RMS.
+    let detail = |l: &[f32], xs: std::ops::Range<usize>| {
+        let blur = box_blur(l, w, h, 8);
+        let mut s = 0.0f64;
+        let mut n = 0.0f64;
+        for y in margin..h - margin {
+            for x in xs.clone() {
+                s += ((l[y * w + x] - blur[y * w + x]) as f64).powi(2);
+                n += 1.0;
+            }
+        }
+        (s / n).sqrt()
+    };
+    let dark = margin..edge - margin;
+    let bright_far = edge + 200..w - margin;
+    let bright_near = edge + 2..edge + 40;
+    runtime().block_on(async {
+        let ctx = SharedContext::new().await.expect("gpu");
+        let base = EditParams { color_noise: 0.0, ..EditParams::default() };
+        let lift = crate::core::tone_regions::gain_ev(0.0, 1.0, DARK);
+        let (flat, rw, _) = render(&ctx, &data, w, h, &base, None).await;
+        assert_eq!(rw as usize, w);
+        let (shadows, _, _) = render(&ctx, &data, w, h, &EditParams { shadows: 1.0, ..base }, None).await;
+        let (exposed, _, _) = render(&ctx, &data, w, h, &EditParams { exposure: lift, ..base }, None).await;
+        let (flat, shadows, exposed) = (log_luma(&flat), log_luma(&shadows), log_luma(&exposed));
+
+        let raised = mean(&shadows, dark.clone()) - mean(&flat, dark.clone());
+        let vs_exposure = mean(&shadows, dark.clone()) - mean(&exposed, dark.clone());
+        let detail_ratio = detail(&shadows, dark.clone()) / detail(&exposed, dark.clone());
+        let far = mean(&shadows, bright_far.clone()) - mean(&flat, bright_far.clone());
+        let near = mean(&shadows, bright_near.clone()) - mean(&flat, bright_near.clone());
+        eprintln!(
+            "scene gain {lift:.2} EV; dark region +{raised:.2} EV on screen, {vs_exposure:+.3} EV from \
+             the same exposure push, detail ×{detail_ratio:.3} of it; bright side far {far:+.3} EV, \
+             within 40 px of the edge {near:+.3} EV"
+        );
+        assert!(raised > 0.5, "Shadows +1 barely lifted the dark region: +{raised:.2} EV");
+        assert!(vs_exposure.abs() < 0.1, "Shadows did not lift like exposure: {vs_exposure:+.3} EV off");
+        assert!((0.9..1.1).contains(&detail_ratio), "the dark region's texture changed: ×{detail_ratio:.3}");
+        assert!(far.abs() < 0.05, "the bright region moved: {far:+.3} EV");
+        assert!(near.abs() < 0.15, "a halo along the edge: {near:+.3} EV");
+    });
+}

@@ -23,27 +23,24 @@
 ///  16.  Clamp
 pub const PASSTHROUGH_SHADER: &str = r#"
 // ── Highlights / Shadows tuning ──────────────────────────────────────────────
-// These operate in SCENE-LINEAR space, where values above 1.0 are real (WB
-// amplification plus Step 3's highlight reconstruction routinely reach ~2).
-// The knee range is therefore in scene-linear units: HL_KNEE_LO is "bright",
-// HL_KNEE_HI is "well past clipping".
-const HL_KNEE_LO: f32 = 0.5;
-const HL_KNEE_HI: f32 = 1.5;
-// At highlights = -1 with full weight the pixel scales by 1 - 0.6 = 0.4, which
-// maps a 2.0 scene-linear highlight to 0.8 — back into the part of the tone
-// curve that still resolves gradation.
-const HL_RECOVER_STRENGTH: f32 = 0.6;
-const HL_LIFT_STRENGTH: f32 = 0.4;
-// Shadows fades out by SH_RANGE. This is a SCENE-LINEAR threshold, so it is far
-// lower than the 0.5 that was correct when this ran display-referred: linear
-// 0.18 is middle grey (~0.46 sRGB), whereas linear 0.5 is already ~0.74 sRGB
-// and would drag most of the frame. Measured on _DSC0177: at 0.5 a shadows of
-// only +0.25 lifted the whole-image mean 53.7 → 75.5, which is a global
-// brightness control, not a shadow one.
-const SH_RANGE: f32 = 0.18;
-// Reduced from 0.15 for the same reason: an additive lift applied before the
-// tone curve gets expanded by it, so it lands much harder than it used to.
-const SH_LIFT_STRENGTH: f32 = 0.07;
+// Both are a gain in STOPS, chosen by the level of a pixel's SURROUNDINGS in
+// stops relative to sensor white (1.0 scene-linear — WB and Step 3 routinely
+// reach +1; middle grey sits near −2.5). See apply_highlights_shadows.
+// MIRRORED in core::tone_regions (shader_tone_region_constants_match_rust).
+//
+// Highlights weigh in from HS_HL_LO (just above grey) to full at HS_HL_HI,
+// past clipping. At −1 they pull a surround down HS_HL_RECOVER stops — a 2.0
+// highlight lands near 0.8, back where the tone curve resolves gradation —
+// and at +1 lift it HS_HL_LIFT.
+const HS_HL_LO: f32 = -2.0;
+const HS_HL_HI: f32 = 0.5;
+const HS_HL_RECOVER: f32 = 1.3;
+const HS_HL_LIFT: f32 = 0.6;
+// Shadows: full below HS_SH_LO, fading out by HS_SH_HI (just above grey),
+// ±HS_SH_LIFT stops at ±1.
+const HS_SH_LO: f32 = -6.5;
+const HS_SH_HI: f32 = -2.0;
+const HS_SH_LIFT: f32 = 1.6;
 
 // ========== Vertex Shader ==========
 // Full-screen triangle (no vertex buffers needed)
@@ -889,49 +886,56 @@ fn sample_tone_curve(x: f32) -> f32 {
     return textureSampleLevel(tone_curve, lut_sampler, c, 0.0).r;
 }
 
-// Highlights & Shadows, ratio-preserving.
+// Highlights & Shadows: a local exposure change.
 //
-// `level` is the scalar the weights key off, supplied by the CALLER rather than
-// derived here, because the right choice differs by colour space:
+// `level` is the scene-linear level of the pixel's SURROUNDINGS: the caller
+// carries the pixel there with `to_surround` (Step 4 — the Clarity base B2
+// over the pixel's own L, gpu/local_contrast.rs). The gain is chosen from it
+// and multiplies the pixel, so:
+//   • detail survives — a region gets one gain, so each pixel's ratio to its
+//     neighbours (texture in a recovered sky, folds in a lifted shadow) is
+//     kept. Weighting each pixel by its own level compressed exactly those
+//     ratios: at −1 a sky's clouds went flat grey.
+//   • hue and saturation survive — a scene-linear multiply moves along the
+//     ray through black. (The old additive Shadows lift was a grey wash that
+//     lifted black too.)
+//   • tonal order survives — the gain changes by less than a stop per stop of
+//     level (slope ≤ 1.5·amount/width < 1), so a brighter surround never ends
+//     darker than a dimmer one.
+// B2 is edge-preserving, so across a strong edge the surround follows the
+// edge and the gain does not bleed over it (no halo).
+//
+// What `level` measures differs by space and is the caller's choice:
 //   • linear sRGB (no-DCP fallback) → luma, `dot(c, (0.2126, 0.7152, 0.0722))`
 //   • ProPhoto (DCP path)           → the PEAK CHANNEL
 // ProPhoto's Y coefficients are (0.2880, 0.7119, 0.0001) — blue contributes
 // essentially nothing, so a blown blue sky would score near-zero luma and the
-// highlight weight would never engage. The peak channel is also the more
-// meaningful quantity for recovery: what matters is proximity to clipping, not
-// perceived brightness.
-//
-// Highlights scale the whole pixel so colour ratios survive — partially
-// overexposed areas (warm-white cloud at R>G>B) stay warm instead of drifting
-// neutral. A pixel whose channels ALL clipped has no ratio left to preserve and
-// still goes neutral; that is a sensor limit, not a pipeline one.
+// highlight weight would never engage. Proximity to clipping is also what
+// recovery is about.
 //
 // MUST run in scene-linear space, before any shoulder. Applied afterwards it is
 // just a uniform multiply on an already-compressed band: the highlight goes
 // grey and no texture comes back.
-fn apply_highlights_shadows(c: vec3<f32>, highlights: f32, shadows: f32, level: f32) -> vec3<f32> {
-    var color = c;
-    var lv = level;
+fn highlights_shadows_ev(highlights: f32, shadows: f32, level: f32) -> f32 {
+    let ev = log2(max(level, 1e-6));
+    var gain = 0.0;
     if (highlights != 0.0) {
-        // 0 below HL_KNEE_LO (midtones untouched), 1 above HL_KNEE_HI
-        // (well past clipping).
-        let hl_weight = smoothstep(HL_KNEE_LO, HL_KNEE_HI, lv);
         // Recovery gets more authority than lift: pulling a blown highlight
         // back has further to travel than brightening one.
-        let strength = select(HL_LIFT_STRENGTH, HL_RECOVER_STRENGTH, highlights < 0.0);
-        let factor = max(1.0 + highlights * strength * hl_weight, 0.2);
-        color = color * factor;
-        // Shadows keys off the POST-highlight level so the two compose, which
-        // is what the original inline code did. Both luma and peak-channel are
-        // homogeneous of degree 1 in `color`, so tracking the uniform scale
-        // reproduces either exactly — no need to know which the caller passed.
-        lv = lv * factor;
+        let amount = select(HS_HL_LIFT, HS_HL_RECOVER, highlights < 0.0);
+        gain += highlights * amount * smoothstep(HS_HL_LO, HS_HL_HI, ev);
     }
     if (shadows != 0.0) {
-        let sh_weight = clamp(1.0 - lv / SH_RANGE, 0.0, 1.0);
-        color = color + vec3<f32>(sh_weight * shadows * SH_LIFT_STRENGTH);
+        gain += shadows * HS_SH_LIFT * (1.0 - smoothstep(HS_SH_LO, HS_SH_HI, ev));
     }
-    return color;
+    return gain;
+}
+
+fn apply_highlights_shadows(c: vec3<f32>, highlights: f32, shadows: f32, level: f32) -> vec3<f32> {
+    if (highlights == 0.0 && shadows == 0.0) {
+        return c;
+    }
+    return c * exp2(highlights_shadows_ev(highlights, shadows, level));
 }
 
 // Adobe DNG SDK "RGBTone": hue-preserving tone curve application.
@@ -1262,25 +1266,39 @@ fn color_pass(input: VertexOutput) -> vec4<f32> {
     // off whatever it lifts past white. Both fade out in deep shadows, where
     // log-domain detail is mostly noise; Clarity also leaves the highlights
     // alone, keeping it a midtone control.
+    //
+    // Highlights/Shadows (global or in any mask, `presence.w`) read the same
+    // bands: B2 − L is the step from this pixel to its surroundings.
     var local_ev = 0.0;
+    var surround_ev = 0.0;
     let texture_amt = params.presence.x;
     let clarity_amt = params.presence.y;
-    if (texture_amt != 0.0 || clarity_amt != 0.0) {
+    let wants_surround = params.presence.w != 0.0;
+    if (texture_amt != 0.0 || clarity_amt != 0.0 || wants_surround) {
         let bands = textureSampleLevel(local_tex, texture_sampler, tex_coords, 0.0);
         let gf = textureSampleLevel(clarity_tex, texture_sampler, tex_coords, 0.0).xy;
         let b2 = gf.x * bands.z + gf.y;
-        // Surrounding level after exposure, in stops below sensor white.
-        let base_ev = b2 + params.exposure;
-        let shadow_w = smoothstep(-11.0, -7.0, base_ev);
-        let mid_w = shadow_w * (1.0 - smoothstep(-1.5, 1.0, base_ev));
-        let k_tex = select(TEXTURE_GAIN, 1.0, texture_amt < 0.0);
-        let k_clar = select(CLARITY_GAIN, 1.0, clarity_amt < 0.0);
-        local_ev = texture_amt * k_tex * (bands.y - bands.z) * shadow_w
-                 + clarity_amt * k_clar * (bands.z - b2) * mid_w;
-        local_ev = local_ev / (1.0 + abs(local_ev) / LOCAL_LIMIT_EV);
+        surround_ev = b2 - bands.w;
+        if (texture_amt != 0.0 || clarity_amt != 0.0) {
+            // Surrounding level after exposure, in stops below sensor white.
+            let base_ev = b2 + params.exposure;
+            let shadow_w = smoothstep(-11.0, -7.0, base_ev);
+            let mid_w = shadow_w * (1.0 - smoothstep(-1.5, 1.0, base_ev));
+            let k_tex = select(TEXTURE_GAIN, 1.0, texture_amt < 0.0);
+            let k_clar = select(CLARITY_GAIN, 1.0, clarity_amt < 0.0);
+            local_ev = texture_amt * k_tex * (bands.y - bands.z) * shadow_w
+                     + clarity_amt * k_clar * (bands.z - b2) * mid_w;
+            local_ev = local_ev / (1.0 + abs(local_ev) / LOCAL_LIMIT_EV);
+        }
     }
     let exposure_multiplier = pow(2.0, params.exposure) * lens_gain * exp2(local_ev);
     color = color * exposure_multiplier;
+    // Any level homogeneous in the colour (peak channel, luma) times this is
+    // that level of the pixel's surroundings — what apply_highlights_shadows
+    // keys off. Texture/Clarity's gain is detail too, so it comes back out.
+    // WB, exposure, dehaze and Step 3 all act on the pixel itself, so they
+    // carry through.
+    let to_surround = select(1.0, exp2(surround_ev - local_ev), wants_surround);
 
     // ── Step 5: Camera RGB → sRGB (DCP Pipeline vs Fallback) ────────────────
     // NOTE: WB was already applied in Step 2 above. Do NOT re-apply here.
@@ -1312,8 +1330,9 @@ fn color_pass(input: VertexOutput) -> vec4<f32> {
         // values that still exceed 1.0, redistributes them back down into the
         // part of the curve that resolves detail.
         //
-        // Peak channel rather than luma — see apply_highlights_shadows.
-        let hs_level = max(pp.r, max(pp.g, pp.b));
+        // Peak channel rather than luma, of the surroundings — see
+        // apply_highlights_shadows.
+        let hs_level = max(pp.r, max(pp.g, pp.b)) * to_surround;
         pp = apply_highlights_shadows(pp, params.highlights, params.shadows, hs_level);
 
         // Highlight shoulder — CAMERA OPERATOR ONLY.
@@ -1561,7 +1580,7 @@ fn color_pass(input: VertexOutput) -> vec4<f32> {
     // Gated on has_dcp, NOT dcp_has_curve: the knee runs for any DCP, curve or
     // not, so any DCP means the work was already done upstream.
     if (params.has_dcp == 0u) {
-        let luma_hl = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
+        let luma_hl = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722)) * to_surround;
         color = apply_highlights_shadows(color, params.highlights, params.shadows, luma_hl);
     }
 
@@ -1649,21 +1668,15 @@ fn color_pass(input: VertexOutput) -> vec4<f32> {
             color = color * vec3<f32>(1.0 + 0.10 * tint, 1.0 - 0.10 * tint, 1.0 + 0.10 * tint);
         }
 
-        // Highlights: same luma-weighted multiplicative form as Step 10
+        // Highlights / Shadows: the global sliders' function, keyed off the
+        // same surroundings. This runs after the tone curve, where levels are
+        // display-linear, but white is still 1 and grey near 0.18, so the
+        // knees land on much the same tones.
         let m_hl = m.adj1.x * w;
-        if (m_hl != 0.0) {
-            let luma_mh = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
-            let hl_w = smoothstep(0.5, 1.5, luma_mh);
-            let strength = select(0.4, 0.6, m_hl < 0.0);
-            color = color * max(1.0 + m_hl * strength * hl_w, 0.2);
-        }
-
-        // Shadows: same additive luma-weighted lift as Step 10
         let m_sh = m.adj1.y * w;
-        if (m_sh != 0.0) {
-            let luma_ms = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
-            let sh_w = clamp(1.0 - luma_ms / 0.5, 0.0, 1.0);
-            color = color + vec3<f32>(sh_w * m_sh * 0.15);
+        if (m_hl != 0.0 || m_sh != 0.0) {
+            let luma_m = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722)) * to_surround;
+            color = apply_highlights_shadows(color, m_hl, m_sh, luma_m);
         }
 
         // Contrast and Saturation: the global controls' functions (Steps
@@ -1863,6 +1876,24 @@ mod tests {
             format!("const GAMUT_MARCH: f32 = {GAMUT_MARCH:?};"),
             format!("const GAMUT_MARCH_STEPS: u32 = {GAMUT_MARCH_STEPS}u;"),
             format!("const GAMUT_BISECT_STEPS: u32 = {GAMUT_BISECT_STEPS}u;"),
+        ] {
+            assert!(PASSTHROUGH_SHADER.contains(&expected), "missing `{expected}`");
+        }
+    }
+
+    /// Highlights/Shadows: `core::tone_regions` is where the curve's
+    /// properties (identity at 0, tonal order kept) are tested.
+    #[test]
+    fn shader_tone_region_constants_match_rust() {
+        use crate::core::tone_regions::*;
+        for expected in [
+            format!("const HS_HL_LO: f32 = {HS_HL_LO:?};"),
+            format!("const HS_HL_HI: f32 = {HS_HL_HI:?};"),
+            format!("const HS_HL_RECOVER: f32 = {HS_HL_RECOVER:?};"),
+            format!("const HS_HL_LIFT: f32 = {HS_HL_LIFT:?};"),
+            format!("const HS_SH_LO: f32 = {HS_SH_LO:?};"),
+            format!("const HS_SH_HI: f32 = {HS_SH_HI:?};"),
+            format!("const HS_SH_LIFT: f32 = {HS_SH_LIFT:?};"),
         ] {
             assert!(PASSTHROUGH_SHADER.contains(&expected), "missing `{expected}`");
         }

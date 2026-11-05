@@ -1263,12 +1263,13 @@ impl ImageResources {
         st.denoise_key = Some(settings);
     }
 
-    /// Texture/Clarity bands: built from whatever the colour pass reads
-    /// (so after `prepare_denoise`), and rebuilt only when that changes —
-    /// never for the Texture or Clarity sliders themselves. Left stale while
-    /// both are zero: the shader does not sample it then.
+    /// Texture/Clarity bands, which are also Highlights/Shadows' surround:
+    /// built from whatever the colour pass reads (so after
+    /// `prepare_denoise`), and rebuilt only when that changes — never for
+    /// those sliders themselves. Left stale while none is set: the shader
+    /// does not sample it then.
     fn prepare_local_contrast(&self, context: &SharedContext, st: &mut StageState, params: &EditParams) {
-        if params.texture == 0.0 && params.clarity == 0.0 {
+        if params.texture == 0.0 && params.clarity == 0.0 && !super::params::wants_surround(params) {
             return;
         }
         let source_key = st.denoise_key.filter(|_| st.denoise_on);

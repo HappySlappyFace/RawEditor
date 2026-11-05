@@ -11,6 +11,9 @@
 //! | B1   | `TEXTURE` ≈ 1/600        | edge-avoiding à-trous (full res)   |
 //! | B2   | `CLARITY` ≈ 1/60         | fast guided filter of B1 (coarse)  |
 //!
+//! The band texture holds the running level in `x`, B0 in `y`, B1 in `z` and
+//! L itself in `w`.
+//!
 //! Texture scales `B0 − B1` (skin, bark, foliage — but not pixel noise, which
 //! is below B0), Clarity `B1 − B2` (mid-scale structure) — both by a gain on
 //! linear RGB (see the colour shader): a local exposure change, so hue and
@@ -37,6 +40,14 @@
 //! evaluated against the full-resolution B1 in the colour pass, which keeps
 //! edges sharp at a fraction of the cost. Filtering B1 rather than L keeps
 //! the bands nested: texture detail never counts as an "edge" for Clarity.
+//!
+//! **B2 is also Highlights/Shadows' surround.** Those sliders choose their
+//! gain by how bright a pixel's *surroundings* are, not the pixel: `B2 − L`
+//! carries the pixel to its surround, so a region is lifted or pulled down
+//! as a whole and the detail inside it (the pixel's ratio to the surround)
+//! is kept. B2's edge-preservation is what keeps that from haloing: across
+//! an edge stronger than `CLARITY_EPS` the surround follows the edge. So the
+//! stage also runs when only Highlights or Shadows is set.
 //!
 //! **Scales are fractions of the image**, so the develop preview, a 100%
 //! zoom and the export pick out the same features. The working texture is
@@ -209,12 +220,14 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
 }
 
 // Source (camera RGB) → log2 luma, in every channel. Sampled bilinearly at
-// this texel's centre, which at half size is exactly a 2×2 average.
+// this texel's centre, which at half size is exactly a 2×2 average. `w`
+// keeps L itself through every level: Highlights/Shadows divide it out of
+// the pixel to find its surround (colour shader, Step 4).
 @fragment
 fn fs_prep(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let c = textureSampleLevel(src_tex, src_sampler, pos.xy * lp.inv_size, 0.0).rgb;
     let l = log2(max(dot(max(c, vec3<f32>(0.0)), lp.luma_w.rgb), 0.0) + lp.luma_w.w);
-    return vec4<f32>(l, l, l, 0.0);
+    return vec4<f32>(l, l, l, l);
 }
 
 fn b3(i: i32) -> f32 {
@@ -248,7 +261,7 @@ fn fs_level(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
         l,
         select(c.y, l, (lp.snap & 1u) != 0u),
         select(c.z, l, (lp.snap & 2u) != 0u),
-        0.0,
+        c.w,
     );
 }
 
