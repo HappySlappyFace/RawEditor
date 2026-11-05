@@ -255,6 +255,7 @@ pub enum Message {
 
     // ========== Export Messages (Phase 89) ==========
     SetExportFormat(crate::app::state::ExportFormat),
+    SetExportColorSpace(crate::core::output_space::OutputSpace),
     SetExportQuality(u8),
     ToggleExportResize(bool),
     SetExportWidth(u32),

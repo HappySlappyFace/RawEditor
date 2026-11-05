@@ -160,8 +160,9 @@ struct EditParams {
     // Phase 52: Rotation
     rotation: f32,
 
-    // Padding to reach 224 bytes
-    pad_phase_1: f32,
+    // Export colour space (core::output_space::OutputSpace::shader_id); 0 =
+    // sRGB, which is all the display ever uses. Former pad slot.
+    output_space: u32,
 
     // Phase 66: Crop (vec4 alignment = 16 bytes)
     crop: vec4<f32>,
@@ -648,10 +649,67 @@ fn gamut_compress(d: f32) -> f32 {
     return GAMUT_THRESHOLD + GAMUT_SCALE * x / pow(1.0 + pow(x, GAMUT_POWER), 1.0 / GAMUT_POWER);
 }
 
-// Lightness and chroma of the gamut's cusp at hue (a, b) — Ottosson's find_cusp.
-fn ok_find_cusp(a: f32, b: f32) -> vec2<f32> {
-    let s_cusp = ok_max_saturation(a, b);
-    let rgb = ok_to_rgb(vec3<f32>(1.0, s_cusp * a, s_cusp * b));
+// Cube-root-LMS hue derivative: along hue (a, b) at L = 1 the LMS cube
+// roots are 1 + s·k for saturation s.
+fn ok_hue_k(a: f32, b: f32) -> vec3<f32> {
+    return vec3<f32>(
+        0.39633778 * a + 0.21580376 * b,
+        -0.105561346 * a - 0.06385417 * b,
+        -0.08948418 * a - 1.2914855 * b,
+    );
+}
+
+// Output-space RGB at L = 1, saturation s, along k.
+fn gamut_rgb_along(lms_to: mat3x3<f32>, k: vec3<f32>, s: f32) -> vec3<f32> {
+    let q = vec3<f32>(1.0) + s * k;
+    return lms_to * (q * q * q);
+}
+
+// MIRRORED from core::perceptual (`shader_perceptual_constants_match_rust`).
+const GAMUT_MARCH: f32 = 1.2;
+const GAMUT_MARCH_STEPS: u32 = 18u;
+const GAMUT_BISECT_STEPS: u32 = 20u;
+
+fn gamut_inside(lms_to: mat3x3<f32>, k: vec3<f32>, s: f32) -> bool {
+    let rgb = gamut_rgb_along(lms_to, k, s);
+    return min(rgb.r, min(rgb.g, rgb.b)) >= 0.0;
+}
+
+// ok_max_saturation for any output gamut containing sRGB — mirrors
+// core::perceptual::max_saturation_in, which explains the march: sRGB is
+// Ottosson's fit; a wider space marches out from it ×1.2 until a channel
+// goes negative, then bisects.
+fn gamut_max_saturation(a: f32, b: f32, lms_to: mat3x3<f32>, wide: bool) -> f32 {
+    let s_srgb = ok_max_saturation(a, b);
+    if (!wide) {
+        return s_srgb;
+    }
+    let k = ok_hue_k(a, b);
+    var lo = 0.9 * s_srgb;
+    var hi = lo * GAMUT_MARCH;
+    for (var i = 0u; i < GAMUT_MARCH_STEPS; i = i + 1u) {
+        if (!gamut_inside(lms_to, k, hi)) {
+            break;
+        }
+        lo = hi;
+        hi = hi * GAMUT_MARCH;
+    }
+    for (var i = 0u; i < GAMUT_BISECT_STEPS; i = i + 1u) {
+        let mid = 0.5 * (lo + hi);
+        if (gamut_inside(lms_to, k, mid)) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo;
+}
+
+// Lightness and chroma of the output gamut's cusp at hue (a, b) —
+// Ottosson's find_cusp.
+fn ok_find_cusp(a: f32, b: f32, lms_to: mat3x3<f32>, wide: bool) -> vec2<f32> {
+    let s_cusp = gamut_max_saturation(a, b, lms_to, wide);
+    let rgb = gamut_rgb_along(lms_to, ok_hue_k(a, b), s_cusp);
     let l_cusp = pow(1.0 / max(rgb.r, max(rgb.g, rgb.b)), 1.0 / 3.0);
     return vec2<f32>(l_cusp, l_cusp * s_cusp);
 }
@@ -660,40 +718,38 @@ fn ok_find_cusp(a: f32, b: f32) -> vec2<f32> {
 // line parameter t (< 1: the point is outside). Ottosson's
 // find_gamut_intersection: exact below the cusp, a triangle estimate plus
 // one Halley step above it.
-fn ok_gamut_intersection(a: f32, b: f32, l1: f32, c1: f32, l0: f32) -> f32 {
-    let cusp = ok_find_cusp(a, b);
+fn ok_gamut_intersection(a: f32, b: f32, l1: f32, c1: f32, l0: f32, lms_to: mat3x3<f32>, wide: bool) -> f32 {
+    let cusp = ok_find_cusp(a, b, lms_to, wide);
     if ((l1 - l0) * cusp.y - (cusp.x - l0) * c1 <= 0.0) {
         return cusp.y * l0 / (c1 * cusp.x + cusp.y * (l0 - l1));
     }
     let t = cusp.y * (l0 - 1.0) / (c1 * (cusp.x - 1.0) + cusp.y * (l0 - l1));
 
-    let k = vec3<f32>(
-        0.39633778 * a + 0.21580376 * b,
-        -0.105561346 * a - 0.06385417 * b,
-        -0.08948418 * a - 1.2914855 * b,
-    );
+    let k = ok_hue_k(a, b);
     let dt = vec3<f32>(l1 - l0) + c1 * k;
     let q = vec3<f32>(l0 * (1.0 - t) + t * l1) + (t * c1) * k;
     let lms = q * q * q;
     let d1 = 3.0 * dt * q * q;
     let d2 = 6.0 * dt * dt * q;
-    let wr = vec3<f32>(4.0767417, -3.3077116, 0.23096994);
-    let wg = vec3<f32>(-1.268438, 2.6097574, -0.34131938);
-    let wb = vec3<f32>(-0.0041960863, -0.7034186, 1.7076147);
-    let f = vec3<f32>(dot(wr, lms), dot(wg, lms), dot(wb, lms)) - vec3<f32>(1.0);
-    let f1 = vec3<f32>(dot(wr, d1), dot(wg, d1), dot(wb, d1));
-    let f2 = vec3<f32>(dot(wr, d2), dot(wg, d2), dot(wb, d2));
+    let rows = transpose(lms_to);
+    let f = vec3<f32>(dot(rows[0], lms), dot(rows[1], lms), dot(rows[2], lms)) - vec3<f32>(1.0);
+    let f1 = vec3<f32>(dot(rows[0], d1), dot(rows[1], d1), dot(rows[2], d1));
+    let f2 = vec3<f32>(dot(rows[0], d2), dot(rows[1], d2), dot(rows[2], d2));
     let u = f1 / (f1 * f1 - 0.5 * f * f2);
     let steps = select(vec3<f32>(3.0e38), -f * u, u >= vec3<f32>(0.0));
     let step = min(steps.x, min(steps.y, steps.z));
     return select(t, t + step, step < 3.0e38);
 }
 
-// Fit extended-range linear sRGB into [0,1]³ at constant Oklab hue: the
-// pipeline's one gamut stage. Near-neutral colours pass untouched; the rest
-// are compressed towards Ottosson's adaptive L0 — the colour's own L for
-// near-greys, white for overbrights (the path to white).
-fn gamut_map(c: vec3<f32>) -> vec3<f32> {
+// Fit extended-range linear sRGB into the output space's [0,1]³ at constant
+// Oklab hue: the pipeline's one gamut stage. `space` is the output space
+// (OutputSpace::shader_id; 0 = sRGB); the result is its linear RGB.
+// Near-neutral colours pass untouched; the rest are compressed towards
+// Ottosson's adaptive L0 — the colour's own L for near-greys, white for
+// overbrights (the path to white).
+fn gamut_map(c: vec3<f32>, space: u32) -> vec3<f32> {
+    let out_m = output_matrix(space);
+    let out = out_m * c;
     let lab = ok_from_rgb(c);
     let l = lab.x;
     if (l <= 0.0) {
@@ -701,21 +757,88 @@ fn gamut_map(c: vec3<f32>) -> vec3<f32> {
     }
     let ch = length(lab.yz);
     if (ch <= 1e-6) {
-        return select(vec3<f32>(1.0), clamp(c, vec3<f32>(0.0), vec3<f32>(1.0)), l <= 1.0);
+        return select(vec3<f32>(1.0), clamp(out, vec3<f32>(0.0), vec3<f32>(1.0)), l <= 1.0);
     }
+    let lms_to = out_m * ok_lms_to_srgb();
     let dir = lab.yz / ch;
     let ld = l - 0.5;
     let e1 = 0.5 + abs(ld) + GAMUT_L0_ALPHA * ch;
     let l0 = 0.5 * (1.0 + sign(ld) * (e1 - sqrt(max(e1 * e1 - 2.0 * abs(ld), 0.0))));
-    let t = ok_gamut_intersection(dir.x, dir.y, l, ch, l0);
+    let t = ok_gamut_intersection(dir.x, dir.y, l, ch, l0, lms_to, space != 0u);
     let d = 1.0 / max(t, 1e-6);
     if (d <= GAMUT_THRESHOLD) {
-        return c;
+        return out;
     }
     let f = min(gamut_compress(d), 1.0) / d;
-    let c2 = f * ch;
-    let mapped = ok_to_rgb(vec3<f32>(l0 + f * (l - l0), dir * c2));
-    return clamp(mapped, vec3<f32>(0.0), vec3<f32>(1.0));
+    let lab2 = vec3<f32>(l0 + f * (l - l0), dir * (f * ch));
+    let q = vec3<f32>(
+        dot(lab2, vec3<f32>(1.0, 0.39633778, 0.21580376)),
+        dot(lab2, vec3<f32>(1.0, -0.105561346, -0.06385417)),
+        dot(lab2, vec3<f32>(1.0, -0.08948418, -1.2914855)),
+    );
+    return clamp(lms_to * (q * q * q), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+// Ottosson's LMS → linear sRGB (M1⁻¹) as a matrix.
+fn ok_lms_to_srgb() -> mat3x3<f32> {
+    return transpose(mat3x3<f32>(
+        vec3<f32>(4.0767417, -3.3077116, 0.23096994),
+        vec3<f32>(-1.268438, 2.6097574, -0.34131938),
+        vec3<f32>(-0.0041960863, -0.7034186, 1.7076147),
+    ));
+}
+
+// ── Output colour space (core::output_space) ────────────────────────────────
+// MIRRORED from core::output_space — `shader_output_space_constants_match_rust`.
+// The display is always sRGB (id 0); only exports choose another.
+const ADOBE_RGB_GAMMA: f32 = 2.1992188;
+const PROPHOTO_GAMMA: f32 = 1.8;
+const PROPHOTO_LINEAR_EDGE: f32 = 0.001953125;
+// Linear sRGB → each space, as ROWS (OutputSpace::srgb_to_space_matrix).
+const OUT_P3_0: vec3<f32> = vec3<f32>(0.82246196, 0.17753804, 0.0);
+const OUT_P3_1: vec3<f32> = vec3<f32>(0.0331942, 0.9668058, 0.0);
+const OUT_P3_2: vec3<f32> = vec3<f32>(0.017082632, 0.07239744, 0.91051996);
+const OUT_ADOBE_0: vec3<f32> = vec3<f32>(0.7151256, 0.28487438, 0.0);
+const OUT_ADOBE_1: vec3<f32> = vec3<f32>(0.0, 1.0, 0.0);
+const OUT_ADOBE_2: vec3<f32> = vec3<f32>(0.0, 0.041161947, 0.95883805);
+const OUT_PROPHOTO_0: vec3<f32> = vec3<f32>(0.52931243, 0.3301362, 0.14055134);
+const OUT_PROPHOTO_1: vec3<f32> = vec3<f32>(0.098361745, 0.87347007, 0.028168162);
+const OUT_PROPHOTO_2: vec3<f32> = vec3<f32>(0.016875, 0.11767152, 0.8654535);
+
+fn output_matrix(id: u32) -> mat3x3<f32> {
+    switch (id) {
+        case 1u: { return transpose(mat3x3<f32>(OUT_P3_0, OUT_P3_1, OUT_P3_2)); }
+        case 2u: { return transpose(mat3x3<f32>(OUT_ADOBE_0, OUT_ADOBE_1, OUT_ADOBE_2)); }
+        case 3u: { return transpose(mat3x3<f32>(OUT_PROPHOTO_0, OUT_PROPHOTO_1, OUT_PROPHOTO_2)); }
+        default: {
+            return mat3x3<f32>(vec3<f32>(1.0, 0.0, 0.0), vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(0.0, 0.0, 1.0));
+        }
+    }
+}
+
+// Display-linear → encoded with the space's transfer curve (sRGB's for
+// sRGB and Display P3).
+fn encode_output(c: vec3<f32>, id: u32) -> vec3<f32> {
+    let x = max(c, vec3<f32>(0.0));
+    if (id == 2u) {
+        return pow(x, vec3<f32>(1.0 / ADOBE_RGB_GAMMA));
+    }
+    if (id == 3u) {
+        return select(pow(x, vec3<f32>(1.0 / PROPHOTO_GAMMA)), 16.0 * x, x < vec3<f32>(PROPHOTO_LINEAR_EDGE));
+    }
+    return vec3<f32>(linear_to_srgb(x.r), linear_to_srgb(x.g), linear_to_srgb(x.b));
+}
+
+// The inverse of encode_output.
+fn decode_output(e: vec3<f32>, id: u32) -> vec3<f32> {
+    let x = max(e, vec3<f32>(0.0));
+    if (id == 2u) {
+        return pow(x, vec3<f32>(ADOBE_RGB_GAMMA));
+    }
+    if (id == 3u) {
+        return select(pow(x, vec3<f32>(PROPHOTO_GAMMA)), x / 16.0, x < vec3<f32>(16.0 * PROPHOTO_LINEAR_EDGE));
+    }
+    return select(pow((x + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4)), x / 12.92, x <= vec3<f32>(0.04045));
 }
 
 // Interleaved gradient noise (Jimenez 2014): ALU-only, high-frequency.
@@ -1630,14 +1753,10 @@ fn color_pass(input: VertexOutput) -> vec4<f32> {
     // away before any edit — a peak-channel mix, and a luma/scale-by-max
     // fit here), none of which held perceived hue. Runs after the tone
     // curve, so the fallback path's shoulder still sees > 1.0 input.
-    color = gamut_map(color);
+    color = gamut_map(color, params.output_space);
 
-    // ── Step 15: sRGB Transfer Function (IEC 61966-2-1) ──────────────────────
-    color = vec3<f32>(
-        linear_to_srgb(color.r),
-        linear_to_srgb(color.g),
-        linear_to_srgb(color.b)
-    );
+    // ── Step 15: Transfer function (sRGB's IEC 61966-2-1 on screen) ─────────
+    color = encode_output(color, params.output_space);
 
     // ── Step 16: Clamp to display range ──────────────────────────────────────
     color = clamp(color, vec3<f32>(0.0), vec3<f32>(1.0));
@@ -1645,8 +1764,19 @@ fn color_pass(input: VertexOutput) -> vec4<f32> {
     // ── Step 17: Point curves (display-encoded, like every curve tool) ──────
     // Per channel: the LUT already composes each channel's curve after the
     // master, so this is three fetches, not six.
+    // Curves are drawn against the sRGB-encoded display, so an export in
+    // another space applies them in sRGB encoding too and re-encodes: greys
+    // then match the screen exactly.
     if (params.curve_active == 1u) {
-        color = vec3<f32>(sample_curve(color.r).r, sample_curve(color.g).g, sample_curve(color.b).b);
+        var e = color;
+        if (params.output_space != 0u) {
+            e = encode_output(decode_output(color, params.output_space), 0u);
+        }
+        e = vec3<f32>(sample_curve(e.r).r, sample_curve(e.g).g, sample_curve(e.b).b);
+        if (params.output_space != 0u) {
+            e = encode_output(decode_output(e, 0u), params.output_space);
+        }
+        color = e;
     }
 
     // Mask overlay: show the selected mask's coverage while editing it.
@@ -1730,9 +1860,40 @@ mod tests {
             format!("const GAMUT_POWER: f32 = {GAMUT_POWER:?};"),
             format!("const GAMUT_L0_ALPHA: f32 = {GAMUT_L0_ALPHA:?};"),
             format!("const GAMUT_SCALE: f32 = {:?};", gamut_compress_scale()),
+            format!("const GAMUT_MARCH: f32 = {GAMUT_MARCH:?};"),
+            format!("const GAMUT_MARCH_STEPS: u32 = {GAMUT_MARCH_STEPS}u;"),
+            format!("const GAMUT_BISECT_STEPS: u32 = {GAMUT_BISECT_STEPS}u;"),
         ] {
             assert!(PASSTHROUGH_SHADER.contains(&expected), "missing `{expected}`");
         }
+    }
+
+    /// Export colour spaces: the shader's matrices and curves are what
+    /// renders, `core::output_space` is what the ICC profile describes.
+    #[test]
+    fn shader_output_space_constants_match_rust() {
+        use crate::core::output_space::*;
+        let mut expected = vec![
+            format!("const ADOBE_RGB_GAMMA: f32 = {ADOBE_RGB_GAMMA:?};"),
+            format!("const PROPHOTO_GAMMA: f32 = {PROPHOTO_GAMMA:?};"),
+            format!("const PROPHOTO_LINEAR_EDGE: f32 = {PROPHOTO_LINEAR_EDGE:?};"),
+        ];
+        for (name, space) in
+            [("P3", OutputSpace::DisplayP3), ("ADOBE", OutputSpace::AdobeRgb), ("PROPHOTO", OutputSpace::ProPhoto)]
+        {
+            let m = space.srgb_to_space_matrix();
+            for row in 0..3 {
+                expected.push(format!(
+                    "const OUT_{name}_{row}: vec3<f32> = vec3<f32>({:?}, {:?}, {:?});",
+                    m[row * 3],
+                    m[row * 3 + 1],
+                    m[row * 3 + 2]
+                ));
+            }
+            assert_eq!(space.shader_id(), [0, 1, 2, 3][OutputSpace::ALL.iter().position(|&s| s == space).unwrap()]);
+        }
+        let missing: Vec<_> = expected.iter().filter(|e| !PASSTHROUGH_SHADER.contains(e.as_str())).collect();
+        assert!(missing.is_empty(), "missing:\n{}", missing.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("\n"));
     }
 
     /// Highlight analysis samples only what Step 3 trusts (below its clip

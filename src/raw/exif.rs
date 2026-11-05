@@ -54,16 +54,18 @@ const KEEP: &[Tag] = &[
 ///
 /// Orientation is written as 1 (upright): the export bakes the rotation into
 /// the pixels, and repeating the camera's tag would make viewers rotate it a
-/// second time.
-pub fn export_app1(raw_path: &Path) -> Option<Vec<u8>> {
+/// second time. `color_space` is the export's EXIF ColorSpace (1 = sRGB,
+/// 0xFFFF = uncalibrated, see `OutputSpace::exif_color_space`) — the
+/// camera's own value describes its JPEG, not this file.
+pub fn export_app1(raw_path: &Path, color_space: u16) -> Option<Vec<u8>> {
     let file = std::fs::File::open(raw_path).ok()?;
     let exif = Reader::new()
         .read_from_container(&mut std::io::BufReader::new(file))
         .ok()?;
-    app1_from(&exif)
+    app1_from(&exif, color_space)
 }
 
-fn app1_from(exif: &exif::Exif) -> Option<Vec<u8>> {
+fn app1_from(exif: &exif::Exif, color_space: u16) -> Option<Vec<u8>> {
     let kept: Vec<&Field> = exif
         .fields()
         .filter(|f| f.ifd_num == In::PRIMARY)
@@ -83,6 +85,11 @@ fn app1_from(exif: &exif::Exif) -> Option<Vec<u8>> {
         ifd_num: In::PRIMARY,
         value: Value::Ascii(vec![format!("RAW Editor {}", env!("CARGO_PKG_VERSION")).into_bytes()]),
     };
+    let space = Field {
+        tag: Tag::ColorSpace,
+        ifd_num: In::PRIMARY,
+        value: Value::Short(vec![color_space]),
+    };
     let version = Field {
         tag: Tag::ExifVersion,
         ifd_num: In::PRIMARY,
@@ -95,6 +102,7 @@ fn app1_from(exif: &exif::Exif) -> Option<Vec<u8>> {
     }
     writer.push_field(&orientation);
     writer.push_field(&software);
+    writer.push_field(&space);
     if !kept.iter().any(|f| f.tag == Tag::ExifVersion) {
         writer.push_field(&version);
     }
@@ -145,7 +153,7 @@ mod tests {
         writer.write(&mut src, true).unwrap();
         let source = Reader::new().read_raw(src.into_inner()).unwrap();
 
-        let app1 = app1_from(&source).expect("has keepable fields");
+        let app1 = app1_from(&source, 0xFFFF).expect("has keepable fields");
         assert!(app1.starts_with(b"Exif\0\0"));
         let out = Reader::new().read_raw(app1[6..].to_vec()).unwrap();
 
@@ -159,6 +167,7 @@ mod tests {
         assert_eq!(get(Tag::Orientation).unwrap().value.get_uint(0), Some(1));
         assert!(get(Tag::MakerNote).is_none(), "vendor data must not be copied");
         assert!(get(Tag::Software).is_some());
+        assert_eq!(get(Tag::ColorSpace).unwrap().value.get_uint(0), Some(0xFFFF));
     }
 
     #[test]
@@ -175,6 +184,6 @@ mod tests {
         let mut src = Cursor::new(Vec::new());
         writer.write(&mut src, true).unwrap();
         let source = Reader::new().read_raw(src.into_inner()).unwrap();
-        assert!(app1_from(&source).is_none());
+        assert!(app1_from(&source, 1).is_none());
     }
 }

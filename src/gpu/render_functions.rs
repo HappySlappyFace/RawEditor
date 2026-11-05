@@ -1,6 +1,7 @@
 /// Phase 95: Standalone rendering functions that work with SharedContext + ImageResources
 /// These replace the old RenderPipeline methods
 use super::shared::{ImageResources, SharedContext};
+use crate::core::output_space::OutputSpace;
 use iced_wgpu::wgpu;
 
 /// Patch just the `view_rect` field of the already-uploaded uniform block.
@@ -21,6 +22,14 @@ fn write_view_rect(context: &SharedContext, resources: &ImageResources, view_rec
         VIEW_RECT_OFFSET,
         bytemuck::cast_slice(&view_rect),
     );
+}
+
+/// Select the colour space the next renders encode into (export only; see
+/// `core::output_space`). A 4-byte targeted write like `write_view_rect`:
+/// `update_uniforms` always writes 0 (sRGB), so the display is unaffected.
+pub fn write_output_space(context: &SharedContext, resources: &ImageResources, space: OutputSpace) {
+    const OFFSET: u64 = std::mem::offset_of!(super::params::GpuEditParams, output_space) as u64;
+    context.queue.write_buffer(&resources.uniform_buffer, OFFSET, bytemuck::bytes_of(&space.shader_id()));
 }
 
 /// Render to bytes at specified resolution
@@ -1101,6 +1110,78 @@ mod tests {
         let (w, h) = res.oriented_dims(params.quarter_turns);
         let (bytes, _, _) = render_to_bytes(ctx, &res, w, h, FULL_VIEW_RECT).await;
         (bytes.to_vec(), w, h)
+    }
+
+    /// Every export colour space must describe the same picture: read back
+    /// through `core::output_space` (the matrices and curves its ICC profile
+    /// states), a colour sRGB can hold comes out the same from all four. A
+    /// shader matrix or curve that drifted from the profile — the export
+    /// would then display wrong in every colour-managed viewer — fails here.
+    #[test]
+    #[ignore]
+    fn export_colour_spaces_agree_on_colours_srgb_can_hold() {
+        use crate::core::output_space::OutputSpace;
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).build().unwrap();
+        rt.block_on(async {
+            let ctx = SharedContext::new().await.unwrap();
+            let raw = crate::raw::loader::load_raw_data(test_raw_path()).await.unwrap();
+            let params = EditParams { saturation: 30.0, ..EditParams::default() };
+            let as_shot = crate::color::as_shot_kelvin_tint(&raw);
+            let (kelvin, _t, wb) =
+                crate::color::solve_wb(&params, as_shot, raw.dcp_profile.as_deref(), raw.color_matrix);
+            let dcp = raw.dcp_profile.as_ref().map(|d| {
+                crate::raw::dcp::interpolate_at_temperature(d, kelvin, crate::core::tonemap::ToneSettings::from_params(&params))
+            });
+            let fm = dcp.as_ref().map(|i| i.camera_to_prophoto).unwrap_or_else(|| {
+                crate::color::calculate_cam_to_srgb(raw.color_matrix, raw.wb_multipliers, raw.color_matrix_is_d65)
+            });
+            let res = ImageResources::new(&ctx, 1, &raw.data, raw.width, raw.height, &params,
+                raw.wb_multipliers, fm, raw.cfa_pattern, raw.black_levels, raw.white_level,
+                dcp.as_ref(), Some(640), raw.orientation, raw.lens_context.clone()).expect("image resources");
+            res.update_uniforms(&ctx, &params, dcp.as_ref(), wb);
+            let (w, h) = res.oriented_dims(params.quarter_turns);
+
+            // Linear sRGB of every pixel, read back through the space's own
+            // curve and matrix.
+            let mut renders = Vec::new();
+            for space in OutputSpace::ALL {
+                write_output_space(&ctx, &res, space);
+                let (samples, _, _) = render_to_bytes_16bit(&ctx, &res, w, h).await;
+                let back = space.space_to_srgb_matrix();
+                let lin: Vec<[f32; 3]> = samples
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
+                    .map(|p| {
+                        let v = [0, 1, 2].map(|i| space.decode(p[i] as f32 / 65535.0));
+                        crate::color::mat3_apply(&back, v)
+                    })
+                    .collect();
+                renders.push((space, lin));
+            }
+            write_output_space(&ctx, &res, OutputSpace::Srgb);
+
+            let srgb = &renders[0].1;
+            // Colours well inside sRGB: no gamut map touched them anywhere.
+            let inside: Vec<usize> = (0..srgb.len())
+                .filter(|&i| {
+                    let lab = crate::core::perceptual::linear_srgb_to_oklab(srgb[i]);
+                    lab[0] > 0.05 && lab[0] < 0.97 && lab[1].hypot(lab[2]) < 0.06
+                })
+                .collect();
+            assert!(inside.len() > srgb.len() / 4, "test image has too few ordinary colours");
+            for (space, lin) in &renders[1..] {
+                let mut errs: Vec<f32> = inside
+                    .iter()
+                    .map(|&i| (0..3).map(|c| (lin[i][c] - srgb[i][c]).abs()).fold(0.0, f32::max))
+                    .collect();
+                errs.sort_by(f32::total_cmp);
+                let p99 = errs[errs.len() * 99 / 100];
+                let mean = errs.iter().sum::<f32>() / errs.len() as f32;
+                eprintln!("{space}: mean {mean:.2e}, p99 {p99:.2e} over {} px", errs.len());
+                assert!(mean < 3e-4 && p99 < 2e-3, "{space} disagrees with sRGB: mean {mean}, p99 {p99}");
+            }
+        });
     }
 
     fn luma(p: &[u8]) -> f64 {

@@ -311,6 +311,8 @@ pub struct ExportJob {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExportSettings {
     pub format: ExportFormat,
+    /// Colour space the pixels are encoded in and tagged with (ICC profile).
+    pub color_space: crate::core::output_space::OutputSpace,
     pub quality: u8,
     pub resize: bool,
     pub max_width: u32,
@@ -322,6 +324,7 @@ impl Default for ExportSettings {
     fn default() -> Self {
         Self {
             format: ExportFormat::Jpeg,
+            color_space: crate::core::output_space::OutputSpace::Srgb,
             quality: 80,
             resize: false,
             max_width: 2048,

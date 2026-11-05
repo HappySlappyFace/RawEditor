@@ -131,7 +131,11 @@ pub struct GpuEditParams {
     sharpening: f32,
     sharpen_masking: f32,
     pub rotation: f32,
-    _pad_phase_1: f32,
+    /// Export colour space (`OutputSpace::shader_id`): 0 = sRGB, the only
+    /// value the display uses. Set per export by
+    /// `render_functions::write_output_space`, never by `update_uniforms`.
+    /// Former pad slot — no offset moved.
+    pub output_space: u32,
     pub crop: [f32; 4],
     pub is_cropping: u32,
     pub has_dcp: u32,
@@ -260,7 +264,7 @@ impl From<&EditParams> for GpuEditParams {
             sharpening: params.sharpening,
             sharpen_masking: params.sharpen_masking,
             rotation: params.rotation,
-            _pad_phase_1: 0.0,
+            output_space: 0,
             crop: params.crop,
             is_cropping: params.is_cropping,
             has_dcp: 0,

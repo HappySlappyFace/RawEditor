@@ -103,6 +103,28 @@ fn view_settings(editor: &RawEditor) -> Element<'_, Message> {
         ExportFormat::Jpeg => column![].into(),
     };
 
+    use crate::core::output_space::OutputSpace;
+    let color_space = row![
+        body_text("Colour space".to_string()),
+        iced::widget::Space::with_width(Length::Fill),
+        iced::widget::pick_list(OutputSpace::ALL, Some(s.color_space), Message::SetExportColorSpace)
+            .text_size(12)
+            .padding([4, 8])
+            .width(Length::Fixed(150.0))
+            .style(ui::styles::pick_list_style)
+            .menu_style(ui::styles::pick_list_menu_style),
+    ]
+    .align_y(Alignment::Center);
+    let color_space_note = hint(
+        match s.color_space {
+            OutputSpace::Srgb => "For the web and most screens.",
+            OutputSpace::DisplayP3 => "Wider gamut for recent phones, Macs and HDR-era monitors.",
+            OutputSpace::AdobeRgb => "Wider greens and cyans, for print workflows.",
+            OutputSpace::ProPhoto => "Widest — for further editing. Use TIFF: 8 bits band in it.",
+        }
+        .to_string(),
+    );
+
     let resize_field: Element<'_, Message> = if s.resize {
         row![
             body_text("Max long edge".to_string()),
@@ -126,6 +148,8 @@ fn view_settings(editor: &RawEditor) -> Element<'_, Message> {
         format_row,
         quality,
         bit_depth_note,
+        color_space,
+        color_space_note,
         iced::widget::Space::with_height(Length::Fixed(8.0)),
         section_header("Size"),
         checkbox("Resize long edge", s.resize)

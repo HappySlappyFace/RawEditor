@@ -42,7 +42,7 @@ There is no separate frontend build — this is a single native Rust binary (no 
   `eval_tests.rs` (ignored GPU quality tests against synthetic ground truth — see §G)
 - `src/raw/` — RAW decoding (`loader`), DCP profiles (`dcp`), embedded-JPEG extraction + cache tiers (`jpeg`, `processor`), EXIF carried into exports (`exif`). kamadak-exif only opens standard TIFF containers — RW2 (`IIU`) and ORF (`IIRO`) come back empty — so the loader fills every gap from rawler's own metadata parse (`ExifInfo::fill_from`), and thumbnail orientation falls back the same way; without it those files had no focal length (so no lens profile), no exposure info and no rotation. `RAW_EXTENSIONS` is the importable set — Bayer formats only, since the debayer pass assumes a 2×2 CFA (the loader rejects anything else with a reason)
 - `src/database/` — SQLite schema, queries, models (the image catalog)
-- `src/core/` — cross-cutting types, histogram computation, logging/tracing setup, profiler, user settings, `paths` (the data and cache folders — every on-disk path derives from it), `viewport.rs` (see §D), and the CPU halves of the editing features: `noise` (per-image noise model), `haze` (dehaze airlight + transmission map), `highlights` (clipped-highlight colour correction), `curves` (point curves → LUT), `perceptual` (Oklab colour controls, §B3), `lens` (lensfun DB, lens/defringe params → shader block), `lensfun` (downloading/updating that DB), `camera_profiles` (installed DCPs, the per-image choice, RawTherapee downloads — see §B), `brush` (mask strokes) — see §G — and, Linux only, `desktop` (the desktop entry that gives a Wayland window its taskbar icon: Wayland windows carry none, so the app keeps `~/.local/share/applications/raw-editor.desktop` pointing at the running binary; the window's app id must stay equal to its file name)
+- `src/core/` — cross-cutting types, histogram computation, logging/tracing setup, profiler, user settings, `paths` (the data and cache folders — every on-disk path derives from it), `viewport.rs` (see §D), and the CPU halves of the editing features: `noise` (per-image noise model), `haze` (dehaze airlight + transmission map), `highlights` (clipped-highlight colour correction), `curves` (point curves → LUT), `perceptual` (Oklab colour controls, §B3), `output_space` (export colour spaces + generated ICC profiles, §B3), `lens` (lensfun DB, lens/defringe params → shader block), `lensfun` (downloading/updating that DB), `camera_profiles` (installed DCPs, the per-image choice, RawTherapee downloads — see §B), `brush` (mask strokes) — see §G — and, Linux only, `desktop` (the desktop entry that gives a Wayland window its taskbar icon: Wayland windows carry none, so the app keeps `~/.local/share/applications/raw-editor.desktop` pointing at the running binary; the window's app id must stay equal to its file name)
 - `src/ui/` — reusable iced widgets (filmstrip, histogram view, icons, palette/styles, profiler graph), plus `preview_renderer.rs` + `viewport.wgsl` (the develop viewport shader widget and its crop/mask canvas overlay), and `motion.rs` + `widgets/` (animation — see §H)
 - `src/color.rs` — color space math (matrices, conversions) shared by CPU and GPU paths
 
@@ -128,6 +128,20 @@ shader's `ok_*`/`perceptual_*` functions, constants guarded by
   line to Ottosson's adaptive `L0` — the colour's own L for near-greys (so shadows
   are never lifted), white for overbrights (the path to white). It replaced three
   stages with three different rules; don't add a fourth.
+- **Export colour spaces** (`core::output_space`): sRGB, Display P3, Adobe RGB, ProPhoto.
+  The gamut map's target and the transfer curve follow `GpuEditParams.output_space`
+  (a former pad slot), which only export sets — by a targeted 4-byte write,
+  `render_functions::write_output_space` — so the display is always sRGB (id 0).
+  Matrices are computed from published primaries (Bradford to D50 for ProPhoto, `srgb_to_space_matrix`) and
+  mirrored as WGSL literals (`shader_output_space_constants_match_rust`); the ICC v4
+  profile is GENERATED from the same matrices, embedded in every format (JPEG APP2,
+  PNG iCCP, TIFF 34675 as UNDEFINED), and EXIF ColorSpace is 1 only for sRGB. A wide
+  space's gamut boundary is found by a ×1.2 march + bisection from sRGB's
+  (`max_saturation_in`): Halley diverges for ProPhoto's imaginary primaries, and along
+  a few of its hues a channel dips negative and recovers, so the march must stay fine.
+  Point curves are applied in sRGB encoding for every space, so greys match the screen.
+  `export_colour_spaces_agree_on_colours_srgb_can_hold` (ignored, GPU) reads each
+  export back through the profile's maths and checks they agree.
 - Every control is gated to an exact identity at its default — keep it that way.
 - The 8-bit entry point `fs_main` TPDF-dithers (±1 LSB, interleaved gradient noise);
   `fs_main_16` (16-bit TIFF) does not. Any new readback test comparing 8-bit renders

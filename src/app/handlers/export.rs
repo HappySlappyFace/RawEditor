@@ -11,6 +11,14 @@ pub fn handle_set_export_format(editor: &mut RawEditor, format: ExportFormat) ->
     Task::none()
 }
 
+pub fn handle_set_export_color_space(
+    editor: &mut RawEditor,
+    space: crate::core::output_space::OutputSpace,
+) -> Task<Message> {
+    editor.export_settings.color_space = space;
+    Task::none()
+}
+
 pub fn handle_set_export_quality(editor: &mut RawEditor, quality: u8) -> Task<Message> {
     editor.export_settings.quality = quality;
     Task::none()
@@ -472,6 +480,9 @@ pub fn handle_export_pipeline_ready(
                 .map(|stem| stem.to_string_lossy().into_owned())
                 .unwrap_or_else(|| format!("image_{}", image_id));
 
+            // Encode into the chosen space. Per-export resources, so this
+            // never reaches the display's uniform buffer.
+            crate::gpu::render_functions::write_output_space(&context, &resources, settings.color_space);
             Task::perform(
                 async move {
                     let pixels = if settings.format == ExportFormat::Tiff {
@@ -620,6 +631,26 @@ enum ExportPixels {
     Rgb16(Vec<u16>),
 }
 
+/// TIFF tag 34675, InterColorProfile.
+const TIFF_ICC_PROFILE: u16 = 34675;
+
+/// An ICC profile as a TIFF value. The tiff crate writes `[u8]` as BYTE;
+/// the TIFF/EP and ICC specifications give this tag type UNDEFINED.
+struct IccBytes<'a>(&'a [u8]);
+
+impl tiff::encoder::TiffValue for IccBytes<'_> {
+    const BYTE_LEN: u8 = 1;
+    const FIELD_TYPE: tiff::tags::Type = tiff::tags::Type::UNDEFINED;
+
+    fn count(&self) -> usize {
+        self.0.len()
+    }
+
+    fn data(&self) -> std::borrow::Cow<'_, [u8]> {
+        std::borrow::Cow::Borrowed(self.0)
+    }
+}
+
 async fn save_export_async(
     filename: String,
     source: Option<PathBuf>,
@@ -657,12 +688,19 @@ async fn save_export_async(
         let file = File::create(&output_path).map_err(|e| e.to_string())?;
         let mut writer = BufWriter::new(file);
 
+        // Every format carries the profile, sRGB included: untagged files
+        // are only *assumed* to be sRGB, and the wide spaces are unreadable
+        // without one.
+        let icc = settings.color_space.icc_profile();
+
         let encoded = (|| -> Result<(), String> {
             match (settings.format, pixels) {
                 (ExportFormat::Png, ExportPixels::Rgba8(bytes)) => {
-                    let mut encoder = png::Encoder::new(&mut writer, width, height);
-                    encoder.set_color(png::ColorType::Rgba);
-                    encoder.set_depth(png::BitDepth::Eight);
+                    let mut info = png::Info::with_size(width, height);
+                    info.color_type = png::ColorType::Rgba;
+                    info.bit_depth = png::BitDepth::Eight;
+                    info.icc_profile = Some(std::borrow::Cow::Borrowed(&icc));
+                    let encoder = png::Encoder::with_info(&mut writer, info).map_err(|e| e.to_string())?;
                     let mut png_writer = encoder.write_header().map_err(|e| e.to_string())?;
                     png_writer.write_image_data(&bytes).map_err(|e| e.to_string())?;
                     // `finish` rather than drop: dropping swallows the error.
@@ -673,11 +711,15 @@ async fn save_export_async(
                     // Capture date, camera, lens and exposure from the RAW, so
                     // the export sorts and reads like the original. Best
                     // effort: a RAW without readable EXIF still exports.
-                    if let Some(app1) = source.as_deref().and_then(crate::raw::exif::export_app1) {
+                    let color_space = settings.color_space.exif_color_space();
+                    if let Some(app1) =
+                        source.as_deref().and_then(|p| crate::raw::exif::export_app1(p, color_space))
+                    {
                         if let Err(e) = encoder.add_app_segment(1, &app1) {
                             tracing::warn!("Exporting without EXIF: {e}");
                         }
                     }
+                    encoder.add_icc_profile(&icc).map_err(|e| e.to_string())?;
                     // Encoded straight from RGBA — the encoder ignores alpha.
                     // The RGB repack this used to do was a third full-frame
                     // buffer (~72 MB at 24 MP) alive next to the readback copy.
@@ -686,10 +728,15 @@ async fn save_export_async(
                         .map_err(|e| e.to_string())?;
                 }
                 (ExportFormat::Tiff, ExportPixels::Rgb16(samples)) => {
-                    tiff::encoder::TiffEncoder::new(&mut writer)
-                        .map_err(|e| e.to_string())?
-                        .write_image::<tiff::encoder::colortype::RGB16>(width, height, &samples)
+                    let mut tiff = tiff::encoder::TiffEncoder::new(&mut writer).map_err(|e| e.to_string())?;
+                    let mut image = tiff
+                        .new_image::<tiff::encoder::colortype::RGB16>(width, height)
                         .map_err(|e| e.to_string())?;
+                    image
+                        .encoder()
+                        .write_tag(tiff::tags::Tag::Unknown(TIFF_ICC_PROFILE), IccBytes(&icc))
+                        .map_err(|e| e.to_string())?;
+                    image.write_data(&samples).map_err(|e| e.to_string())?;
                 }
                 (format, _) => {
                     return Err(format!("Export pixel buffer does not match format {format}"));
@@ -812,6 +859,55 @@ mod tests {
 
     /// `File::create` truncates, so without uniquifying, two source folders
     /// holding the same stem meant the second export destroyed the first.
+    /// Every format carries the chosen space's ICC profile, byte for byte —
+    /// without it a wide-gamut export displays desaturated and wrong.
+    #[test]
+    fn every_format_embeds_the_colour_spaces_profile() {
+        use crate::core::output_space::OutputSpace;
+        let dir = std::env::temp_dir().join(format!("raw-editor-icc-{}", std::process::id()));
+        let rt = tokio::runtime::Builder::new_current_thread().build().expect("runtime");
+        let space = OutputSpace::DisplayP3;
+        let want = space.icc_profile();
+        for format in [ExportFormat::Jpeg, ExportFormat::Png, ExportFormat::Tiff] {
+            let settings = ExportSettings {
+                format,
+                color_space: space,
+                base_path: dir.clone(),
+                subfolder: String::new(),
+                ..ExportSettings::default()
+            };
+            let pixels = match format {
+                ExportFormat::Tiff => ExportPixels::Rgb16(vec![30_000; 2 * 2 * 3]),
+                _ => ExportPixels::Rgba8(vec![128; 2 * 2 * 4]),
+            };
+            let path = rt
+                .block_on(save_export_async(format!("icc_{format}"), None, pixels, 2, 2, settings))
+                .expect("saved");
+            let got = match format {
+                ExportFormat::Jpeg => {
+                    let bytes = std::fs::read(&path).expect("read");
+                    let at = bytes.windows(12).position(|w| w == b"ICC_PROFILE\0").expect("APP2 ICC segment");
+                    // The segment length (counting itself) sits just before
+                    // the identifier; then a sequence number and a count.
+                    let len = u16::from_be_bytes([bytes[at - 2], bytes[at - 1]]) as usize;
+                    assert_eq!((bytes[at + 12], bytes[at + 13]), (1, 1), "one chunk");
+                    bytes[at + 14..at - 2 + len].to_vec()
+                }
+                ExportFormat::Png => {
+                    let decoder = png::Decoder::new(std::fs::File::open(&path).expect("open"));
+                    let reader = decoder.read_info().expect("png");
+                    reader.info().icc_profile.as_ref().expect("iCCP chunk").to_vec()
+                }
+                ExportFormat::Tiff => {
+                    let mut decoder = tiff::decoder::Decoder::new(std::fs::File::open(&path).expect("open")).expect("tiff");
+                    decoder.get_tag_u8_vec(tiff::tags::Tag::Unknown(TIFF_ICC_PROFILE)).expect("ICC tag")
+                }
+            };
+            assert_eq!(got, want, "{format}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn output_path_avoids_clobbering_an_existing_file() {
         let dir = std::env::temp_dir().join(format!("raw-editor-export-{}", std::process::id()));

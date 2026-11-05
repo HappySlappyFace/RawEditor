@@ -346,34 +346,101 @@ pub fn gamut_compress(d: f32) -> f32 {
     GAMUT_THRESHOLD + s * x / (1.0 + x.powf(GAMUT_POWER)).powf(1.0 / GAMUT_POWER)
 }
 
-/// Lightness and chroma of the most saturated colour sRGB holds at hue
-/// direction `(a, b)` — the cusp of the gamut's L–C cross-section.
+/// LMS → linear RGB of the output space whose matrix from linear sRGB is
+/// `from_srgb` (`OutputSpace::srgb_to_space_matrix`). The gamut functions below
+/// take this: Oklab itself does not depend on the RGB space, only the
+/// boundary being mapped to does.
+pub fn lms_to_output(from_srgb: &[f32; 9]) -> [f32; 9] {
+    crate::color::mat3_mul(from_srgb, &OK_M1_INV)
+}
+
+/// Cube-root-LMS hue derivative `(k_l, k_m, k_s)`: along hue `(a, b)` at
+/// L = 1, the LMS cube roots are `1 + s·k` for saturation `s`.
+fn hue_k(a: f32, b: f32) -> [f32; 3] {
+    [
+        0.396_337_78 * a + 0.215_803_76 * b,
+        -0.105_561_346 * a - 0.063_854_17 * b,
+        -0.089_484_18 * a - 1.291_485_5 * b,
+    ]
+}
+
+/// Output-space RGB at L = 1, saturation `s`, along `k`.
+fn rgb_along(lms_to: &[f32; 9], k: [f32; 3], s: f32) -> [f32; 3] {
+    let q = k.map(|k| 1.0 + s * k);
+    apply(lms_to, q.map(|q| q * q * q))
+}
+
+/// How the wide-gamut boundary is found (`max_saturation_in`): march out
+/// from sRGB's limit by `GAMUT_MARCH` per step until a channel goes
+/// negative, then bisect. **Mirrored as `GAMUT_MARCH`,
+/// `GAMUT_MARCH_STEPS`, `GAMUT_BISECT_STEPS`.**
+pub const GAMUT_MARCH: f32 = 1.2;
+pub const GAMUT_MARCH_STEPS: u32 = 18;
+pub const GAMUT_BISECT_STEPS: u32 = 20;
+
+/// `max_saturation` for any output gamut that contains sRGB.
+///
+/// sRGB itself is Ottosson's fit. A wider space's limit lies beyond it —
+/// up to 17× for ProPhoto, whose primaries are imaginary — and Halley's
+/// method from there can diverge or land on a later root. Worse, along a
+/// few ProPhoto hues a channel dips below zero and comes back (the line of
+/// constant Oklab hue is a curve in RGB), so the step must be fine enough
+/// not to jump the first crossing. A ×1.2 march and 20 bisections agree
+/// with the exact cubic roots to ~2e-7 at every hue in every space.
+pub fn max_saturation_in(a: f32, b: f32, lms_to: &[f32; 9]) -> f32 {
+    let s_srgb = max_saturation(a, b);
+    if *lms_to == OK_M1_INV {
+        return s_srgb;
+    }
+    let k = hue_k(a, b);
+    let inside = |s: f32| rgb_along(lms_to, k, s).iter().all(|&v| v >= 0.0);
+    // A little inside sRGB's limit: Ottosson's fit is a few % high for blues.
+    let mut lo = 0.9 * s_srgb;
+    let mut hi = lo * GAMUT_MARCH;
+    for _ in 0..GAMUT_MARCH_STEPS {
+        if !inside(hi) {
+            break;
+        }
+        lo = hi;
+        hi *= GAMUT_MARCH;
+    }
+    for _ in 0..GAMUT_BISECT_STEPS {
+        let mid = 0.5 * (lo + hi);
+        if inside(mid) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    lo
+}
+
+/// Lightness and chroma of the most saturated colour the output gamut holds
+/// at hue direction `(a, b)` — the cusp of the gamut's L–C cross-section.
 /// Ottosson's `find_cusp`.
-pub fn find_cusp(a: f32, b: f32) -> (f32, f32) {
-    let s_cusp = max_saturation(a, b);
-    let rgb = oklab_to_linear_srgb([1.0, s_cusp * a, s_cusp * b]);
+pub fn find_cusp(a: f32, b: f32, lms_to: &[f32; 9]) -> (f32, f32) {
+    let s_cusp = max_saturation_in(a, b, lms_to);
+    let rgb = rgb_along(lms_to, hue_k(a, b), s_cusp);
     let l_cusp = (1.0 / rgb[0].max(rgb[1]).max(rgb[2])).cbrt();
     (l_cusp, l_cusp * s_cusp)
 }
 
-/// Where the line from `(l0, 0)` through `(l1, c1)` meets the sRGB gamut
+/// Where the line from `(l0, 0)` through `(l1, c1)` meets the output gamut
 /// boundary, at hue direction `(a, b)`, as the parameter `t` with the
 /// boundary at `(l0 + t·(l1 − l0), t·c1)`: `t < 1` means `(l1, c1)` is
 /// outside. Ottosson's `find_gamut_intersection`: below the cusp the
 /// boundary is the straight edge from black (the cone again); above it a
 /// triangle estimate polished by one Halley step on whichever channel
 /// reaches 1 first.
-pub fn gamut_intersection(a: f32, b: f32, l1: f32, c1: f32, l0: f32) -> f32 {
-    let (cusp_l, cusp_c) = find_cusp(a, b);
+pub fn gamut_intersection(a: f32, b: f32, l1: f32, c1: f32, l0: f32, lms_to: &[f32; 9]) -> f32 {
+    let (cusp_l, cusp_c) = find_cusp(a, b, lms_to);
     if (l1 - l0) * cusp_c - (cusp_l - l0) * c1 <= 0.0 {
         return cusp_c * l0 / (c1 * cusp_l + cusp_c * (l0 - l1));
     }
     let mut t = cusp_c * (l0 - 1.0) / (c1 * (cusp_l - 1.0) + cusp_c * (l0 - l1));
 
     let dl = l1 - l0;
-    let k_l = 0.396_337_78 * a + 0.215_803_76 * b;
-    let k_m = -0.105_561_346 * a - 0.063_854_17 * b;
-    let k_s = -0.089_484_18 * a - 1.291_485_5 * b;
+    let [k_l, k_m, k_s] = hue_k(a, b);
     let l_dt = dl + c1 * k_l;
     let m_dt = dl + c1 * k_m;
     let s_dt = dl + c1 * k_s;
@@ -388,7 +455,7 @@ pub fn gamut_intersection(a: f32, b: f32, l1: f32, c1: f32, l0: f32) -> f32 {
     let d2 = [6.0 * l_dt * l_dt * l_, 6.0 * m_dt * m_dt * m_, 6.0 * s_dt * s_dt * s_];
     let mut step = f32::MAX;
     for row in 0..3 {
-        let w = &OK_M1_INV[row * 3..row * 3 + 3];
+        let w = &lms_to[row * 3..row * 3 + 3];
         let f = w[0] * lms[0] + w[1] * lms[1] + w[2] * lms[2] - 1.0;
         let f1 = w[0] * d1[0] + w[1] * d1[1] + w[2] * d1[2];
         let f2 = w[0] * d2[0] + w[1] * d2[1] + w[2] * d2[2];
@@ -418,6 +485,14 @@ pub fn gamut_intersection(a: f32, b: f32, l1: f32, c1: f32, l0: f32) -> f32 {
 /// is the path to white: a light too bright for its hue fades to white
 /// rather than flattening into a neon primary.
 pub fn gamut_map(rgb: [f32; 3]) -> [f32; 3] {
+    gamut_map_to(rgb, &crate::core::output_space::OutputSpace::Srgb.srgb_to_space_matrix())
+}
+
+/// `gamut_map` into another output space: `rgb` is the pass's linear sRGB,
+/// `from_srgb` the output space's matrix from it, and the result is linear
+/// RGB in that space.
+pub fn gamut_map_to(rgb: [f32; 3], from_srgb: &[f32; 9]) -> [f32; 3] {
+    let out = apply(from_srgb, rgb);
     let lab = linear_srgb_to_oklab(rgb);
     let l = lab[0];
     if l <= 0.0 {
@@ -426,20 +501,22 @@ pub fn gamut_map(rgb: [f32; 3]) -> [f32; 3] {
     let c = lab[1].hypot(lab[2]);
     if c <= 1e-6 {
         // A grey: in gamut unless brighter than white.
-        return if l <= 1.0 { rgb.map(|v| v.clamp(0.0, 1.0)) } else { [1.0; 3] };
+        return if l <= 1.0 { out.map(|v| v.clamp(0.0, 1.0)) } else { [1.0; 3] };
     }
+    let lms_to = lms_to_output(from_srgb);
     let (da, db) = (lab[1] / c, lab[2] / c);
     let ld = l - 0.5;
     let e1 = 0.5 + ld.abs() + GAMUT_L0_ALPHA * c;
     let l0 = 0.5 * (1.0 + ld.signum() * (e1 - (e1 * e1 - 2.0 * ld.abs()).max(0.0).sqrt()));
-    let t = gamut_intersection(da, db, l, c, l0);
+    let t = gamut_intersection(da, db, l, c, l0, &lms_to);
     let d = 1.0 / t.max(1e-6);
     if d <= GAMUT_THRESHOLD {
-        return rgb;
+        return out;
     }
     let f = gamut_compress(d).min(1.0) / d;
     let (l2, c2) = (l0 + f * (l - l0), f * c);
-    oklab_to_linear_srgb([l2, da * c2, db * c2]).map(|v| v.clamp(0.0, 1.0))
+    let lms_ = apply(&OK_M2_INV, [l2, da * c2, db * c2]);
+    apply(&lms_to, lms_.map(|q| q * q * q)).map(|v| v.clamp(0.0, 1.0))
 }
 
 #[cfg(test)]
@@ -674,7 +751,7 @@ mod tests {
     fn the_cusp_sits_on_the_gamut_corner() {
         for i in 0..72 {
             let h = (i as f32 * 5.0).to_radians();
-            let (l, c) = find_cusp(h.cos(), h.sin());
+            let (l, c) = find_cusp(h.cos(), h.sin(), &OK_M1_INV);
             let rgb = oklab_to_linear_srgb([l, c * h.cos(), c * h.sin()]);
             let hi = rgb[0].max(rgb[1]).max(rgb[2]);
             let lo = rgb[0].min(rgb[1]).min(rgb[2]);
@@ -688,7 +765,7 @@ mod tests {
             let h = (i as f32 * 5.0).to_radians();
             let (a, b) = (h.cos(), h.sin());
             for &(l1, c1, l0) in &[(0.3, 0.4, 0.3), (0.9, 0.3, 0.7), (0.6, 0.5, 0.5), (1.2, 0.2, 0.95)] {
-                let t = gamut_intersection(a, b, l1, c1, l0);
+                let t = gamut_intersection(a, b, l1, c1, l0, &OK_M1_INV);
                 let (l, c) = (l0 + t * (l1 - l0), t * c1);
                 let rgb = oklab_to_linear_srgb([l, c * a, c * b]);
                 let lo = rgb[0].min(rgb[1]).min(rgb[2]);
@@ -770,6 +847,92 @@ mod tests {
                 prev = Some(out);
             }
         }
+    }
+
+    /// The generic solver agrees with Ottosson's sRGB fit, and in every
+    /// output space lands on that space's boundary.
+    #[test]
+    fn max_saturation_in_finds_each_spaces_boundary() {
+        use crate::core::output_space::OutputSpace;
+        for i in 0..360 {
+            let h = (i as f32).to_radians();
+            let (a, b) = (h.cos(), h.sin());
+            let srgb = max_saturation_in(a, b, &OK_M1_INV);
+            assert!((srgb - max_saturation(a, b)).abs() < 1e-3 * srgb, "{i}°");
+            for space in OutputSpace::ALL {
+                let lms_to = lms_to_output(&space.srgb_to_space_matrix());
+                let s = max_saturation_in(a, b, &lms_to);
+                let rgb = rgb_along(&lms_to, hue_k(a, b), s);
+                let lo = rgb[0].min(rgb[1]).min(rgb[2]);
+                let hi = rgb[0].max(rgb[1]).max(rgb[2]);
+                assert!(lo.abs() < 2e-3 * hi, "{space} {i}°: {rgb:?}");
+                // Every space here contains sRGB.
+                assert!(s >= srgb * 0.999, "{space} {i}°: {s} < {srgb}");
+            }
+        }
+    }
+
+    #[test]
+    fn gamut_map_to_fits_every_output_space_at_constant_hue() {
+        use crate::core::output_space::OutputSpace;
+        let mut inputs = samples();
+        for i in 0..72 {
+            let h = (i as f32 * 5.0).to_radians();
+            for &(l, s) in &[(0.4, 1.2), (0.6, 0.8), (0.8, 0.5), (0.95, 0.3), (1.1, 0.2)] {
+                inputs.push(oklab_to_linear_srgb([l, h.cos() * s * l, h.sin() * s * l]));
+            }
+        }
+        for space in OutputSpace::ALL {
+            let m = space.srgb_to_space_matrix();
+            let back = |v: [f32; 3]| {
+                // Output-space linear → linear sRGB, to measure hue.
+                apply(&invert3(&m), v)
+            };
+            for &rgb in &inputs {
+                let out = gamut_map_to(rgb, &m);
+                assert!(in_unit_cube(out), "{space}: {rgb:?} → {out:?}");
+                let srgb = back(out);
+                let lab = linear_srgb_to_oklab(srgb);
+                if lab[1].hypot(lab[2]) > 0.02 {
+                    assert!(hue_diff(hue(srgb), hue(rgb)) < 1.0, "{space}: {rgb:?}");
+                }
+            }
+            // A colour inside sRGB is inside every wider space: untouched.
+            let inside = [0.5, 0.4, 0.3];
+            let want = apply(&m, inside);
+            assert!(close(gamut_map_to(inside, &m), want, 1e-6), "{space}");
+        }
+    }
+
+    /// A saturated colour sRGB cannot hold but Display P3 can survives a P3
+    /// export with more chroma than an sRGB one keeps.
+    #[test]
+    fn a_wider_space_keeps_more_of_a_wide_colour() {
+        use crate::core::output_space::OutputSpace;
+        let wide = [1.2, -0.08, -0.04]; // a red past sRGB's primary
+        let p3 = OutputSpace::DisplayP3.srgb_to_space_matrix();
+        let chroma = |srgb: [f32; 3]| {
+            let l = linear_srgb_to_oklab(srgb);
+            l[1].hypot(l[2])
+        };
+        let via_p3 = apply(&invert3(&p3), gamut_map_to(wide, &p3));
+        assert!(chroma(via_p3) > chroma(gamut_map(wide)) + 0.01);
+    }
+
+    fn invert3(m: &[f32; 9]) -> [f32; 9] {
+        let det = m[0] * (m[4] * m[8] - m[5] * m[7]) - m[1] * (m[3] * m[8] - m[5] * m[6])
+            + m[2] * (m[3] * m[7] - m[4] * m[6]);
+        [
+            (m[4] * m[8] - m[5] * m[7]) / det,
+            (m[2] * m[7] - m[1] * m[8]) / det,
+            (m[1] * m[5] - m[2] * m[4]) / det,
+            (m[5] * m[6] - m[3] * m[8]) / det,
+            (m[0] * m[8] - m[2] * m[6]) / det,
+            (m[2] * m[3] - m[0] * m[5]) / det,
+            (m[3] * m[7] - m[4] * m[6]) / det,
+            (m[1] * m[6] - m[0] * m[7]) / det,
+            (m[0] * m[4] - m[1] * m[3]) / det,
+        ]
     }
 
     /// Dark colours keep their lightness: compression moves them towards

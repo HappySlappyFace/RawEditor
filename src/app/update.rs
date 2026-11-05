@@ -325,6 +325,7 @@ fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
 
         // Export
         Message::SetExportFormat(f) => handlers::export::handle_set_export_format(editor, f),
+        Message::SetExportColorSpace(c) => handlers::export::handle_set_export_color_space(editor, c),
         Message::SetExportQuality(q) => handlers::export::handle_set_export_quality(editor, q),
         Message::ToggleExportResize(b) => handlers::export::handle_toggle_export_resize(editor, b),
         Message::SetExportWidth(w) => handlers::export::handle_set_export_width(editor, w),
