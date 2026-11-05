@@ -1871,6 +1871,18 @@ mod tests {
     /// on some widget arguments, e.g. slider ranges).
     #[test]
     fn develop_view_builds_in_every_tool_state() {
+        // The whole sidebar, unoptimised, nests deeper than a test thread's
+        // default 2 MB stack (CI aborts with a stack overflow), so build it
+        // on a thread with room — the app's main thread has 8 MB.
+        std::thread::Builder::new()
+            .stack_size(16 << 20)
+            .spawn(develop_view_builds_in_every_tool_state_body)
+            .expect("spawn test thread")
+            .join()
+            .expect("develop view build panicked");
+    }
+
+    fn develop_view_builds_in_every_tool_state_body() {
         let mut e = RawEditor::new().0;
         e.selected_image_id = Some(1);
         e.editor_readiness = EditorReadiness::Ready(1);
