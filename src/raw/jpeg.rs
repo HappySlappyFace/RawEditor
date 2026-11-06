@@ -29,7 +29,7 @@ pub fn largest_embedded_jpeg(buffer: &[u8]) -> Option<&[u8]> {
         let rest = &buffer[start..];
         if let Some(len) = jpeg_len(rest) {
             let candidate = &rest[..len];
-            if largest.is_none_or(|best| candidate.len() > best.len()) {
+            if is_picture(candidate) && largest.is_none_or(|best| candidate.len() > best.len()) {
                 largest = Some(candidate);
             }
             // Skip the whole image, including any thumbnail nested in it.
@@ -44,6 +44,41 @@ pub fn largest_embedded_jpeg(buffer: &[u8]) -> Option<&[u8]> {
         }
     }
     largest.or(fallback)
+}
+
+/// Whether a well-formed JPEG is a picture rather than sensor data: an 8-bit
+/// baseline/extended/progressive DCT frame (SOF0–2) of 1 or 3 components.
+///
+/// Canon's CR2 stores the mosaic itself as a 12-bit *lossless* JPEG (SOF3,
+/// 2 components) — well-formed, and by far the largest JPEG in the file. It
+/// used to win, fail to decode, and leave the image without any cache tier.
+fn is_picture(jpeg: &[u8]) -> bool {
+    let mut i = 2;
+    while let (Some(&0xFF), Some(&marker)) = (jpeg.get(i), jpeg.get(i + 1)) {
+        if marker == 0xFF {
+            i += 1;
+            continue;
+        }
+        i += 2;
+        if marker == 0x01 || (0xD0..=0xD7).contains(&marker) {
+            continue;
+        }
+        let (Some(&hi), Some(&lo)) = (jpeg.get(i), jpeg.get(i + 1)) else {
+            return false;
+        };
+        match marker {
+            0xC0..=0xC2 => {
+                let precision = jpeg.get(i + 2).copied();
+                let components = jpeg.get(i + 7).copied();
+                return precision == Some(8) && matches!(components, Some(1 | 3));
+            }
+            // Any other frame type (lossless, hierarchical, arithmetic), or a
+            // scan before any frame header.
+            0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF | 0xDA => return false,
+            _ => i += u16::from_be_bytes([hi, lo]) as usize,
+        }
+    }
+    false
 }
 
 /// Byte length of the JPEG that starts at `buf[0]`, found by walking its
@@ -120,10 +155,39 @@ mod tests {
         let mut v = vec![0xFF, 0xD8, 0xFF, 0xE1];
         v.extend_from_slice(&((app.len() + 2) as u16).to_be_bytes());
         v.extend_from_slice(app);
+        v.extend_from_slice(&sof(0xC0, 8, 3));
         v.extend_from_slice(&[0xFF, 0xDA, 0x00, 0x02]);
         v.extend_from_slice(scan);
         v.extend_from_slice(&[0xFF, 0xD9]);
         v
+    }
+
+    /// A frame header: `marker`, sample `precision`, a 16×16 image of
+    /// `components` components.
+    fn sof(marker: u8, precision: u8, components: u8) -> Vec<u8> {
+        let mut v = vec![0xFF, marker];
+        v.extend_from_slice(&(8 + 3 * components as u16).to_be_bytes());
+        v.extend_from_slice(&[precision, 0, 16, 0, 16, components]);
+        for c in 0..components {
+            v.extend_from_slice(&[c + 1, 0x11, 0]);
+        }
+        v
+    }
+
+    /// CR2: the sensor data is a lossless JPEG far larger than the preview.
+    #[test]
+    fn lossless_sensor_data_never_beats_the_preview() {
+        let preview = jpeg(b"exif", &[0x42; 32]);
+        let mut raw = vec![0xFF, 0xD8];
+        raw.extend_from_slice(&sof(0xC3, 12, 2));
+        raw.extend_from_slice(&[0xFF, 0xDA, 0x00, 0x02]);
+        raw.extend_from_slice(&[0x13; 500]);
+        raw.extend_from_slice(&[0xFF, 0xD9]);
+        assert!(jpeg_len(&raw).is_some(), "the sensor JPEG is well-formed");
+
+        let mut bytes = preview.clone();
+        bytes.extend_from_slice(&raw);
+        assert_eq!(largest_embedded_jpeg(&bytes), Some(&preview[..]));
     }
 
     #[test]

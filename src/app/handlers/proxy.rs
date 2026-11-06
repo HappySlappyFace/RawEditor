@@ -72,14 +72,17 @@ enum Persist {
     Save(u64),
 }
 
-fn plan(proxy: Option<&EditedProxy>, current: &EditParams) -> Persist {
+/// `has_camera_thumb`: an image without one (its embedded preview could not
+/// be read) keeps even an unedited render on disk — it is the only thumbnail
+/// the image has.
+fn plan(proxy: Option<&EditedProxy>, current: &EditParams, has_camera_thumb: bool) -> Persist {
     let Some(proxy) = proxy else {
         return Persist::Nothing;
     };
     match proxy.params {
         Some(rendered) if rendered != edit_key(current) => Persist::Invalidate,
         _ if proxy.persisted => Persist::Nothing,
-        _ if !proxy.edited => Persist::Clear,
+        _ if !proxy.edited && has_camera_thumb => Persist::Clear,
         _ => Persist::Save(proxy.generation),
     }
 }
@@ -91,7 +94,7 @@ pub fn persist(editor: &mut RawEditor) -> Task<Message> {
     let Some(id) = editor.selected_image_id else {
         return Task::none();
     };
-    match plan(editor.edited_proxies.peek(&id), &editor.current_edit_params) {
+    match plan(editor.edited_proxies.peek(&id), &editor.current_edit_params, has_camera_thumb(editor, id)) {
         Persist::Nothing => Task::none(),
         Persist::Invalidate => {
             // Releasing a slider and moving straight on leaves the render of
@@ -132,7 +135,7 @@ fn write(editor: &mut RawEditor, id: i64) -> Task<Message> {
     let Some(proxy) = editor.edited_proxies.peek(&id) else {
         return Task::none();
     };
-    if !proxy.edited {
+    if !proxy.edited && has_camera_thumb(editor, id) {
         set_saved_path(editor, id, None);
         if let Some(proxy) = editor.edited_proxies.peek_mut(&id) {
             proxy.persisted = true;
@@ -158,7 +161,7 @@ pub fn persist_now(editor: &mut RawEditor) {
     let Some(id) = editor.selected_image_id else {
         return;
     };
-    match plan(editor.edited_proxies.peek(&id), &editor.current_edit_params) {
+    match plan(editor.edited_proxies.peek(&id), &editor.current_edit_params, has_camera_thumb(editor, id)) {
         Persist::Nothing => {}
         Persist::Invalidate => editor.invalidate_proxies(&[id]),
         Persist::Clear => {
@@ -186,6 +189,10 @@ pub fn handle_saved(editor: &mut RawEditor, id: i64, generation: u64, result: Re
         }
         Err(e) => tracing::warn!("Could not save the edited thumbnail of image {id}: {e}"),
     }
+}
+
+fn has_camera_thumb(editor: &RawEditor, id: i64) -> bool {
+    editor.images.iter().any(|img| img.id == id && img.cache_path_thumb.is_some())
 }
 
 /// Record (or clear) an image's saved proxy, in the catalogue and in memory.
@@ -328,14 +335,14 @@ mod tests {
     #[test]
     fn a_fresh_unsaved_edit_is_saved() {
         let p = proxy(Some(edited()), true, false);
-        assert_eq!(plan(Some(&p), &edited()), Persist::Save(7));
+        assert_eq!(plan(Some(&p), &edited(), true), Persist::Save(7));
     }
 
     #[test]
     fn an_already_saved_proxy_is_left_alone() {
         let p = proxy(Some(edited()), true, true);
-        assert_eq!(plan(Some(&p), &edited()), Persist::Nothing);
-        assert_eq!(plan(None, &edited()), Persist::Nothing);
+        assert_eq!(plan(Some(&p), &edited(), true), Persist::Nothing);
+        assert_eq!(plan(None, &edited(), true), Persist::Nothing);
     }
 
     /// Edits made while no usable render was captured (crop mode) leave the
@@ -344,7 +351,7 @@ mod tests {
     fn a_proxy_behind_the_edit_is_invalidated() {
         let p = proxy(Some(edited()), true, false);
         let moved = EditParams { exposure: 0.5, ..EditParams::default() };
-        assert_eq!(plan(Some(&p), &moved), Persist::Invalidate);
+        assert_eq!(plan(Some(&p), &moved, true), Persist::Invalidate);
     }
 
     /// The crop tool's flag is UI state: entering crop mode must not make an
@@ -354,13 +361,21 @@ mod tests {
         let p = proxy(Some(edited()), true, false);
         let mut cropping = edited();
         cropping.is_cropping = 1;
-        assert_eq!(plan(Some(&p), &cropping), Persist::Save(7));
+        assert_eq!(plan(Some(&p), &cropping, true), Persist::Save(7));
     }
 
     #[test]
     fn a_reset_image_clears_its_saved_thumbnail() {
         let p = proxy(Some(EditParams::default()), false, false);
-        assert_eq!(plan(Some(&p), &EditParams::default()), Persist::Clear);
+        assert_eq!(plan(Some(&p), &EditParams::default(), true), Persist::Clear);
+    }
+
+    /// Without a camera thumbnail the unedited render is the image's only
+    /// one, so it is saved rather than cleared.
+    #[test]
+    fn an_image_without_a_camera_thumbnail_keeps_its_unedited_render() {
+        let p = proxy(Some(EditParams::default()), false, false);
+        assert_eq!(plan(Some(&p), &EditParams::default(), false), Persist::Save(7));
     }
 
     #[test]

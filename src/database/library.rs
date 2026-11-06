@@ -277,13 +277,18 @@ impl Library {
     /// nothing ever claims a non-`pending` row again, so the images sat on
     /// "Queued..." with no thumbnail in every later session. Only safe at
     /// startup, before this session's workers exist.
+    ///
+    /// `failed` rows get one more try each launch too: a failure is usually
+    /// the embedded-preview finder not knowing a format yet (Canon's CR2 once),
+    /// and a fixed build should repair those images without a re-import. A
+    /// file that really is unreadable costs one read per launch.
     pub fn requeue_interrupted_cache_jobs(&self) -> SqlResult<usize> {
         let n = self.conn.execute(
-            "UPDATE images SET cache_status = 'pending' WHERE cache_status = 'processing'",
+            "UPDATE images SET cache_status = 'pending' WHERE cache_status IN ('processing', 'failed')",
             [],
         )?;
         if n > 0 {
-            tracing::warn!("Requeued {n} image(s) left mid-caching by a previous session");
+            tracing::warn!("Requeued {n} image(s) left mid-caching or failed by a previous session");
         }
         Ok(n)
     }
@@ -926,19 +931,25 @@ mod tests {
     }
 
     /// A row left `processing` by a session that quit mid-import must become
-    /// claimable again, or that image never gets a thumbnail.
+    /// claimable again, or that image never gets a thumbnail; so must one an
+    /// older build failed on.
     #[test]
     fn interrupted_cache_jobs_are_requeued() {
         let lib = in_memory_library();
         let a = lib.import_image("/a.nef", "a.nef").unwrap();
         let b = lib.import_image("/b.nef", "b.nef").unwrap();
+        let c = lib.import_image("/c.cr2", "c.cr2").unwrap();
         lib.conn
             .execute("UPDATE images SET cache_status = 'processing' WHERE id = ?1", [a])
             .unwrap();
+        lib.conn
+            .execute("UPDATE images SET cache_status = 'failed' WHERE id = ?1", [c])
+            .unwrap();
         lib.set_image_cache_paths(b, "/t", "/i", "/w").unwrap();
 
-        assert_eq!(lib.requeue_interrupted_cache_jobs().unwrap(), 1);
+        assert_eq!(lib.requeue_interrupted_cache_jobs().unwrap(), 2);
         assert_eq!(status_of(&lib, a).0, "pending");
+        assert_eq!(status_of(&lib, c).0, "pending");
         assert_eq!(status_of(&lib, b).0, "cached", "finished rows are left alone");
     }
 

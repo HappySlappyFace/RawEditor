@@ -1184,10 +1184,12 @@ impl RawEditor {
     ///
     /// An in-memory proxy is authoritative — it is the newest render. When it
     /// says "unedited" (the edit was just reset) the camera thumbnail wins
-    /// even over a saved edited one that has not been cleared yet.
+    /// even over a saved edited one that has not been cleared yet — unless
+    /// the camera has none (its preview could not be read, so the cache job
+    /// failed): then the render is the only picture there is, edited or not.
     pub fn thumbnail_handle(&self, img: &ImageData) -> Option<Handle> {
         if let Some(proxy) = self.edited_proxies.peek(&img.id) {
-            if proxy.edited {
+            if proxy.edited || img.cache_path_thumb.is_none() {
                 return Some(proxy.handle.clone());
             }
             return img.cache_path_thumb.as_ref().map(Handle::from_path);
@@ -1900,6 +1902,22 @@ mod tests {
         // ...including when it says the edit was just reset to defaults.
         e.edited_proxies.put(image.id, proxy(false));
         assert_eq!(e.thumbnail_handle(&image), Some(Handle::from_path("/c/thumb.jpg")));
+    }
+
+    /// A RAW whose embedded preview couldn't be read has no camera thumbnail;
+    /// its unedited render must fill the slot rather than leave it blank
+    /// until the user touches a slider.
+    #[test]
+    fn without_a_camera_thumbnail_an_unedited_render_is_shown() {
+        let mut e = catalog();
+        let mut image = e.images[0].clone();
+        image.cache_path_thumb = None;
+        assert_eq!(e.thumbnail_handle(&image), None);
+
+        let unedited = proxy(false);
+        let handle = unedited.handle.clone();
+        e.edited_proxies.put(image.id, unedited);
+        assert_eq!(e.thumbnail_handle(&image), Some(handle));
     }
 
     /// Undo / reset / paste in Library change an image's saved edits without
