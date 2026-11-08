@@ -202,7 +202,7 @@ struct EditParams {
 // crop changes. Like the crop rectangle, masks do not follow the straighten
 // rotation.
 struct Mask {
-    info: vec4<f32>,  // x: type (0 linear / 1 radial / 2 brush / 3 range), y: enabled, z: invert, w: feather
+    info: vec4<f32>,  // x: type (0 linear / 1 radial / 2 brush / 3 range / 4 AI), y: enabled, z: invert, w: feather
     geom: vec4<f32>,  // linear: ax, ay, bx, by;  radial: cx, cy, rx, ry
     adj0: vec4<f32>,  // exposure (EV), contrast, saturation, warmth
     adj1: vec4<f32>,  // highlights, shadows, tint, rotation (radians)
@@ -221,6 +221,11 @@ var brush_layers: texture_2d_array<f32>;
 
 @group(1) @binding(1)
 var<uniform> mask_block: MaskBlock;
+
+// AI masks' segmentation bitmaps, one layer per mask slot, in the same
+// oriented display frame as the brush layers (gpu/ai_mask.rs).
+@group(1) @binding(2)
+var ai_layers: texture_2d_array<f32>;
 
 // Group 2: Presence, all in sensor UV. The local-contrast bands
 // (gpu/local_contrast.rs): y = B0 (fine), z = B1 (texture base), log2 luma;
@@ -371,7 +376,10 @@ fn get_cam_luma(coords: vec2<i32>, dimensions: vec2<u32>) -> f32 {
 // sheared instead of rotated on any non-square image.
 fn mask_shape(m: Mask, p: vec2<f32>, aspect: f32) -> f32 {
     var w: f32;
-    if (m.info.x > 2.5) {
+    if (m.info.x > 3.5) {
+        // AI mask: its bitmap (sampled in mask_weight, which knows the slot).
+        w = 0.0;
+    } else if (m.info.x > 2.5) {
         // Range mask: the whole frame, narrowed only by its refinements.
         w = 1.0;
     } else if (m.info.x > 1.5) {
@@ -414,6 +422,9 @@ fn mask_shape(m: Mask, p: vec2<f32>, aspect: f32) -> f32 {
 // colour ranges respectively.
 fn mask_weight(m: Mask, idx: u32, p: vec2<f32>, aspect: f32, color0: vec3<f32>, cam0: vec3<f32>) -> f32 {
     var w = mask_shape(m, p, aspect);
+    if (m.info.x > 3.5) {
+        w = textureSampleLevel(ai_layers, lut_sampler, p, i32(idx), 0.0).r;
+    }
     if (m.adj2.y > 0.5) {
         w = w + textureSampleLevel(brush_layers, lut_sampler, p, i32(idx), 0.0).r;
     }

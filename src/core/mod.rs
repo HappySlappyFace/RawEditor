@@ -1,6 +1,7 @@
 pub mod brush;
 pub mod camera_profiles;
 pub mod curves;
+pub mod guided;
 #[cfg(target_os = "linux")]
 pub mod desktop;
 pub mod haze;

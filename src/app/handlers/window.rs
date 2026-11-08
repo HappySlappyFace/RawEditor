@@ -206,6 +206,13 @@ pub fn handle_modal_confirm(editor: &mut RawEditor) -> Task<Message> {
         // Help, Preferences and About have nothing to confirm; Enter closes
         // them, which is the least surprising thing a dialog can do.
         Modal::Help | Modal::Preferences | Modal::About => handle_close_modal(editor),
+        Modal::AiModel => match editor.models.offered {
+            Some(id) if editor.models.job.is_none() => crate::app::handlers::models::handle_download(editor, id),
+            _ => Task::none(),
+        },
+        Modal::AiDenoise => crate::app::handlers::ai_denoise::handle_apply(editor),
+        // No modal: Enter finishes an AI selection, if one is open.
+        Modal::None if editor.ai_select.is_some() => crate::app::handlers::ai_mask::handle_done(editor),
         Modal::None => Task::none(),
     }
 }
@@ -224,6 +231,8 @@ pub fn handle_escape(editor: &mut RawEditor) -> Task<Message> {
         editor.active_modal = Modal::None;
         editor.pending_delete_ids.clear();
         editor.pending_remove_folder = None;
+    } else if editor.ai_select.is_some() {
+        return crate::app::handlers::ai_mask::handle_cancel(editor);
     } else if editor.is_wb_picking {
         editor.is_wb_picking = false;
         editor.status.clear();

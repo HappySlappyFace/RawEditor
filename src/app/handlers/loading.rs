@@ -125,10 +125,12 @@ pub fn prepare_image_resources_from_raw(
                 (cam_to_srgb, None)
             };
 
+            // AI denoise rides in on the mosaic itself (`ml::denoise`).
+            let (mosaic, ai_applied) = crate::ml::denoise::effective_mosaic(&raw, image_id, params.ai_denoise);
             match gpu::shared::ImageResources::new(
                 &ctx,
                 image_id,
-                &raw.data,
+                &mosaic,
                 raw.width,
                 raw.height,
                 &params,
@@ -144,6 +146,7 @@ pub fn prepare_image_resources_from_raw(
             ) {
                 Ok(mut resources) => {
                     resources.profile_use = Some(profile_use);
+                    resources.ai_denoise = (params.ai_denoise, ai_applied);
                     Ok((ctx, std::sync::Arc::new(resources)))
                 }
                 Err(e) => Err(e),
@@ -190,6 +193,10 @@ pub fn handle_image_resources_ready(editor: &mut RawEditor, image_id: i64, resul
             // A full-resolution upgrade keeps the preview it replaces: renders
             // that full resolution would not sharpen use it instead
             // (`RawEditor::preview_resources`). Anything else drops it.
+            // AI masks: the new resources start with no bitmaps.
+            if editor.ai_bitmaps.image_id == Some(image_id) {
+                resources.set_ai_bitmaps(editor.ai_bitmaps.bitmaps.clone());
+            }
             let upgrade = resources.width == resources.original_width;
             editor.preview_resources = editor.image_resources.take().filter(|old| {
                 upgrade && old.image_id == image_id && old.width < old.original_width
@@ -204,7 +211,8 @@ pub fn handle_image_resources_ready(editor: &mut RawEditor, image_id: i64, resul
             // (the previous image, or the subsampled pass before a full-res
             // upgrade). Starting a second one alongside it raced the two, and
             // whichever landed last won the screen.
-            crate::app::handlers::navigation::throttled_render(editor)
+            let render = crate::app::handlers::navigation::throttled_render(editor);
+            Task::batch([render, crate::app::handlers::ai_denoise::after_resources(editor)])
         }
         Err(e) => {
             editor.status = format!("GPU Init Failed: {}", e);
@@ -328,10 +336,12 @@ pub fn trigger_full_res_upgrade(editor: &mut RawEditor) -> Task<Message> {
                 (cam_to_srgb, None)
             };
 
+            // AI denoise rides in on the mosaic itself (`ml::denoise`).
+            let (mosaic, ai_applied) = crate::ml::denoise::effective_mosaic(&raw, image_id, params.ai_denoise);
             match gpu::shared::ImageResources::new(
                 &ctx,
                 image_id,
-                &raw.data,
+                &mosaic,
                 raw.width,
                 raw.height,
                 &params,
@@ -347,6 +357,7 @@ pub fn trigger_full_res_upgrade(editor: &mut RawEditor) -> Task<Message> {
             ) {
                 Ok(mut resources) => {
                     resources.profile_use = Some(profile_use);
+                    resources.ai_denoise = (params.ai_denoise, ai_applied);
                     Ok((ctx, Arc::new(resources)))
                 }
                 Err(e) => Err(e),

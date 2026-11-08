@@ -11,7 +11,10 @@ use iced::{Point, Rectangle};
 
 use crate::app::message::Message;
 
-pub struct LoupeDrag;
+pub struct LoupeDrag {
+    /// The message a drag of `(dx, dy)` logical pixels sends.
+    pub on_pan: fn(f32, f32) -> Message,
+}
 
 #[derive(Debug, Default)]
 pub struct DragState {
@@ -61,7 +64,7 @@ impl canvas::Program<Message> for LoupeDrag {
         use canvas::event::Status;
         let canvas::Event::Mouse(event) = event else { return (Status::Ignored, None) };
         match state.on(&event, cursor.is_over(bounds)) {
-            Some(pan) => (Status::Captured, pan.map(|(dx, dy)| Message::LoupePan(dx, dy))),
+            Some(pan) => (Status::Captured, pan.map(|(dx, dy)| (self.on_pan)(dx, dy))),
             None => (Status::Ignored, None),
         }
     }

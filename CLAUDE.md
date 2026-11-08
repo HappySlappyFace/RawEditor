@@ -23,7 +23,8 @@ There is no separate frontend build — this is a single native Rust binary (no 
 - **Async:** `tokio` for background I/O and CPU-heavy decoding (`spawn_blocking`)
 - **RAW decoding:** `rawler` (dnglab fork of rawloader), `tiff`/`kamadak-exif` for DCP/EXIF metadata
 - **Database:** `rusqlite` (bundled SQLite)
-- **Network:** `ureq` (blocking, rustls — no OpenSSL) + `bzip2-rs`/`tar`, used ONLY when the user clicks to download the lensfun database (`core::lensfun`) or RawTherapee's open-source camera profiles (`core::camera_profiles`: GitHub's contents API + `raw.githubusercontent.com`). The app makes no other network requests; keep it that way unless the user explicitly wants otherwise.
+- **Network:** `ureq` (blocking, rustls — no OpenSSL) + `bzip2-rs`/`tar`, used ONLY when the user clicks to download the lensfun database (`core::lensfun`) or RawTherapee's open-source camera profiles (`core::camera_profiles`: GitHub's contents API + `raw.githubusercontent.com`). It also downloads the AI models (`ml::models`) from this repo's own `models-v1` GitHub release, again only on the user's click. The app makes no other network requests; keep it that way unless the user explicitly wants otherwise.
+- **AI inference:** `ort` (ONNX Runtime, CPU, statically linked from pyke's prebuilt binaries; that fetch happens at BUILD time only). See §J.
 
 ## Architecture
 
@@ -31,7 +32,7 @@ There is no separate frontend build — this is a single native Rust binary (no 
 - `src/main.rs` — entry point / iced application bootstrap
 - `src/app/` — application state and update loop, split Elm-style:
   - `state.rs` / `message.rs` — `RawEditor` state struct and `Message` enum
-  - `update.rs` + `handlers/{camera_profiles,delete,develop,export,lens,lensfun,library,loading,loupe,masks,navigation,proxy,scroll,window}.rs` — message handlers grouped by feature area
+  - `update.rs` + `handlers/{ai_denoise,ai_mask,camera_profiles,delete,develop,export,lens,lensfun,library,loading,loupe,masks,models,navigation,proxy,scroll,window}.rs` — message handlers grouped by feature area
   - `views/{develop,library,cull,export,layout,modals,preferences}.rs` — iced view builders per tab/screen
   - `loader.rs` — async multi-tier image loading orchestration
 - `src/gpu/` — the wgpu rendering pipeline (see dual-pass system below):
@@ -41,6 +42,7 @@ There is no separate frontend build — this is a single native Rust binary (no 
   (uniform struct layout), `render_functions.rs` (render + readback entry points),
   `eval_tests.rs` (ignored GPU quality tests against synthetic ground truth — see §G)
 - `src/raw/` — RAW decoding (`loader`), DCP profiles (`dcp`), embedded-JPEG extraction + cache tiers (`jpeg`, `processor`), EXIF carried into exports (`exif`). kamadak-exif only opens standard TIFF containers — RW2 (`IIU`) and ORF (`IIRO`) come back empty — so the loader fills every gap from rawler's own metadata parse (`ExifInfo::fill_from`), and thumbnail orientation falls back the same way; without it those files had no focal length (so no lens profile), no exposure info and no rotation. `RAW_EXTENSIONS` is the importable set — Bayer formats only, since the debayer pass assumes a 2×2 CFA (the loader rejects anything else with a reason)
+- `src/ml/` — the on-demand AI features (§J): `models` (registry, verified download), `runtime` (ONNX Runtime sessions), `segment` (SAM 2.1), `masks` (AI-mask bitmaps on disk), `denoise` (PMRID + its cache)
 - `src/database/` — SQLite schema, queries, models (the image catalog)
 - `src/core/` — cross-cutting types, histogram computation, logging/tracing setup, profiler, user settings, `paths` (the data and cache folders — every on-disk path derives from it), `viewport.rs` (see §D), and the CPU halves of the editing features: `noise` (per-image noise model), `haze` (dehaze airlight + transmission map), `highlights` (clipped-highlight colour correction), `curves` (point curves → LUT), `perceptual` (Oklab colour controls, §B3), `output_space` (export colour spaces + generated ICC profiles, §B3), `lens` (lensfun DB, lens/defringe params → shader block), `lensfun` (downloading/updating that DB), `camera_profiles` (installed DCPs, the per-image choice, RawTherapee downloads — see §B), `brush` (mask strokes) — see §G — and, Linux only, `desktop` (the desktop entry that gives a Wayland window its taskbar icon: Wayland windows carry none, so the app keeps `~/.local/share/applications/raw-editor.desktop` pointing at the running binary; the window's app id must stay equal to its file name)
 - `src/ui/` — reusable iced widgets (filmstrip, histogram view, icons, palette/styles, profiler graph), plus `preview_renderer.rs` + `viewport.wgsl` (the develop viewport shader widget and its crop/mask canvas overlay), and `motion.rs` + `widgets/` (animation — see §H)
@@ -217,6 +219,22 @@ Animation primitives live in `ui::motion` (plain, unit-tested math): **springs**
 
 ### I. Develop Sliders (`views::develop::slider_field`)
 Every sidebar slider goes through `slider_field`. Clicking the value types a number in the units shown (`from_display` reads them back — WB inverts its as-shot anchoring); double-clicking the label or track resets it (`ui::widgets::double_click`, which has to see the press before the slider captures it). Both arrive as `Message::SliderSet { change, commit }`: the slider's own change message, then a commit exactly like a drag's release (`commit: false` for tool settings such as brush size). The field being typed is keyed by `slider_key` — the Debug of the change message, because labels repeat. iced 0.13's text field has no blur event and swallows Escape, so `update::ends_slider_entry` abandons it when the user moves on, and the subscription turns a captured Escape into `SliderEntryCancel`.
+
+### J. AI Features (`src/ml/`, `handlers::{ai_mask,ai_denoise,models}`)
+Click-to-select masks (SAM 2.1 hiera-tiny) and raw-domain denoise (PMRID), on the CPU through ONNX Runtime.
+- **Zero cost when unused — the rule this design is built on.** ONNX Runtime's environment is created on the first session (`ml::runtime`). Sessions live only while a tool is open: the SAM encoder for one run, the decoder for the AI-select session, PMRID for one job. Nothing infers in the background except regenerating a *missing* denoise cache for an edit that asks for one. Don't add speculative or prefetch inference.
+- **Models** are converted by `tools/models/export.py` (see its README), published on the `models-v1` release, and pinned by SHA-256 in `ml::models`. A download streams to `.part`, is hashed, and is renamed into place only on a match. `RAWEDITOR_MODELS_DIR` overrides the folder (tests, fresh exports). Licences: SAM 2.1 and PMRID are Apache-2.0, and both are credited in Preferences › Licenses. EdgeSAM is S-Lab (non-commercial) and the SAM 3 licence restricts use; don't swap them in.
+- **AI masks** (`MASK_AI`). The shape is a bitmap, which can't live in `Copy` `EditParams`, so `MaskParams::ai_id` names a file: `ai_masks/<image>/<id>.png` (+ `.json` prompts) in the DATA folder (it's user work).
+  - Files are immutable, and every change gets a new id, so undo and the peek just work. An id is set only once its PNG is written. Startup sweeps files no saved edit names (`Library::ai_mask_references`).
+  - Bitmaps are stored in the SENSOR frame and rotated on upload, so quarter turns and EXIF orientation never touch them.
+  - The GPU side is `gpu::ai_mask`: an R8 layer array at group 1 binding 2, uploaded in `prepare_stages` keyed by (slot ids, orientation, bitmap generation). The app hands decoded bitmaps to resources with `set_ai_bitmaps`. Every NEW `ImageResources` needs them: the develop install in `loading.rs` and export's `load_all` do this.
+  - Paste drops AI masks onto other images (`EditParams::without_ai_masks`, keyed on `EditClipboard::source_image`).
+  - SAM's input is built from the mosaic, not the embedded JPEG, whose framing can differ from the active area.
+- **AI denoise** (`EditParams::ai_denoise`, 0 = off) is applied to the MOSAIC before upload: `ml::denoise::effective_mosaic` blends the cached result (`cache/denoised/<image>-<model hash>.bin`) with the RAW. So demosaic, the noise model, NR, previews, the loupe and export all see it without a new GPU stage.
+  - Any new mosaic upload path must go through it. Export uses `ai_denoise::export_mosaic`, which regenerates a missing cache rather than drop the edit.
+  - `ImageResources::ai_denoise` records (requested, applied). A different amount rebuilds the image (`ai_denoise::resources_stale`, checked in `push_uniforms_and_render`).
+  - PMRID's k-sigma transform takes the image's own measured noise model (unit range, no WB), not ISO tables.
+  - The modal previews by running PMRID on just the loupe's crop (`gpu::loupe::MosaicOverride`), so Amount is a blend and re-render and stays live.
 
 ## Strict Engineering Constraints (must follow)
 

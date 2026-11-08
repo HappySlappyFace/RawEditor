@@ -80,6 +80,12 @@ pub enum Modal {
     /// Confirm forgetting a folder. Its target lives in
     /// `RawEditor::pending_remove_folder`.
     RemoveFolder,
+    /// Confirm downloading an AI model a feature needs
+    /// (`RawEditor::models.offered`).
+    AiModel,
+    /// AI denoise: choose the amount on a 1:1 preview, then apply
+    /// (`RawEditor::ai_denoise`).
+    AiDenoise,
 }
 
 /// Noise-reduction settings the main view keeps showing while a drag on one
@@ -198,17 +204,19 @@ pub enum PreferencesSection {
     Memory,
     CameraProfiles,
     LensProfiles,
+    AiModels,
     Folders,
     Licenses,
 }
 
 impl PreferencesSection {
-    pub const ALL: [PreferencesSection; 7] = [
+    pub const ALL: [PreferencesSection; 8] = [
         PreferencesSection::General,
         PreferencesSection::Performance,
         PreferencesSection::Memory,
         PreferencesSection::CameraProfiles,
         PreferencesSection::LensProfiles,
+        PreferencesSection::AiModels,
         PreferencesSection::Folders,
         PreferencesSection::Licenses,
     ];
@@ -702,6 +710,14 @@ pub struct RawEditor {
     pub noise_settle_token: u64,
     pub loupe: LoupeState,
     pub lensfun: LensfunState,
+    /// The open AI-select session, if any (`handlers::ai_mask`).
+    pub ai_select: Option<crate::app::handlers::ai_mask::AiSelect>,
+    /// The selected image's decoded AI-mask bitmaps.
+    pub ai_bitmaps: crate::app::handlers::ai_mask::AiBitmapState,
+    /// AI model downloads (`handlers::models`).
+    pub models: crate::app::handlers::models::ModelsState,
+    /// The AI denoise modal (`handlers::ai_denoise`).
+    pub ai_denoise: crate::app::handlers::ai_denoise::AiDenoiseState,
     pub camera_profiles: CameraProfileState,
 
     // ── Scroll boost + filmstrip momentum ──────────────────────────────────
@@ -920,6 +936,10 @@ impl RawEditor {
                 noise_settle_token: 0,
                 loupe: LoupeState::default(),
                 lensfun: LensfunState::default(),
+                ai_select: None,
+                ai_bitmaps: Default::default(),
+                models: Default::default(),
+                ai_denoise: Default::default(),
                 camera_profiles: CameraProfileState::default(),
                 cursor_over_grid: false,
                 grid_scroll_y: 0.0,
@@ -1065,7 +1085,7 @@ impl RawEditor {
         // The mask overlay shows while the user asks for it, or while a
         // stroke is being painted (you need to see what you are painting).
         self.current_edit_params.mask_overlay = match self.selected_mask {
-            Some(i) if (self.show_mask_overlay || self.is_painting)
+            Some(i) if (self.show_mask_overlay || self.is_painting || self.ai_select.is_some())
                 && i < self.current_edit_params.mask_count as usize =>
             {
                 i as u32 + 1
@@ -1667,6 +1687,10 @@ impl RawEditor {
         // — avoids driving a redraw-linked subscription at all times.
         if self.filmstrip_velocity != 0.0 || self.scroll_glide.is_some() {
             subs.push(iced::window::frames().map(Message::KineticTick));
+        }
+        // AI progress bars: tick only while a download or an AI job runs.
+        if self.models.job.is_some() || self.ai_denoise.busy() {
+            subs.push(iced::time::every(std::time::Duration::from_millis(100)).map(|_| Message::AiTick));
         }
         iced::Subscription::batch(subs)
     }

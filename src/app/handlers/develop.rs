@@ -434,6 +434,7 @@ fn store_clipboard(editor: &mut RawEditor, categories: crate::core::types::CopyC
     editor.edit_clipboard = Some(crate::core::types::EditClipboard {
         params: editor.current_edit_params,
         categories,
+        source_image: editor.selected_image_id,
     });
     editor.status = format!("Copied {}", describe_categories(&categories));
 }
@@ -515,9 +516,13 @@ pub fn handle_paste_settings(editor: &mut RawEditor) -> Task<Message> {
         return Task::none();
     }
 
+    // AI masks name bitmaps of the image they were made on.
+    let for_image = |id: Option<i64>| {
+        if id == clip.source_image { clip.params } else { clip.params.without_ai_masks() }
+    };
     crate::core::types::apply_categories(
         &mut editor.current_edit_params,
-        &clip.params,
+        &for_image(editor.selected_image_id),
         clip.categories,
     );
 
@@ -542,7 +547,7 @@ pub fn handle_paste_settings(editor: &mut RawEditor) -> Task<Message> {
             .filter(|&&id| Some(id) != editor.selected_image_id)
             .map(|&id| {
                 let mut target = lib.load_edit_params(id).unwrap_or_default();
-                crate::core::types::apply_categories(&mut target, &clip.params, clip.categories);
+                crate::core::types::apply_categories(&mut target, &for_image(Some(id)), clip.categories);
                 (id, target)
             })
             .collect();
@@ -1046,6 +1051,10 @@ pub(crate) fn push_uniforms_and_render(
     // a texture): undo, paste or reset changed it — rebuild instead.
     if crate::app::handlers::camera_profiles::resources_stale(editor) {
         return crate::app::handlers::camera_profiles::rebuild(editor);
+    }
+    // Likewise a different AI denoise amount: it is baked into the mosaic.
+    if crate::app::handlers::ai_denoise::resources_stale(editor) {
+        return crate::app::handlers::navigation::reload_selected_image(editor);
     }
     if let (Some(ctx), Some(resources)) = (&editor.gpu_context, &editor.image_resources) {
         // Phase 140: Interpolate DCP + resolve slider WB

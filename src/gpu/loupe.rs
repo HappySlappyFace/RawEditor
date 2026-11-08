@@ -173,9 +173,20 @@ impl std::fmt::Debug for LoupeFrame {
     }
 }
 
+/// A mosaic to show in place of the RAW's own, over `region` — AI denoise's
+/// preview (`handlers::ai_denoise`). `key` identifies its content, so the GPU
+/// crop re-uploads exactly when it changes.
+pub struct MosaicOverride {
+    pub region: Region,
+    pub data: Vec<u16>,
+    pub key: u64,
+}
+
 /// The crop currently on the GPU.
 struct Crop {
     region: Region,
+    /// The override it was cut from (`None` = the RAW itself).
+    key: Option<u64>,
     #[allow(dead_code)] // owner: the views below read it
     mosaic: wgpu::Texture,
     #[allow(dead_code)] // owner
@@ -195,6 +206,8 @@ pub struct Loupe {
     /// mosaic; the loupe denoises sensor pixels and needs theirs.
     noise_model: NoiseModel,
     black_offsets: [f32; 4],
+    /// The AI denoise amount baked into `raw` (`ImageResources::ai_denoise`).
+    ai_denoise: f32,
     uniform: wgpu::Buffer,
     crop: Mutex<Option<Crop>>,
 }
@@ -241,6 +254,7 @@ impl Loupe {
             raw,
             noise_model,
             black_offsets: main.black_offsets,
+            ai_denoise: main.ai_denoise.1,
             uniform,
             crop: Mutex::new(None),
         })
@@ -248,14 +262,49 @@ impl Loupe {
 
     /// Still valid for `main` (same image, same sensor calibration)?
     pub fn matches(&self, main: &ImageResources) -> bool {
-        self.image_id == main.image_id && self.black_offsets == main.black_offsets
+        self.image_id == main.image_id && self.black_offsets == main.black_offsets && self.ai_denoise == main.ai_denoise.1
     }
 
     fn sensor(&self) -> (u32, u32) {
         (self.raw.width, self.raw.height)
     }
 
+    /// The RAW it cuts from (unmodified — never AI-denoised).
+    pub fn raw(&self) -> &Arc<RawDataResult> {
+        &self.raw
+    }
+
+    /// The sensor region a window needs (every stage's reach) and that region
+    /// grown by `slack`.
+    fn regions(&self, gp: &GpuEditParams, window: [f32; 4], slack: u32) -> (Region, Region) {
+        let sensor = self.sensor();
+        let reach = super::denoise::reach(1.0) + DEMOSAIC_REACH + COLOR_REACH;
+        let bbox = footprint(gp, window, sensor);
+        (Region::around(bbox, reach, sensor), Region::around(bbox, reach + slack, sensor))
+    }
+
+    /// The sensor region a `size`-pixel window at `center` needs, grown by
+    /// `slack` — what a mosaic override must cover.
+    pub fn region_for(&self, main: &ImageResources, center: [f32; 2], size: u32, slack: u32) -> Region {
+        let gp = *main.current_params.lock().unwrap_or_else(|e| e.into_inner());
+        let window = view_window(&gp, center, size.clamp(16, 2048), self.sensor());
+        self.regions(&gp, window, slack).1
+    }
+
+    /// Whether `region` covers what a window at `center` needs.
+    pub fn covers(&self, main: &ImageResources, center: [f32; 2], size: u32, region: &Region) -> bool {
+        let gp = *main.current_params.lock().unwrap_or_else(|e| e.into_inner());
+        let window = view_window(&gp, center, size.clamp(16, 2048), self.sensor());
+        region.contains(&self.regions(&gp, window, 0).0)
+    }
+
+    /// The RAW's own samples over `region`.
+    pub fn cut(&self, region: Region) -> Vec<u16> {
+        extract(&self.raw.data, self.raw.width, region)
+    }
+
     /// Make sure the GPU crop covers `needed`, cutting a new one if not.
+    #[allow(clippy::too_many_arguments)]
     fn ensure_crop<'a>(
         &self,
         context: &SharedContext,
@@ -263,11 +312,17 @@ impl Loupe {
         slot: &'a mut Option<Crop>,
         needed: Region,
         grown: Region,
+        over: Option<&MosaicOverride>,
     ) -> Result<&'a mut Crop, String> {
-        if slot.as_ref().is_some_and(|c| c.region.contains(&needed)) {
+        let key = over.map(|o| o.key);
+        if slot.as_ref().is_some_and(|c| c.region.contains(&needed) && c.key == key) {
             return slot.as_mut().ok_or_else(|| "loupe crop vanished".to_string());
         }
-        let region = grown;
+        let (region, data) = match over {
+            Some(o) if o.region.contains(&needed) => (o.region, std::borrow::Cow::Borrowed(&o.data[..])),
+            Some(_) => return Err("the preview area moved past the prepared crop".to_string()),
+            None => (grown, std::borrow::Cow::Owned(extract(&self.raw.data, self.raw.width, grown))),
+        };
         context.check_texture_size(region.w, region.h)?;
         let size = wgpu::Extent3d { width: region.w, height: region.h, depth_or_array_layers: 1 };
         let mosaic = context.device.create_texture(&wgpu::TextureDescriptor {
@@ -280,7 +335,6 @@ impl Loupe {
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        let data = extract(&self.raw.data, self.raw.width, region);
         context.queue.write_texture(
             wgpu::ImageCopyTexture {
                 texture: &mosaic,
@@ -288,7 +342,7 @@ impl Loupe {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            bytemuck::cast_slice(&data),
+            bytemuck::cast_slice(&data[..]),
             wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(region.w * 2), rows_per_image: Some(region.h) },
             size,
         );
@@ -314,7 +368,7 @@ impl Loupe {
             &debayer_view,
         );
         let targets = context.denoise.targets(&context.device, &debayer_view, region.w, region.h);
-        *slot = Some(Crop { region, mosaic, debayer, debayer_view, targets, denoised: None });
+        *slot = Some(Crop { region, key, mosaic, debayer, debayer_view, targets, denoised: None });
         slot.as_mut().ok_or_else(|| "loupe crop vanished".to_string())
     }
 
@@ -331,15 +385,13 @@ impl Loupe {
         center: [f32; 2],
         size: u32,
         denoise: DenoiseSettings,
+        over: Option<&MosaicOverride>,
     ) -> Result<LoupeFrame, String> {
         let size = size.clamp(16, 2048);
         let sensor = self.sensor();
         let mut gp = *main.current_params.lock().unwrap_or_else(|e| e.into_inner());
         let window = view_window(&gp, center, size, sensor);
-        let reach = super::denoise::reach(1.0) + DEMOSAIC_REACH + COLOR_REACH;
-        let bbox = footprint(&gp, window, sensor);
-        let needed = Region::around(bbox, reach, sensor);
-        let grown = Region::around(bbox, reach + SLACK, sensor);
+        let (needed, grown) = self.regions(&gp, window, SLACK);
 
         // The main image's bind groups 1 and 2 (masks, Texture/Clarity, haze),
         // brought up to date exactly as for its own render.
@@ -347,7 +399,7 @@ impl Loupe {
 
         let bindings = {
             let mut slot = self.crop.lock().unwrap_or_else(|e| e.into_inner());
-            let crop = self.ensure_crop(context, main, &mut slot, needed, grown)?;
+            let crop = self.ensure_crop(context, main, &mut slot, needed, grown, over)?;
             let input = if denoise.is_active() {
                 let out = match crop.denoised {
                     Some((key, out)) if key == denoise => out,
@@ -474,7 +526,7 @@ mod tests {
                     let loupe = Loupe::new(&ctx, main, raw.clone()).unwrap();
                     assert_eq!(loupe.noise_model, full.noise_model, "noise model must be the sensor's");
                     let t = std::time::Instant::now();
-                    let frame = loupe.render(&ctx, main, center, size, nr).await.unwrap();
+                    let frame = loupe.render(&ctx, main, center, size, nr, None).await.unwrap();
                     let first_ms = t.elapsed().as_secs_f32() * 1000.0;
                     assert_eq!(frame.window, window);
 
@@ -492,10 +544,10 @@ mod tests {
                     let mut tick = nr;
                     tick.luma = 0.6;
                     let t = std::time::Instant::now();
-                    loupe.render(&ctx, main, center, size, tick).await.unwrap();
+                    loupe.render(&ctx, main, center, size, tick, None).await.unwrap();
                     eprintln!("    NR tick {:.1} ms", t.elapsed().as_secs_f32() * 1000.0);
                     let t = std::time::Instant::now();
-                    loupe.render(&ctx, main, center, size, tick).await.unwrap();
+                    loupe.render(&ctx, main, center, size, tick, None).await.unwrap();
                     eprintln!("    other-slider tick {:.1} ms", t.elapsed().as_secs_f32() * 1000.0);
                 }
             }

@@ -117,6 +117,12 @@ pub struct EditParams {
     /// Chroma (color) noise reduction strength (0.0 to 1.0)
     pub color_noise: f32,
 
+    /// AI denoise (`ml::denoise`): how far the mosaic moves towards the
+    /// model's result, 0 = off. Applied before demosaic, so every stage —
+    /// the NR above included — sees the cleaner mosaic.
+    #[serde(default)]
+    pub ai_denoise: f32,
+
     /// Sharpening strength (0.0 to 1.0)
     /// - 0.0 = no sharpening
     /// - 1.0 = maximum sharpening
@@ -250,6 +256,8 @@ pub const MASK_LINEAR: u32 = 0;
 pub const MASK_RADIAL: u32 = 1;
 pub const MASK_BRUSH: u32 = 2;
 pub const MASK_RANGE: u32 = 3;
+/// Shape from a segmentation bitmap (`ml::masks`), referenced by `ai_id`.
+pub const MASK_AI: u32 = 4;
 
 /// Epsilon in a colour-range mask's log-chromaticity, `ln((r+ε)/(g+ε))`:
 /// keeps near-black pixels (whose chromaticity is noise) from scattering.
@@ -347,6 +355,11 @@ pub struct MaskParams {
     /// 0..1 — how far from the picked colour still counts.
     #[serde(default)]
     pub color_tolerance: f32,
+    /// AI masks only: which bitmap (`ml::masks`) gives the shape; 0 = none
+    /// yet. Every change to an AI mask writes a NEW id (files are
+    /// immutable), so undo, redo and the before/after peek just point back.
+    #[serde(default)]
+    pub ai_id: u64,
 }
 
 impl MaskParams {
@@ -379,6 +392,11 @@ impl MaskParams {
     /// New enabled brush mask: no shape of its own, only what is painted.
     pub fn new_brush() -> Self {
         Self { mask_type: MASK_BRUSH, enabled: 1, ..Self::default() }
+    }
+
+    /// New enabled AI mask, empty until its first selection lands.
+    pub fn new_ai() -> Self {
+        Self { mask_type: MASK_AI, enabled: 1, ..Self::default() }
     }
 
     /// New enabled range mask: the whole frame, narrowed by its luminance
@@ -427,7 +445,8 @@ impl Default for EditParams {
             tint: 0.0,                  // Phase 18: Manual white balance (as-shot)
             luma_noise: 0.0,            // Phase 133: No luma noise reduction by default
             luma_detail: 0.5,           // Mid detail retention (only acts with luma_noise > 0)
-            color_noise: 0.3,           // Phase 133: Default color noise reduction to eliminate speckles
+            color_noise: 0.3,
+            ai_denoise: 0.0,           // Phase 133: Default color noise reduction to eliminate speckles
             sharpening: 0.0,            // Phase 50: No sharpening by default
             sharpen_masking: 0.0,       // Phase 51: No masking by default
             rotation: 0.0,              // Phase 52: No rotation by default
@@ -450,6 +469,34 @@ impl Default for EditParams {
 }
 
 impl EditParams {
+    /// These edits with every AI mask removed (its strokes too, the rest
+    /// renumbered) — for pasting onto another image, whose own bitmaps the
+    /// ids would not name.
+    pub fn without_ai_masks(mut self) -> Self {
+        let mut i = 0;
+        while i < (self.mask_count as usize).min(MAX_MASKS) {
+            if self.masks[i].mask_type == MASK_AI {
+                let count = self.mask_count as usize;
+                self.masks.copy_within(i + 1..count, i);
+                self.masks[count - 1] = MaskParams::default();
+                self.mask_count -= 1;
+                self.brush.remove_mask(i);
+            } else {
+                i += 1;
+            }
+        }
+        self
+    }
+
+    /// `(slot, ai id)` of every live AI mask with a bitmap.
+    pub fn ai_masks(&self) -> impl Iterator<Item = (usize, u64)> + '_ {
+        self.masks[..(self.mask_count as usize).min(MAX_MASKS)]
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.mask_type == MASK_AI && m.ai_id != 0)
+            .map(|(i, m)| (i, m.ai_id))
+    }
+
     /// Create new default edit parameters
     pub fn new() -> Self {
         Self::default()
@@ -707,6 +754,9 @@ impl CopyCategories {
 pub struct EditClipboard {
     pub params: EditParams,
     pub categories: CopyCategories,
+    /// The image copied from. AI masks are bitmaps of THAT image, so they
+    /// only paste back onto it (`EditParams::without_ai_masks`).
+    pub source_image: Option<i64>,
 }
 
 /// Copy the fields belonging to `cats` from `src` onto `dst`, leaving every
@@ -745,6 +795,7 @@ pub fn apply_categories(dst: &mut EditParams, src: &EditParams, cats: CopyCatego
         dst.luma_noise = src.luma_noise;
         dst.luma_detail = src.luma_detail;
         dst.color_noise = src.color_noise;
+        dst.ai_denoise = src.ai_denoise;
     }
     if cats.detail {
         dst.sharpening = src.sharpening;
@@ -896,6 +947,7 @@ mod tests {
         p.luma_noise = 0.4;
         p.luma_detail = 0.8;
         p.color_noise = 0.7;
+        p.ai_denoise = 0.6;
         p.sharpening = 0.8;
         p.sharpen_masking = 0.6;
         p.rotation = 12.0;

@@ -8,6 +8,7 @@
 /// - `shared.rs`   — Shared GPU context + ImageResources (the live render path)
 /// - `render_functions.rs` — Standalone rendering functions (used by develop + export)
 /// - `loupe.rs`    — the 1:1 detail loupe: a full-resolution crop through the same passes
+pub mod ai_mask;
 pub mod brush;
 pub mod demosaic;
 pub mod denoise;

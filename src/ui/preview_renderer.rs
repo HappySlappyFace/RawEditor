@@ -494,7 +494,15 @@ pub struct CropOverlay {
     /// Level tool armed: a drag draws a line, and its release emits
     /// `LevelLineDrawn` with the line's screen direction.
     pub is_leveling: bool,
+    /// AI select open and ready: a click emits `AiPrompt` (right/Alt-click
+    /// subtracts), a drag `AiRect`. Holds the clicks so far (full-image
+    /// display UV, positive?) to draw them.
+    pub ai_select: Option<Vec<(f32, f32, bool)>>,
 }
+
+/// Pointer travel (logical px) under which an AI-select press is a click,
+/// not a box.
+const AI_CLICK_SLOP: f32 = 4.0;
 
 /// Canvas state: last seen size (for resize sensing) and an in-progress
 /// brush stroke.
@@ -504,6 +512,10 @@ pub struct OverlayState {
     painting: bool,
     /// A level line being drawn: start and current end, canvas-local.
     level: Option<(iced::Point, iced::Point)>,
+    /// An AI-select press: where it started and where the pointer is now.
+    ai_drag: Option<(iced::Point, iced::Point)>,
+    /// Alt held (Alt-click subtracts in AI select).
+    alt: bool,
 }
 
 impl CropOverlay {
@@ -717,6 +729,33 @@ impl CropOverlay {
 
 impl CropOverlay {
     /// The level line under the pointer, haloed so it reads on any photo.
+    /// AI select's clicks (orange = add, white ring = subtract) and the box
+    /// being dragged.
+    fn draw_ai_prompts(
+        &self,
+        frame: &mut canvas::Frame,
+        bounds: Rectangle,
+        points: &[(f32, f32, bool)],
+        drag: Option<(iced::Point, iced::Point)>,
+    ) {
+        let ib = self.image_bounds(bounds.width, bounds.height);
+        let accent = Color::from_rgb(0.976, 0.451, 0.086);
+        for &(u, v, positive) in points {
+            let p = self.uv_to_screen(u, v, &ib);
+            let dot = canvas::Path::circle(p, 5.0);
+            frame.fill(&dot, if positive { accent } else { Color::from_rgb(0.1, 0.1, 0.1) });
+            frame.stroke(&dot, canvas::Stroke::default().with_color(Color::WHITE).with_width(1.5));
+        }
+        if let Some((a, b)) = drag.filter(|(a, b)| a.distance(*b) >= AI_CLICK_SLOP) {
+            let top_left = iced::Point::new(a.x.min(b.x), a.y.min(b.y));
+            let size = iced::Size::new((a.x - b.x).abs(), (a.y - b.y).abs());
+            frame.stroke(
+                &canvas::Path::rectangle(top_left, size),
+                canvas::Stroke::default().with_color(accent).with_width(1.5),
+            );
+        }
+    }
+
     fn draw_level_line(&self, frame: &mut canvas::Frame, from: iced::Point, to: iced::Point) {
         let line = canvas::Path::line(from, to);
         frame.stroke(&line, canvas::Stroke::default().with_color(Color::from_rgba(0.0, 0.0, 0.0, 0.6)).with_width(4.0));
@@ -767,6 +806,11 @@ impl canvas::Program<Message> for CropOverlay {
             if let (true, Some((from, to))) = (self.is_leveling, state.level) {
                 let mut frame = canvas::Frame::new(renderer, bounds.size());
                 self.draw_level_line(&mut frame, from, to);
+                layers.push(frame.into_geometry());
+            }
+            if let Some(points) = &self.ai_select {
+                let mut frame = canvas::Frame::new(renderer, bounds.size());
+                self.draw_ai_prompts(&mut frame, bounds, points, state.ai_drag);
                 layers.push(frame.into_geometry());
             }
             return layers;
@@ -861,6 +905,36 @@ impl canvas::Program<Message> for CropOverlay {
             return (canvas::event::Status::Captured, None);
         }
 
+        if let canvas::Event::Keyboard(iced::keyboard::Event::ModifiersChanged(m)) = event {
+            state.alt = m.alt();
+        }
+
+        // An AI-select press owns the mouse until release: a short one is a
+        // click, a longer drag a box.
+        if let Some((from, last)) = state.ai_drag {
+            let local = cursor.position().map(|p| iced::Point::new(p.x - bounds.x, p.y - bounds.y));
+            match event {
+                canvas::Event::Mouse(iced::mouse::Event::CursorMoved { .. }) => {
+                    state.ai_drag = Some((from, local.unwrap_or(last)));
+                }
+                canvas::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {
+                    state.ai_drag = None;
+                    let to = local.unwrap_or(last);
+                    let ib = self.image_bounds(bounds.width, bounds.height);
+                    let (u0, v0) = self.screen_to_uv(from, &ib);
+                    let message = if from.distance(to) < AI_CLICK_SLOP {
+                        Message::AiPrompt { u: u0, v: v0, positive: !state.alt }
+                    } else {
+                        let (u1, v1) = self.screen_to_uv(to, &ib);
+                        Message::AiRect(u0, v0, u1, v1)
+                    };
+                    return (canvas::event::Status::Captured, Some(message));
+                }
+                _ => {}
+            }
+            return (canvas::event::Status::Captured, None);
+        }
+
         // A level line likewise owns the mouse until release. Released off
         // the canvas, it ends where the pointer last was on it.
         if let Some((from, last)) = state.level {
@@ -889,6 +963,7 @@ impl canvas::Program<Message> for CropOverlay {
             && !self.is_color_picking
             && !self.is_loupe_targeting
             && self.selected_mask.is_none()
+            && self.ai_select.is_none()
         {
             return (canvas::event::Status::Ignored, None);
         }
@@ -897,6 +972,28 @@ impl canvas::Program<Message> for CropOverlay {
             Some(p) => p,
             None => return (canvas::event::Status::Ignored, None),
         };
+
+        // AI select: presses on the image are prompts.
+        if self.ai_select.is_some() {
+            let ib = self.image_bounds(bounds.width, bounds.height);
+            if ib.contains(cursor_position) {
+                match event {
+                    canvas::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left)) => {
+                        state.ai_drag = Some((cursor_position, cursor_position));
+                        return (canvas::event::Status::Captured, None);
+                    }
+                    canvas::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Right)) => {
+                        let (u, v) = self.screen_to_uv(cursor_position, &ib);
+                        return (
+                            canvas::event::Status::Captured,
+                            Some(Message::AiPrompt { u, v, positive: false }),
+                        );
+                    }
+                    _ => {}
+                }
+            }
+            return (canvas::event::Status::Ignored, None);
+        }
 
         // Level tool: a press on the image starts the line.
         if self.is_leveling {
@@ -1044,6 +1141,7 @@ impl canvas::Program<Message> for CropOverlay {
             || self.is_color_picking
             || self.is_loupe_targeting
             || self.is_leveling
+            || self.ai_select.is_some()
         {
             return iced::mouse::Interaction::Crosshair;
         }

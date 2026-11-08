@@ -1094,6 +1094,15 @@ mod tests {
         raw: &crate::raw::loader::RawDataResult,
         params: &EditParams,
     ) -> (Vec<u8>, u32, u32) {
+        render_params_with(ctx, raw, params, None).await
+    }
+
+    async fn render_params_with(
+        ctx: &SharedContext,
+        raw: &crate::raw::loader::RawDataResult,
+        params: &EditParams,
+        ai: Option<std::sync::Arc<crate::gpu::ai_mask::AiBitmaps>>,
+    ) -> (Vec<u8>, u32, u32) {
         let as_shot = crate::color::as_shot_kelvin_tint(raw);
         let (kelvin, _t, wb) =
             crate::color::solve_wb(params, as_shot, raw.dcp_profile.as_deref(), raw.color_matrix);
@@ -1106,10 +1115,67 @@ mod tests {
         let res = ImageResources::new(ctx, 1, &raw.data, raw.width, raw.height, params,
             raw.wb_multipliers, fm, raw.cfa_pattern, raw.black_levels, raw.white_level,
             dcp.as_ref(), Some(1280), raw.orientation, raw.lens_context.clone()).expect("image resources");
+        if let Some(ai) = ai {
+            res.set_ai_bitmaps(ai);
+        }
         res.update_uniforms(ctx, params, dcp.as_ref(), wb);
         let (w, h) = res.oriented_dims(params.quarter_turns);
         let (bytes, _, _) = render_to_bytes(ctx, &res, w, h, FULL_VIEW_RECT).await;
         (bytes.to_vec(), w, h)
+    }
+
+    /// An AI mask darkens exactly its bitmap's coverage, and the bitmap —
+    /// stored in the sensor frame — follows the EXIF orientation and a
+    /// quarter turn.
+    ///
+    /// Run with `cargo test --release ai_mask_hits -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn ai_mask_hits_only_its_bitmap() {
+        use crate::core::types::MaskParams;
+        let test_raw = test_raw_path();
+        if !std::path::Path::new(&test_raw).exists() {
+            return;
+        }
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).build().unwrap();
+        rt.block_on(async {
+            let ctx = SharedContext::new().await.unwrap();
+            let raw = crate::raw::loader::load_raw_data(test_raw.clone()).await.unwrap();
+            let (bw, bh) = (raw.width / 4, raw.height / 4);
+            let data = (0..bw * bh).map(|i| if i % bw < bw / 2 { 255 } else { 0 }).collect();
+            let bitmap = crate::ml::masks::Bitmap { width: bw, height: bh, data };
+            let ai: crate::gpu::ai_mask::AiBitmaps = [(42u64, std::sync::Arc::new(bitmap))].into_iter().collect();
+            let ai = std::sync::Arc::new(ai);
+
+            for turns in [0u32, 1] {
+                let base = EditParams { quarter_turns: turns, ..EditParams::default() };
+                let (plain, w, h) = render_params(&ctx, &raw, &base).await;
+                let mut p = base;
+                p.masks[0] = MaskParams::new_ai();
+                p.masks[0].ai_id = 42;
+                p.masks[0].exposure = -2.5;
+                p.mask_count = 1;
+                let (masked, _, _) = render_params_with(&ctx, &raw, &p, Some(ai.clone())).await;
+                // The sensor's left and right halves, wherever this
+                // orientation puts them on screen.
+                let o = crate::color::compose_orientation(raw.orientation, turns);
+                let around = |su: f32, sv: f32| {
+                    let (u, v) = crate::color::sensor_to_display_uv(su, sv, o);
+                    (u - 0.1, v - 0.1, u + 0.1, v + 0.1)
+                };
+                let (inside, outside) = (around(0.25, 0.5), around(0.75, 0.5));
+                let (i0, i1) = (region_mean(&plain, w, h, inside), region_mean(&masked, w, h, inside));
+                let (o0, o1) = (region_mean(&plain, w, h, outside), region_mean(&masked, w, h, outside));
+                eprintln!("turns {turns}: inside {i0:.1} → {i1:.1}, outside {o0:.1} → {o1:.1}");
+                assert!(i1 < i0 * 0.6, "turns {turns}: the AI mask did not darken its region");
+                assert!((o1 - o0).abs() < 0.5, "turns {turns}: the AI mask leaked outside its bitmap");
+
+                // Without decoded bitmaps the mask is empty, never garbage.
+                let (blank, _, _) = render_params(&ctx, &raw, &p).await;
+                let (b, _) = (region_mean(&blank, w, h, inside), 0);
+                assert!((b - i0).abs() < 0.5, "turns {turns}: a missing bitmap changed the image");
+            }
+        });
     }
 
     /// Every export colour space must describe the same picture: read back

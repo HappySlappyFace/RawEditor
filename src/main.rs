@@ -11,6 +11,7 @@ mod core;
 mod database;
 mod debug;
 mod gpu;
+mod ml;
 mod raw;
 mod ui;
 

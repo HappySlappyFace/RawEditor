@@ -40,6 +40,7 @@ impl PreferencesSection {
             PreferencesSection::Memory => "Memory",
             PreferencesSection::CameraProfiles => "Camera Profiles",
             PreferencesSection::LensProfiles => "Lens Profiles",
+            PreferencesSection::AiModels => "AI Models",
             PreferencesSection::Folders => "Folders",
             PreferencesSection::Licenses => "Licenses",
         }
@@ -53,6 +54,7 @@ impl PreferencesSection {
             PreferencesSection::Memory => "\u{f2db}",      // microchip
             PreferencesSection::CameraProfiles => "\u{f042}", // adjust (colour)
             PreferencesSection::LensProfiles => "\u{f030}", // camera
+            PreferencesSection::AiModels => "\u{f0d0}",     // magic
             PreferencesSection::Folders => ui::icons::FOLDER,
             PreferencesSection::Licenses => "\u{f24e}",    // balance scale
         }
@@ -68,6 +70,7 @@ pub fn view_preferences_modal(editor: &RawEditor) -> Element<'_, Message> {
         PreferencesSection::Memory => memory(editor),
         PreferencesSection::CameraProfiles => camera_profiles(editor),
         PreferencesSection::LensProfiles => lens_profiles(editor),
+        PreferencesSection::AiModels => ai_models(editor),
         PreferencesSection::Folders => folders(),
         PreferencesSection::Licenses => licenses(),
     };
@@ -646,6 +649,84 @@ fn lens_profiles(editor: &RawEditor) -> Element<'_, Message> {
     .into()
 }
 
+/// Preferences › AI Models: what each model is for, whether it is installed,
+/// and Download / Remove. Downloads also start from the feature that needs
+/// them (`handlers::models::offer`).
+fn ai_models(editor: &RawEditor) -> Element<'_, Message> {
+    use crate::app::views::modals::megabytes;
+    use crate::ml::models::{is_installed, ALL};
+
+    let cards = ALL.iter().fold(column![].spacing(12), |list, model| {
+        let id = model.id;
+        let installed = is_installed(id);
+        let job = editor.models.job.as_ref().filter(|(j, _)| *j == id);
+        let busy = editor.models.job.is_some();
+        let action: Element<'_, Message> = match (job, installed) {
+            (Some((_, progress)), _) => row![
+                iced::widget::progress_bar(0.0..=1.0, progress.fraction()).height(6).width(Length::Fixed(160.0)),
+                button(text("Cancel").size(13))
+                    .on_press(Message::ModelDownloadCancel)
+                    .padding([6, 12])
+                    .style(ui::styles::NeutralButton::style),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .into(),
+            (None, true) => button(text("Remove").size(13))
+                .on_press(Message::ModelRemove(id))
+                .padding([6, 12])
+                .style(ui::styles::NeutralButton::style)
+                .into(),
+            (None, false) => button(
+                row![
+                    text("\u{f019}").font(ICON_FONT).size(13), // download
+                    text(format!("Download {}", megabytes(model.total_bytes()))).size(13),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            )
+            .on_press_maybe((!busy).then_some(Message::ModelDownload(id)))
+            .padding([6, 12])
+            .style(ui::styles::AccentButton::style)
+            .into(),
+        };
+        let state = if installed { "Installed" } else { "Not installed" };
+        let mut body = column![
+            row![card_title(model.purpose), Space::with_width(Length::Fill), action]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            readout(format!("{} · {} · {state}", model.title, megabytes(model.total_bytes()))),
+            hint(model.licence),
+        ]
+        .spacing(8);
+        if let Some((_, e)) = editor.models.error.as_ref().filter(|(e, _)| *e == id) {
+            body = body.push(text(format!("Download failed: {e}")).size(12).style(|_| text::Style {
+                color: Some(Color::from_rgb(0.9, 0.55, 0.3)),
+            }));
+        }
+        list.push(card(body))
+    });
+
+    column![
+        heading("AI Models"),
+        hint("AI masks and AI denoise run on your computer, on the CPU, only while you use them. Their models are downloaded once, on request, from RawEditor's GitHub release and checked against published checksums."),
+        cards,
+        row![
+            Space::with_width(Length::Fill),
+            button(
+                row![text(ui::icons::FOLDER_OPEN).font(ICON_FONT).size(13), text("Open Folder").size(13)]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+            )
+            .on_press(Message::OpenAppFolder(AppFolder::Models))
+            .padding([6, 12])
+            .style(ui::styles::NeutralButton::style),
+        ],
+    ]
+    .spacing(12)
+    .into()
+}
+
 fn card_title(title: &str) -> Element<'_, Message> {
     text(title)
         .size(14)
@@ -781,6 +862,13 @@ const BUNDLED: &[Credit] = &[
         "Catalogue database engine, compiled in by rusqlite",
         "https://sqlite.org/copyright.html",
     ),
+    credit(
+        "ONNX Runtime",
+        &[],
+        "MIT",
+        "Runs the AI models, compiled in by ort",
+        "https://github.com/microsoft/onnxruntime",
+    ),
 ];
 
 /// Direct dependencies (and wgpu, which iced_wgpu brings in but which does
@@ -798,6 +886,7 @@ const LIBRARIES: &[Credit] = &[
     credit("jpeg-encoder", &["jpeg-encoder"], "(MIT OR Apache-2.0) AND IJG", "JPEG export", "https://github.com/vstroebel/jpeg-encoder"),
     credit("kamadak-exif", &["kamadak-exif"], "BSD-2-Clause", "EXIF metadata", "https://github.com/kamadak/exif-rs"),
     credit("lru", &["lru"], "MIT", "Preview cache", "https://github.com/jeromefroe/lru-rs"),
+    credit("ort", &["ort"], "MIT OR Apache-2.0", "ONNX Runtime bindings, for the AI features", "https://github.com/pykeio/ort"),
     credit("rawler", &["rawler"], "LGPL-2.1", "RAW decoding, from the dnglab project", "https://github.com/dnglab/dnglab"),
     credit("rfd", &["rfd"], "MIT", "Native file dialogs", "https://github.com/PolyMeilex/rfd"),
     credit("ring", &[], "Apache-2.0 AND ISC", "Cryptography for HTTPS", "https://github.com/briansmith/ring"),
@@ -805,6 +894,7 @@ const LIBRARIES: &[Credit] = &[
     credit("rusqlite", &["rusqlite"], "MIT", "SQLite bindings", "https://github.com/rusqlite/rusqlite"),
     credit("rustls", &[], "Apache-2.0 OR ISC OR MIT", "HTTPS for the lens-profile download", "https://github.com/rustls/rustls"),
     credit("serde · serde_json", &["serde", "serde_json"], "MIT OR Apache-2.0", "Settings and edit storage", "https://github.com/serde-rs/serde"),
+    credit("sha2", &["sha2"], "MIT OR Apache-2.0", "Checking downloaded AI models", "https://github.com/RustCrypto/hashes"),
     credit("tar", &["tar"], "MIT OR Apache-2.0", "Unpacking the lens-profile download", "https://github.com/composefs/tar-rs"),
     credit("thiserror", &["thiserror"], "MIT OR Apache-2.0", "Error types", "https://github.com/dtolnay/thiserror"),
     credit("tiff", &["tiff"], "MIT", "TIFF export, DCP parsing", "https://github.com/image-rs/image-tiff"),
@@ -826,6 +916,20 @@ const EXTERNAL: &[Credit] = &[
         "CC BY-SA 3.0",
         "Lens profiles — downloaded when you ask, or read from your system",
         "https://lensfun.github.io",
+    ),
+    credit(
+        "SAM 2.1 (hiera-tiny)",
+        &[],
+        "Apache-2.0",
+        "AI masks — Meta's Segment Anything 2, converted to ONNX; downloaded when you ask",
+        "https://github.com/facebookresearch/sam2",
+    ),
+    credit(
+        "PMRID",
+        &[],
+        "Apache-2.0",
+        "AI denoise — Megvii's raw denoiser (ECCV 2020), converted to ONNX; downloaded when you ask",
+        "https://github.com/MegEngine/PMRID",
     ),
     credit(
         "RawTherapee camera profiles",

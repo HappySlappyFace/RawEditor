@@ -1,6 +1,6 @@
 use iced::font::{Font, Weight};
 use iced::widget::{
-    checkbox, column, container, radio, row, scrollable, slider, stack, text,
+    checkbox, column, container, radio, row, scrollable, slider, stack, text, Space,
     text_input,
 };
 use crate::ui::widgets::button;
@@ -728,4 +728,95 @@ pub fn view_delete_modal<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
     .spacing(15)
     .width(440)
     .into()
+}
+
+/// Megabytes for a byte count, as the dialogs show sizes.
+pub fn megabytes(bytes: u64) -> String {
+    format!("{:.0} MB", bytes as f64 / 1_000_000.0)
+}
+
+/// "This feature needs a model": what it is, how big, from where, under what
+/// licence — then a download with progress. Closes itself and carries on
+/// with the feature once installed (`handlers::models`).
+pub fn view_ai_model_modal(editor: &RawEditor) -> Element<'_, Message> {
+    let Some(id) = editor.models.offered else {
+        return Space::new(Length::Shrink, Length::Shrink).into();
+    };
+    let model = id.model();
+    let dim = |s: String, size: u16, shade: f32| {
+        text(s).size(size).style(move |_theme: &Theme| text::Style { color: Some(Color::from_rgb(shade, shade, shade)) })
+    };
+    let job = editor.models.job.as_ref().filter(|(j, _)| *j == id);
+    let actions: Element<'_, Message> = match job {
+        Some((_, progress)) => column![
+            iced::widget::progress_bar(0.0..=1.0, progress.fraction()).height(6),
+            row![
+                dim(
+                    format!(
+                        "Downloading… {} of {}",
+                        megabytes((progress.fraction() as f64 * model.total_bytes() as f64) as u64),
+                        megabytes(model.total_bytes())
+                    ),
+                    12,
+                    0.6
+                ),
+                iced::widget::horizontal_space(),
+                button(text("Cancel")).on_press(Message::ModelDownloadCancel).padding([6, 12])
+                    .style(ui::styles::NeutralButton::style),
+            ]
+            .align_y(Alignment::Center),
+        ]
+        .spacing(10)
+        .into(),
+        None => row![
+            button(text("Not now").align_x(iced::alignment::Horizontal::Center))
+                .on_press(Message::CloseModal)
+                .padding(10)
+                .width(Length::Fill)
+                .style(ui::styles::NeutralButton::style),
+            button(text(format!("Download {}", megabytes(model.total_bytes()))).align_x(iced::alignment::Horizontal::Center))
+                .on_press(Message::ModelDownload(id))
+                .padding(10)
+                .width(Length::Fill)
+                .style(ui::styles::AccentButton::style),
+        ]
+        .spacing(10)
+        .into(),
+    };
+    let error = editor
+        .models
+        .error
+        .as_ref()
+        .filter(|(e, _)| *e == id)
+        .map(|(_, e)| text(e.clone()).size(12).style(|_theme: &Theme| text::Style { color: Some(Color::from_rgb(0.95, 0.4, 0.35)) }));
+
+    column![
+        text(format!("{} needs a model", model.purpose)).size(18).font(Font { weight: Weight::Bold, ..Default::default() })
+            .style(|_| text::Style { color: Some(Color::from_rgb(0.85, 0.85, 0.85)) }),
+        iced::widget::horizontal_rule(1.0).style(|_| iced::widget::rule::Style {
+            color: Color::from_rgb(0.3, 0.3, 0.3),
+            width: 1,
+            radius: 0.0.into(),
+            fill_mode: iced::widget::rule::FillMode::Full
+        }),
+        dim(format!("{} — {}", model.title, megabytes(model.total_bytes())), 13, 0.75),
+        dim(format!("Licence: {}. Source: {}", model.licence, model.upstream), 11, 0.55),
+        dim(
+            "Downloaded once from this app's GitHub release and checked against a published checksum. \
+             It runs on your computer — nothing is uploaded — and only while you use the feature."
+                .to_string(),
+            11,
+            0.5
+        ),
+    ]
+    .push_maybe(error)
+    .push(iced::widget::vertical_space().height(6))
+    .push(actions)
+    .spacing(12)
+    .width(460)
+    .into()
+}
+
+pub fn view_ai_denoise_modal(editor: &RawEditor) -> Element<'_, Message> {
+    crate::app::views::ai_denoise::view(editor)
 }

@@ -84,6 +84,15 @@ ureq = { version = "3.4", default-features = false, features = ["rustls"] }
 bzip2-rs = "0.1.2"
 tar = { version = "0.4.46", default-features = false }
 
+# AI masks and AI denoise (`src/ml`). ONNX Runtime, CPU execution, linked
+# statically from pyke's prebuilt binaries (fetched at BUILD time only).
+# Nothing initialises it until a model is first used, so the app pays nothing
+# — no thread pool, no weights in RAM — when the AI features are unused.
+# rustls for the build-time fetch, so still no OpenSSL anywhere.
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "tracing", "download-binaries", "tls-rustls", "api-31"] }
+# Verifies downloaded model files.
+sha2 = "0.10"
+
 
 [target.'cfg(windows)'.build-dependencies]
 # Embeds assets/icon.ico so the .exe itself has an icon in Explorer.

@@ -22,6 +22,17 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
     } else {
         task
     };
+    let task = match handlers::ai_mask::track(editor) {
+        Some(ai) => Task::batch([task, ai]),
+        None => task,
+    };
+    if modal_before == Modal::AiModel && editor.active_modal != Modal::AiModel {
+        handlers::models::dismissed(editor);
+    }
+    // However the AI denoise modal closed, its engine (a full mosaic) goes.
+    if modal_before == Modal::AiDenoise && editor.active_modal != Modal::AiDenoise {
+        handlers::ai_denoise::close(editor);
+    }
     match track_modal_exit(editor, modal_before) {
         Some(exit) => Task::batch([task, exit]),
         None => task,
@@ -377,6 +388,32 @@ fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::ImportFolderPicked(r) => handlers::library::handle_import_folder_picked(editor, r),
         Message::CheckForUpdates => handlers::window::handle_check_for_updates(editor),
         Message::OpenRepository => handlers::window::handle_open_repository(editor),
+        Message::AiSelectStart => handlers::ai_mask::handle_start(editor),
+        Message::AiSelectRefine(slot) => handlers::ai_mask::handle_refine(editor, slot),
+        Message::AiEngineReady(token, r) => handlers::ai_mask::handle_engine_ready(editor, token, r),
+        Message::AiPrompt { u, v, positive } => handlers::ai_mask::handle_prompt(editor, u, v, positive),
+        Message::AiRect(u0, v0, u1, v1) => handlers::ai_mask::handle_rect(editor, u0, v0, u1, v1),
+        Message::AiMaskReady(token, r) => handlers::ai_mask::handle_mask_ready(editor, token, r),
+        Message::AiSelectDone => handlers::ai_mask::handle_done(editor),
+        Message::AiSelectCancel => handlers::ai_mask::handle_cancel(editor),
+        Message::AiBitmapsLoaded(id, loaded) => handlers::ai_mask::handle_bitmaps_loaded(editor, id, loaded),
+        Message::ModelDownload(id) => handlers::models::handle_download(editor, id),
+        Message::ModelDownloaded(id, r) => handlers::models::handle_downloaded(editor, id, r),
+        Message::ModelDownloadCancel => handlers::models::handle_cancel_download(editor),
+        Message::ModelRemove(id) => handlers::models::handle_remove(editor, id),
+        Message::AiTick => Task::none(),
+        Message::OpenAiDenoise => handlers::ai_denoise::handle_open(editor),
+        Message::AiDenoiseReady(id, r) => handlers::ai_denoise::handle_ready(editor, id, r),
+        Message::AiDenoiseCropReady(id, r) => handlers::ai_denoise::handle_crop_ready(editor, id, r),
+        Message::AiDenoiseRendered(id, r) => handlers::ai_denoise::handle_rendered(editor, id, r),
+        Message::AiDenoiseAmount(a) => handlers::ai_denoise::handle_amount(editor, a),
+        Message::AiDenoiseBefore(b) => handlers::ai_denoise::handle_before(editor, b),
+        Message::AiDenoisePan(dx, dy) => handlers::ai_denoise::handle_pan(editor, dx, dy),
+        Message::AiDenoiseApply => handlers::ai_denoise::handle_apply(editor),
+        Message::AiDenoiseApplied(id, a, r) => handlers::ai_denoise::handle_applied(editor, id, a, r),
+        Message::AiDenoiseRemove => handlers::ai_denoise::handle_remove(editor),
+        Message::AiDenoiseCancel => handlers::ai_denoise::handle_cancel(editor),
+        Message::AiDenoiseRegenerated(id, r) => handlers::ai_denoise::handle_regenerated(editor, id, r),
         Message::LoupeReady(id, r) => handlers::loupe::handle_ready(editor, id, r),
         Message::LoupeRendered(id, r) => handlers::loupe::handle_rendered(editor, id, r),
         Message::LoupePan(dx, dy) => handlers::loupe::handle_pan(editor, dx, dy),

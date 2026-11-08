@@ -258,6 +258,7 @@ fn view_sidebar(editor: &RawEditor) -> iced::widget::Column<'_, Message> {
             0.01,
             Message::ColorNoiseChanged,
         ))
+        .push(ai_denoise_row(editor))
         .push(text("Detail").size(14))
         .push(slider_row(editor, 
             "Sharpen",
@@ -693,6 +694,8 @@ fn view_main_content<'a>(
                     is_color_picking: !peeking && editor.color_picking_mask.is_some(),
                     is_loupe_targeting: !peeking && editor.loupe.targeting,
                     is_leveling: !peeking && editor.is_leveling,
+                    ai_select: (!peeking && editor.ai_select.as_ref().is_some_and(|s| s.engine.is_some()))
+                        .then(|| crate::app::handlers::ai_mask::display_points(editor)),
                 })
                 .width(Length::Fill)
                 .height(Length::Fill)
@@ -905,7 +908,7 @@ fn push_mask_section<'a>(
 ) -> iced::widget::Column<'a, Message> {
     use crate::app::message::{BrushSetting, MaskAdjustment};
     use crate::app::state::MaskTool;
-    use crate::core::types::{MASK_BRUSH, MASK_LINEAR, MASK_RADIAL, MASK_RANGE, MAX_MASKS};
+    use crate::core::types::{MASK_AI, MASK_BRUSH, MASK_LINEAR, MASK_RADIAL, MASK_RANGE, MAX_MASKS};
 
     let params = &editor.current_edit_params;
     let count = params.mask_count as usize;
@@ -934,7 +937,52 @@ fn push_mask_section<'a>(
     };
     sidebar = sidebar
         .push(row![add_button("+ Linear", linear_active, 0), add_button("+ Radial", radial_active, 1)].spacing(5))
-        .push(row![add_button("+ Brush", false, MASK_BRUSH), add_button("+ Range", false, MASK_RANGE)].spacing(5));
+        .push(row![add_button("+ Brush", false, MASK_BRUSH), add_button("+ Range", false, MASK_RANGE)].spacing(5))
+        .push(
+            button(text("+ AI Select").size(12))
+                .style(ui::styles::NeutralButton::style)
+                .on_press_maybe((can_add && editor.ai_select.is_none()).then_some(Message::AiSelectStart))
+                .width(Length::Fill),
+        );
+
+    // An open AI selection owns the canvas: say what clicks do, and how to
+    // finish.
+    if let Some(s) = &editor.ai_select {
+        let status = if let Some(e) = &s.error {
+            format!("Unavailable: {e}")
+        } else if s.analysing() {
+            "Analysing the image…".to_string()
+        } else if s.prompts.is_empty() {
+            "Click the subject to select it.".to_string()
+        } else {
+            "Click to add · right-click or Alt-click to subtract · drag a box.".to_string()
+        };
+        sidebar = sidebar.push(
+            container(
+                column![
+                    text("AI Select").size(12).font(Font { weight: Weight::Bold, ..Default::default() }),
+                    text(status).size(11).style(|_| text::Style { color: Some(Color::from_rgb(0.65, 0.65, 0.65)) }),
+                    row![
+                        button(text("Cancel").size(12))
+                            .style(ui::styles::NeutralButton::style)
+                            .on_press(Message::AiSelectCancel)
+                            .width(Length::Fill),
+                        button(text("Done").size(12))
+                            .style(ui::styles::AccentButton::style)
+                            .on_press(Message::AiSelectDone)
+                            .width(Length::Fill),
+                    ]
+                    .spacing(5),
+                ]
+                .spacing(6),
+            )
+            .padding(8)
+            .style(|_| container::Style {
+                border: Border { color: Color::from_rgb(0.976, 0.451, 0.086), width: 1.0, radius: 0.0.into() },
+                ..Default::default()
+            }),
+        );
+    }
 
     // Mask list: select / enable / delete
     for i in 0..count {
@@ -944,6 +992,7 @@ fn push_mask_section<'a>(
             MASK_LINEAR => "Linear",
             MASK_RADIAL => "Radial",
             MASK_BRUSH => "Brush",
+            MASK_AI => "AI",
             _ => "Range",
         };
         let mut extras = String::new();
@@ -995,6 +1044,13 @@ fn push_mask_section<'a>(
         ]
         .spacing(12),
     );
+    if m.mask_type == MASK_AI && editor.ai_select.is_none() {
+        sidebar = sidebar.push(
+            button(text("Refine selection").size(11))
+                .style(ui::styles::NeutralButton::style)
+                .on_press(Message::AiSelectRefine(i)),
+        );
+    }
 
     // Brush: painting is the whole of a brush mask, and a refinement
     // (add / erase) for any other.
@@ -1131,6 +1187,21 @@ fn push_mask_section<'a>(
     sidebar
 }
 
+/// `AI Denoise…` and, when applied, how much.
+fn ai_denoise_row(editor: &RawEditor) -> Element<'_, Message> {
+    let amount = editor.current_edit_params.ai_denoise;
+    let label = if amount > 0.0 { format!("AI Denoise · {:.0}%", amount * 100.0) } else { "AI Denoise…".to_string() };
+    button(
+        row![text("\u{f0d0}").font(ICON_FONT).size(12), text(label).size(12)]
+            .spacing(8)
+            .align_y(Alignment::Center),
+    )
+    .style(if amount > 0.0 { ui::styles::AccentButton::style } else { ui::styles::NeutralButton::style })
+    .on_press(Message::OpenAiDenoise)
+    .width(Length::Fill)
+    .into()
+}
+
 /// A section title that folds its body away (`ui::widgets::collapse`).
 ///
 /// Header and body are a single sidebar item, with the gap between them
@@ -1185,7 +1256,7 @@ fn loupe_section(editor: &RawEditor) -> Element<'_, Message> {
             iced::widget::image(f.handle.clone())
                 .width(Length::Fixed(LOUPE_SIZE))
                 .height(Length::Fixed(LOUPE_SIZE)),
-            iced::widget::canvas::Canvas::new(ui::loupe::LoupeDrag)
+            iced::widget::canvas::Canvas::new(ui::loupe::LoupeDrag { on_pan: Message::LoupePan })
                 .width(Length::Fixed(LOUPE_SIZE))
                 .height(Length::Fixed(LOUPE_SIZE)),
         ]

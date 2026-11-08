@@ -49,6 +49,19 @@ pub fn lensfun_updates_dir() -> PathBuf {
     lensfun_dir().join("updates")
 }
 
+/// The AI models (`ml::models`), downloaded on request. Owned by the app;
+/// in the data folder rather than the cache because re-downloading them is
+/// slow and cache-clearing tools would take them.
+pub fn models_dir() -> PathBuf {
+    data_dir().join("models")
+}
+
+/// AI mask bitmaps (`ml::masks`): `<image id>/<mask id>.png`. User work —
+/// a saved edit refers to them.
+pub fn ai_masks_dir() -> PathBuf {
+    data_dir().join("ai_masks")
+}
+
 /// One of the folders Preferences › Folders can open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppFolder {
@@ -60,6 +73,8 @@ pub enum AppFolder {
     Lensfun,
     /// [`profiles_dir`]
     Profiles,
+    /// [`models_dir`]
+    Models,
 }
 
 impl AppFolder {
@@ -69,6 +84,7 @@ impl AppFolder {
             AppFolder::Cache => cache_dir(),
             AppFolder::Lensfun => Some(lensfun_dir()),
             AppFolder::Profiles => Some(profiles_dir()),
+            AppFolder::Models => Some(models_dir()),
         }
     }
 }

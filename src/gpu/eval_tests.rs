@@ -723,3 +723,58 @@ fn shadows_lift_a_region_like_exposure_keeping_its_detail() {
         assert!(near.abs() < 0.15, "a halo along the edge: {near:+.3} EV");
     });
 }
+
+/// AI denoise (PMRID) against the classical NR, both scored against the
+/// clean render. Needs the model (`RAWEDITOR_MODELS_DIR`). Prints, and
+/// asserts only that PMRID moves towards the truth at high ISO — the
+/// comparison with NLM is for judgement:
+/// `RAWEDITOR_MODELS_DIR=… cargo test --release ai_denoise_vs -- --ignored --nocapture`
+/// (`RAWEDITOR_EVAL_IMAGE=photo.jpg` for natural texture).
+#[test]
+#[ignore]
+fn ai_denoise_vs_classical_nr() {
+    use crate::ml::denoise::{denoise, noise_model, MosaicLayout};
+    let scene = Scene::default_scene(1600);
+    let dump = std::env::var("EVAL_DUMP").ok();
+    let layout = MosaicLayout { width: scene.w, height: scene.h, cfa_pattern: 0, black: [BLACK; 4], white: WHITE };
+    runtime().block_on(async {
+        let ctx = SharedContext::new().await.expect("gpu");
+        let off = EditParams { color_noise: 0.0, ..EditParams::default() };
+        let (reference, w, h) = render(&ctx, &mosaic(&scene, 0.0, 0.0, 1), scene.w, scene.h, &off, None).await;
+        for (name, a, b) in [("iso800", 2.5e-4f32, 1e-6f32), ("iso3200", 1e-3, 4e-6), ("iso12800", 4e-3, 2e-5)] {
+            let noisy = mosaic(&scene, a, b, 7);
+            let model = noise_model(&noisy, &layout);
+            eprintln!("{name}: true a={a:.2e} b={b:.2e}; measured a={:?} b={:?}", model.a, model.b);
+            let t = std::time::Instant::now();
+            let ai = denoise(&noisy, &layout, &model, &crate::ml::Progress::default()).expect("model (set RAWEDITOR_MODELS_DIR)");
+            let ai_s = t.elapsed().as_secs_f32();
+            let (raw, _, _) = render(&ctx, &noisy, scene.w, scene.h, &off, None).await;
+            let (ai_img, _, _) = render(&ctx, &ai, scene.w, scene.h, &off, None).await;
+            let y_raw = psnr_luma_chroma(&raw, &reference, w, h, 8);
+            let y_ai = psnr_luma_chroma(&ai_img, &reference, w, h, 8);
+            let mut best_nlm = (f64::MIN, 0.0, 0.0f32);
+            for luma in [0.25f32, 0.5, 0.75, 1.0] {
+                let p = EditParams { luma_noise: luma, color_noise: 0.5, ..EditParams::default() };
+                let (img, _, _) = render(&ctx, &noisy, scene.w, scene.h, &p, None).await;
+                let (y, c) = psnr_luma_chroma(&img, &reference, w, h, 8);
+                if y > best_nlm.0 {
+                    best_nlm = (y, c, luma);
+                }
+            }
+            eprintln!(
+                "  noisy Y {:.2} C {:.2} | PMRID Y {:.2} C {:.2} ({ai_s:.1}s) | best NLM (luma {:.2}) Y {:.2} C {:.2}",
+                y_raw.0, y_raw.1, y_ai.0, y_ai.1, best_nlm.2, best_nlm.0, best_nlm.1
+            );
+            if let Some(d) = &dump {
+                write_png(&format!("{d}/{name}_noisy.png"), &raw, w, h);
+                write_png(&format!("{d}/{name}_pmrid.png"), &ai_img, w, h);
+            }
+            if name != "iso800" {
+                assert!(y_ai.0 > y_raw.0 + 2.0, "{name}: PMRID did not move towards the truth");
+            }
+        }
+        if let Some(d) = &dump {
+            write_png(&format!("{d}/reference.png"), &reference, w, h);
+        }
+    });
+}

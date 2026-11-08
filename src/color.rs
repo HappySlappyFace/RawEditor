@@ -474,6 +474,16 @@ pub fn display_to_sensor_uv(u: f32, v: f32, orientation: u32) -> (f32, f32) {
     }
 }
 
+/// The inverse of [`display_to_sensor_uv`].
+pub fn sensor_to_display_uv(u: f32, v: f32, orientation: u32) -> (f32, f32) {
+    match orientation {
+        6 => (1.0 - v, u),
+        8 => (v, 1.0 - u),
+        3 => (1.0 - u, 1.0 - v),
+        _ => (u, v),
+    }
+}
+
 /// The orientation the colour pass renders: the normalised EXIF one (1/3/6/8)
 /// turned a further `quarter_turns` clockwise (`EditParams::quarter_turns`).
 /// One composed value, so the shader, the overlay and every UV mapping keep

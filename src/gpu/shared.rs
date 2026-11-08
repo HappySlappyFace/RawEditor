@@ -201,6 +201,17 @@ impl SharedContext {
                     },
                     count: None,
                 },
+                // AI mask layers (gpu/ai_mask.rs).
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         let presence_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -404,6 +415,8 @@ pub struct ImageResources {
     /// The params most recently pushed — what `prepare_stages` brings the
     /// cached stages up to date with before a render.
     stage_params: std::sync::Mutex<EditParams>,
+    /// AI mask bitmaps by id, with a generation counter (`set_ai_bitmaps`).
+    ai_bitmaps: std::sync::Mutex<(u64, Arc<super::ai_mask::AiBitmaps>)>,
     /// `GpuMasks` uniform (group 1, binding 1).
     mask_buffer: wgpu::Buffer,
     /// This shot's optics (matched profile, focal length, crop factor).
@@ -459,6 +472,10 @@ pub struct ImageResources {
     /// it. `None` for paths that don't record it (tests); set by the app's
     /// loaders before the resources are shared.
     pub profile_use: Option<crate::core::camera_profiles::ProfileUse>,
+    /// AI denoise these resources were built for: `(requested, applied)`.
+    /// `applied` is 0 when the result was not cached yet (it is then
+    /// regenerated and the image rebuilt). Set by the app's loaders.
+    pub ai_denoise: (f32, f32),
     /// Normalised EXIF orientation (1/3/6/8). Sensor textures stay landscape;
     /// the color pass maps display UVs to sensor space, and render targets are
     /// sized to `oriented_*` dims. The edit's quarter turns compose on top
@@ -698,6 +715,10 @@ struct StageState {
     brush: Option<super::brush::BrushLayers>,
     /// Group 1 for the colour pass: brush layers (or the placeholder) + masks.
     masks: Arc<wgpu::BindGroup>,
+    /// What the AI mask layers hold; `None` = nothing uploaded yet.
+    ai_key: Option<super::ai_mask::AiKey>,
+    /// Allocated with the first AI mask.
+    ai: Option<super::ai_mask::AiLayers>,
     /// Which denoise target holds the current output (when `denoise_key`).
     denoise_out: usize,
     /// The source the local-contrast bands were last built from, keyed by
@@ -721,6 +742,7 @@ pub struct ColorBindings {
 fn make_mask_bind_group(
     context: &SharedContext,
     layers: &wgpu::TextureView,
+    ai_layers: &wgpu::TextureView,
     mask_buffer: &wgpu::Buffer,
 ) -> wgpu::BindGroup {
     context.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -729,6 +751,7 @@ fn make_mask_bind_group(
         entries: &[
             wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(layers) },
             wgpu::BindGroupEntry { binding: 1, resource: mask_buffer.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(ai_layers) },
         ],
     })
 }
@@ -783,6 +806,8 @@ impl StageState {
             brush_key: None,
             brush: None,
             masks,
+            ai_key: None,
+            ai: None,
             denoise_out: 0,
             local_key: None,
             local: None,
@@ -1010,6 +1035,7 @@ impl ImageResources {
         let mask_bind_group = Arc::new(make_mask_bind_group(
             context,
             &super::brush::placeholder(&context.device),
+            &super::ai_mask::placeholder(&context.device),
             &mask_buffer,
         ));
 
@@ -1090,6 +1116,7 @@ impl ImageResources {
             mask_buffer,
             base_bind_group,
             stage_params: std::sync::Mutex::new(*params),
+            ai_bitmaps: std::sync::Mutex::new((0, Arc::default())),
             lens,
             curve_texture,
             curve_view,
@@ -1119,6 +1146,7 @@ impl ImageResources {
             has_dcp,
             dcp_has_curve,
             profile_use: None,
+            ai_denoise: (0.0, 0.0),
             orientation,
             // None → the first update_uniforms after load re-uploads the LUTs
             // once with the anchored-kelvin interpolation (cheap, ~90 KB).
@@ -1202,19 +1230,86 @@ impl ImageResources {
             let (dw, dh) = self.oriented_dims(params.quarter_turns);
             let (lw, lh) = super::brush::layer_size(dw, dh);
             if st.brush.as_ref().is_none_or(|l| (l.width, l.height) != (lw, lh)) {
-                let layers = context.brush.layers(&context.device, lw, lh);
-                st.masks = Arc::new(make_mask_bind_group(context, &layers.array_view, &self.mask_buffer));
-                st.brush = Some(layers);
+                st.brush = Some(context.brush.layers(&context.device, lw, lh));
+                self.rebuild_mask_group(context, &mut st);
             }
             if let Some(layers) = &st.brush {
                 context.brush.rasterize(&context.device, &context.queue, layers, &params.brush);
             }
             st.brush_key = Some(params.brush);
         }
+        self.prepare_ai_masks(context, &mut st, &params);
         let st = &mut *st;
         self.prepare_denoise(context, st, &params);
         self.prepare_local_contrast(context, st, &params);
         ColorBindings { main: st.active.clone(), masks: st.masks.clone(), presence: st.presence.clone() }
+    }
+
+    /// Group 1 from whatever layers exist (placeholders for the rest).
+    fn rebuild_mask_group(&self, context: &SharedContext, st: &mut StageState) {
+        let brush_placeholder;
+        let brush = match &st.brush {
+            Some(l) => &l.array_view,
+            None => {
+                brush_placeholder = super::brush::placeholder(&context.device);
+                &brush_placeholder
+            }
+        };
+        let ai_placeholder;
+        let ai = match &st.ai {
+            Some(l) => &l.array_view,
+            None => {
+                ai_placeholder = super::ai_mask::placeholder(&context.device);
+                &ai_placeholder
+            }
+        };
+        st.masks = Arc::new(make_mask_bind_group(context, brush, ai, &self.mask_buffer));
+    }
+
+    /// Hand the app's decoded AI mask bitmaps to these resources. The next
+    /// render uploads whatever the edit refers to.
+    pub fn set_ai_bitmaps(&self, bitmaps: Arc<super::ai_mask::AiBitmaps>) {
+        let mut slot = self.ai_bitmaps.lock().unwrap_or_else(|e| e.into_inner());
+        slot.0 += 1;
+        slot.1 = bitmaps;
+    }
+
+    /// AI mask layers: upload when the slots' ids, the orientation or the
+    /// decoded bitmaps changed. An edit with no AI mask (or the before/after
+    /// peek, which has no masks) leaves the layers as they are, like brush.
+    fn prepare_ai_masks(&self, context: &SharedContext, st: &mut StageState, params: &EditParams) {
+        let mut ids = [0u64; crate::core::types::MAX_MASKS];
+        for (slot, id) in params.ai_masks() {
+            ids[slot] = id;
+        }
+        if ids.iter().all(|&id| id == 0) {
+            return;
+        }
+        let (generation, bitmaps) = {
+            let slot = self.ai_bitmaps.lock().unwrap_or_else(|e| e.into_inner());
+            (slot.0, slot.1.clone())
+        };
+        let key = super::ai_mask::AiKey { ids, orientation: self.display_orientation(params.quarter_turns), generation };
+        if st.ai_key == Some(key) {
+            return;
+        }
+        // Same frame and cap as the brush layers.
+        let (dw, dh) = self.oriented_dims(params.quarter_turns);
+        let (lw, lh) = super::brush::layer_size(dw, dh);
+        if st.ai.as_ref().is_none_or(|l| (l.width, l.height) != (lw, lh)) {
+            st.ai = Some(super::ai_mask::AiLayers::new(&context.device, lw, lh));
+            self.rebuild_mask_group(context, st);
+        }
+        if let Some(layers) = &st.ai {
+            for (slot, &id) in ids.iter().enumerate() {
+                let bitmap = (id != 0).then(|| bitmaps.get(&id)).flatten();
+                if id != 0 && bitmap.is_none() {
+                    tracing::warn!("AI mask {id} (slot {slot}) has no decoded bitmap yet");
+                }
+                layers.upload(&context.queue, slot, bitmap.map(|b| &**b), key.orientation);
+            }
+        }
+        st.ai_key = Some(key);
     }
 
     /// Noise reduction: re-run when its settings changed, and point the

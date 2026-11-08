@@ -387,10 +387,13 @@ pub fn handle_export_raw_loaded(
                         }
                     };
 
+                    // AI denoise: the cached result, regenerated if missing
+                    // (an export must not silently drop an edit).
+                    let mosaic = crate::app::handlers::ai_denoise::export_mosaic(&raw_data, image_id, params.ai_denoise);
                     gpu::shared::ImageResources::new(
                         &context,
                         image_id,
-                        &raw_data.data,
+                        &mosaic,
                         raw_data.width,
                         raw_data.height,
                         &params,
@@ -404,7 +407,15 @@ pub fn handle_export_raw_loaded(
                         raw_data.orientation,
                         raw_data.lens_context.clone(),
                     )
-                    .map(|res| (context, Arc::new(res)))
+                    .map(|res| {
+                        // Export's resources are its own: give them the AI
+                        // masks' bitmaps, or those masks would export empty.
+                        if params.ai_masks().next().is_some() {
+                            let bitmaps = crate::app::handlers::ai_mask::load_all(image_id, &params);
+                            res.set_ai_bitmaps(Arc::new(bitmaps));
+                        }
+                        (context, Arc::new(res))
+                    })
                 },
                 move |res| Message::ExportPipelineReady(image_id, params, res),
             )

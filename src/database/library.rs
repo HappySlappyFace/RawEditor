@@ -435,6 +435,25 @@ impl Library {
         Ok(())
     }
 
+    /// Every `(image id, AI mask id)` a saved edit refers to — what the
+    /// startup sweep of `ai_masks/` must keep.
+    pub fn ai_mask_references(&self) -> SqlResult<std::collections::HashSet<(i64, u64)>> {
+        let mut stmt = self.conn.prepare("SELECT image_id, settings_json FROM edits")?;
+        let rows = stmt.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))?;
+        let mut out = std::collections::HashSet::new();
+        for row in rows {
+            let (image_id, json) = row?;
+            // Edits saved before AI masks existed carry no `ai_id` at all.
+            if !json.contains("\"ai_id\"") {
+                continue;
+            }
+            if let Ok(params) = EditParams::from_json(&json) {
+                out.extend(params.ai_masks().map(|(_, id)| (image_id, id)));
+            }
+        }
+        Ok(out)
+    }
+
     /// Load edit parameters for an image from the database
     /// Returns Default if no edits exist for this image
     pub fn load_edit_params(&self, image_id: i64) -> SqlResult<EditParams> {
@@ -653,6 +672,15 @@ fn load_database_blocking() -> Result<Vec<super::models::Image>, String> {
     }
     if let Err(e) = lib.verify_files() {
         tracing::warn!("Could not verify RAW files: {e}");
+    }
+    match lib.ai_mask_references() {
+        Ok(referenced) => {
+            let n = crate::ml::masks::sweep(&referenced);
+            if n > 0 {
+                tracing::info!("Removed {n} superseded AI mask file(s)");
+            }
+        }
+        Err(e) => tracing::warn!("Could not sweep AI masks: {e}"),
     }
     if let Ok(dir) = crate::raw::processor::cache_dir("edited") {
         match lib.sweep_edited_proxies(&dir) {

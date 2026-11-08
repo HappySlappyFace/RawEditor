@@ -69,7 +69,7 @@ pub fn request(editor: &mut RawEditor) -> Task<Message> {
     let size = physical_size(editor);
     let image_id = main.image_id;
     Task::perform(
-        async move { loupe.render(&ctx, &main, center, size, nr).await },
+        async move { loupe.render(&ctx, &main, center, size, nr, None).await },
         move |result| Message::LoupeRendered(image_id, result),
     )
 }
@@ -99,7 +99,14 @@ fn build(
                 (None, Some(path)) => Arc::new(crate::raw::loader::load_raw_data(path).await?),
                 (None, None) => return Err("image is no longer in the catalogue".to_string()),
             };
-            tokio::task::spawn_blocking(move || crate::gpu::loupe::Loupe::new(&ctx, &main, raw).map(Arc::new))
+            tokio::task::spawn_blocking(move || {
+                // The main view's mosaic carries any AI denoise; so must this.
+                let raw = match crate::ml::denoise::effective_mosaic(&raw, image_id, main.ai_denoise.1) {
+                    (std::borrow::Cow::Owned(data), _) => Arc::new(crate::raw::loader::RawDataResult { data, ..(*raw).clone() }),
+                    (std::borrow::Cow::Borrowed(_), _) => raw,
+                };
+                crate::gpu::loupe::Loupe::new(&ctx, &main, raw).map(Arc::new)
+            })
                 .await
                 .map_err(|e| format!("loupe preparation panicked: {e}"))?
         },
