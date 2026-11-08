@@ -193,6 +193,7 @@ pub fn handle_modal_confirm(editor: &mut RawEditor) -> Task<Message> {
         Modal::RemoveFolder => {
             crate::app::handlers::library::handle_remove_folder_confirmed(editor)
         }
+        Modal::ImportDropped => crate::app::handlers::library::handle_drop_import_confirmed(editor),
         // Help, Preferences and About have nothing to confirm; Enter closes
         // them, which is the least surprising thing a dialog can do.
         Modal::Help | Modal::Preferences | Modal::About => handle_close_modal(editor),
@@ -216,6 +217,7 @@ pub fn handle_close_modal(editor: &mut RawEditor) -> Task<Message> {
     editor.active_modal = Modal::None;
     editor.pending_delete_ids.clear();
     editor.pending_remove_folder = None;
+    editor.drop_import = Default::default();
     Task::none()
 }
 
@@ -226,6 +228,7 @@ pub fn handle_escape(editor: &mut RawEditor) -> Task<Message> {
         editor.active_modal = Modal::None;
         editor.pending_delete_ids.clear();
         editor.pending_remove_folder = None;
+        editor.drop_import = Default::default();
     } else if editor.ai_select.is_some() {
         return crate::app::handlers::ai_mask::handle_cancel(editor);
     } else if editor.is_wb_picking {

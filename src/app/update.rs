@@ -378,6 +378,10 @@ fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
             handlers::library::handle_remove_folder_confirmed(editor)
         }
         Message::ImportFolderPicked(r) => handlers::library::handle_import_folder_picked(editor, r),
+        Message::OpenInDevelop(id) => handlers::navigation::handle_open_in_develop(editor, id),
+        Message::FileDropped(path) => handlers::library::handle_file_dropped(editor, path),
+        Message::DropScanned { dropped, scan } => handlers::library::handle_drop_scanned(editor, dropped, scan),
+        Message::DropImportConfirmed => handlers::library::handle_drop_import_confirmed(editor),
         Message::CheckForUpdates => handlers::updates::handle_check(editor),
         Message::UpdateChecked { result, manual } => handlers::updates::handle_checked(editor, result, manual),
         Message::UpdatePromptToggled(on) => handlers::updates::handle_prompt_toggled(editor, on),
@@ -675,5 +679,74 @@ mod tests {
         let _ = update(&mut e, Message::MenuItem(Box::new(Message::OpenModal(Modal::About))));
         assert_eq!(e.active_modal, Modal::About);
         assert_ne!(e.menu_generation, generation);
+    }
+
+    fn scanned(e: &mut RawEditor, folder: &str, files: &[&str]) {
+        let folder = std::path::PathBuf::from(folder);
+        e.drop_import.scanning.insert(folder.clone());
+        let files = files.iter().map(std::path::PathBuf::from).collect();
+        let _ = update(e, Message::DropScanned { dropped: folder.clone(), scan: Some((folder, files)) });
+    }
+
+    /// A dropped folder is offered with only its new photos, a nested one
+    /// dropped too doesn't count them twice, and a scan landing after Cancel
+    /// doesn't reopen the dialog.
+    #[test]
+    fn dropped_folders_offer_only_new_photos_once() {
+        use std::path::PathBuf;
+        let mut e = editor();
+        e.images = vec![crate::database::models::Image {
+            id: 1,
+            filename: "a.nef".into(),
+            path: "/card/a.nef".into(),
+            cache_path_thumb: None,
+            cache_path_instant: None,
+            cache_path_working: None,
+            cache_path_edited: None,
+            file_status: "exists".into(),
+            rating: 0,
+            flag: 0,
+        }];
+        scanned(&mut e, "/card", &["/card/a.nef", "/card/b.nef", "/card/sub/c.nef"]);
+        assert_eq!(e.active_modal, Modal::ImportDropped);
+        assert_eq!(e.drop_import.folders, vec![(PathBuf::from("/card"), 2)]);
+
+        scanned(&mut e, "/card/sub", &["/card/sub/c.nef", "/card/sub/d.nef"]);
+        assert_eq!(e.drop_import.files.len(), 3, "c.nef is counted once");
+        assert_eq!(e.drop_import.folders[1], (PathBuf::from("/card/sub"), 1));
+
+        e.drop_import.scanning.insert(PathBuf::from("/late"));
+        let _ = update(&mut e, Message::CloseModal);
+        assert!(e.drop_import.folders.is_empty());
+        let late = PathBuf::from("/late");
+        let _ = update(&mut e, Message::DropScanned {
+            dropped: late.clone(),
+            scan: Some((late, vec![PathBuf::from("/late/x.nef")])),
+        });
+        assert_eq!(e.active_modal, Modal::None, "a cancelled drop stays cancelled");
+    }
+
+    /// A folder that is already all in the library opens no dialog; it is
+    /// shown in Library instead.
+    #[test]
+    fn a_catalogued_folder_is_shown_not_offered() {
+        let mut e = editor();
+        e.images = vec![crate::database::models::Image {
+            id: 1,
+            filename: "a.nef".into(),
+            path: "/card/a.nef".into(),
+            cache_path_thumb: None,
+            cache_path_instant: None,
+            cache_path_working: None,
+            cache_path_edited: None,
+            file_status: "exists".into(),
+            rating: 0,
+            flag: 0,
+        }];
+        e.current_tab = crate::app::message::AppTab::Develop;
+        scanned(&mut e, "/card", &["/card/a.nef"]);
+        assert_eq!(e.active_modal, Modal::None);
+        assert_eq!(e.current_tab, crate::app::message::AppTab::Library);
+        assert_eq!(e.library_folder_filter.as_deref(), Some("/card"));
     }
 }

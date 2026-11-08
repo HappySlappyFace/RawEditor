@@ -435,16 +435,17 @@ fn view_image_card<'a>(
 
     // Selection and hover live on the button so they *transition* (see
     // `ui::widgets::button`): a click crossfades the highlight in, hovering
-    // warms the frame. Keyed by id like the image.
-    button(image_stack)
+    // warms the frame. Keyed by id like the image. A double click opens it
+    // in Develop; its first press still selects, as a single click would.
+    let card = button(image_stack)
         .on_press(Message::ImageSelected(img.id))
         .width(Length::Fixed(thumb_width + 14.0))
         .height(Length::Fixed(thumb_height + 14.0))
         .padding(theme::space::S)
         .clip(true)
         .key(img.id as u64)
-        .style(move |_theme, status| card_style(is_selected, status))
-        .into()
+        .style(move |_theme, status| card_style(is_selected, status));
+    ui::widgets::double_click::double_click(card, Message::OpenInDevelop(img.id)).into()
 }
 
 /// The contact-sheet frame around a thumbnail. Square corners throughout.

@@ -80,6 +80,9 @@ pub enum Modal {
     /// Confirm forgetting a folder. Its target lives in
     /// `RawEditor::pending_remove_folder`.
     RemoveFolder,
+    /// Folders dropped onto the window, waiting for the user to import them
+    /// (`RawEditor::drop_import`).
+    ImportDropped,
     /// Confirm downloading an AI model a feature needs
     /// (`RawEditor::models.offered`).
     AiModel,
@@ -90,6 +93,21 @@ pub enum Modal {
     UpdatePrompt,
     /// A check's result: a newer version, up to date, or an error.
     Update,
+}
+
+/// Folders dropped onto the window (`handlers::library::handle_file_dropped`).
+///
+/// Dropping fifty RAW files from one folder delivers fifty events, so each
+/// folder is scanned once (`scanning`) and offered once (`folders`).
+#[derive(Debug, Default)]
+pub struct DropImport {
+    /// Dropped items whose scan hasn't come back yet.
+    pub scanning: HashSet<std::path::PathBuf>,
+    /// Folders the dialog offers, each with the number of new photos it adds.
+    pub folders: Vec<(std::path::PathBuf, usize)>,
+    /// Every new file across `folders`, so nested or repeated folders aren't
+    /// counted twice.
+    pub files: HashSet<std::path::PathBuf>,
 }
 
 /// Noise-reduction settings the main view keeps showing while a drag on one
@@ -642,6 +660,9 @@ pub struct RawEditor {
     /// Folder the open RemoveFolder dialog acts on — a snapshot taken when the
     /// dialog opens, mirroring `pending_delete_ids`.
     pub pending_remove_folder: Option<String>,
+    /// Folders dropped onto the window: being scanned, and scanned ones the
+    /// ImportDropped dialog offers.
+    pub drop_import: DropImport,
     /// Phase 79: Modular Info Overlay state
     pub info_overlay: InfoOverlayState,
     /// Phase 65: Undo/Redo History Map<ImageID, (HistoryStack, CurrentIndex)>
@@ -919,6 +940,7 @@ impl RawEditor {
                 min_filter_rating: 0,
                 library_folder_filter: None,
                 pending_remove_folder: None,
+                drop_import: DropImport::default(),
                 // Must be the enum's own default (Hidden). Starting at
                 // Metadata booted the app with the overlay already on, at
                 // phase 2 of 3, so the first `I` press advanced the cycle
@@ -1570,6 +1592,11 @@ impl RawEditor {
             ) = event
             {
                 return Some(Message::WindowResized(size));
+            }
+            // Only winit's X11, macOS and Windows backends deliver drops;
+            // on native Wayland (winit 0.30) this never fires.
+            if let iced::Event::Window(iced::window::Event::FileDropped(path)) = event {
+                return Some(Message::FileDropped(path));
             }
             // Alt-tabbing away while Space is held sends the KeyReleased to
             // the other window, which would otherwise strand the peek on.

@@ -160,6 +160,54 @@ pub fn view_export_modal<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
     .into()
 }
 
+/// Folders dropped onto the window, offered for import. Counts are of NEW
+/// photos: files already in the library are left out, as the import skips them.
+pub fn view_import_dropped_modal(editor: &RawEditor) -> Element<'_, Message> {
+    let drop = &editor.drop_import;
+    let total = drop.files.len();
+    let plural = |n: usize| if n == 1 { "" } else { "s" };
+
+    let folders = drop.folders.iter().fold(column![].spacing(theme::space::S), |col, (folder, count)| {
+        col.push(
+            row![
+                text(folder.display().to_string())
+                    .size(theme::size::SMALL)
+                    .width(Length::Fill)
+                    .style(|_theme: &Theme| text::Style { color: Some(theme::colours().text_secondary) }),
+                ui::text::tinted(format!("{count} new"), theme::size::SMALL, theme::colours().text_muted),
+            ]
+            .spacing(theme::space::M),
+        )
+    });
+    let body = column![
+        container(scrollable(folders)).max_height(200),
+        text(format!(
+            "{total} photo{} will be added to the library. Your files stay where they are.",
+            plural(total)
+        ))
+        .size(theme::size::BODY)
+        .style(|_theme: &Theme| text::Style { color: Some(theme::colours().text_secondary) }),
+    ]
+    .spacing(theme::space::XL);
+
+    let title = match drop.folders.len() {
+        1 => "Import Folder".to_string(),
+        n => format!("Import {n} Folders"),
+    };
+    dialog::frame(
+        title,
+        body,
+        dialog::actions([
+            dialog::action("Cancel", Kind::Neutral).on_press(Message::CloseModal).into(),
+            dialog::action(format!("Import {total} Photo{}", plural(total)), Kind::Primary)
+                .on_press(Message::DropImportConfirmed)
+                .into(),
+        ]),
+    )
+    .width(dialog::WIDE)
+    .into()
+}
+
 /// Confirmation for forgetting a folder.
 ///
 /// The wording is deliberately explicit that files survive — this is the only

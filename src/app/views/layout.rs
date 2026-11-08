@@ -101,6 +101,7 @@ pub fn view(editor: &RawEditor) -> Element<'_, Message> {
             Modal::CopySettings => Some(view_copy_settings_modal(editor)),
             Modal::About => Some(view_about_modal()),
             Modal::RemoveFolder => Some(view_remove_folder_modal(editor)),
+            Modal::ImportDropped => Some(crate::app::views::modals::view_import_dropped_modal(editor)),
             Modal::AiModel => Some(crate::app::views::modals::view_ai_model_modal(editor)),
             Modal::AiDenoise => Some(crate::app::views::modals::view_ai_denoise_modal(editor)),
             Modal::UpdatePrompt => Some(crate::app::views::modals::view_update_prompt_modal(editor)),

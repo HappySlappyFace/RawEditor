@@ -82,6 +82,138 @@ pub fn handle_import_folder_picked(
     Task::perform(import_folder_async(folder, db_path), Message::ImportComplete)
 }
 
+/// A file or folder dropped onto the window. A folder is offered for import;
+/// a RAW file stands for the folder it is in. Anything else is ignored.
+///
+/// The stat and the folder walk happen off the UI thread. A RAW is
+/// recognised by its extension alone, so the fifty events of a fifty-file
+/// drop collapse into one scan of their folder here, without touching disk.
+pub fn handle_file_dropped(editor: &mut RawEditor, path: PathBuf) -> Task<Message> {
+    use crate::app::state::Modal;
+    if editor.library.is_none() || !matches!(editor.active_modal, Modal::None | Modal::ImportDropped) {
+        return Task::none();
+    }
+    let key = if raw::is_supported_raw(&path) {
+        path.parent().map(Path::to_path_buf).unwrap_or_else(|| path.clone())
+    } else {
+        path.clone()
+    };
+    let drop = &mut editor.drop_import;
+    if drop.scanning.contains(&key) || drop.folders.iter().any(|(f, _)| *f == key) {
+        return Task::none();
+    }
+    drop.scanning.insert(key.clone());
+    Task::perform(
+        async move {
+            let scan = tokio::task::spawn_blocking({
+                let key = key.clone();
+                move || key.is_dir().then(|| { let files = collect_raw_files(&key); (key, files) })
+            })
+            .await
+            .ok()
+            .flatten();
+            (key, scan)
+        },
+        |(dropped, scan)| Message::DropScanned { dropped, scan },
+    )
+}
+
+/// A dropped folder's scan is back: offer its new photos, say there are
+/// none, or (when it is all catalogued already) show it.
+pub fn handle_drop_scanned(
+    editor: &mut RawEditor,
+    dropped: PathBuf,
+    scan: Option<(PathBuf, Vec<PathBuf>)>,
+) -> Task<Message> {
+    use crate::app::state::Modal;
+    // Not ours any more: the dialog was cancelled while this scan ran.
+    if !editor.drop_import.scanning.remove(&dropped) {
+        return Task::none();
+    }
+    let Some((folder, files)) = scan else {
+        return Task::none();
+    };
+    let catalogued: std::collections::HashSet<&str> = editor.images.iter().map(|img| img.path.as_str()).collect();
+    let new: Vec<PathBuf> = files
+        .iter()
+        .filter(|f| !catalogued.contains(f.to_string_lossy().as_ref()))
+        .cloned()
+        .collect();
+    let offering = !editor.drop_import.folders.is_empty();
+
+    if new.is_empty() {
+        if offering {
+            return Task::none();
+        }
+        if files.is_empty() {
+            editor.status = format!("No RAW files in {}.", folder.display());
+            return Task::none();
+        }
+        // All catalogued: show it (the folder filter is a path prefix, so
+        // this works for a folder whose photos sit in subfolders too).
+        editor.status = format!("{} is already in the library.", folder.display());
+        let key = folder.to_string_lossy().into_owned();
+        if editor.active_modal == Modal::None {
+            let tab = crate::app::handlers::navigation::handle_tab_changed(editor, crate::app::message::AppTab::Library);
+            let filter = handle_set_library_folder_filter(editor, Some(key));
+            return Task::batch([tab, filter]);
+        }
+        return Task::none();
+    }
+
+    let drop = &mut editor.drop_import;
+    let before = drop.files.len();
+    drop.files.extend(new);
+    let added = drop.files.len() - before;
+    if added > 0 {
+        drop.folders.push((folder, added));
+        // Scans land in any order; list the folders by path.
+        drop.folders.sort();
+    }
+    if editor.active_modal == Modal::None && !editor.drop_import.folders.is_empty() {
+        return crate::app::handlers::window::handle_open_modal(editor, Modal::ImportDropped);
+    }
+    Task::none()
+}
+
+/// Import every folder the dropped-import dialog lists, in one background job.
+pub fn handle_drop_import_confirmed(editor: &mut RawEditor) -> Task<Message> {
+    use crate::app::state::Modal;
+    if editor.active_modal != Modal::ImportDropped {
+        return Task::none();
+    }
+    editor.active_modal = Modal::None;
+    let drop = std::mem::take(&mut editor.drop_import);
+    let Some(library) = &editor.library else {
+        return Task::none();
+    };
+    let folders: Vec<PathBuf> = drop.folders.into_iter().map(|(f, _)| f).collect();
+    if folders.is_empty() {
+        return Task::none();
+    }
+    editor.status = match folders.as_slice() {
+        [one] => format!("Importing {}…", one.display()),
+        many => format!("Importing {} folders…", many.len()),
+    };
+    let db_path = library.path().clone();
+    Task::perform(
+        async move {
+            tokio::task::spawn_blocking(move || {
+                let mut total = ImportResult { imported_count: 0, skipped_count: 0 };
+                for folder in &folders {
+                    let result = import_folder_blocking(folder, &db_path)?;
+                    total.imported_count += result.imported_count;
+                    total.skipped_count += result.skipped_count;
+                }
+                Ok(total)
+            })
+            .await
+            .map_err(|e| format!("Import task failed: {e}"))?
+        },
+        Message::ImportComplete,
+    )
+}
+
 pub fn handle_import_from_camera(editor: &mut RawEditor) -> Task<Message> {
     editor.status = "Camera import is not implemented yet.".to_string();
     Task::none()

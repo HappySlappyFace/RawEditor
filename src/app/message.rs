@@ -466,6 +466,15 @@ pub enum Message {
     RemoveFolderConfirmed,
     /// Result of the async folder picker; `None` = cancelled.
     ImportFolderPicked(Option<PathBuf>),
+    /// Library: a thumbnail was double-clicked — open it in Develop.
+    OpenInDevelop(i64),
+    /// A file or folder was dropped onto the window (one per item dropped).
+    FileDropped(PathBuf),
+    /// A dropped item's folder, scanned off the UI thread: the folder and the
+    /// RAW files under it. `None` when the item was neither a folder nor a RAW.
+    DropScanned { dropped: PathBuf, scan: Option<(PathBuf, Vec<PathBuf>)> },
+    /// Import every folder in the dropped-import dialog.
+    DropImportConfirmed,
     // ========== Updates (handlers::updates) ==========
     /// Help › Check for Updates, or Preferences' Check Now: check and show
     /// the result.

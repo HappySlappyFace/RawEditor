@@ -148,6 +148,21 @@ fn reveal(editor: &mut RawEditor, animate: bool) -> Task<Message> {
     Task::none()
 }
 
+/// Library: a double-clicked thumbnail opens in Develop. The double click's
+/// first press has already selected it (a plain click); the select here
+/// covers a double click that arrives without one.
+pub fn handle_open_in_develop(editor: &mut RawEditor, image_id: i64) -> Task<Message> {
+    if editor.active_modal != crate::app::state::Modal::None {
+        return Task::none();
+    }
+    let select = if editor.selected_image_id != Some(image_id) {
+        handle_image_selected(editor, image_id)
+    } else {
+        Task::none()
+    };
+    Task::batch([select, handle_tab_changed(editor, AppTab::Develop)])
+}
+
 pub fn handle_tab_changed(editor: &mut RawEditor, tab: AppTab) -> Task<Message> {
     // Leaving Develop mid-gesture must not strand unsaved slider edits.
     editor.flush_edits();
