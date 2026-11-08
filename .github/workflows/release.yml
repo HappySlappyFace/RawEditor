@@ -67,7 +67,8 @@ jobs:
         if: matrix.os == 'macos-15'
         env:
           RUSTFLAGS: -C target-cpu=apple-m1
-          MACOSX_DEPLOYMENT_TARGET: "11.0"
+          # 13.4: ONNX Runtime's prebuilt library (ort) is built for it.
+          MACOSX_DEPLOYMENT_TARGET: "13.4"
         run: cargo build --release --target aarch64-apple-darwin --features fast-jpeg
 
       - name: Prepare release directory (Linux)
@@ -139,7 +140,7 @@ jobs:
             <key>CFBundlePackageType</key><string>APPL</string>
             <key>CFBundleShortVersionString</key><string>${VERSION#v}</string>
             <key>CFBundleVersion</key><string>${VERSION#v}</string>
-            <key>LSMinimumSystemVersion</key><string>11.0</string>
+            <key>LSMinimumSystemVersion</key><string>13.4</string>
             <key>LSArchitecturePriority</key><array><string>arm64</string></array>
             <key>NSHighResolutionCapable</key><true/>
           </dict>
