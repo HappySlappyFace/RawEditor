@@ -413,8 +413,21 @@ pub enum Message {
     RemoveFolderConfirmed,
     /// Result of the async folder picker; `None` = cancelled.
     ImportFolderPicked(Option<PathBuf>),
-    /// Help > Check for Updates — opens the releases page.
+    // ========== Updates (handlers::updates) ==========
+    /// Help › Check for Updates, or Preferences' Check Now: check and show
+    /// the result.
     CheckForUpdates,
+    /// A check finished. `manual`: the user asked, so show the result (an
+    /// automatic check only lights the title-bar badge, and only on success).
+    UpdateChecked { result: Result<Option<crate::core::updates::Available>, String>, manual: bool },
+    /// The first-run prompt's checkbox.
+    UpdatePromptToggled(bool),
+    /// The first-run prompt's Continue: save the answer.
+    UpdatePromptConfirmed,
+    /// Preferences › General › Check for updates at startup.
+    ToggleUpdateCheck,
+    /// Open the available release's page.
+    OpenUpdatePage,
     /// Open the project page in the default browser.
     OpenRepository,
     // ========== AI masks (handlers::ai_mask) ==========

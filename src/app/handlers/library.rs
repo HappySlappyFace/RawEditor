@@ -24,6 +24,8 @@ pub fn handle_database_loaded(editor: &mut RawEditor, result: Result<Vec<crate::
                     let maximize_window = window::get_latest().and_then(|id| window::maximize(id, true));
 
                     let scale = crate::app::handlers::window::query_scale_factor();
+                    // The first-run question, or the check the user agreed to.
+                    let updates = crate::app::handlers::updates::on_startup(editor);
                     if let Some(lib) = &editor.library {
                         let db_path = lib.path().clone();
                         editor.pending_cache_count = lib.count_pending_cache().unwrap_or(0);
@@ -31,9 +33,10 @@ pub fn handle_database_loaded(editor: &mut RawEditor, result: Result<Vec<crate::
                             maximize_window,
                             scale,
                             spawn_cache_workers(db_path),
+                            updates,
                         ]);
                     }
-                    return Task::batch(vec![maximize_window, scale]);
+                    return Task::batch(vec![maximize_window, scale, updates]);
                 }
                 Err(e) => editor.status = format!("Failed to create library: {:?}", e),
             }

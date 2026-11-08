@@ -24,4 +24,5 @@ pub mod settings;
 pub mod tone_regions;
 pub mod tonemap;
 pub mod types;
+pub mod updates;
 pub mod viewport;

@@ -86,6 +86,10 @@ pub enum Modal {
     /// AI denoise: choose the amount on a 1:1 preview, then apply
     /// (`RawEditor::ai_denoise`).
     AiDenoise,
+    /// First run: "Check for updates at startup?" (`RawEditor::updates`).
+    UpdatePrompt,
+    /// A check's result: a newer version, up to date, or an error.
+    Update,
 }
 
 /// Noise-reduction settings the main view keeps showing while a drag on one
@@ -413,6 +417,10 @@ pub struct RawEditor {
     pub reduce_motion: bool,
     /// Per-camera default profile (`AppSettings::camera_profile_defaults`).
     pub camera_profile_defaults: std::collections::HashMap<String, String>,
+    /// `AppSettings::update_check`: `None` until the first-run prompt is answered.
+    pub update_check: Option<bool>,
+    /// The update check's progress and result (`handlers::updates`).
+    pub updates: crate::app::handlers::updates::UpdatesState,
     /// The page Preferences shows. Kept while the app runs, so reopening the
     /// dialog lands where the user left it; not persisted.
     pub preferences_section: PreferencesSection,
@@ -953,6 +961,8 @@ impl RawEditor {
                 modal_exit_seq: 0,
                 reduce_motion: settings.reduce_motion,
                 camera_profile_defaults: settings.camera_profile_defaults.clone(),
+                update_check: settings.update_check,
+                updates: Default::default(),
                 preferences_section: PreferencesSection::default(),
                 scroll_glide: None,
                 menu_generation: 0,
@@ -1498,6 +1508,7 @@ impl RawEditor {
             min_free_ram_mb: self.min_free_ram_mb,
             reduce_motion: self.reduce_motion,
             camera_profile_defaults: self.camera_profile_defaults.clone(),
+            update_check: self.update_check,
         };
 
         if let Err(e) = settings.save() {

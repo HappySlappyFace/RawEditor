@@ -94,6 +94,8 @@ pub fn view(editor: &RawEditor) -> Element<'_, Message> {
             Modal::RemoveFolder => Some(view_remove_folder_modal(editor)),
             Modal::AiModel => Some(crate::app::views::modals::view_ai_model_modal(editor)),
             Modal::AiDenoise => Some(crate::app::views::modals::view_ai_denoise_modal(editor)),
+            Modal::UpdatePrompt => Some(crate::app::views::modals::view_update_prompt_modal(editor)),
+            Modal::Update => Some(crate::app::views::modals::view_update_modal(editor)),
         }
     };
 
@@ -514,13 +516,40 @@ fn view_title_bar(editor: &RawEditor) -> Element<'_, Message> {
             // events last-child-first), so this only fires on empty space.
             iced::widget::mouse_area(Space::new(Length::Fill, Length::Fill))
                 .on_press(Message::DragWindow),
-            row![menus, Space::with_width(Length::Fill), controls]
+            row![menus, Space::with_width(Length::Fill)]
+                .push_maybe(update_badge(editor))
+                .push(controls)
                 .height(Length::Fill)
                 .align_y(Alignment::Center)
                 .padding(0),
             navigation,
         ]
     ).height(Length::Fixed(35.0)).style(|_theme| container::Style { background: Some(Background::Color(Color::from_rgb(0.05, 0.05, 0.05))), ..Default::default() }).into()
+}
+
+/// "Update available" in the title bar, after a check found a newer
+/// release. Opens the update dialog.
+fn update_badge(editor: &RawEditor) -> Option<Element<'_, Message>> {
+    let available = editor.updates.available.as_ref()?;
+    Some(
+        container(
+            button(
+                row![
+                    text("\u{f0aa}").font(ICON_FONT).size(12), // arrow-circle-up
+                    text(format!("Update {}", available.version)).size(12),
+                ]
+                .spacing(6)
+                .align_y(Alignment::Center),
+            )
+            .on_press(Message::OpenModal(Modal::Update))
+            .padding([4, 10])
+            .style(ui::styles::AccentButton::style),
+        )
+        .height(Length::Fill)
+        .align_y(iced::alignment::Vertical::Center)
+        .padding([0, 10])
+        .into(),
+    )
 }
 
 /// Set the application theme

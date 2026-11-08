@@ -5,10 +5,6 @@ use iced::window;
 
 /// Canonical project URL, shown in About and opened by both Help actions.
 pub const REPO_URL: &str = "https://github.com/HappySlappyFace/RawEditor";
-/// Where "Check for Updates" goes. Deliberately just a page: querying the
-/// GitHub API would mean an HTTP client, TLS, and a release-parsing format to
-/// keep in sync, for something the user can read in a second.
-pub const RELEASES_URL: &str = "https://github.com/HappySlappyFace/RawEditor/releases";
 
 /// Hand a URL to the platform's default browser.
 ///
@@ -16,7 +12,7 @@ pub const RELEASES_URL: &str = "https://github.com/HappySlappyFace/RawEditor/rel
 /// while it resolves a handler, and this runs on the update thread. Failure is
 /// logged, never fatal — the URL is also displayed in the About dialog so the
 /// user can copy it by hand.
-fn open_url(url: &str) {
+pub fn open_url(url: &str) {
     let result = if cfg!(target_os = "windows") {
         std::process::Command::new("cmd").args(["/c", "start", "", url]).spawn()
     } else if cfg!(target_os = "macos") {
@@ -102,12 +98,6 @@ pub fn handle_open_app_folder(
 pub fn handle_open_repository(editor: &mut RawEditor) -> Task<Message> {
     open_url(REPO_URL);
     editor.status = format!("Opened {REPO_URL}");
-    Task::none()
-}
-
-pub fn handle_check_for_updates(editor: &mut RawEditor) -> Task<Message> {
-    open_url(RELEASES_URL);
-    editor.status = format!("Current version {}", env!("CARGO_PKG_VERSION"));
     Task::none()
 }
 
@@ -211,6 +201,11 @@ pub fn handle_modal_confirm(editor: &mut RawEditor) -> Task<Message> {
             _ => Task::none(),
         },
         Modal::AiDenoise => crate::app::handlers::ai_denoise::handle_apply(editor),
+        Modal::UpdatePrompt => crate::app::handlers::updates::handle_prompt_confirmed(editor),
+        Modal::Update if editor.updates.available.is_some() && !editor.updates.checking => {
+            crate::app::handlers::updates::handle_open_page(editor)
+        }
+        Modal::Update => handle_close_modal(editor),
         // No modal: Enter finishes an AI selection, if one is open.
         Modal::None if editor.ai_select.is_some() => crate::app::handlers::ai_mask::handle_done(editor),
         Modal::None => Task::none(),

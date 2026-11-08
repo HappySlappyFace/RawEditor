@@ -35,6 +35,12 @@ pub struct AppSettings {
     /// name, or `"builtin"` for no profile. `#[serde(default)]`: see above.
     #[serde(default)]
     pub camera_profile_defaults: std::collections::HashMap<String, String>,
+    /// Check for a newer release at startup (`core::updates`). `None` until
+    /// the user answers the first-run prompt, which is the only thing that
+    /// sets it; until then the app makes no request. `#[serde(default)]`:
+    /// see above.
+    #[serde(default)]
+    pub update_check: Option<bool>,
 }
 
 fn default_min_free_ram_mb() -> u32 {
@@ -57,6 +63,7 @@ impl Default for AppSettings {
             min_free_ram_mb: default_min_free_ram_mb(),
             reduce_motion: false,
             camera_profile_defaults: Default::default(),
+            update_check: None,
         }
     }
 }

@@ -190,9 +190,65 @@ fn general(editor: &RawEditor) -> Element<'_, Message> {
             hint("Transitions and animations jump straight to their end state."),
         ]
         .spacing(4),
+        group_label("Updates"),
+        column![
+            checkbox("Check for updates at startup", editor.update_check == Some(true))
+                .on_toggle(|_| Message::ToggleUpdateCheck)
+                .size(16)
+                .spacing(8)
+                .text_size(13)
+                .style(checkbox_style),
+            hint("One small request to GitHub when RawEditor starts. Nothing is downloaded or installed."),
+        ]
+        .spacing(4),
+        row![
+            button(text("Check Now").size(13))
+                .on_press_maybe((!editor.updates.checking).then_some(Message::CheckForUpdates))
+                .padding([6, 12])
+                .style(ui::styles::NeutralButton::style),
+            text(format!("Version {}", crate::core::updates::current_version()))
+                .size(12)
+                .font(iced::Font::MONOSPACE)
+                .style(|_| text::Style { color: Some(Color::from_rgb(0.55, 0.55, 0.55)) }),
+        ]
+        .spacing(12)
+        .align_y(Alignment::Center),
     ]
+    .push_maybe(update_status(editor))
     .spacing(12)
     .into()
+}
+
+/// The last Check Now's result, under its button.
+fn update_status(editor: &RawEditor) -> Option<Element<'_, Message>> {
+    let st = &editor.updates;
+    let warn = Color::from_rgb(0.85, 0.55, 0.35);
+    let ok = Color::from_rgb(0.6, 0.6, 0.6);
+    let line = |s: String, color: Color| -> Element<'_, Message> {
+        text(s).size(12).style(move |_| text::Style { color: Some(color) }).into()
+    };
+    if st.checking {
+        return Some(line("Checking…".into(), ok));
+    }
+    if let Some(a) = &st.available {
+        return Some(
+            row![
+                line(format!("RawEditor {} is available.", a.version), ui::palette::accent_text()),
+                button(text("Open Release Page").size(12))
+                    .on_press(Message::OpenUpdatePage)
+                    .padding([4, 10])
+                    .style(ui::styles::AccentButton::style),
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center)
+            .into(),
+        );
+    }
+    match &st.shown {
+        Some(Err(e)) => Some(line(format!("Couldn't check: {e}"), warn)),
+        Some(Ok(_)) => Some(line("You're up to date.".into(), ok)),
+        None => None,
+    }
 }
 
 fn performance(editor: &RawEditor) -> Element<'_, Message> {

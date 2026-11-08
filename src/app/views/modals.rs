@@ -820,3 +820,110 @@ pub fn view_ai_model_modal(editor: &RawEditor) -> Element<'_, Message> {
 pub fn view_ai_denoise_modal(editor: &RawEditor) -> Element<'_, Message> {
     crate::app::views::ai_denoise::view(editor)
 }
+
+fn modal_title<'a>(s: &str) -> iced::widget::Text<'a> {
+    text(s.to_string())
+        .size(18)
+        .font(Font { weight: Weight::Bold, ..Default::default() })
+        .style(|_| text::Style { color: Some(Color::from_rgb(0.85, 0.85, 0.85)) })
+}
+
+fn modal_rule<'a>() -> iced::widget::Rule<'a> {
+    iced::widget::horizontal_rule(1.0).style(|_| iced::widget::rule::Style {
+        color: Color::from_rgb(0.3, 0.3, 0.3),
+        width: 1,
+        radius: 0.0.into(),
+        fill_mode: iced::widget::rule::FillMode::Full,
+    })
+}
+
+fn shade<'a>(s: impl Into<String>, size: u16, v: f32) -> iced::widget::Text<'a> {
+    text(s.into()).size(size).style(move |_theme: &Theme| text::Style { color: Some(Color::from_rgb(v, v, v)) })
+}
+
+/// First run: may RawEditor check for updates at startup? Until this is
+/// answered the app makes no request (`handlers::updates`).
+pub fn view_update_prompt_modal(editor: &RawEditor) -> Element<'_, Message> {
+    column![
+        modal_title("Updates"),
+        modal_rule(),
+        checkbox("Check for updates at startup", editor.updates.prompt_choice)
+            .on_toggle(Message::UpdatePromptToggled)
+            .size(16)
+            .spacing(8)
+            .text_size(13)
+            .style(ui::styles::checkbox_style),
+        shade(
+            "Each time it starts, RawEditor asks GitHub whether a newer version has been released. \
+             Nothing is downloaded or installed: you choose whether to get it.",
+            12,
+            0.6,
+        ),
+        shade("You can change this any time in Preferences › General.", 11, 0.5),
+        iced::widget::vertical_space().height(6),
+        button(text("Continue").align_x(iced::alignment::Horizontal::Center))
+            .on_press(Message::UpdatePromptConfirmed)
+            .padding(10)
+            .width(Length::Fill)
+            .style(ui::styles::AccentButton::style),
+    ]
+    .spacing(12)
+    .width(420)
+    .into()
+}
+
+/// A check's outcome: checking, a newer version, up to date, or an error.
+pub fn view_update_modal(editor: &RawEditor) -> Element<'_, Message> {
+    let st = &editor.updates;
+    let current = crate::core::updates::current_version();
+    let close = |label: &str| {
+        button(text(label.to_string()).align_x(iced::alignment::Horizontal::Center))
+            .on_press(Message::CloseModal)
+            .padding(10)
+            .width(Length::Fill)
+            .style(ui::styles::NeutralButton::style)
+    };
+
+    let (title, body, actions): (&str, Element<'_, Message>, Element<'_, Message>) = if st.checking {
+        ("Checking for Updates", shade("Asking GitHub for the newest release…", 13, 0.7).into(), close("Close").into())
+    } else if let Some(a) = &st.available {
+        let date = a.published.get(..10).map(|d| format!(", released {d}")).unwrap_or_default();
+        (
+            "Update Available",
+            column![
+                shade(format!("RawEditor {}{date}.", a.version), 14, 0.85),
+                shade(format!("You have {current}."), 12, 0.6),
+                shade("The release page has what's new and a download for this computer.", 12, 0.6),
+            ]
+            .spacing(6)
+            .into(),
+            row![
+                close("Not Now"),
+                button(text("Open Release Page").align_x(iced::alignment::Horizontal::Center))
+                    .on_press(Message::OpenUpdatePage)
+                    .padding(10)
+                    .width(Length::Fill)
+                    .style(ui::styles::AccentButton::style),
+            ]
+            .spacing(10)
+            .into(),
+        )
+    } else if let Some(Err(e)) = &st.shown {
+        (
+            "Couldn't Check for Updates",
+            column![shade(e.clone(), 13, 0.75), shade(format!("You have {current}."), 12, 0.6)].spacing(6).into(),
+            close("Close").into(),
+        )
+    } else {
+        (
+            "You're Up to Date",
+            shade(format!("RawEditor {current} is the newest release."), 13, 0.75).into(),
+            close("Close").into(),
+        )
+    };
+
+    column![modal_title(title), modal_rule(), body, iced::widget::vertical_space().height(6), actions]
+        .spacing(12)
+        .width(420)
+        .into()
+}

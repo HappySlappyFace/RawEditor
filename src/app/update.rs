@@ -386,7 +386,12 @@ fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
             handlers::library::handle_remove_folder_confirmed(editor)
         }
         Message::ImportFolderPicked(r) => handlers::library::handle_import_folder_picked(editor, r),
-        Message::CheckForUpdates => handlers::window::handle_check_for_updates(editor),
+        Message::CheckForUpdates => handlers::updates::handle_check(editor),
+        Message::UpdateChecked { result, manual } => handlers::updates::handle_checked(editor, result, manual),
+        Message::UpdatePromptToggled(on) => handlers::updates::handle_prompt_toggled(editor, on),
+        Message::UpdatePromptConfirmed => handlers::updates::handle_prompt_confirmed(editor),
+        Message::ToggleUpdateCheck => handlers::updates::handle_toggle(editor),
+        Message::OpenUpdatePage => handlers::updates::handle_open_page(editor),
         Message::OpenRepository => handlers::window::handle_open_repository(editor),
         Message::AiSelectStart => handlers::ai_mask::handle_start(editor),
         Message::AiSelectRefine(slot) => handlers::ai_mask::handle_refine(editor, slot),

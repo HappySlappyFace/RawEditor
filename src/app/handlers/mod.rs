@@ -15,3 +15,4 @@ pub mod camera_profiles;
 pub mod ai_mask;
 pub mod ai_denoise;
 pub mod models;
+pub mod updates;
