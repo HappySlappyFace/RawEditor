@@ -8,6 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 cargo build --release          # standard release build (default features, most compatible)
 cargo run --release            # run in release mode (debug builds are too slow for GPU/RAW work)
 cargo build-fast / run-fast    # release build/run with the fast-jpeg (SIMD) decoder feature
+cargo run-quick / build-quick  # day-to-day: optimised but no LTO ([profile.quick]); seconds to rebuild, not for shipping
 cargo build-compat             # explicit alias for the default-features release build
 cargo test                     # run unit tests (see src/raw/tests.rs and inline #[cfg(test)] modules)
 cargo test <name>              # run a single test by name/substring

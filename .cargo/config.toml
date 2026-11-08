@@ -15,11 +15,16 @@
 #   cargo build-fast       →  release build with fast-jpeg
 #   cargo run-fast         →  release run with fast-jpeg
 #   cargo build-compat     →  release build with default (most compatible) settings
+#   cargo run-quick        →  fast-to-build optimised run for development
+#                             (Cargo.toml's [profile.quick]: no LTO; seconds
+#                             to rebuild after a small change)
 #
 [alias]
 build-fast   = "build --release --features fast-jpeg"
 run-fast     = "run --release --features fast-jpeg"
 build-compat = "build --release"
+run-quick    = "run --profile quick --features fast-jpeg"
+build-quick  = "build --profile quick --features fast-jpeg"
 
 # ── OPTIONAL: target-cpu=native ──────────────────────────────────────────────
 # Uncommenting this makes the compiler use every instruction your specific CPU

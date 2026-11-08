@@ -115,3 +115,14 @@ opt-level = 3
 lto = true
 codegen-units = 1
 strip = true
+
+# Day-to-day runs: release speed for the app itself, without the whole-program
+# optimisation that makes `--release` take minutes. About a minute from clean,
+# seconds after a small change. Not for shipping: CI builds `--release`.
+#   cargo run-quick
+[profile.quick]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true
+strip = false
