@@ -445,8 +445,8 @@ impl Default for EditParams {
             tint: 0.0,                  // Phase 18: Manual white balance (as-shot)
             luma_noise: 0.0,            // Phase 133: No luma noise reduction by default
             luma_detail: 0.5,           // Mid detail retention (only acts with luma_noise > 0)
-            color_noise: 0.3,
-            ai_denoise: 0.0,           // Phase 133: Default color noise reduction to eliminate speckles
+            color_noise: 0.3,           // Phase 133: Default color noise reduction to eliminate speckles
+            ai_denoise: 0.0,            // Off; when on, it replaces the sliders above
             sharpening: 0.0,            // Phase 50: No sharpening by default
             sharpen_masking: 0.0,       // Phase 51: No masking by default
             rotation: 0.0,              // Phase 52: No rotation by default

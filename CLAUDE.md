@@ -236,6 +236,7 @@ Click-to-select masks (SAM 2.1 hiera-tiny) and raw-domain denoise (PMRID), on th
 - **AI denoise** (`EditParams::ai_denoise`, 0 = off) is applied to the MOSAIC before upload: `ml::denoise::effective_mosaic` blends the cached result (`cache/denoised/<image>-<model hash>.bin`) with the RAW. So demosaic, the noise model, NR, previews, the loupe and export all see it without a new GPU stage.
   - Any new mosaic upload path must go through it. Export uses `ai_denoise::export_mosaic`, which regenerates a missing cache rather than drop the edit.
   - `ImageResources::ai_denoise` records (requested, applied). A different amount rebuilds the image (`ai_denoise::resources_stale`, checked in `push_uniforms_and_render`).
+  - It REPLACES the classic noise reduction: with `ai_denoise > 0`, `DenoiseSettings::from_params` reads the sliders as zero, so the NR stage is skipped on every path (develop, loupe, export, the modal's preview), and Develop hides the sliders. Their values are kept for when AI denoise is removed. No DNG is written; the result is the cache file above.
   - PMRID's k-sigma transform takes the image's own measured noise model (unit range, no WB), not ISO tables.
   - The modal previews by running PMRID on just the loupe's crop (`gpu::loupe::MosaicOverride`), so Amount is a blend and re-render and stays live.
 

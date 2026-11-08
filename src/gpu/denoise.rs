@@ -92,6 +92,12 @@ const MAX_PASSES: usize = MAX_LEVELS + 3;
 
 /// The sliders that drive this stage. When all are zero the stage is
 /// skipped entirely and the colour pass samples the demosaic directly.
+///
+/// AI denoise replaces it: with `ai_denoise` applied the mosaic is already
+/// clean, so these read as zero (the stage is skipped) whatever the sliders
+/// say. The sliders keep their values for when AI denoise is removed. This
+/// is the one place that rule lives; every render path builds its settings
+/// here.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DenoiseSettings {
     pub luma: f32,
@@ -101,6 +107,9 @@ pub struct DenoiseSettings {
 
 impl DenoiseSettings {
     pub fn from_params(p: &crate::core::types::EditParams) -> Self {
+        if p.ai_denoise > 0.0 {
+            return Self { luma: 0.0, detail: p.luma_detail.clamp(0.0, 1.0), color: 0.0 };
+        }
         Self {
             luma: p.luma_noise.clamp(0.0, 1.0),
             detail: p.luma_detail.clamp(0.0, 1.0),
@@ -601,6 +610,19 @@ impl Denoise {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn ai_denoise_replaces_the_classic_stage() {
+        let mut p = crate::core::types::EditParams::default();
+        p.luma_noise = 0.6;
+        assert!(DenoiseSettings::from_params(&p).is_active(), "the default colour NR and luma are on");
+        p.ai_denoise = 0.4;
+        assert!(!DenoiseSettings::from_params(&p).is_active(), "AI denoise applied: the stage is skipped");
+        assert_eq!(p.luma_noise, 0.6, "the sliders keep their values for when it is removed");
+        p.ai_denoise = 0.0;
+        assert!(DenoiseSettings::from_params(&p).is_active());
+    }
+
     use super::*;
 
     #[test]

@@ -306,10 +306,7 @@ fn view_sidebar(editor: &RawEditor) -> iced::widget::Column<'_, Message> {
     let detail = rows([
         section(editor, "Detail Preview", SidebarSection::DetailPreview, None, loupe_section(editor)),
         group_label("Noise reduction"),
-        slider_row(editor, "Luminance", p.luma_noise, d.luma_noise, 0.0..=1.0, 0.01, Message::LumaNoiseChanged),
-        slider_row(editor, "Detail", p.luma_detail, d.luma_detail, 0.0..=1.0, 0.01, Message::LumaDetailChanged),
-        slider_row(editor, "Colour", p.color_noise, d.color_noise, 0.0..=1.0, 0.01, Message::ColorNoiseChanged),
-        ai_denoise_row(editor),
+        noise_reduction(editor),
         group_label("Sharpening"),
         slider_row(editor, "Amount", p.sharpening, d.sharpening, 0.0..=2.0, 0.01, Message::SharpeningChanged),
         slider_row(editor, "Masking", p.sharpen_masking, d.sharpen_masking, 0.0..=1.0, 0.01, Message::SharpenMaskingChanged),
@@ -1133,6 +1130,26 @@ fn mask_rows<'a>(
     }
 
     sidebar
+}
+
+/// The noise sliders, or, with AI denoise applied, just AI denoise: it
+/// replaces them (`DenoiseSettings::from_params`), so they would do nothing.
+/// Their values are kept for when it is removed.
+fn noise_reduction(editor: &RawEditor) -> Element<'_, Message> {
+    let p = &editor.current_edit_params;
+    let d = crate::core::types::EditParams::default();
+    if p.ai_denoise > 0.0 {
+        return rows([
+            ai_denoise_row(editor),
+            hint("AI denoise replaces the noise sliders. Remove it in AI Denoise to use them again.".to_string()),
+        ]);
+    }
+    rows([
+        slider_row(editor, "Luminance", p.luma_noise, d.luma_noise, 0.0..=1.0, 0.01, Message::LumaNoiseChanged),
+        slider_row(editor, "Detail", p.luma_detail, d.luma_detail, 0.0..=1.0, 0.01, Message::LumaDetailChanged),
+        slider_row(editor, "Colour", p.color_noise, d.color_noise, 0.0..=1.0, 0.01, Message::ColorNoiseChanged),
+        ai_denoise_row(editor),
+    ])
 }
 
 /// `AI Denoise…` and, when applied, how much.

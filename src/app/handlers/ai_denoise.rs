@@ -241,7 +241,11 @@ fn request(editor: &mut RawEditor) -> Task<Message> {
     st.render_in_flight = true;
     let amount = if st.before { 0.0 } else { st.amount };
     let center = st.center;
-    let nr = crate::gpu::denoise::DenoiseSettings::from_params(&editor.view_params());
+    // Preview what Apply will give: with AI denoise at this amount the
+    // classic noise reduction stands down; "Before" (0) shows it as it is now.
+    let mut previewed = editor.view_params();
+    previewed.ai_denoise = amount;
+    let nr = crate::gpu::denoise::DenoiseSettings::from_params(&previewed);
     Task::perform(
         async move {
             let data = crate::ml::denoise::blend(&crop.original, &crop.denoised, amount);
