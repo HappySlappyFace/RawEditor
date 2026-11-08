@@ -42,3 +42,15 @@ pub fn body<'a>(s: impl IntoFragment<'a>) -> Text<'a> {
 pub fn tinted<'a>(s: impl IntoFragment<'a>, size: u16, colour: Color) -> Text<'a> {
     text(s).size(size).style(move |_| Style { color: Some(colour) })
 }
+
+/// A centred message where content would be: "No image selected", "Preview
+/// failed". The title is a message, so sentence case. `detail` is usually
+/// `body(..)`, or `tinted(.., theme::colours().error)` for a failure.
+pub fn empty_state<'a, Message: 'a>(title: impl IntoFragment<'a>, detail: Text<'a>) -> iced::widget::Column<'a, Message> {
+    iced::widget::column![
+        text(title).size(theme::size::TITLE).font(theme::font::BOLD).style(|_| Style { color: Some(theme::colours().text_secondary) }),
+        detail,
+    ]
+    .spacing(theme::space::M)
+    .align_x(iced::Alignment::Center)
+}

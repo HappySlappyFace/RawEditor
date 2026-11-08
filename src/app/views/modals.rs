@@ -1,6 +1,5 @@
 use iced::widget::{
-    checkbox, column, container, radio, row, scrollable, slider, stack, text, Space,
-    text_input,
+    checkbox, column, container, row, scrollable, stack, text, Space,
 };
 use crate::ui::widgets::button;
 use iced::{Alignment, Element, Length, Theme};
@@ -148,181 +147,16 @@ pub fn view_help_modal<'a>() -> Element<'a, Message> {
 }
 
 pub fn view_export_modal<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
-    let settings = &editor.export_settings;
-
-    let format_section = column![
-        text("File Format")
-            .size(theme::size::SMALL)
-            .font(theme::font::BOLD)
-            .style(|_theme: &Theme| text::Style {
-                color: Some(theme::colours().text_muted)
-            }),
-        row![
-            radio(
-                "JPEG",
-                crate::app::state::ExportFormat::Jpeg,
-                Some(settings.format),
-                Message::SetExportFormat
-            )
-            .size(theme::size::LABEL)
-            .spacing(5)
-            .text_size(13)
-            .style(ui::styles::radio_style),
-            radio(
-                "PNG",
-                crate::app::state::ExportFormat::Png,
-                Some(settings.format),
-                Message::SetExportFormat
-            )
-            .size(theme::size::LABEL)
-            .spacing(5)
-            .text_size(13)
-            .style(ui::styles::radio_style),
-            radio(
-                "TIFF (16-bit)",
-                crate::app::state::ExportFormat::Tiff,
-                Some(settings.format),
-                Message::SetExportFormat
-            )
-            .size(theme::size::LABEL)
-            .spacing(5)
-            .text_size(13)
-            .style(ui::styles::radio_style),
-        ]
-        .spacing(20),
-        if settings.format == crate::app::state::ExportFormat::Jpeg {
-            Element::from(
-                column![
-                    row![
-                        text("Quality:")
-                            .size(theme::size::BODY)
-                            .style(|_theme: &Theme| text::Style {
-                                color: Some(theme::colours().text_secondary)
-                            }),
-                        text(format!("{}", settings.quality))
-                            .size(theme::size::BODY)
-                            .font(theme::font::BOLD)
-                            .style(|_theme: &Theme| text::Style {
-                                color: Some(theme::colours().text)
-                            }),
-                    ]
-                    .spacing(theme::space::M)
-                    .align_y(Alignment::Center),
-                    slider(10..=100, settings.quality, Message::SetExportQuality).step(1),
-                ]
-                .spacing(5),
-            )
-        } else {
-            column![].into()
-        }
-    ]
-    .spacing(theme::space::L);
-
-    let dimensions_section = column![
-        text("Dimensions")
-            .size(theme::size::SMALL)
-            .font(theme::font::BOLD)
-            .style(|_theme: &Theme| text::Style {
-                color: Some(theme::colours().text_muted)
-            }),
-        checkbox("Resize Long Edge", settings.resize)
-            .on_toggle(Message::ToggleExportResize)
-            .size(16)
-            .text_size(13)
-            .style(ui::styles::checkbox_style),
-        if settings.resize {
-            Element::from(
-                row![
-                    text("Max Width (px):")
-                        .size(theme::size::BODY)
-                        .style(|_theme: &Theme| text::Style {
-                            color: Some(theme::colours().text_secondary)
-                        }),
-                    text_input("2048", &settings.max_width.to_string())
-                        .on_input(|s| s
-                            .parse()
-                            .ok()
-                            .map(Message::SetExportWidth)
-                            .unwrap_or(Message::SetExportWidth(settings.max_width)))
-                        .width(Length::Fixed(80.0))
-                        .padding(5)
-                        .style(ui::styles::text_input_style)
-                ]
-                .spacing(theme::space::L)
-                .align_y(Alignment::Center),
-            )
-        } else {
-            row![].into()
-        }
-    ]
-    .spacing(theme::space::L);
-
-    let destination_section = column![
-        text("Destination")
-            .size(theme::size::SMALL)
-            .font(theme::font::BOLD)
-            .style(|_theme: &Theme| text::Style {
-                color: Some(theme::colours().text_muted)
-            }),
-        row![
-            text("Base Folder:")
-                .size(theme::size::BODY)
-                .style(|_theme: &Theme| text::Style {
-                    color: Some(theme::colours().text_secondary)
-                }),
-            button(
-                row![
-                    text(
-                        settings
-                            .base_path
-                            .file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                    )
-                    .size(theme::size::BODY),
-                    text("...").size(theme::size::BODY)
-                ]
-                .spacing(5)
-                .align_y(Alignment::Center)
-            )
-            .on_press(Message::PickExportBasePath)
-            .padding(5)
-            .style(ui::styles::button_style),
-        ]
-        .spacing(theme::space::L)
-        .align_y(Alignment::Center),
-        row![
-            text("Subfolder:")
-                .size(theme::size::BODY)
-                .style(|_theme: &Theme| text::Style {
-                    color: Some(theme::colours().text_secondary)
-                }),
-            text_input("Export", &settings.subfolder)
-                .on_input(Message::SetExportSubfolder)
-                .padding(5)
-                .style(ui::styles::text_input_style)
-        ]
-        .spacing(theme::space::L)
-        .align_y(Alignment::Center),
-        text(format!(
-            "Full Path: {}/{}",
-            settings.base_path.display(),
-            settings.subfolder
-        ))
-        .size(theme::size::CAPTION)
-        .style(|_theme: &Theme| text::Style {
-            color: Some(theme::colours().text_muted)
-        })
-    ]
-    .spacing(theme::space::L);
-
     let count = if editor.multi_selection.is_empty() {
         1
     } else {
         editor.multi_selection.len()
     };
     let export_btn = button(
-        text(format!("Export {} Images", count)).align_x(iced::alignment::Horizontal::Center),
+        text(if count == 1 { "Export 1 Image".to_string() } else { format!("Export {count} Images") })
+            .size(theme::size::BODY)
+            .width(Length::Fill)
+            .align_x(iced::alignment::Horizontal::Center),
     )
     .on_press(Message::ExportConfirmed)
     .width(Length::Fill)
@@ -330,14 +164,13 @@ pub fn view_export_modal<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
     .style(ui::styles::AccentButton::style);
 
     column![
-        ui::text::title("Export Studio"),
+        ui::text::title("Export"),
         iced::widget::horizontal_rule(1).style(ui::styles::rule),
-        format_section,
-        dimensions_section,
-        destination_section,
+        // The same panel as the Export tab's, so the two can't drift apart.
+        crate::app::views::export::settings_panel(editor),
         iced::widget::vertical_space().height(10),
         row![
-            button("Cancel")
+            button(text("Cancel").size(theme::size::BODY).width(Length::Fill).align_x(iced::alignment::Horizontal::Center))
                 .on_press(Message::CloseModal)
                 .padding(10)
                 .width(Length::Fill)
@@ -408,7 +241,7 @@ pub fn view_about_modal<'a>() -> Element<'a, Message> {
     };
 
     column![
-        ui::text::title("RAW Editor"),
+        ui::text::title("RawEditor"),
         iced::widget::horizontal_rule(1).style(ui::styles::rule),
         line(format!("Version {}", env!("CARGO_PKG_VERSION"))),
         line("A native RAW photo editor written in Rust.".to_string()),
@@ -453,10 +286,10 @@ pub fn view_copy_settings_modal(editor: &RawEditor) -> Element<'_, Message> {
     // label, description, current value, which category
     let mut rows: Vec<(&str, String, bool, CopyCategory)> = vec![
         ("Tone", "Exposure, contrast, highlights, shadows, whites, blacks, curves".into(), cats.tone, CopyCategory::Tone),
-        ("Color", "Vibrance, saturation".into(), cats.color, CopyCategory::Color),
+        ("Colour", "Vibrance, saturation".into(), cats.color, CopyCategory::Color),
         ("White Balance", "Temperature, tint".into(), cats.white_balance, CopyCategory::WhiteBalance),
         ("Presence", "Texture, clarity, dehaze".into(), cats.presence, CopyCategory::Presence),
-        ("Noise Reduction", "Luminance, detail and color noise".into(), cats.noise, CopyCategory::Noise),
+        ("Noise Reduction", "Luminance, detail and colour noise".into(), cats.noise, CopyCategory::Noise),
         ("Detail", "Sharpening and masking".into(), cats.detail, CopyCategory::Detail),
         ("Geometry & Crop", "Straighten angle and crop rectangle".into(), cats.geometry, CopyCategory::Geometry),
         ("Profile & Tone Mapping", "Camera profile, profile curve, tone mapper, GT shape".into(), cats.profile, CopyCategory::Profile),
@@ -655,7 +488,7 @@ pub fn view_ai_model_modal(editor: &RawEditor) -> Element<'_, Message> {
         .spacing(theme::space::L)
         .into(),
         None => row![
-            button(text("Not now").align_x(iced::alignment::Horizontal::Center))
+            button(text("Not Now").align_x(iced::alignment::Horizontal::Center))
                 .on_press(Message::CloseModal)
                 .padding(10)
                 .width(Length::Fill)

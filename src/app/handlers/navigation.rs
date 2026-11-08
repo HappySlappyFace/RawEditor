@@ -856,7 +856,7 @@ fn trigger_image_load(editor: &mut RawEditor, image_id: i64) -> Task<Message> {
         // `Loading` promises a RAW load is in flight for this image, and only
         // Develop starts one. Setting it from Cull too left the promise
         // unfulfilled: switching Cull → Develop then saw "already loading",
-        // started nothing, and sat on "Loading RAW..." forever.
+        // started nothing, and sat on "Loading RAW…" forever.
         if develop {
             editor.editor_readiness = EditorReadiness::Loading(image_id);
         }

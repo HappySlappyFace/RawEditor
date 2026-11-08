@@ -20,7 +20,7 @@ use crate::ui::icons::ICON_FONT;
 use crate::ui::theme;
 
 pub fn view_export(editor: &RawEditor) -> Element<'_, Message> {
-    let settings_panel = container(scrollable(view_settings(editor)))
+    let settings_panel = container(scrollable(settings_panel(editor)))
         .width(Length::Fixed(320.0))
         .height(Length::Fill)
         .padding(14)
@@ -52,7 +52,9 @@ fn hint(s: String) -> Element<'static, Message> {
     ui::text::hint(s).into()
 }
 
-fn view_settings(editor: &RawEditor) -> Element<'_, Message> {
+/// Format, size and destination: the Export tab's side panel, and the body
+/// of the Export dialog.
+pub fn settings_panel(editor: &RawEditor) -> Element<'_, Message> {
     let s = &editor.export_settings;
 
     let format_row = row![

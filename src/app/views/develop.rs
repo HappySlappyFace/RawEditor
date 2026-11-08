@@ -498,7 +498,7 @@ fn prepare_preview(editor: &RawEditor) -> (bool, Option<Element<'_, Message>>) {
                         .style(|_| text::Style {
                             color: Some(Color::WHITE)
                         }),
-                    text(" Loading RAW...").size(theme::size::LABEL).style(|_| text::Style {
+                    text(" Loading RAW…").size(theme::size::LABEL).style(|_| text::Style {
                         color: Some(Color::WHITE)
                     })
                 ]]
@@ -531,20 +531,8 @@ fn prepare_preview(editor: &RawEditor) -> (bool, Option<Element<'_, Message>>) {
         }
         EditorReadiness::Failed(_, error) => {
             let overlay = container(
-                column![
-                    row![
-                        text(ui::icons::TIMES).font(ICON_FONT).size(theme::size::DISPLAY),
-                        text(" Preview Failed").size(theme::size::DISPLAY)
-                    ],
-                    text("").size(20),
-                    text(error.clone())
-                        .size(theme::size::LABEL)
-                        .style(|theme: &Theme| text::Style {
-                            color: Some(theme.palette().danger)
-                        })
-                ]
-                .padding(40)
-                .align_x(Alignment::Center),
+                ui::text::empty_state("Preview failed", ui::text::tinted(error.clone(), theme::size::BODY, theme::colours().error))
+                    .padding(40),
             );
             (false, Some(overlay.into()))
         }
@@ -557,19 +545,7 @@ fn view_main_content<'a>(
     overlay_content: Option<Element<'a, Message>>,
 ) -> Element<'a, Message> {
     if matches!(editor.editor_readiness, EditorReadiness::NoSelection) {
-        return container(
-            column![
-                text("No Image Selected").size(32),
-                text("").size(20),
-                text("← Switch to Library tab to select an image")
-                    .size(theme::size::TITLE)
-                    .style(|theme: &Theme| text::Style {
-                        color: Some(theme.palette().text.scale_alpha(0.6))
-                    })
-            ]
-            .padding(40)
-            .align_x(Alignment::Center),
-        )
+        return container(ui::text::empty_state("No image selected", ui::text::body("Pick a photo in Library to start editing.")))
         .width(Length::Fill)
         .height(Length::Fill)
         .center_x(Length::Fill)
@@ -1018,7 +994,7 @@ fn mask_rows<'a>(
     );
     if m.mask_type == MASK_AI && editor.ai_select.is_none() {
         sidebar = sidebar.push(
-            button(text("Refine selection").size(theme::size::CAPTION))
+            button(text("Refine Selection").size(theme::size::CAPTION))
                 .style(ui::styles::NeutralButton::style)
                 .on_press(Message::AiSelectRefine(i)),
         );
@@ -1056,7 +1032,7 @@ fn mask_rows<'a>(
     brush_row = brush_row.push(iced::widget::Space::with_width(Length::Fill));
     if params.brush.has_strokes_for(i) {
         brush_row = brush_row.push(
-            button(text("Clear brush").size(theme::size::CAPTION))
+            button(text("Clear Brush").size(theme::size::CAPTION))
                 .style(ui::styles::NeutralButton::style)
                 .on_press(Message::ClearMaskBrush),
         );
@@ -1093,9 +1069,9 @@ fn mask_rows<'a>(
     let picking = editor.color_picking_mask == Some(i);
     sidebar = sidebar.push(
         row![
-            small("Color range", m.color_range != 0 || picking).on_toggle(Message::ToggleMaskColorRange),
+            small("Colour range", m.color_range != 0 || picking).on_toggle(Message::ToggleMaskColorRange),
             iced::widget::Space::with_width(Length::Fill),
-            button(text(if picking { "Picking…" } else { "Pick color" }).size(theme::size::CAPTION))
+            button(text(if picking { "Picking…" } else { "Pick Colour" }).size(theme::size::CAPTION))
                 .style(if picking { ui::styles::AccentButton::style } else { ui::styles::NeutralButton::style })
                 .on_press(Message::PickMaskColor),
         ]

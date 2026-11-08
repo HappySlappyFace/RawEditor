@@ -269,9 +269,6 @@ pub fn modal_surface() -> crate::ui::widgets::modal::Surface {
     }
 }
 
-pub fn button_style(theme: &Theme, status: iced::widget::button::Status) -> iced::widget::button::Style {
-    NeutralButton::style(theme, status)
-}
 
 
 

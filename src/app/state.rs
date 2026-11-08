@@ -813,7 +813,7 @@ pub const SPLASH_MIN: std::time::Duration = std::time::Duration::from_secs(1);
 
 impl RawEditor {
     pub fn title(&self) -> String {
-        String::from("RAW Editor")
+        String::from("RawEditor")
     }
 
     /// Phase 23: Create a new instance of the application (INSTANT!)
@@ -845,7 +845,7 @@ impl RawEditor {
         (
             RawEditor {
                 library: None, // Phase 23: Database loads in background
-                status: "Initializing...".to_string(),
+                status: "Starting…".to_string(),
                 images: Vec::new(), // Empty until database loads
                 pending_cache_count: 0,
                 selected_image_id: None,

@@ -293,9 +293,9 @@ fn view_image_card<'a>(
         Space::new(Length::Fill, Length::Fill).into()
     } else {
         let placeholder_label = match thumb_state {
-            ThumbnailState::Missing => "Missing...",
-            ThumbnailState::Queued => "Queued...",
-            ThumbnailState::Ready => "Generating...",
+            ThumbnailState::Missing => "Missing…",
+            ThumbnailState::Queued => "Queued…",
+            ThumbnailState::Ready => "Generating…",
         };
         container(
             column![
@@ -756,16 +756,11 @@ pub fn view_library(editor: &RawEditor) -> Element<'_, Message> {
         container(
             container(
                 column![
-                    text("No images match this filter").size(theme::size::DISPLAY),
-                    text("Try another folder/rating or import a new directory.")
-                        .size(theme::size::LABEL)
-                        .style(|_| text::Style {
-                            color: Some(theme::colours().text_muted)
-                        }),
+                    ui::text::empty_state("No images match this filter", ui::text::body("Try another folder or rating, or import a folder.")),
                     button(
                         row![
-                            text(ui::icons::FOLDER_OPEN).font(ICON_FONT),
-                            text("Import Folder")
+                            text(ui::icons::FOLDER_OPEN).font(ICON_FONT).size(theme::size::BODY),
+                            text("Import Folder").size(theme::size::BODY)
                         ]
                         .spacing(theme::space::M)
                     )

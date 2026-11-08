@@ -1,4 +1,4 @@
-use iced::{Alignment, Background, Color, Element, Length, Theme};
+use iced::{Background, Color, Element, Length};
 use iced::widget::{column, container, stack, text, Image, Container};
 use iced::widget::image::Handle;
 
@@ -69,7 +69,7 @@ fn view_preview(editor: &RawEditor, id: i64) -> Element<'_, Message> {
         
         container(stacked_image).width(Length::Fill).height(Length::Fill).center_x(Length::Fill).center_y(Length::Fill).style(|_| container::Style { background: Some(Background::Color(Color::BLACK)), ..Default::default() }).into()
     } else {
-        container(text("Loading preview...").size(20).style(|theme: &Theme| text::Style { color: Some(theme.palette().text.scale_alpha(0.6)) })).width(Length::Fill).height(Length::Fill).center_x(Length::Fill).center_y(Length::Fill).into()
+        container(ui::text::tinted("Loading preview…", theme::size::LABEL, theme::colours().text_muted)).width(Length::Fill).height(Length::Fill).center_x(Length::Fill).center_y(Length::Fill).into()
     }
 }
 
@@ -100,11 +100,7 @@ fn view_filename_overlay(editor: &RawEditor, id: i64) -> Element<'_, Message> {
 }
 
 fn view_empty_state() -> Element<'static, Message> {
-    container(column![
-        text("No Image Selected").size(32), 
-        text("").size(20), 
-        text("← Switch to Library tab to select an image").size(theme::size::TITLE).style(|theme: &Theme| text::Style { color: Some(theme.palette().text.scale_alpha(0.6)) })
-    ].padding(40).align_x(Alignment::Center)).width(Length::Fill).height(Length::Fill).center_x(Length::Fill).center_y(Length::Fill).into()
+    container(ui::text::empty_state("No image selected", ui::text::body("Pick a photo in Library to start culling."))).width(Length::Fill).height(Length::Fill).center_x(Length::Fill).center_y(Length::Fill).into()
 }
 
 /// Cached previews within the preload window, behind and ahead — in display

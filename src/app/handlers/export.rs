@@ -145,7 +145,7 @@ pub fn handle_export_confirmed(editor: &mut RawEditor) -> Task<Message> {
     editor.export_queue = ids.into_iter().rev().collect();
 
     editor.is_exporting = true;
-    editor.status = format!("Starting export of {} images...", editor.export_jobs.len());
+    editor.status = format!("Starting export of {} images…", editor.export_jobs.len());
     Task::perform(async {}, |_| Message::ProcessNextExport)
 }
 
@@ -263,7 +263,7 @@ pub fn handle_process_next_export(editor: &mut RawEditor) -> Task<Message> {
             .iter()
             .filter(|j| !matches!(j.state, crate::app::state::ExportJobState::Pending))
             .count();
-        editor.status = format!("Exporting {} of {}...", done + 1, editor.export_jobs.len());
+        editor.status = format!("Exporting {} of {}…", done + 1, editor.export_jobs.len());
         set_job_state(editor, image_id, crate::app::state::ExportJobState::Working);
         if let Some(img) = editor.images.iter().find(|i| i.id == image_id) {
             let path = img.path.clone();

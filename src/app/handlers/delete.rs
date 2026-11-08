@@ -127,7 +127,7 @@ pub fn handle_delete_from_disk_confirmed(editor: &mut RawEditor) -> Task<Message
     }
 
     editor.is_deleting = true;
-    editor.status = format!("Deleting {} image(s)...", targets.len());
+    editor.status = format!("Deleting {} image(s)…", targets.len());
     Task::perform(hard_delete_async(targets, db_path), Message::HardDeleteComplete)
 }
 

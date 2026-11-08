@@ -168,7 +168,7 @@ fn general(editor: &RawEditor) -> Element<'_, Message> {
         heading("General"),
         group_label("Workflow"),
         column![
-            checkbox("Auto-Advance on Rate/Flag", editor.auto_advance)
+            checkbox("Auto-advance", editor.auto_advance)
                 .on_toggle(|_| Message::ToggleAutoAdvance)
                 .size(16)
                 .spacing(theme::space::M)
