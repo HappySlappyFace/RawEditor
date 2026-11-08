@@ -14,6 +14,8 @@ cargo test <name>              # run a single test by name/substring
 cargo clippy --all-targets -- -D warnings   # lint; CI enforces this exactly, so keep it at zero
 ```
 
+**Releasing:** `Cargo.toml`'s `version` is the one source of truth. Bump it, commit, and push the tag `v<that version>` (e.g. `v1.0.0`, or `v1.0.0-rc.1` for a pre-release). The release workflow fails any tag that isn't exactly that, so no letter suffixes: a hotfix is the next patch number, because semver puts `0.9.8-E` *before* `0.9.8` and the update check (`core::updates`) would offer it backwards. Pre-release tags (with a `-`) are published as pre-releases, which are never "latest", so the update check never offers them.
+
 There is no separate frontend build — this is a single native Rust binary (no web tech, no Electron/Tauri).
 
 ## Core Tech Stack
@@ -23,7 +25,7 @@ There is no separate frontend build — this is a single native Rust binary (no 
 - **Async:** `tokio` for background I/O and CPU-heavy decoding (`spawn_blocking`)
 - **RAW decoding:** `rawler` (dnglab fork of rawloader), `tiff`/`kamadak-exif` for DCP/EXIF metadata
 - **Database:** `rusqlite` (bundled SQLite)
-- **Network:** `ureq` (blocking, rustls — no OpenSSL) + `bzip2-rs`/`tar`, used ONLY when the user clicks to download the lensfun database (`core::lensfun`) or RawTherapee's open-source camera profiles (`core::camera_profiles`: GitHub's contents API + `raw.githubusercontent.com`). It also downloads the AI models (`ml::models`) from this repo's own `models-v1` GitHub release, again only on the user's click. The app makes no other network requests; keep it that way unless the user explicitly wants otherwise.
+- **Network:** `ureq` (blocking, rustls — no OpenSSL) + `bzip2-rs`/`tar`, used ONLY when the user clicks to download the lensfun database (`core::lensfun`) or RawTherapee's open-source camera profiles (`core::camera_profiles`: GitHub's contents API + `raw.githubusercontent.com`). It also downloads the AI models (`ml::models`) from this repo's own `models-v1` GitHub release, again only on the user's click. The one request it makes unprompted is the update check (`core::updates`, `handlers::updates`): `latest.json` from the newest release, fetched at startup only if the user said yes to the first-run prompt (`AppSettings::update_check` stays `None`, and the app silent, until they answer), or when they click Check for Updates. The release workflow's final `manifest` job writes that file after every platform has uploaded. The check fetches the plain `releases/latest/download/` link, never the REST API (rate-limited per IP). It downloads and installs nothing. The app makes no other network requests; keep it that way unless the user explicitly wants otherwise.
 - **AI inference:** `ort` (ONNX Runtime, CPU, statically linked from pyke's prebuilt binaries; that fetch happens at BUILD time only). See §J.
 
 ## Architecture
@@ -32,7 +34,7 @@ There is no separate frontend build — this is a single native Rust binary (no 
 - `src/main.rs` — entry point / iced application bootstrap
 - `src/app/` — application state and update loop, split Elm-style:
   - `state.rs` / `message.rs` — `RawEditor` state struct and `Message` enum
-  - `update.rs` + `handlers/{ai_denoise,ai_mask,camera_profiles,delete,develop,export,lens,lensfun,library,loading,loupe,masks,models,navigation,proxy,scroll,window}.rs` — message handlers grouped by feature area
+  - `update.rs` + `handlers/{ai_denoise,ai_mask,camera_profiles,delete,develop,export,lens,lensfun,library,loading,loupe,masks,models,navigation,proxy,scroll,updates,window}.rs` — message handlers grouped by feature area
   - `views/{develop,library,cull,export,layout,modals,preferences}.rs` — iced view builders per tab/screen
   - `loader.rs` — async multi-tier image loading orchestration
 - `src/gpu/` — the wgpu rendering pipeline (see dual-pass system below):

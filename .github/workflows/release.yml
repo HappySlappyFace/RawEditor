@@ -3,7 +3,9 @@ name: RawEditor CI & Release
 on:
   push:
     branches: [ "main" ]
-    tags: [ "v*" ]
+    # V* and bare numbers too, so a mistyped tag fails the version check
+    # instead of being silently ignored. (models-v1 matches none of these.)
+    tags: [ "v*", "V*", "[0-9]*" ]
     paths-ignore:
       - "README.md"
       - "LICENSE"
@@ -34,26 +36,25 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
 
-      # The tag is the source of truth for the version: write it into
-      # Cargo.toml so env!("CARGO_PKG_VERSION") (About, Preferences, EXIF
-      # Software tag) matches the release. Cargo needs semver, so a letter
-      # suffix becomes a pre-release: v0.9.8E -> 0.9.8-E.
-      - name: Set version from tag
+      # Cargo.toml is the source of truth for the version: a release is
+      # "bump it, commit, tag v<that version>". The tag must match exactly,
+      # so a missing or capital v, a letter suffix (v0.9.8E, which semver
+      # orders BEFORE 0.9.8, so the updater would offer it backwards) or a
+      # forgotten bump fails here instead of shipping a mislabelled build.
+      # Pre-releases are semver: v1.0.0-rc.1 with version = "1.0.0-rc.1".
+      - name: Check the tag matches Cargo.toml
         shell: bash
         run: |
-          TAG="${GITHUB_REF_NAME#[vV]}"
-          if [[ "$TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-            VERSION="$TAG"
-          elif [[ "$TAG" =~ ^([0-9]+\.[0-9]+\.[0-9]+)([0-9A-Za-z.]+)$ ]]; then
-            VERSION="${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"
-          else
-            echo "::error::Tag '$GITHUB_REF_NAME' is not a version (expected vX.Y.Z)"
+          VERSION=$(sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [[ "$GITHUB_REF_NAME" != "v$VERSION" ]]; then
+            echo "::error::Tag '$GITHUB_REF_NAME' doesn't match Cargo.toml's version $VERSION: expected tag v$VERSION"
             exit 1
           fi
-          # Only the first `version =` line, which is [package]'s.
-          sed -i.bak "1,/^version *=/ s/^version *=.*/version = \"$VERSION\"/" Cargo.toml
-          rm Cargo.toml.bak
-          grep -m1 '^version' Cargo.toml
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Cargo.toml's version $VERSION is not x.y.z or x.y.z-pre"
+            exit 1
+          fi
+          echo "Building $VERSION"
 
       - name: Build release
         if: matrix.os != 'macos-15'
@@ -169,3 +170,52 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*.zip
+          # v1.0.0-rc.1 etc.: a pre-release is never "latest", so the
+          # update check (which reads the latest release) never offers it.
+          prerelease: ${{ contains(github.ref_name, '-') }}
+
+  # The app's update check reads latest.json from the newest release
+  # (core::updates). It is written here, after every platform has uploaded,
+  # so it never names a download that isn't there yet — while a release is
+  # still building the file is simply missing, and the check finds nothing.
+  manifest:
+    needs: release
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: "*-zip"
+          path: dist
+          merge-multiple: true
+
+      - name: Write and upload latest.json
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The release job already checked the tag is v<Cargo.toml version>.
+          VERSION="${GITHUB_REF_NAME#v}"
+
+          # Keys are the app's core::updates::platform(): "<os>-<arch>" as
+          # Rust's std::env::consts spells them.
+          assets='{}'
+          for f in dist/*.zip; do
+            name=$(basename "$f")
+            case "$name" in
+              *-linux-*)       key=linux-x86_64 ;;
+              *-windows-*)     key=windows-x86_64 ;;
+              *-macos-arm64-*) key=macos-aarch64 ;;
+              *) echo "::warning::not listed in latest.json: $name"; continue ;;
+            esac
+            assets=$(jq -c --arg k "$key" --arg file "$name" \
+              --arg sha "$(sha256sum "$f" | cut -d' ' -f1)" --argjson bytes "$(stat -c%s "$f")" \
+              '. + {($k): {file: $file, sha256: $sha, bytes: $bytes}}' <<<"$assets")
+          done
+          [ "$(jq length <<<"$assets")" -gt 0 ] || { echo "::error::no release zips found"; exit 1; }
+
+          jq -n --arg version "$VERSION" --arg tag "$GITHUB_REF_NAME" \
+            --arg url "https://github.com/$GITHUB_REPOSITORY/releases/tag/$GITHUB_REF_NAME" \
+            --arg published "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson assets "$assets" \
+            '{format: 1, version: $version, tag: $tag, url: $url, published: $published, assets: $assets}' > latest.json
+          cat latest.json
+          gh release upload "$GITHUB_REF_NAME" latest.json --clobber --repo "$GITHUB_REPOSITORY"
