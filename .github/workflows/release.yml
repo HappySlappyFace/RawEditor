@@ -19,9 +19,9 @@ jobs:
 
     strategy:
       matrix:
-        # macos-14 is an Apple Silicon (M1) runner, so the arm64 build is
+        # macos-15 is an Apple Silicon runner, so the arm64 build is
         # native rather than cross-compiled.
-        os: [ubuntu-latest, windows-latest, macos-14]
+        os: [ubuntu-latest, windows-latest, macos-15]
 
     steps:
       - uses: actions/checkout@v4
@@ -56,7 +56,7 @@ jobs:
           grep -m1 '^version' Cargo.toml
 
       - name: Build release
-        if: matrix.os != 'macos-14'
+        if: matrix.os != 'macos-15'
         run: cargo build --release
 
       # Apple Silicon only ships arm64 Macs, so the build can assume more than
@@ -64,7 +64,7 @@ jobs:
       # extensions (and its scheduling model) while still running on every
       # M-series chip. `fast-jpeg` adds zune-jpeg's NEON decoder.
       - name: Build release (Apple Silicon)
-        if: matrix.os == 'macos-14'
+        if: matrix.os == 'macos-15'
         env:
           RUSTFLAGS: -C target-cpu=apple-m1
           MACOSX_DEPLOYMENT_TARGET: "11.0"
@@ -105,7 +105,7 @@ jobs:
           Compress-Archive -Path $OUT -DestinationPath "dist\$APP-windows-$VERSION.zip"
 
       - name: Prepare app bundle (Apple Silicon)
-        if: matrix.os == 'macos-14'
+        if: matrix.os == 'macos-15'
         shell: bash
         run: |
           APP=raw-editor
