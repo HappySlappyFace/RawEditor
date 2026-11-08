@@ -340,3 +340,52 @@ pub fn tooltip_style(_theme: &Theme) -> iced::widget::container::Style {
         ..Default::default()
     }
 }
+
+/// A filter chip (Library's rating filter): a pill, accent-filled when on.
+pub fn chip(active: bool) -> impl Fn(&Theme, iced::widget::button::Status) -> iced::widget::button::Style {
+    move |_theme, status| {
+        use iced::widget::button::{Status, Style};
+        let c = theme::colours();
+        let (background, text_color, edge) = match (active, status) {
+            (true, _) => (c.accent_fill, c.text_strong, c.accent_border),
+            (false, Status::Hovered | Status::Pressed) => (c.control_hover, c.text, c.border_strong),
+            (false, _) => (c.control, c.text_secondary, c.border),
+        };
+        Style {
+            background: Some(Background::Color(background)),
+            text_color,
+            border: Border { radius: theme::radius::PILL.into(), width: 1.0, color: edge },
+            ..Default::default()
+        }
+    }
+}
+
+/// A row in a selectable list (Library's folders): quiet until hovered,
+/// accent-filled when it is the current one.
+pub fn list_item(active: bool) -> impl Fn(&Theme, iced::widget::button::Status) -> iced::widget::button::Style {
+    move |_theme, status| {
+        use iced::widget::button::{Status, Style};
+        let c = theme::colours();
+        let (background, text_color, edge) = match (active, status) {
+            (true, _) => (c.accent_fill_hover, c.text_strong, c.accent_border_hover),
+            (false, Status::Hovered | Status::Pressed) => (c.control_hover, c.text, c.border_strong),
+            (false, _) => (c.control, c.text_secondary, c.border_subtle),
+        };
+        Style {
+            background: Some(Background::Color(background)),
+            text_color,
+            border: Border { radius: theme::radius::CONTROL.into(), width: 1.0, color: edge },
+            ..Default::default()
+        }
+    }
+}
+
+/// Divider lines (`horizontal_rule(1).style(styles::rule)`).
+pub fn rule(_theme: &Theme) -> iced::widget::rule::Style {
+    iced::widget::rule::Style {
+        color: theme::colours().border_strong,
+        width: 1,
+        radius: 0.0.into(),
+        fill_mode: iced::widget::rule::FillMode::Full,
+    }
+}

@@ -1,4 +1,3 @@
-use iced::font::{Font, Weight};
 use iced::widget::{
     checkbox, column, container, mouse_area, row, scrollable, slider, stack, text, text_input,
     Container,
@@ -223,7 +222,7 @@ fn expanded(editor: &RawEditor, section: SidebarSection) -> bool {
 
 /// A muted caption that labels a group of rows inside a section.
 fn group_label<'a>(label: &'a str) -> Element<'a, Message> {
-    container(text(label).size(theme::size::CAPTION).style(|_| text::Style { color: Some(theme::colours().text_muted) }))
+    container(ui::text::group_label(label))
         .padding(iced::Padding { top: 4.0, ..iced::Padding::ZERO })
         .into()
 }
@@ -674,7 +673,7 @@ fn view_main_content<'a>(
                         container(
                             text("BEFORE")
                                 .size(theme::size::CAPTION)
-                                .font(Font { weight: Weight::Bold, ..Default::default() })
+                                .font(theme::font::BOLD)
                                 .style(|_theme| text::Style { color: Some(theme::colours().text_strong) }),
                         )
                         .padding([4, 10])
@@ -933,7 +932,7 @@ fn mask_rows<'a>(
         sidebar = sidebar.push(
             container(
                 column![
-                    text("AI Select").size(theme::size::SMALL).font(Font { weight: Weight::Bold, ..Default::default() }),
+                    text("AI Select").size(theme::size::SMALL).font(theme::font::BOLD),
                     text(status).size(theme::size::CAPTION).style(|_| text::Style { color: Some(theme::colours().text_secondary) }),
                     row![
                         button(text("Cancel").size(theme::size::SMALL))
@@ -1389,10 +1388,7 @@ fn missing_database_prompt(editor: &RawEditor) -> Element<'_, Message> {
 }
 
 fn hint<'a>(s: String) -> Element<'a, Message> {
-    text(s)
-        .size(theme::size::CAPTION)
-        .style(|_theme| text::Style { color: Some(theme::colours().text_hint) })
-        .into()
+    ui::text::hint(s).into()
 }
 
 /// Profile toggles (with what was matched, or why nothing was) and the

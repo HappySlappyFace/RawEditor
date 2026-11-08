@@ -515,6 +515,12 @@ fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
         }
         Message::WindowResized(size) => {
             editor.window_size = size;
+            // The grid learns its size only from scroll events, and a
+            // catalogue that fits on screen never scrolls: drop the stale
+            // size so `GridGeometry::of` estimates from the window until the
+            // next one. Without this, a window that started small and was
+            // maximised kept its first-frame column count.
+            editor.grid_viewport = (0.0, 0.0);
             handlers::window::query_scale_factor()
         }
         Message::KineticTick(now) => handlers::scroll::handle_kinetic_tick(editor, now),

@@ -9,7 +9,6 @@
 //! The Export modal is deliberately kept as the quick path from Library and
 //! Develop; both drive the same `ExportConfirmed` handler.
 
-use iced::font::{Font, Weight};
 use iced::widget::{checkbox, column, container, radio, row, scrollable, slider, text, text_input};
 use crate::ui::widgets::button;
 use iced::{Alignment, Background, Border, Element, Length, Theme};
@@ -42,25 +41,15 @@ pub fn view_export(editor: &RawEditor) -> Element<'_, Message> {
 }
 
 fn section_header(label: &str) -> Element<'_, Message> {
-    text(label)
-        .size(theme::size::SMALL)
-        .font(Font { weight: Weight::Bold, ..Default::default() })
-        .style(|_| text::Style { color: Some(theme::colours().text_muted) })
-        .into()
+    ui::text::group_label(label).into()
 }
 
 fn body_text(s: String) -> Element<'static, Message> {
-    text(s)
-        .size(theme::size::SMALL)
-        .style(|_: &Theme| text::Style { color: Some(theme::colours().text_secondary) })
-        .into()
+    ui::text::body(s).into()
 }
 
 fn hint(s: String) -> Element<'static, Message> {
-    text(s)
-        .size(theme::size::CAPTION)
-        .style(|_: &Theme| text::Style { color: Some(theme::colours().text_hint) })
-        .into()
+    ui::text::hint(s).into()
 }
 
 fn view_settings(editor: &RawEditor) -> Element<'_, Message> {
@@ -328,7 +317,7 @@ fn view_queue(editor: &RawEditor) -> Element<'_, Message> {
             row![
                 text(header)
                     .size(theme::size::LABEL)
-                    .font(Font { weight: Weight::Bold, ..Default::default() })
+                    .font(theme::font::BOLD)
                     .style(|_: &Theme| text::Style {
                         color: Some(theme::colours().text)
                     }),

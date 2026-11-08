@@ -5,12 +5,12 @@
 //! pointer; the menu's highlight slides between rows (`indicator::vertical`)
 //! and the page fades up through the dialog surface (`fade_through`).
 
-use iced::font::{Font, Weight};
+use iced::font::Font;
 use iced::widget::{
     checkbox, column, container, horizontal_rule, row, scrollable, slider, stack, text,
     vertical_rule, Space,
 };
-use iced::{Alignment, Background, Border, Color, Element, Length, Theme};
+use iced::{Alignment, Background, Border, Color, Element, Length};
 
 use crate::app::message::Message;
 use crate::app::state::{PreferencesSection, RawEditor};
@@ -86,11 +86,9 @@ pub fn view_preferences_modal(editor: &RawEditor) -> Element<'_, Message> {
     );
 
     column![
-        text("Preferences").size(theme::size::TITLE).font(bold()).style(|_| text::Style {
-            color: Some(theme::colours().text)
-        }),
+        ui::text::title("Preferences"),
         rule(),
-        row![menu(section), vertical_rule(1).style(rule_style), content]
+        row![menu(section), vertical_rule(1).style(ui::styles::rule), content]
             .spacing(0)
             .height(Length::Fixed(BODY_HEIGHT)),
         rule(),
@@ -175,7 +173,7 @@ fn general(editor: &RawEditor) -> Element<'_, Message> {
                 .size(16)
                 .spacing(theme::space::M)
                 .text_size(13)
-                .style(checkbox_style),
+                .style(ui::styles::checkbox_style),
             hint("After rating or flagging an image, move on to the next one."),
         ]
         .spacing(theme::space::XS),
@@ -187,7 +185,7 @@ fn general(editor: &RawEditor) -> Element<'_, Message> {
                 .size(16)
                 .spacing(theme::space::M)
                 .text_size(13)
-                .style(checkbox_style),
+                .style(ui::styles::checkbox_style),
             hint("Transitions and animations jump straight to their end state."),
         ]
         .spacing(theme::space::XS),
@@ -198,7 +196,7 @@ fn general(editor: &RawEditor) -> Element<'_, Message> {
                 .size(16)
                 .spacing(theme::space::M)
                 .text_size(13)
-                .style(checkbox_style),
+                .style(ui::styles::checkbox_style),
             hint("One small request to GitHub when RawEditor starts. Nothing is downloaded or installed."),
         ]
         .spacing(theme::space::XS),
@@ -913,6 +911,13 @@ const BUNDLED: &[Credit] = &[
         "https://github.com/ryanoasis/nerd-fonts",
     ),
     credit(
+        "JetBrains Mono Bold",
+        &[],
+        "OFL-1.1",
+        "Headings",
+        "https://github.com/JetBrains/JetBrainsMono",
+    ),
+    credit(
         "SQLite",
         &[],
         "Public domain",
@@ -1075,33 +1080,19 @@ fn credit_row(c: &'static Credit) -> Element<'static, Message> {
 // ── pieces ──────────────────────────────────────────────────────────────────
 
 fn bold() -> Font {
-    Font {
-        weight: Weight::Bold,
-        ..Default::default()
-    }
+    theme::font::BOLD
 }
 
 fn heading(label: &str) -> Element<'_, Message> {
-    text(label)
-        .size(theme::size::HEADING)
-        .font(bold())
-        .style(|_| text::Style { color: Some(theme::colours().text) })
-        .into()
+    ui::text::heading(label).into()
 }
 
 fn group_label(label: &str) -> Element<'_, Message> {
-    container(text(label).size(theme::size::SMALL).font(bold()).style(|_| text::Style {
-        color: Some(theme::colours().text_muted)
-    }))
-    .padding(iced::Padding { top: 8.0, ..Default::default() })
-    .into()
+    container(ui::text::group_label(label)).padding(iced::Padding { top: 8.0, ..Default::default() }).into()
 }
 
 fn hint(s: &str) -> Element<'_, Message> {
-    text(s)
-        .size(theme::size::CAPTION)
-        .style(|_| text::Style { color: Some(theme::colours().text_hint) })
-        .into()
+    ui::text::hint(s).into()
 }
 
 fn readout(s: String) -> Element<'static, Message> {
@@ -1157,30 +1148,12 @@ fn card<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
 }
 
 fn rule() -> Element<'static, Message> {
-    horizontal_rule(1.0).style(rule_style).into()
+    horizontal_rule(1.0).style(ui::styles::rule).into()
 }
 
-fn rule_style(_theme: &Theme) -> iced::widget::rule::Style {
-    iced::widget::rule::Style {
-        color: theme::colours().border_strong,
-        width: 1,
-        radius: 0.0.into(),
-        fill_mode: iced::widget::rule::FillMode::Full,
-    }
-}
 
-fn checkbox_style(_theme: &Theme, _status: checkbox::Status) -> checkbox::Style {
-    checkbox::Style {
-        background: Background::Color(theme::colours().control_hover),
-        icon_color: theme::colours().text,
-        border: Border {
-            color: theme::colours().border_control,
-            width: 1.0,
-            radius: theme::radius::CONTROL.into(),
-        },
-        text_color: Some(theme::colours().text_secondary),
-    }
-}
+
+
 
 #[cfg(test)]
 mod tests {

@@ -53,8 +53,6 @@ pub struct Colours {
     /// One-line explanations under a control.
     pub text_hint: Color,
     pub text_disabled: Color,
-    /// Barely there: placeholders for empty slots.
-    pub text_faint: Color,
 
     // ── Accent (the electric orange) ──
     /// Full strength, for small high-signal marks (active tab underline,
@@ -103,7 +101,6 @@ pub const DARK: Colours = Colours {
     text_muted: Color::from_rgb(0.50, 0.50, 0.50),
     text_hint: Color::from_rgb(0.45, 0.45, 0.45),
     text_disabled: Color::from_rgb(0.40, 0.40, 0.40),
-    text_faint: Color::from_rgb(0.30, 0.30, 0.30),
 
     accent: Color::from_rgb(0.976, 0.451, 0.086),
     accent_text: Color::from_rgb(0.92, 0.63, 0.34),
@@ -144,6 +141,18 @@ pub fn iced_theme() -> iced::Theme {
             danger: c.danger,
         },
     )
+}
+
+/// Fonts. Regular text is the app's default font (JetBrains Mono Nerd Font,
+/// which also carries the icons); bold text must name its family too, or
+/// iced asks the OS for a default sans-serif and every platform shows a
+/// different face.
+pub mod font {
+    use iced::font::{Family, Font, Weight};
+
+    /// Headings and emphasis: JetBrains Mono Bold, bundled (OFL-1.1).
+    pub const BOLD: Font = Font { family: Family::Name("JetBrains Mono"), weight: Weight::Bold, ..Font::DEFAULT };
+    pub const BOLD_BYTES: &[u8] = include_bytes!("../../assets/fonts/JetBrainsMono-Bold.ttf");
 }
 
 /// Text sizes. The values are the ones the UI already used most.

@@ -4,7 +4,7 @@ use iced::widget::{
 };
 use crate::ui::widgets::button;
 use crate::ui::widgets::fade_image::fade_image;
-use iced::{Alignment, Background, Border, Color, Element, Length, Theme};
+use iced::{Alignment, Background, Border, Color, Element, Length};
 use std::collections::HashMap;
 
 use crate::app::message::Message;
@@ -179,156 +179,6 @@ fn metric_pill<'a>(label: &'a str, value: impl ToString, color: Color) -> Elemen
     .into()
 }
 
-fn style_toolbar_button(_theme: &Theme, status: button::Status) -> button::Style {
-    match status {
-        button::Status::Hovered => button::Style {
-            background: Some(Background::Color(theme::colours().control_active)),
-            text_color: theme::colours().text_strong,
-            border: Border {
-                radius: theme::radius::CARD.into(),
-                width: 1.0,
-                color: theme::colours().border_control,
-            },
-            ..Default::default()
-        },
-        button::Status::Pressed => button::Style {
-            background: Some(Background::Color(theme::colours().control)),
-            text_color: theme::colours().text_strong,
-            border: Border {
-                radius: theme::radius::CARD.into(),
-                width: 1.0,
-                color: theme::colours().border_strong,
-            },
-            ..Default::default()
-        },
-        _ => button::Style {
-            background: Some(Background::Color(theme::colours().control_hover)),
-            text_color: theme::colours().text,
-            border: Border {
-                radius: theme::radius::CARD.into(),
-                width: 1.0,
-                color: theme::colours().border_strong,
-            },
-            ..Default::default()
-        },
-    }
-}
-
-fn style_chip(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
-    move |_theme, status| {
-        if active {
-            button::Style {
-                background: Some(Background::Color(theme::colours().accent_fill)),
-                text_color: theme::colours().text_strong,
-                border: Border {
-                    radius: theme::radius::PILL.into(),
-                    width: 1.0,
-                    color: theme::colours().accent_border,
-                },
-                ..Default::default()
-            }
-        } else {
-            match status {
-                button::Status::Hovered => button::Style {
-                    background: Some(Background::Color(theme::colours().control_hover)),
-                    text_color: theme::colours().text,
-                    border: Border {
-                        radius: theme::radius::PILL.into(),
-                        width: 1.0,
-                        color: theme::colours().border_strong,
-                    },
-                    ..Default::default()
-                },
-                _ => button::Style {
-                    background: Some(Background::Color(theme::colours().control)),
-                    text_color: theme::colours().text_secondary,
-                    border: Border {
-                        radius: theme::radius::PILL.into(),
-                        width: 1.0,
-                        color: theme::colours().border,
-                    },
-                    ..Default::default()
-                },
-            }
-        }
-    }
-}
-
-fn style_sidebar_button(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
-    move |_theme, status| {
-        if active {
-            button::Style {
-                background: Some(Background::Color(theme::colours().accent_fill_hover)),
-                text_color: theme::colours().text_strong,
-                border: Border {
-                    radius: theme::radius::CARD.into(),
-                    width: 1.0,
-                    color: theme::colours().accent_border_hover,
-                },
-                ..Default::default()
-            }
-        } else {
-            match status {
-                button::Status::Hovered => button::Style {
-                    background: Some(Background::Color(theme::colours().control_hover)),
-                    text_color: theme::colours().text,
-                    border: Border {
-                        radius: theme::radius::CARD.into(),
-                        width: 1.0,
-                        color: theme::colours().border_strong,
-                    },
-                    ..Default::default()
-                },
-                _ => button::Style {
-                    background: Some(Background::Color(theme::colours().control)),
-                    text_color: theme::colours().text_secondary,
-                    border: Border {
-                        radius: theme::radius::CARD.into(),
-                        width: 1.0,
-                        color: theme::colours().border_subtle,
-                    },
-                    ..Default::default()
-                },
-            }
-        }
-    }
-}
-
-fn style_sidebar_action_button(_theme: &Theme, status: button::Status) -> button::Style {
-    match status {
-        button::Status::Hovered => button::Style {
-            background: Some(Background::Color(theme::colours().control_active)),
-            text_color: theme::colours().text,
-            border: Border {
-                radius: theme::radius::CARD.into(),
-                width: 0.0,
-                color: Color::TRANSPARENT,
-            },
-            ..Default::default()
-        },
-        button::Status::Pressed => button::Style {
-            background: Some(Background::Color(theme::colours().control)),
-            text_color: theme::colours().text,
-            border: Border {
-                radius: theme::radius::CARD.into(),
-                width: 0.0,
-                color: Color::TRANSPARENT,
-            },
-            ..Default::default()
-        },
-        _ => button::Style {
-            background: Some(Background::Color(theme::colours().control_hover)),
-            text_color: theme::colours().text,
-            border: Border {
-                radius: theme::radius::CARD.into(),
-                width: 0.0,
-                color: Color::TRANSPARENT,
-            },
-            ..Default::default()
-        },
-    }
-}
-
 fn compact_path(path: &str) -> String {
     let path = std::path::Path::new(path);
     let parts: Vec<String> = path
@@ -390,28 +240,28 @@ fn view_thumbnail_size_presets<'a>(editor: &'a RawEditor) -> Element<'a, Message
         button(text("S").size(theme::size::CAPTION))
             .on_press(Message::SetThumbnailSize(THUMB_PRESET_SMALL))
             .padding([4, 8])
-            .style(style_chip(is_thumb_preset_active(
+            .style(ui::styles::chip(is_thumb_preset_active(
                 editor.thumbnail_size,
                 THUMB_PRESET_SMALL
             ))),
         button(text("M").size(theme::size::CAPTION))
             .on_press(Message::SetThumbnailSize(THUMB_PRESET_MEDIUM))
             .padding([4, 8])
-            .style(style_chip(is_thumb_preset_active(
+            .style(ui::styles::chip(is_thumb_preset_active(
                 editor.thumbnail_size,
                 THUMB_PRESET_MEDIUM
             ))),
         button(text("L").size(theme::size::CAPTION))
             .on_press(Message::SetThumbnailSize(THUMB_PRESET_LARGE))
             .padding([4, 8])
-            .style(style_chip(is_thumb_preset_active(
+            .style(ui::styles::chip(is_thumb_preset_active(
                 editor.thumbnail_size,
                 THUMB_PRESET_LARGE
             ))),
         button(text("XL").size(theme::size::CAPTION))
             .on_press(Message::SetThumbnailSize(THUMB_PRESET_XL))
             .padding([4, 8])
-            .style(style_chip(is_thumb_preset_active(
+            .style(ui::styles::chip(is_thumb_preset_active(
                 editor.thumbnail_size,
                 THUMB_PRESET_XL
             ))),
@@ -661,83 +511,43 @@ fn view_grid<'a>(editor: &'a RawEditor, images: &[&'a ImageData]) -> Element<'a,
 }
 
 fn view_filter_bar<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
-    row![
-        button(text("All").size(theme::size::SMALL))
-            .on_press(Message::SetMinRating(0))
-            .padding([5, 10])
-            .style(style_chip(editor.min_filter_rating == 0)),
-        button(row![text(ui::icons::STAR).font(ICON_FONT).size(theme::size::CAPTION), text("1+")].spacing(theme::space::XS))
-            .on_press(Message::SetMinRating(1))
-            .padding([5, 10])
-            .style(style_chip(editor.min_filter_rating == 1)),
-        button(
+    let chip = |label: Element<'a, Message>, rating: u8| {
+        button(label)
+            .on_press(Message::SetMinRating(rating))
+            .padding([4, 10])
+            .style(ui::styles::chip(editor.min_filter_rating == rating))
+    };
+    let mut bar = row![chip(text("All").size(theme::size::SMALL).into(), 0)]
+        .spacing(theme::space::S)
+        .align_y(Alignment::Center);
+    // One star and the threshold ("★ 3+") instead of a run of stars: the
+    // chips stay one width and the number reads at a glance.
+    for rating in 1..=5u8 {
+        let label = if rating == 5 { "5".to_string() } else { format!("{rating}+") };
+        bar = bar.push(chip(
             row![
-                text(format!("{} {}", ui::icons::STAR, ui::icons::STAR))
-                    .font(ICON_FONT)
-                    .size(theme::size::CAPTION),
-                text("2+")
+                text(ui::icons::STAR).font(ICON_FONT).size(theme::size::CAPTION),
+                text(label).size(theme::size::SMALL),
             ]
             .spacing(theme::space::XS)
-        )
-        .on_press(Message::SetMinRating(2))
-        .padding([5, 10])
-        .style(style_chip(editor.min_filter_rating == 2)),
-        button(
-            row![
-                text(format!("{} {} {}", ui::icons::STAR, ui::icons::STAR, ui::icons::STAR))
-                    .font(ICON_FONT)
-                    .size(theme::size::CAPTION),
-                text("3+")
-            ]
-            .spacing(theme::space::XS)
-        )
-        .on_press(Message::SetMinRating(3))
-        .padding([5, 10])
-        .style(style_chip(editor.min_filter_rating == 3)),
-        button(
-            row![
-                text(
-                    format!(
-                        "{} {} {} {}",
-                        ui::icons::STAR,
-                        ui::icons::STAR,
-                        ui::icons::STAR,
-                        ui::icons::STAR
-                    )
-                )
-                .font(ICON_FONT)
-                .size(theme::size::CAPTION),
-                text("4+")
-            ]
-            .spacing(theme::space::XS)
-        )
-        .on_press(Message::SetMinRating(4))
-        .padding([5, 10])
-        .style(style_chip(editor.min_filter_rating == 4)),
-        button(
-            row![
-                text(
-                    format!(
-                        "{} {} {} {} {}",
-                        ui::icons::STAR,
-                        ui::icons::STAR,
-                        ui::icons::STAR,
-                        ui::icons::STAR,
-                        ui::icons::STAR
-                    )
-                )
-                .font(ICON_FONT)
-                .size(theme::size::CAPTION),
-                text("5")
-            ]
-            .spacing(theme::space::XS)
-        )
-        .on_press(Message::SetMinRating(5))
-        .padding([5, 10])
-        .style(style_chip(editor.min_filter_rating == 5)),
-    ]
-    .spacing(theme::space::S)
-    .align_y(Alignment::Center)
+            .align_y(Alignment::Center)
+            .into(),
+            rating,
+        ));
+    }
+    bar.into()
+}
+
+fn import_button(icon: &'static str, label: &'static str, msg: Message) -> Element<'static, Message> {
+    button(
+        row![text(icon).font(ICON_FONT).size(theme::size::BODY), text(label).size(theme::size::BODY)]
+            .spacing(theme::space::M)
+            .align_y(Alignment::Center),
+    )
+    .on_press(msg)
+    .padding([7, 10])
+    .width(Length::Fill)
+    .style(ui::styles::NeutralButton::style)
     .into()
 }
 
@@ -761,7 +571,7 @@ fn view_library_sidebar<'a>(
         .on_press(Message::SetLibraryFolderFilter(None))
         .padding([7, 9])
         .width(Length::Fill)
-        .style(style_sidebar_button(all_active)),
+        .style(ui::styles::list_item(all_active)),
     ]
     .spacing(theme::space::S);
 
@@ -783,12 +593,12 @@ fn view_library_sidebar<'a>(
                 .on_press(Message::SetLibraryFolderFilter(Some(folder.clone())))
                 .padding([6, 8])
                 .width(Length::Fill)
-                .style(style_sidebar_button(is_active)),
+                .style(ui::styles::list_item(is_active)),
                 // Forget this folder — catalogue only, files untouched.
                 button(text(ui::icons::TIMES).font(ICON_FONT).size(theme::size::CAPTION))
                     .on_press(Message::RemoveFolderRequested(folder.clone()))
                     .padding([6, 8])
-                    .style(style_sidebar_button(false)),
+                    .style(ui::styles::ghost_button),
             ]
             .spacing(theme::space::XXS)
             .align_y(Alignment::Center),
@@ -797,41 +607,11 @@ fn view_library_sidebar<'a>(
 
     container(
         column![
-            text("Library Sources").size(theme::size::LABEL),
-            text("Projects and locations")
-                .size(theme::size::CAPTION)
-                .style(|_| text::Style {
-                    color: Some(theme::colours().text_muted)
-                }),
-            Space::with_height(Length::Fixed(8.0)),
-            button(
-                row![
-                    text(ui::icons::FOLDER_OPEN).font(ICON_FONT),
-                    text("Import Folder")
-                ]
-                .spacing(theme::space::M)
-                .align_y(Alignment::Center)
-            )
-            .on_press(Message::ImportFolder)
-            .padding([8, 10])
-            .width(Length::Fill)
-            .style(style_sidebar_action_button),
-            button(
-                row![
-                    text(ui::icons::FOLDER).font(ICON_FONT),
-                    text("Import from Camera")
-                ]
-                .spacing(theme::space::M)
-                .align_y(Alignment::Center)
-            )
-            .on_press(Message::ImportFromCamera)
-            .padding([8, 10])
-            .width(Length::Fill)
-            .style(style_sidebar_action_button),
+            ui::text::group_label("Import"),
+            import_button(ui::icons::FOLDER_OPEN, "Import Folder", Message::ImportFolder),
+            import_button(ui::icons::FOLDER, "Import from Camera", Message::ImportFromCamera),
             Space::with_height(Length::Fixed(10.0)),
-            text("Folders").size(theme::size::SMALL).style(|_| text::Style {
-                color: Some(theme::colours().text_secondary)
-            }),
+            ui::text::group_label("Folders"),
             scrollable(folders_column).height(Length::Fill),
         ]
         .spacing(theme::space::S)
@@ -855,17 +635,20 @@ fn view_library_sidebar<'a>(
 
 fn view_library_toolbar<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
     let export_btn = button(
-        row![text(ui::icons::SAVE).font(ICON_FONT), text("Export")]
-            .spacing(theme::space::M)
-            .align_y(Alignment::Center),
+        row![
+            text(ui::icons::SAVE).font(ICON_FONT).size(theme::size::BODY),
+            text("Export").size(theme::size::BODY),
+        ]
+        .spacing(theme::space::M)
+        .align_y(Alignment::Center),
     )
     .on_press(Message::OpenExportModal)
-    .padding([8, 12])
-    .style(style_toolbar_button);
+    .padding([7, 14])
+    .style(ui::styles::AccentButton::style);
 
     container(
         row![
-            text("Library").size(22),
+            ui::text::title("Library"),
             view_filter_bar(editor),
             Space::with_width(Length::Fill),
             export_btn,
@@ -912,25 +695,13 @@ fn view_status_bar<'a>(
                 format!("{}/{}", filtered_count, total_count),
                 theme::colours().text,
             ),
-            text("|").size(theme::size::SMALL).style(|_| text::Style {
-                color: Some(theme::colours().text_faint)
-            }),
             metric_pill("Selected", selected_count, theme::colours().accent_text),
-            text("|").size(theme::size::SMALL).style(|_| text::Style {
-                color: Some(theme::colours().text_faint)
-            }),
             metric_pill(
                 "Cached",
                 format!("{}/{}", cached_count, filtered_count),
                 theme::colours().ok,
             ),
-            text("|").size(theme::size::SMALL).style(|_| text::Style {
-                color: Some(theme::colours().text_faint)
-            }),
             metric_pill("Deleted", deleted_count, theme::colours().error),
-            text("|").size(theme::size::SMALL).style(|_| text::Style {
-                color: Some(theme::colours().text_faint)
-            }),
             metric_pill("Folder", folder_label, theme::colours().text),
             iced::widget::horizontal_space(),
             view_thumbnail_size_presets(editor),
@@ -999,7 +770,7 @@ pub fn view_library(editor: &RawEditor) -> Element<'_, Message> {
                         .spacing(theme::space::M)
                     )
                     .on_press(Message::ImportFolder)
-                    .style(style_toolbar_button)
+                    .style(ui::styles::NeutralButton::style)
                     .padding([10, 14]),
                 ]
                 .spacing(theme::space::XXL)

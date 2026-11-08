@@ -1,9 +1,9 @@
 //! The AI denoise modal (`handlers::ai_denoise`): a 1:1 preview you can drag,
 //! Amount, a hold-to-compare Before, and Apply for the whole image.
 
-use iced::font::{Font, Weight};
+use iced::font::Font;
 use iced::widget::{column, container, mouse_area, row, slider, stack, text, Space};
-use iced::{Alignment, Border, Color, Element, Length, Theme};
+use iced::{Alignment, Border, Color, Element, Length};
 
 use crate::app::handlers::ai_denoise::PREVIEW_SIZE;
 use crate::app::message::Message;
@@ -12,9 +12,6 @@ use crate::ui;
 use crate::ui::widgets::button;
 use crate::ui::theme;
 
-fn dim<'a>(s: impl Into<String>, size: u16, shade: f32) -> iced::widget::Text<'a> {
-    text(s.into()).size(size).style(move |_theme: &Theme| text::Style { color: Some(Color::from_rgb(shade, shade, shade)) })
-}
 
 pub fn view(editor: &RawEditor) -> Element<'_, Message> {
     let st = &editor.ai_denoise;
@@ -56,7 +53,7 @@ pub fn view(editor: &RawEditor) -> Element<'_, Message> {
             }
             layers.into()
         }
-        None => container(dim(status.clone().unwrap_or_default(), 12, 0.6))
+        None => container(ui::text::tinted(status.clone().unwrap_or_default(), 12, theme::colours().text_muted))
             .center_x(Length::Fixed(PREVIEW_SIZE))
             .center_y(Length::Fixed(PREVIEW_SIZE))
             .into(),
@@ -68,9 +65,9 @@ pub fn view(editor: &RawEditor) -> Element<'_, Message> {
 
     let ready = st.engine_ready();
     let amount_row = row![
-        dim("Amount", 13, 0.8).width(Length::Fixed(70.0)),
+        ui::text::tinted("Amount", 13, theme::colours().text_secondary).width(Length::Fixed(70.0)),
         slider(0.0..=100.0, st.amount * 100.0, |v: f32| Message::AiDenoiseAmount(v / 100.0)).step(1.0_f32),
-        dim(format!("{:.0}%", st.amount * 100.0), 12, 0.7).font(Font::MONOSPACE).width(Length::Fixed(44.0)),
+        ui::text::tinted(format!("{:.0}%", st.amount * 100.0), 12, theme::colours().text_secondary).font(Font::MONOSPACE).width(Length::Fixed(44.0)),
     ]
     .spacing(theme::space::L)
     .align_y(Alignment::Center);
@@ -94,7 +91,7 @@ pub fn view(editor: &RawEditor) -> Element<'_, Message> {
         Some(progress) => column![
             iced::widget::progress_bar(0.0..=1.0, progress.fraction()).height(6),
             row![
-                dim(format!("Denoising the whole image… {:.0}%", progress.fraction() * 100.0), 12, 0.6),
+                ui::text::tinted(format!("Denoising the whole image… {:.0}%", progress.fraction() * 100.0), 12, theme::colours().text_muted),
                 Space::with_width(Length::Fill),
                 button(text("Stop").size(theme::size::BODY))
                     .on_press(Message::AiDenoiseCancel)
@@ -134,19 +131,13 @@ pub fn view(editor: &RawEditor) -> Element<'_, Message> {
     };
 
     column![
-        text("AI Denoise").size(theme::size::TITLE).font(Font { weight: Weight::Bold, ..Default::default() })
-            .style(|_| text::Style { color: Some(theme::colours().text) }),
-        dim("Shown at 1:1 with every other edit. Drag the preview to look elsewhere.", 12, 0.55),
+        ui::text::title("AI Denoise"),
+        ui::text::tinted("Shown at 1:1 with every other edit. Drag the preview to look elsewhere.", 12, theme::colours().text_muted),
         row![picture].width(Length::Fill).align_y(Alignment::Center),
         amount_row,
-        row![before, Space::with_width(Length::Fill), dim("PMRID · runs on this computer", 11, 0.45)]
+        row![before, Space::with_width(Length::Fill), ui::text::tinted("PMRID · runs on this computer", 11, theme::colours().text_hint)]
             .align_y(Alignment::Center),
-        iced::widget::horizontal_rule(1.0).style(|_| iced::widget::rule::Style {
-            color: theme::colours().border_strong,
-            width: 1,
-            radius: 0.0.into(),
-            fill_mode: iced::widget::rule::FillMode::Full
-        }),
+        iced::widget::horizontal_rule(1).style(ui::styles::rule),
         actions,
     ]
     .spacing(theme::space::XL)

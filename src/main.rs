@@ -37,6 +37,7 @@ pub fn main() -> iced::Result {
     .subscription(app::state::RawEditor::subscription)
     .theme(app::view::theme)
     .font(ui::icons::ICON_FONT_BYTES)
+    .font(ui::theme::font::BOLD_BYTES)
     .default_font(Font::with_name("JetBrainsMono Nerd Font"))
     .window(iced::window::Settings {
         size: iced::Size::new(900.0, 350.0),
