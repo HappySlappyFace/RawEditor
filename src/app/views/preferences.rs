@@ -166,6 +166,25 @@ fn menu(active: PreferencesSection) -> Element<'static, Message> {
 fn general(editor: &RawEditor) -> Element<'_, Message> {
     column![
         heading("General"),
+        group_label("Appearance"),
+        column![
+            row![
+                text("Theme").size(theme::size::BODY).width(Length::Fill),
+                iced::widget::pick_list(
+                    crate::ui::theme::Appearance::ALL,
+                    Some(editor.appearance),
+                    Message::SetAppearance,
+                )
+                .text_size(theme::size::SMALL)
+                .padding([4, 8])
+                .width(Length::Fixed(120.0))
+                .style(ui::styles::pick_list_style)
+                .menu_style(ui::styles::pick_list_menu_style),
+            ]
+            .align_y(Alignment::Center),
+            hint("Photos look the same in either; only the interface changes."),
+        ]
+        .spacing(theme::space::XS),
         group_label("Workflow"),
         column![
             checkbox("Auto-advance", editor.auto_advance)

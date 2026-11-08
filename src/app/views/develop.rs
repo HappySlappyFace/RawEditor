@@ -647,7 +647,7 @@ fn view_main_content<'a>(
                             text("BEFORE")
                                 .size(theme::size::CAPTION)
                                 .font(theme::font::BOLD)
-                                .style(|_theme| text::Style { color: Some(theme::colours().text_strong) }),
+                                .style(|_theme| text::Style { color: Some(theme::colours().on_photo) }),
                         )
                         .padding([4, 10])
                         .style(|_theme| container::Style {
@@ -827,7 +827,7 @@ fn view_main_content<'a>(
             // The shader quad now covers exactly the on-screen image rect (no
             // more, no less), so this container background IS the letterbox
             // color on every side, including portrait side bars.
-            background: Some(Background::Color(theme::colours().surface_raised)),
+            background: Some(Background::Color(theme::colours().canvas)),
             ..Default::default()
         })
         .into()
@@ -1633,7 +1633,7 @@ pub(crate) fn metadata_lines(editor: &RawEditor) -> [String; 3] {
 fn info_line<'a>(s: String) -> Element<'a, Message> {
     text(s)
         .size(theme::size::SMALL)
-        .style(|_| text::Style { color: Some(theme::colours().text_strong) })
+        .style(|_| text::Style { color: Some(theme::colours().on_photo) })
         .into()
 }
 

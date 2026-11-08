@@ -80,7 +80,7 @@ fn view_overlay(editor: &RawEditor, id: i64) -> Element<'_, Message> {
             let lines = super::develop::metadata_lines(editor)
                 .into_iter()
                 .fold(column![].spacing(theme::space::XXS), |col, line| {
-                    col.push(text(line).size(theme::size::SMALL).style(|_| text::Style { color: Some(theme::colours().text_strong) }))
+                    col.push(text(line).size(theme::size::SMALL).style(|_| text::Style { color: Some(theme::colours().on_photo) }))
                 });
             container(lines).padding(10).style(|_| container::Style { background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.6))), border: iced::border::Border { radius: theme::radius::CONTROL.into(), ..Default::default() }, ..Default::default() }).into()
         }
@@ -89,14 +89,14 @@ fn view_overlay(editor: &RawEditor, id: i64) -> Element<'_, Message> {
             container(
                 text(format!("-{} | +{}", before, after))
                     .size(theme::size::HEADING)
-                    .style(|_| text::Style { color: Some(theme::colours().text_strong) })
+                    .style(|_| text::Style { color: Some(theme::colours().on_photo) })
             ).padding(10).style(|_| container::Style { background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.6))), border: iced::border::Border { radius: theme::radius::CONTROL.into(), ..Default::default() }, ..Default::default() }).into()
         }
     }
 }
 
 fn view_filename_overlay(editor: &RawEditor, id: i64) -> Element<'_, Message> {
-    container(text(editor.images.iter().find(|img| img.id == id).map(|img| img.filename.clone()).unwrap_or_default()).size(theme::size::SMALL).style(|_| text::Style { color: Some(theme::colours().text_strong) })).padding(5).style(|_| container::Style { background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.4))), border: iced::border::Border { radius: theme::radius::CONTROL.into(), ..Default::default() }, ..Default::default() }).into()
+    container(text(editor.images.iter().find(|img| img.id == id).map(|img| img.filename.clone()).unwrap_or_default()).size(theme::size::SMALL).style(|_| text::Style { color: Some(theme::colours().on_photo) })).padding(5).style(|_| container::Style { background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.4))), border: iced::border::Border { radius: theme::radius::CONTROL.into(), ..Default::default() }, ..Default::default() }).into()
 }
 
 fn view_empty_state() -> Element<'static, Message> {

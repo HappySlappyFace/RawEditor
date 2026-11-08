@@ -62,7 +62,8 @@ impl TabButton {
     /// highlight as it slides past.
     pub fn style(&self, _theme: &Theme, status: iced::widget::button::Status) -> iced::widget::button::Style {
         use iced::widget::button::{Status, Style};
-        let tint = |a: f32| Some(Background::Color(Color::from_rgba(1.0, 1.0, 1.0, a)));
+        let wash = theme::colours().hover_wash;
+        let tint = |a: f32| Some(Background::Color(Color { a: wash.a * a / 0.05, ..wash }));
         match (self.is_active, status) {
             (true, _) => Style { background: None, text_color: theme::colours().text_strong, ..Default::default() },
             (false, Status::Hovered) => Style {
@@ -114,7 +115,7 @@ impl AccentButton {
         match status {
             iced::widget::button::Status::Active => iced::widget::button::Style {
                 background: Some(Background::Color(theme::colours().accent_fill)),
-                text_color: theme::colours().text_strong,
+                text_color: theme::colours().on_accent,
                 border: Border {
                     radius: theme::radius::CONTROL.into(),
                     width: 1.0,
@@ -124,7 +125,7 @@ impl AccentButton {
             },
             iced::widget::button::Status::Hovered => iced::widget::button::Style {
                 background: Some(Background::Color(theme::colours().accent_fill_hover)),
-                text_color: theme::colours().text_strong,
+                text_color: theme::colours().on_accent,
                 border: Border {
                     radius: theme::radius::CONTROL.into(),
                     width: 1.0,
@@ -134,7 +135,7 @@ impl AccentButton {
             },
             iced::widget::button::Status::Pressed => iced::widget::button::Style {
                 background: Some(Background::Color(theme::colours().accent_selection)),
-                text_color: theme::colours().text_strong,
+                text_color: theme::colours().on_accent,
                 border: Border {
                     radius: theme::radius::CONTROL.into(),
                     width: 1.0,
@@ -165,7 +166,7 @@ impl DangerButton {
         match status {
             iced::widget::button::Status::Active => iced::widget::button::Style {
                 background: Some(Background::Color(theme::colours().danger)),
-                text_color: theme::colours().text_strong,
+                text_color: theme::colours().on_accent,
                 border: Border {
                     radius: theme::radius::CONTROL.into(),
                     width: 0.0,
@@ -176,7 +177,7 @@ impl DangerButton {
             iced::widget::button::Status::Hovered => iced::widget::button::Style {
                 // Matches the title-bar close-button hover color (layout.rs).
                 background: Some(Background::Color(theme::colours().danger_hover)),
-                text_color: theme::colours().text_strong,
+                text_color: theme::colours().on_accent,
                 border: Border {
                     radius: theme::radius::CONTROL.into(),
                     width: 0.0,
@@ -211,7 +212,7 @@ impl DangerButton {
 pub fn radio_style(_theme: &Theme, _status: iced::widget::radio::Status) -> iced::widget::radio::Style {
     iced::widget::radio::Style {
         background: Background::Color(theme::colours().control_hover),
-        dot_color: Color::WHITE,
+        dot_color: theme::colours().text_strong,
         border_width: 1.0,
         border_color: theme::colours().border_control,
         text_color: Some(theme::colours().text_strong),
@@ -344,7 +345,7 @@ pub fn chip(active: bool) -> impl Fn(&Theme, iced::widget::button::Status) -> ic
         use iced::widget::button::{Status, Style};
         let c = theme::colours();
         let (background, text_color, edge) = match (active, status) {
-            (true, _) => (c.accent_fill, c.text_strong, c.accent_border),
+            (true, _) => (c.accent_fill, c.on_accent, c.accent_border),
             (false, Status::Hovered | Status::Pressed) => (c.control_hover, c.text, c.border_strong),
             (false, _) => (c.control, c.text_secondary, c.border),
         };
@@ -364,7 +365,7 @@ pub fn list_item(active: bool) -> impl Fn(&Theme, iced::widget::button::Status) 
         use iced::widget::button::{Status, Style};
         let c = theme::colours();
         let (background, text_color, edge) = match (active, status) {
-            (true, _) => (c.accent_fill_hover, c.text_strong, c.accent_border_hover),
+            (true, _) => (c.accent_fill_hover, c.on_accent, c.accent_border_hover),
             (false, Status::Hovered | Status::Pressed) => (c.control_hover, c.text, c.border_strong),
             (false, _) => (c.control, c.text_secondary, c.border_subtle),
         };

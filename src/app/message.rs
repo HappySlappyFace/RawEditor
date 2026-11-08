@@ -449,6 +449,7 @@ pub enum Message {
     ModalExitFinished(u64),
     /// Preferences › Reduce motion.
     ToggleReduceMotion,
+    SetAppearance(crate::ui::theme::Appearance),
     ModalNoOp, // Swallows clicks
     /// An arrow key came up: ends a held-key follow scroll
     /// (`handlers::scroll::release`).

@@ -25,6 +25,7 @@ pub(crate) const TITLE_BAR_HEIGHT: f32 = 35.0;
 
 // Phase 69: Brand Identity
 const LOGO_BYTES: &[u8] = include_bytes!("../../../assets/logo.png");
+const LOGO_LIGHT_BYTES: &[u8] = include_bytes!("../../../assets/logo-light.png");
 
 /// The logo's image handle, built once.
 ///
@@ -35,7 +36,14 @@ const LOGO_BYTES: &[u8] = include_bytes!("../../../assets/logo.png");
 fn logo() -> Handle {
     static LOGO: std::sync::LazyLock<Handle> =
         std::sync::LazyLock::new(|| Handle::from_bytes(LOGO_BYTES));
-    LOGO.clone()
+    // The logo is opaque, on the title bar's own grey, so each theme has its
+    // own (the light one is the dark one inverted onto `LIGHT.chrome`).
+    static LOGO_LIGHT: std::sync::LazyLock<Handle> =
+        std::sync::LazyLock::new(|| Handle::from_bytes(LOGO_LIGHT_BYTES));
+    match crate::ui::theme::appearance() {
+        crate::ui::theme::Appearance::Dark => LOGO.clone(),
+        crate::ui::theme::Appearance::Light => LOGO_LIGHT.clone(),
+    }
 }
 
 /// The splash artwork, looked up beside the executable first.
@@ -508,7 +516,7 @@ fn view_title_bar(editor: &RawEditor) -> Element<'_, Message> {
         button(container(text(ui::icons::MINIMIZE).font(ICON_FONT).size(theme::size::LABEL)).width(Length::Fill).height(Length::Fill).align_x(iced::alignment::Horizontal::Center).align_y(iced::alignment::Vertical::Center)).on_press(Message::MinimizeWindow).style(ui::styles::WindowControlButton::style).width(Length::Fixed(45.0)).height(Length::Fill),
         button(container(text(ui::icons::MAXIMIZE).font(ICON_FONT).size(theme::size::LABEL)).width(Length::Fill).height(Length::Fill).align_x(iced::alignment::Horizontal::Center).align_y(iced::alignment::Vertical::Center)).on_press(Message::MaximizeWindow).style(ui::styles::WindowControlButton::style).width(Length::Fixed(45.0)).height(Length::Fill),
         button(container(text(ui::icons::CLOSE).font(ICON_FONT).size(theme::size::LABEL)).width(Length::Fill).height(Length::Fill).align_x(iced::alignment::Horizontal::Center).align_y(iced::alignment::Vertical::Center)).on_press(Message::CloseWindow)
-            .style(|_theme, status| if status == button::Status::Hovered { button::Style { background: Some(Background::Color(theme::colours().danger_hover)), text_color: theme::colours().text_strong, ..button::Style::default() } } else { button::Style { text_color: theme::colours().text_secondary, ..button::text(_theme, status) } })
+            .style(|_theme, status| if status == button::Status::Hovered { button::Style { background: Some(Background::Color(theme::colours().danger_hover)), text_color: theme::colours().on_accent, ..button::Style::default() } } else { button::Style { text_color: theme::colours().text_secondary, ..button::text(_theme, status) } })
             .width(Length::Fixed(45.0)).height(Length::Fill),
     ].spacing(0).height(Length::Fill).align_y(Alignment::Center);
 

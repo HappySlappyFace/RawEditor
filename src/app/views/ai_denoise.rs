@@ -44,7 +44,7 @@ pub fn view(editor: &RawEditor) -> Element<'_, Message> {
                             .padding([3, 8])
                             .style(|_| container::Style {
                                 background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.7).into()),
-                                text_color: Some(theme::colours().text_strong),
+                                text_color: Some(theme::colours().on_photo),
                                 ..Default::default()
                             }),
                     )

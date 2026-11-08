@@ -36,7 +36,7 @@ pub struct EditorState {
 
 fn channel_color(ch: CurveChannel, alpha: f32) -> Color {
     match ch {
-        CurveChannel::Master => Color::from_rgba(0.92, 0.92, 0.92, alpha),
+        CurveChannel::Master => Color { a: alpha, ..theme::colours().text },
         CurveChannel::Red => Color::from_rgba(0.95, 0.35, 0.30, alpha),
         CurveChannel::Green => Color::from_rgba(0.35, 0.85, 0.40, alpha),
         CurveChannel::Blue => Color::from_rgba(0.40, 0.55, 1.0, alpha),
@@ -201,7 +201,9 @@ impl canvas::Program<Message> for CurveEditor {
         }
 
         // Quarter grid + identity diagonal.
-        let grid = Stroke::default().with_color(Color::from_rgba(1.0, 1.0, 1.0, 0.08)).with_width(1.0);
+        // Faint lines in the text colour: white on dark, black on light.
+        let ink = theme::colours().text;
+        let grid = Stroke::default().with_color(Color { a: 0.08, ..ink }).with_width(1.0);
         for k in 1..4 {
             let t = k as f32 / 4.0;
             frame.stroke(&Path::line(to_screen(&r, t, 0.0), to_screen(&r, t, 1.0)), grid);
@@ -210,7 +212,7 @@ impl canvas::Program<Message> for CurveEditor {
         frame.stroke(&Path::line(to_screen(&r, 0.0, 0.0), to_screen(&r, 1.0, 1.0)), grid);
         frame.stroke(
             &Path::rectangle(Point::new(r.x, r.y), r.size()),
-            Stroke::default().with_color(Color::from_rgba(1.0, 1.0, 1.0, 0.15)).with_width(1.0),
+            Stroke::default().with_color(Color { a: 0.15, ..ink }).with_width(1.0),
         );
 
         let curve_path = |c: &Curve| {

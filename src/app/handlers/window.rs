@@ -269,6 +269,15 @@ pub fn handle_toggle_info_hud(editor: &mut RawEditor) -> Task<Message> {
     Task::none()
 }
 
+/// Dark or light. Every style reads `theme::colours()`, so the next view
+/// rebuild (this message's) redraws the whole app in the new palette.
+pub fn handle_set_appearance(editor: &mut RawEditor, appearance: crate::ui::theme::Appearance) -> Task<Message> {
+    editor.appearance = appearance;
+    crate::ui::theme::set_appearance(appearance);
+    editor.save_preferences();
+    Task::none()
+}
+
 pub fn handle_toggle_reduce_motion(editor: &mut RawEditor) -> Task<Message> {
     editor.reduce_motion = !editor.reduce_motion;
     crate::ui::motion::set_reduced(editor.reduce_motion);
@@ -364,6 +373,8 @@ pub fn handle_reset_preferences(editor: &mut RawEditor) -> Task<Message> {
     editor.min_free_ram_mb = defaults.min_free_ram_mb;
     editor.reduce_motion = defaults.reduce_motion;
     crate::ui::motion::set_reduced(editor.reduce_motion);
+    editor.appearance = crate::ui::theme::Appearance::default();
+    crate::ui::theme::set_appearance(editor.appearance);
 
     editor.evict_raw_cache_to_budget();
     editor.save_preferences();

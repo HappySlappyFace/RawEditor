@@ -415,6 +415,8 @@ pub struct RawEditor {
     /// Preferences › Reduce motion: every animation jumps to its end state.
     /// Mirrored into `ui::motion::set_reduced`, which the widgets read.
     pub reduce_motion: bool,
+    /// Dark or light UI (`ui::theme::set_appearance` holds the live value).
+    pub appearance: crate::ui::theme::Appearance,
     /// Per-camera default profile (`AppSettings::camera_profile_defaults`).
     pub camera_profile_defaults: std::collections::HashMap<String, String>,
     /// `AppSettings::update_check`: `None` until the first-run prompt is answered.
@@ -824,8 +826,14 @@ impl RawEditor {
         let settings = crate::core::settings::AppSettings::load_or_default();
         // Not under test: the flag is process-global, tests build editors in
         // parallel, and this reads the developer's real settings file.
+        let appearance = settings
+            .appearance
+            .as_deref()
+            .and_then(crate::ui::theme::Appearance::from_name)
+            .unwrap_or_default();
         if !cfg!(test) {
             crate::ui::motion::set_reduced(settings.reduce_motion);
+            crate::ui::theme::set_appearance(appearance);
         }
         let cache_capacity = settings.cache_capacity.clamp(20, 500);
         let raw_preload_budget_mb = settings.raw_preload_budget_mb.min(4096);
@@ -960,6 +968,7 @@ impl RawEditor {
                 modal_exit: None,
                 modal_exit_seq: 0,
                 reduce_motion: settings.reduce_motion,
+                appearance,
                 camera_profile_defaults: settings.camera_profile_defaults.clone(),
                 update_check: settings.update_check,
                 updates: Default::default(),
@@ -1506,6 +1515,7 @@ impl RawEditor {
             copy_categories: self.copy_categories,
             min_free_ram_mb: self.min_free_ram_mb,
             reduce_motion: self.reduce_motion,
+            appearance: Some(self.appearance.name().to_string()),
             camera_profile_defaults: self.camera_profile_defaults.clone(),
             update_check: self.update_check,
             develop_folded: Some(

@@ -46,6 +46,10 @@ pub struct AppSettings {
     /// which keeps the defaults; names this version doesn't know are ignored.
     #[serde(default)]
     pub develop_folded: Option<Vec<String>>,
+    /// "dark" or "light" (`ui::theme::Appearance::name`); missing or unknown
+    /// means dark.
+    #[serde(default)]
+    pub appearance: Option<String>,
 }
 
 fn default_min_free_ram_mb() -> u32 {
@@ -70,6 +74,7 @@ impl Default for AppSettings {
             camera_profile_defaults: Default::default(),
             update_check: None,
             develop_folded: None,
+            appearance: None,
         }
     }
 }

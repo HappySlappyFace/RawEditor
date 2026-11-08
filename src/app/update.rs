@@ -362,6 +362,7 @@ fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::ToggleReduceMotion => handlers::window::handle_toggle_reduce_motion(editor),
+        Message::SetAppearance(a) => handlers::window::handle_set_appearance(editor, a),
         Message::ModalNoOp => Task::none(),
         Message::MenuItem(inner) => {
             editor.menu_generation = editor.menu_generation.wrapping_add(1);
