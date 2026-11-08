@@ -1713,6 +1713,55 @@ pub fn slider_entry_id() -> text_input::Id {
 /// Which slider a message comes from: its change message for a fixed value,
 /// e.g. `MaskAdjustmentChanged(Contrast, 0.0)`. Unique where labels are not
 /// ("Contrast", "Tint" and "Distortion" each appear twice in the sidebar).
+/// The colours a slider's rail shows, left to right, for the sliders whose
+/// effect has an obvious picture (`ui::widgets::slider`). Keyed by the change
+/// message, like `slider_key`, so one table covers the global and mask
+/// sliders alike. These are the colours of what the slider DOES, not theme
+/// colours, so they stay the same in any theme.
+fn rail_gradient(change: &Message) -> Option<&'static [Color]> {
+    use crate::app::message::MaskAdjustment as M;
+    use std::sync::LazyLock;
+    const DARK_TO_LIGHT: &[Color] = &[Color::from_rgb(0.08, 0.08, 0.08), Color::from_rgb(0.82, 0.82, 0.82)];
+    const COOL_TO_WARM: &[Color] = &[Color::from_rgb(0.27, 0.47, 0.86), Color::from_rgb(0.93, 0.78, 0.30)];
+    const GREEN_TO_MAGENTA: &[Color] = &[Color::from_rgb(0.33, 0.70, 0.36), Color::from_rgb(0.80, 0.36, 0.76)];
+    const GREY_TO_COLOUR: &[Color] = &[Color::from_rgb(0.42, 0.42, 0.42), Color::from_rgb(0.88, 0.32, 0.24)];
+    // Defringe hue sliders show the hues they select, over their own ranges.
+    static PURPLE_HUES: LazyLock<Vec<Color>> = LazyLock::new(|| hue_strip(200.0, 360.0));
+    static GREEN_HUES: LazyLock<Vec<Color>> = LazyLock::new(|| hue_strip(40.0, 180.0));
+    Some(match change {
+        Message::ExposureChanged(_) | Message::MaskAdjustmentChanged(M::Exposure, _) => DARK_TO_LIGHT,
+        Message::TemperatureChanged(_) | Message::MaskAdjustmentChanged(M::Warmth, _) => COOL_TO_WARM,
+        Message::TintChanged(_) | Message::MaskAdjustmentChanged(M::Tint, _) => GREEN_TO_MAGENTA,
+        Message::VibranceChanged(_) | Message::SaturationChanged(_) | Message::MaskAdjustmentChanged(M::Saturation, _) => {
+            GREY_TO_COLOUR
+        }
+        Message::DefringeChanged(DefringeParam::PurpleHue, _) => PURPLE_HUES.as_slice(),
+        Message::DefringeChanged(DefringeParam::GreenHue, _) => GREEN_HUES.as_slice(),
+        _ => return None,
+    })
+}
+
+/// Evenly spaced, slightly muted hues from `from`° to `to`°.
+fn hue_strip(from: f32, to: f32) -> Vec<Color> {
+    (0..=8)
+        .map(|i| {
+            let h = (from + (to - from) * i as f32 / 8.0).rem_euclid(360.0) / 60.0;
+            let x = 1.0 - (h % 2.0 - 1.0).abs();
+            let (r, g, b) = match h as u32 {
+                0 => (1.0, x, 0.0),
+                1 => (x, 1.0, 0.0),
+                2 => (0.0, 1.0, x),
+                3 => (0.0, x, 1.0),
+                4 => (x, 0.0, 1.0),
+                _ => (1.0, 0.0, x),
+            };
+            // Value 0.8, saturation 0.7: vivid, but not neon on the panel.
+            let m = |c: f32| 0.8 * (1.0 - 0.7 * (1.0 - c));
+            Color::from_rgb(m(r), m(g), m(b))
+        })
+        .collect()
+}
+
 fn slider_key(on_change: &impl Fn(f32) -> Message) -> String {
     format!("{:?}", on_change(0.0))
 }
@@ -1784,10 +1833,14 @@ fn slider_field<'a>(
     };
 
     let reset = default.map(|d| Message::SliderSet { change: Box::new(on_change(d)), commit: true });
-    let mut track = slider(range, value, on_change)
+    let gradient = rail_gradient(&on_change(0.0));
+    let mut track = ui::widgets::slider::slider(range, value, on_change)
         .step(step)
         .width(Length::Fill)
         .style(crate::ui::styles::ProSlider::style);
+    if let Some(stops) = gradient {
+        track = track.gradient(stops);
+    }
     if let Some(d) = default {
         track = track.default(d).on_release(Message::CommitEdit);
     }
