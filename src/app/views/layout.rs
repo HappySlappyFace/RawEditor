@@ -159,7 +159,7 @@ fn view_splash(editor: &RawEditor) -> Element<'_, Message> {
                 ]
                 .spacing(theme::space::S)
             )
-            .padding([12, 14])
+            .padding([theme::space::XL, theme::space::XL])
             .style(|_| container::Style {
                 background: Some(Background::Color(theme::colours().surface)),
                 border: iced::Border {
@@ -312,7 +312,7 @@ fn menu_entry<'a>(label: &'a str, checked: Option<bool>, msg: Message) -> Elemen
         .align_y(Alignment::Center),
     )
     .width(Length::Fill)
-    .padding([6, 10])
+    .padding([theme::space::S, theme::space::L])
     .style(ui::styles::WindowControlButton::style)
     .on_press(Message::MenuItem(Box::new(msg)))
     .into()
@@ -326,7 +326,7 @@ fn menu_separator<'a>() -> Element<'a, Message> {
         radius: 0.0.into(),
         fill_mode: iced::widget::rule::FillMode::Full,
     }))
-    .padding([4, 6])
+    .padding([theme::space::XS, theme::space::S])
     .into()
 }
 
@@ -344,7 +344,7 @@ fn view_title_bar(editor: &RawEditor) -> Element<'_, Message> {
         )
         .style(ui::styles::WindowControlButton::style)
         .height(Length::Fill)
-        .padding([0, 10])
+        .padding([0, theme::space::L])
         // A menu root still needs an on_press or iced treats it as disabled
         // and greys the label; ModalNoOp is the established no-op message.
         .on_press(Message::ModalNoOp)
@@ -511,7 +511,7 @@ fn view_title_bar(editor: &RawEditor) -> Element<'_, Message> {
         .align_y(iced::alignment::Vertical::Center);
 
     let controls = row![
-        container(Image::new(logo()).height(Length::Fixed(24.0)).content_fit(iced::ContentFit::Contain)).height(Length::Fill).align_y(iced::alignment::Vertical::Center).padding([8,15]),
+        container(Image::new(logo()).height(Length::Fixed(24.0)).content_fit(iced::ContentFit::Contain)).height(Length::Fill).align_y(iced::alignment::Vertical::Center).padding([theme::space::M, theme::space::XXL]),
         iced::widget::Space::with_width(Length::Fixed(5.0)),
         button(container(text(ui::icons::MINIMIZE).font(ICON_FONT).size(theme::size::LABEL)).width(Length::Fill).height(Length::Fill).align_x(iced::alignment::Horizontal::Center).align_y(iced::alignment::Vertical::Center)).on_press(Message::MinimizeWindow).style(ui::styles::WindowControlButton::style).width(Length::Fixed(45.0)).height(Length::Fill),
         button(container(text(ui::icons::MAXIMIZE).font(ICON_FONT).size(theme::size::LABEL)).width(Length::Fill).height(Length::Fill).align_x(iced::alignment::Horizontal::Center).align_y(iced::alignment::Vertical::Center)).on_press(Message::MaximizeWindow).style(ui::styles::WindowControlButton::style).width(Length::Fixed(45.0)).height(Length::Fill),
@@ -553,12 +553,12 @@ fn update_badge(editor: &RawEditor) -> Option<Element<'_, Message>> {
                 .align_y(Alignment::Center),
             )
             .on_press(Message::OpenModal(Modal::Update))
-            .padding([4, 10])
+            .padding([theme::space::XS, theme::space::L])
             .style(ui::styles::AccentButton::style),
         )
         .height(Length::Fill)
         .align_y(iced::alignment::Vertical::Center)
-        .padding([0, 10])
+        .padding([0, theme::space::L])
         .into(),
     )
 }

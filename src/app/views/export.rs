@@ -23,7 +23,7 @@ pub fn view_export(editor: &RawEditor) -> Element<'_, Message> {
     let settings_panel = container(scrollable(settings_panel(editor)))
         .width(Length::Fixed(320.0))
         .height(Length::Fill)
-        .padding(14)
+        .padding(theme::space::XL)
         .style(|_| container::Style {
             background: Some(Background::Color(theme::colours().bg)),
             border: Border {
@@ -101,7 +101,7 @@ pub fn settings_panel(editor: &RawEditor) -> Element<'_, Message> {
         iced::widget::Space::with_width(Length::Fill),
         iced::widget::pick_list(OutputSpace::ALL, Some(s.color_space), Message::SetExportColorSpace)
             .text_size(12)
-            .padding([4, 8])
+            .padding([theme::space::XS, theme::space::M])
             .width(Length::Fixed(150.0))
             .style(ui::styles::pick_list_style)
             .menu_style(ui::styles::pick_list_menu_style),
@@ -159,7 +159,7 @@ pub fn settings_panel(editor: &RawEditor) -> Element<'_, Message> {
                 .align_y(Alignment::Center)
         )
         .on_press(Message::PickExportBasePath)
-        .padding([8, 10])
+        .padding([theme::space::M, theme::space::L])
         .width(Length::Fill)
         .style(ui::styles::NeutralButton::style),
         row![
@@ -258,7 +258,7 @@ fn view_queue(editor: &RawEditor) -> Element<'_, Message> {
                     .spacing(theme::space::L)
                     .align_y(Alignment::Center),
                 )
-                .padding([5, 8]),
+                .padding([theme::space::XS, theme::space::M]),
             );
         }
     } else {
@@ -272,7 +272,7 @@ fn view_queue(editor: &RawEditor) -> Element<'_, Message> {
                                 color: Some(theme::colours().text_secondary)
                             }),
                     )
-                    .padding([5, 8]),
+                    .padding([theme::space::XS, theme::space::M]),
                 );
             }
         }
@@ -295,7 +295,7 @@ fn view_queue(editor: &RawEditor) -> Element<'_, Message> {
     let start: Element<'_, Message> = if editor.is_exporting {
         button(text("Cancel").align_x(iced::alignment::Horizontal::Center))
             .on_press(Message::CancelExport)
-            .padding(10)
+            .padding(theme::space::L)
             .width(Length::Fixed(180.0))
             .style(ui::styles::DangerButton::style)
             .into()
@@ -308,7 +308,7 @@ fn view_queue(editor: &RawEditor) -> Element<'_, Message> {
             .align_x(iced::alignment::Horizontal::Center),
         )
         .on_press_maybe((!pending_ids.is_empty()).then_some(Message::ExportConfirmed))
-        .padding(10)
+        .padding(theme::space::L)
         .width(Length::Fixed(180.0))
         .style(ui::styles::AccentButton::style)
         .into()
@@ -340,6 +340,6 @@ fn view_queue(editor: &RawEditor) -> Element<'_, Message> {
     )
     .width(Length::Fill)
     .height(Length::Fill)
-    .padding(16)
+    .padding(theme::space::XXL)
     .into()
 }

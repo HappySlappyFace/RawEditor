@@ -75,7 +75,7 @@ pub fn view_preferences_modal(editor: &RawEditor) -> Element<'_, Message> {
         PreferencesSection::Folders => folders(),
         PreferencesSection::Licenses => licenses(),
     };
-    let content = scrollable(container(page).padding([4, 18]).width(Length::Fill))
+    let content = scrollable(container(page).padding([theme::space::XS, theme::space::XXL]).width(Length::Fill))
         .id(content_scroll_id())
         .width(Length::Fill)
         .height(Length::Fill);
@@ -96,12 +96,12 @@ pub fn view_preferences_modal(editor: &RawEditor) -> Element<'_, Message> {
             // Resets every page, not just the one showing — the label says so.
             button(text("Reset All to Defaults").size(theme::size::BODY))
                 .on_press(Message::ResetPreferences)
-                .padding([8, 14])
+                .padding([theme::space::M, theme::space::XL])
                 .style(ui::styles::NeutralButton::style),
             Space::with_width(Length::Fill),
             button(text("Close").size(theme::size::BODY).align_x(iced::alignment::Horizontal::Center))
                 .on_press(Message::CloseModal)
-                .padding([8, 14])
+                .padding([theme::space::M, theme::space::XL])
                 .width(Length::Fixed(110.0))
                 .style(ui::styles::AccentButton::style),
         ]
@@ -136,7 +136,7 @@ fn menu(active: PreferencesSection) -> Element<'static, Message> {
             )
             .width(Length::Fill)
             .height(Length::Fixed(MENU_ROW))
-            .padding([0, 14])
+            .padding([0, theme::space::XL])
             .style(move |t, s| ui::styles::TabButton { is_active }.style(t, s))
             .on_press(Message::SetPreferencesSection(section)),
         )
@@ -157,7 +157,7 @@ fn menu(active: PreferencesSection) -> Element<'static, Message> {
     container(stack![highlight, rows])
         .width(Length::Fixed(MENU_WIDTH))
         .height(Length::Fill)
-        .padding([0, 8])
+        .padding([0, theme::space::M])
         .into()
 }
 
@@ -176,7 +176,7 @@ fn general(editor: &RawEditor) -> Element<'_, Message> {
                     Message::SetAppearance,
                 )
                 .text_size(theme::size::SMALL)
-                .padding([4, 8])
+                .padding([theme::space::XS, theme::space::M])
                 .width(Length::Fixed(120.0))
                 .style(ui::styles::pick_list_style)
                 .menu_style(ui::styles::pick_list_menu_style),
@@ -222,7 +222,7 @@ fn general(editor: &RawEditor) -> Element<'_, Message> {
         row![
             button(text("Check Now").size(theme::size::BODY))
                 .on_press_maybe((!editor.updates.checking).then_some(Message::CheckForUpdates))
-                .padding([6, 12])
+                .padding([theme::space::S, theme::space::XL])
                 .style(ui::styles::NeutralButton::style),
             text(format!("Version {}", crate::core::updates::current_version()))
                 .size(theme::size::SMALL)
@@ -254,7 +254,7 @@ fn update_status(editor: &RawEditor) -> Option<Element<'_, Message>> {
                 line(format!("RawEditor {} is available.", a.version), theme::colours().accent_text),
                 button(text("Open Release Page").size(theme::size::SMALL))
                     .on_press(Message::OpenUpdatePage)
-                    .padding([4, 10])
+                    .padding([theme::space::XS, theme::space::L])
                     .style(ui::styles::AccentButton::style),
             ]
             .spacing(theme::space::L)
@@ -415,7 +415,7 @@ fn camera_profiles(editor: &RawEditor) -> Element<'_, Message> {
         Some(c) if c.profiles.is_empty() => hint(
             "No camera profiles are installed yet. When a camera has none, Develop offers RawTherapee's — or import your own below.",
         ),
-        Some(c) => c.cameras().into_iter().fold(column![].spacing(14), |list, camera| {
+        Some(c) => c.cameras().into_iter().fold(column![].spacing(theme::space::XL), |list, camera| {
             let profiles: Vec<_> = c.profiles.iter().filter(|p| p.camera.eq_ignore_ascii_case(&camera)).collect();
             let mut options = vec![DefaultOption { value: None, label: "Automatic".to_string() }];
             options.extend(profiles.iter().map(|p| DefaultOption {
@@ -430,12 +430,12 @@ fn camera_profiles(editor: &RawEditor) -> Element<'_, Message> {
                 Message::SetCameraProfileDefault(key.clone(), o.value)
             })
             .text_size(12)
-            .padding([4, 8])
+            .padding([theme::space::XS, theme::space::M])
             .width(Length::Fixed(210.0))
             .style(ui::styles::pick_list_style)
             .menu_style(ui::styles::pick_list_menu_style);
 
-            let rows = profiles.iter().fold(column![].spacing(3), |rows, p| {
+            let rows = profiles.iter().fold(column![].spacing(theme::space::XS), |rows, p| {
                 let origin = match p.origin {
                     Origin::Own => "Your file",
                     Origin::Downloaded => "Downloaded",
@@ -501,14 +501,14 @@ fn camera_profiles(editor: &RawEditor) -> Element<'_, Message> {
                 .align_y(Alignment::Center),
             )
             .on_press_maybe(idle.then_some(Message::DownloadCameraProfile))
-            .padding([6, 12])
+            .padding([theme::space::S, theme::space::XL])
             .style(ui::styles::AccentButton::style),
         );
     }
     actions = actions.push(
         button(text("Update Downloaded").size(theme::size::BODY))
             .on_press_maybe(idle.then_some(Message::UpdateCameraProfiles))
-            .padding([6, 12])
+            .padding([theme::space::S, theme::space::XL])
             .style(ui::styles::NeutralButton::style),
     );
     let mut open_source = column![
@@ -528,11 +528,11 @@ fn camera_profiles(editor: &RawEditor) -> Element<'_, Message> {
             Space::with_width(Length::Fill),
             button(text("Rescan").size(theme::size::BODY))
                 .on_press_maybe(idle.then_some(Message::RescanCameraProfiles))
-                .padding([6, 12])
+                .padding([theme::space::S, theme::space::XL])
                 .style(ui::styles::NeutralButton::style),
             button(text("Import…").size(theme::size::BODY))
                 .on_press_maybe(idle.then_some(Message::ImportCameraProfiles))
-                .padding([6, 12])
+                .padding([theme::space::S, theme::space::XL])
                 .style(ui::styles::NeutralButton::style),
             button(
                 row![text(ui::icons::FOLDER_OPEN).font(ICON_FONT).size(theme::size::BODY), text("Open Folder").size(theme::size::BODY)]
@@ -540,7 +540,7 @@ fn camera_profiles(editor: &RawEditor) -> Element<'_, Message> {
                     .align_y(Alignment::Center),
             )
             .on_press(Message::OpenAppFolder(AppFolder::Profiles))
-            .padding([6, 12])
+            .padding([theme::space::S, theme::space::XL])
             .style(ui::styles::NeutralButton::style),
         ]
         .spacing(theme::space::M)
@@ -669,11 +669,11 @@ fn lens_profiles(editor: &RawEditor) -> Element<'_, Message> {
         .align_y(Alignment::Center),
     )
     .on_press_maybe(idle.then_some(Message::LensfunDownload))
-    .padding([6, 12])
+    .padding([theme::space::S, theme::space::XL])
     .style(ui::styles::AccentButton::style);
     let check = button(text("Check for Updates").size(theme::size::BODY))
         .on_press_maybe(idle.then_some(Message::LensfunCheck))
-        .padding([6, 12])
+        .padding([theme::space::S, theme::space::XL])
         .style(ui::styles::NeutralButton::style);
     let mut updates = column![
         card_title("Download & Updates"),
@@ -689,7 +689,7 @@ fn lens_profiles(editor: &RawEditor) -> Element<'_, Message> {
 
     let rescan = button(text("Rescan").size(theme::size::BODY))
         .on_press_maybe(idle.then_some(Message::LensfunRescan))
-        .padding([6, 12])
+        .padding([theme::space::S, theme::space::XL])
         .style(ui::styles::NeutralButton::style);
     let open = button(
         row![text(ui::icons::FOLDER_OPEN).font(ICON_FONT).size(theme::size::BODY), text("Open Folder").size(theme::size::BODY)]
@@ -697,7 +697,7 @@ fn lens_profiles(editor: &RawEditor) -> Element<'_, Message> {
             .align_y(Alignment::Center),
     )
     .on_press(Message::OpenAppFolder(AppFolder::Lensfun))
-    .padding([6, 12])
+    .padding([theme::space::S, theme::space::XL])
     .style(ui::styles::NeutralButton::style);
 
     column![
@@ -740,7 +740,7 @@ fn ai_models(editor: &RawEditor) -> Element<'_, Message> {
                 iced::widget::progress_bar(0.0..=1.0, progress.fraction()).height(6).width(Length::Fixed(160.0)),
                 button(text("Cancel").size(theme::size::BODY))
                     .on_press(Message::ModelDownloadCancel)
-                    .padding([6, 12])
+                    .padding([theme::space::S, theme::space::XL])
                     .style(ui::styles::NeutralButton::style),
             ]
             .spacing(theme::space::M)
@@ -748,7 +748,7 @@ fn ai_models(editor: &RawEditor) -> Element<'_, Message> {
             .into(),
             (None, true) => button(text("Remove").size(theme::size::BODY))
                 .on_press(Message::ModelRemove(id))
-                .padding([6, 12])
+                .padding([theme::space::S, theme::space::XL])
                 .style(ui::styles::NeutralButton::style)
                 .into(),
             (None, false) => button(
@@ -760,7 +760,7 @@ fn ai_models(editor: &RawEditor) -> Element<'_, Message> {
                 .align_y(Alignment::Center),
             )
             .on_press_maybe((!busy).then_some(Message::ModelDownload(id)))
-            .padding([6, 12])
+            .padding([theme::space::S, theme::space::XL])
             .style(ui::styles::AccentButton::style)
             .into(),
         };
@@ -793,7 +793,7 @@ fn ai_models(editor: &RawEditor) -> Element<'_, Message> {
                     .align_y(Alignment::Center),
             )
             .on_press(Message::OpenAppFolder(AppFolder::Models))
-            .padding([6, 12])
+            .padding([theme::space::S, theme::space::XL])
             .style(ui::styles::NeutralButton::style),
         ],
     ]
@@ -874,7 +874,7 @@ fn folder_card(
             .align_y(Alignment::Center),
     )
     .on_press_maybe(path.is_some().then_some(Message::OpenAppFolder(folder)))
-    .padding([6, 12])
+    .padding([theme::space::S, theme::space::XL])
     .style(ui::styles::NeutralButton::style);
 
     card(
@@ -1088,11 +1088,11 @@ fn credit_row(c: &'static Credit) -> Element<'static, Message> {
     match c.url {
         Some(url) => button(body)
             .width(Length::Fill)
-            .padding([6, 8])
+            .padding([theme::space::S, theme::space::M])
             .style(|t, s| ui::styles::TabButton { is_active: false }.style(t, s))
             .on_press(Message::OpenLink(url))
             .into(),
-        None => container(body).padding([6, 8]).into(),
+        None => container(body).padding([theme::space::S, theme::space::M]).into(),
     }
 }
 
@@ -1152,7 +1152,7 @@ fn labelled_slider<'a>(
 
 fn card<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
     container(content)
-        .padding(12)
+        .padding(theme::space::XL)
         .width(Length::Fill)
         .style(|_| container::Style {
             background: Some(Background::Color(theme::colours().surface_raised)),

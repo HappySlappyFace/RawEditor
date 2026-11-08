@@ -85,7 +85,7 @@ pub fn view_develop(editor: &RawEditor) -> Element<'_, Message> {
 fn with_tooltip<'a>(content: impl Into<Element<'a, Message>>, label: &'a str) -> Element<'a, Message> {
     iced::widget::tooltip(
         content,
-        container(text(label).size(theme::size::CAPTION)).padding([3, 6]).style(ui::styles::tooltip_style),
+        container(text(label).size(theme::size::CAPTION)).padding([theme::space::XS, theme::space::S]).style(ui::styles::tooltip_style),
         iced::widget::tooltip::Position::Bottom,
     )
     .gap(4)
@@ -102,7 +102,7 @@ fn sidebar_histogram(editor: &RawEditor) -> Option<Element<'_, Message>> {
     })
     .width(Length::Fill)
     .height(Length::Fixed(96.0));
-    let framed = container(histogram).padding(4).style(|_theme| container::Style {
+    let framed = container(histogram).padding(theme::space::XS).style(|_theme| container::Style {
         background: Some(Background::Color(theme::colours().surface)),
         border: Border { color: theme::colours().border, width: 1.0, radius: theme::radius::CONTROL.into() },
         ..Default::default()
@@ -118,7 +118,7 @@ fn sidebar_actions(editor: &RawEditor) -> Element<'_, Message> {
             button(text(glyph).font(ICON_FONT).size(theme::size::BODY).align_x(iced::alignment::Horizontal::Center))
                 .style(if active { ui::styles::AccentButton::style } else { ui::styles::NeutralButton::style })
                 .on_press_maybe(msg)
-                .padding([7, 0])
+                .padding([theme::space::S, 0])
                 .width(Length::Fixed(32.0)),
             label,
         )
@@ -136,7 +136,7 @@ fn sidebar_actions(editor: &RawEditor) -> Element<'_, Message> {
     )
     .style(ui::styles::AccentButton::style)
     .on_press(Message::OpenExportModal)
-    .padding([7, 0])
+    .padding([theme::space::S, 0])
     .width(Length::Fill);
     let row = row![
         icon(
@@ -153,7 +153,7 @@ fn sidebar_actions(editor: &RawEditor) -> Element<'_, Message> {
     .spacing(theme::space::XS)
     .align_y(Alignment::Center);
     container(row)
-        .padding([10, 12])
+        .padding([theme::space::L, theme::space::XL])
         .width(Length::Fill)
         .into()
 }
@@ -188,7 +188,7 @@ fn section<'a>(
         .align_y(Alignment::Center),
     )
     .style(ui::styles::ghost_button)
-    .padding([5, 4])
+    .padding([theme::space::XS, theme::space::XS])
     .width(Length::Fill)
     .on_press(Message::ToggleSection(which));
 
@@ -202,7 +202,7 @@ fn section<'a>(
         header = header.push(with_tooltip(
             button(text(ui::icons::RESET).font(ICON_FONT).size(theme::size::CAPTION))
                 .style(ui::styles::ghost_button)
-                .padding([5, 6])
+                .padding([theme::space::XS, theme::space::S])
                 .on_press(Message::ResetSection(which)),
             "Reset this section",
         ));
@@ -283,7 +283,7 @@ fn view_sidebar(editor: &RawEditor) -> iced::widget::Column<'_, Message> {
     let wb_picker = with_tooltip(
         button(text(ui::icons::EYEDROPPER).font(ICON_FONT).size(theme::size::SMALL))
             .style(if editor.is_wb_picking { ui::styles::AccentButton::style } else { ui::styles::ghost_button })
-            .padding([4, 7])
+            .padding([theme::space::XS, theme::space::S])
             .on_press(Message::ToggleWbPicker),
         "Pick white balance",
     );
@@ -391,7 +391,7 @@ fn crop_presets(editor: &RawEditor) -> Element<'_, Message> {
     )
     .style(if editor.is_cropping { ui::styles::AccentButton::style } else { ui::styles::NeutralButton::style })
     .on_press(Message::ToggleCrop)
-    .padding([4, 0])
+    .padding([theme::space::XS, 0])
     .width(Length::Fill);
     column![
         row![
@@ -411,7 +411,7 @@ fn crop_presets(editor: &RawEditor) -> Element<'_, Message> {
             button(text("Full").size(theme::size::CAPTION).align_x(iced::alignment::Horizontal::Center))
                 .style(ui::styles::NeutralButton::style)
                 .on_press(Message::SetCrop([0.0, 0.0, 1.0, 1.0]))
-                .padding([4, 0])
+                .padding([theme::space::XS, 0])
                 .width(Length::Fill),
         ]
         .spacing(theme::space::XS),
@@ -430,7 +430,7 @@ fn geometry_tools(editor: &RawEditor) -> Element<'_, Message> {
             button(text(icon).font(ICON_FONT).size(theme::size::BODY))
                 .style(ui::styles::NeutralButton::style)
                 .on_press_maybe(ready.then_some(Message::TurnImage { clockwise }))
-                .padding([4, 12]),
+                .padding([theme::space::XS, theme::space::XL]),
             label,
         )
     };
@@ -445,7 +445,7 @@ fn geometry_tools(editor: &RawEditor) -> Element<'_, Message> {
     )
     .style(if editor.is_leveling { ui::styles::AccentButton::style } else { ui::styles::NeutralButton::style })
     .on_press_maybe(ready.then_some(Message::ToggleLevelTool))
-    .padding([4, 10]);
+    .padding([theme::space::XS, theme::space::L]);
     row![
         text("Rotate")
             .width(Length::Fixed(LABEL_WIDTH))
@@ -468,7 +468,7 @@ fn geometry_tools(editor: &RawEditor) -> Element<'_, Message> {
 fn aspect_crop_button<'a>(editor: &RawEditor, label: &'a str, ratio: f32) -> Element<'a, Message> {
     button(text(label).size(theme::size::CAPTION).align_x(iced::alignment::Horizontal::Center))
         .style(ui::styles::NeutralButton::style)
-        .padding([4, 0])
+        .padding([theme::space::XS, 0])
         .width(Length::Fill)
         .on_press_maybe(editor.image_resources.as_ref().map(|res| {
             let (w, h) = res.oriented_dims(editor.current_edit_params.quarter_turns);
@@ -499,7 +499,7 @@ fn prepare_preview(editor: &RawEditor) -> (bool, Option<Element<'_, Message>>) {
                         color: Some(Color::WHITE)
                     })
                 ]]
-                .padding(8),
+                .padding(theme::space::M),
             )
             .style(|_theme| container::Style {
                 background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.5))),
@@ -649,7 +649,7 @@ fn view_main_content<'a>(
                                 .font(theme::font::BOLD)
                                 .style(|_theme| text::Style { color: Some(theme::colours().on_photo) }),
                         )
-                        .padding([4, 10])
+                        .padding([theme::space::XS, theme::space::L])
                         .style(|_theme| container::Style {
                             background: Some(Background::Color(theme::colours().accent)),
                             border: Border { radius: theme::radius::CONTROL.into(), ..Default::default() },
@@ -660,7 +660,7 @@ fn view_main_content<'a>(
                     .height(Length::Fill)
                     .align_x(iced::alignment::Horizontal::Center)
                     .align_y(iced::alignment::Vertical::Top)
-                    .padding(16)
+                    .padding(theme::space::XXL)
                     .into()
                 } else {
                     iced::widget::Space::new(Length::Shrink, Length::Shrink).into()
@@ -773,7 +773,7 @@ fn view_main_content<'a>(
             color: Some(Color::WHITE),
         }),
     )
-    .padding(5)
+    .padding(theme::space::XS)
     .style(|_| container::Style {
         background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.4))),
         border: iced::border::Border {
@@ -790,13 +790,13 @@ fn view_main_content<'a>(
             .height(Length::Fill)
             .align_x(iced::alignment::Horizontal::Left)
             .align_y(iced::alignment::Vertical::Top)
-            .padding(10),
+            .padding(theme::space::L),
         container(filename_overlay)
             .width(Length::Fill)
             .height(Length::Fill)
             .align_x(iced::alignment::Horizontal::Left)
             .align_y(iced::alignment::Vertical::Bottom)
-            .padding(10),
+            .padding(theme::space::L),
     ];
 
     use iced::mouse::ScrollDelta;
@@ -868,7 +868,7 @@ fn mask_rows<'a>(
                 ui::styles::NeutralButton::style
             })
             .on_press_maybe(msg)
-            .padding([5, 0])
+            .padding([theme::space::XS, 0])
             .width(Length::Fill)
     };
     let place = |kind: u32, active: bool| (can_add || active).then_some(Message::ToggleMaskPlacement(kind));
@@ -917,11 +917,11 @@ fn mask_rows<'a>(
                             .on_press(Message::AiSelectDone)
                             .width(Length::Fill),
                     ]
-                    .spacing(5),
+                    .spacing(theme::space::XS),
                 ]
                 .spacing(theme::space::S),
             )
-            .padding(8)
+            .padding(theme::space::M)
             .style(|_| container::Style {
                 border: Border { color: theme::colours().accent, width: 1.0, radius: 0.0.into() },
                 ..Default::default()
@@ -967,9 +967,9 @@ fn mask_rows<'a>(
                 button(text(ui::icons::TIMES).font(ICON_FONT).size(theme::size::SMALL))
                     .style(ui::styles::NeutralButton::style)
                     .on_press(Message::DeleteMask(i))
-                    .padding(6),
+                    .padding(theme::space::S),
             ]
-            .spacing(5)
+            .spacing(theme::space::XS)
             .align_y(Alignment::Center),
         );
     }
@@ -1214,7 +1214,7 @@ fn loupe_section(editor: &RawEditor) -> Element<'_, Message> {
     )
     .style(if targeting { ui::styles::AccentButton::style } else { ui::styles::NeutralButton::style })
     .on_press(Message::ToggleLoupeTarget)
-    .padding([4, 8]);
+    .padding([theme::space::XS, theme::space::M]);
 
     column![
         container(framed).center_x(Length::Fill),
@@ -1283,7 +1283,7 @@ fn camera_profile_block(editor: &RawEditor) -> Element<'_, Message> {
         text("Profile").size(theme::size::BODY).width(Length::Fixed(60.0)),
         iced::widget::pick_list(options, selected, |o: ProfileOption| Message::CameraProfileSelected(o.choice))
             .text_size(12)
-            .padding([4, 8])
+            .padding([theme::space::XS, theme::space::M])
             .width(Length::Fill)
             .style(ui::styles::pick_list_style)
             .menu_style(ui::styles::pick_list_menu_style),
@@ -1311,11 +1311,11 @@ fn missing_profile_prompt(editor: &RawEditor, camera: String) -> Element<'_, Mes
     )
     .style(ui::styles::AccentButton::style)
     .on_press_maybe((state.busy.is_none() && !unavailable).then_some(Message::DownloadCameraProfile))
-    .padding([5, 10]);
+    .padding([theme::space::XS, theme::space::L]);
     let import = button(text("Import…").size(theme::size::SMALL))
         .style(ui::styles::NeutralButton::style)
         .on_press_maybe(state.busy.is_none().then_some(Message::ImportCameraProfiles))
-        .padding([5, 10]);
+        .padding([theme::space::XS, theme::space::L]);
 
     let mut col = column![
         text("No DCP profile found").size(theme::size::BODY),
@@ -1335,7 +1335,7 @@ fn missing_profile_prompt(editor: &RawEditor, camera: String) -> Element<'_, Mes
         col = col.push(text(e.clone()).size(theme::size::CAPTION).style(move |_theme| text::Style { color: Some(warn) }));
     }
     container(col)
-        .padding(10)
+        .padding(theme::space::L)
         .width(Length::Fill)
         .style(|_theme| container::Style {
             background: Some(Background::Color(theme::colours().surface_raised)),
@@ -1360,7 +1360,7 @@ fn missing_database_prompt(editor: &RawEditor) -> Element<'_, Message> {
     )
     .style(ui::styles::AccentButton::style)
     .on_press_maybe(editor.lensfun.busy.is_none().then_some(Message::LensfunDownload))
-    .padding([5, 10]);
+    .padding([theme::space::XS, theme::space::L]);
     let mut col = column![
         hint("No lens profiles are installed.".to_string()),
         download,
@@ -1527,7 +1527,7 @@ fn tone_mapper_selector(editor: &RawEditor) -> Element<'_, Message> {
     use crate::core::tonemap::ToneMapper;
     iced::widget::pick_list(ToneMapper::ALL, Some(editor.current_edit_params.tone_mapper), Message::ToneMapperChanged)
         .text_size(theme::size::SMALL)
-        .padding([3, 8])
+        .padding([theme::space::XS, theme::space::M])
         .width(Length::Fixed(112.0))
         .style(ui::styles::pick_list_style)
         .menu_style(ui::styles::pick_list_menu_style)
@@ -1601,7 +1601,7 @@ fn tone_shape_controls(editor: &RawEditor) -> Element<'_, Message> {
 /// argument and return lifetimes to different regions and won't compile here.
 fn info_panel<'a>(body: Element<'a, Message>) -> Container<'a, Message> {
     container(body)
-        .padding(10)
+        .padding(theme::space::L)
         .style(|_| container::Style {
             background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.6))),
             border: iced::border::Border {
@@ -1803,7 +1803,7 @@ fn slider_field<'a>(
                 .on_input(Message::SliderEntryChanged)
                 .on_submit(submit)
                 .size(theme::size::SMALL)
-                .padding([1, 4])
+                .padding([1, theme::space::XS])
                 .width(Length::Fixed(VALUE_WIDTH))
                 .align_x(iced::alignment::Horizontal::Right)
                 .style(ui::styles::text_input_style)

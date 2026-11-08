@@ -166,7 +166,7 @@ fn metric_pill<'a>(label: &'a str, value: impl ToString, color: Color) -> Elemen
         .spacing(theme::space::S)
         .align_y(Alignment::Center),
     )
-    .padding([4, 8])
+    .padding([theme::space::XS, theme::space::M])
     .style(|_| container::Style {
         background: Some(Background::Color(theme::colours().surface_raised)),
         border: Border {
@@ -239,28 +239,28 @@ fn view_thumbnail_size_presets<'a>(editor: &'a RawEditor) -> Element<'a, Message
             .style(|_| text::Style { color: Some(theme::colours().text_secondary) }),
         button(text("S").size(theme::size::CAPTION))
             .on_press(Message::SetThumbnailSize(THUMB_PRESET_SMALL))
-            .padding([4, 8])
+            .padding([theme::space::XS, theme::space::M])
             .style(ui::styles::chip(is_thumb_preset_active(
                 editor.thumbnail_size,
                 THUMB_PRESET_SMALL
             ))),
         button(text("M").size(theme::size::CAPTION))
             .on_press(Message::SetThumbnailSize(THUMB_PRESET_MEDIUM))
-            .padding([4, 8])
+            .padding([theme::space::XS, theme::space::M])
             .style(ui::styles::chip(is_thumb_preset_active(
                 editor.thumbnail_size,
                 THUMB_PRESET_MEDIUM
             ))),
         button(text("L").size(theme::size::CAPTION))
             .on_press(Message::SetThumbnailSize(THUMB_PRESET_LARGE))
-            .padding([4, 8])
+            .padding([theme::space::XS, theme::space::M])
             .style(ui::styles::chip(is_thumb_preset_active(
                 editor.thumbnail_size,
                 THUMB_PRESET_LARGE
             ))),
         button(text("XL").size(theme::size::CAPTION))
             .on_press(Message::SetThumbnailSize(THUMB_PRESET_XL))
-            .padding([4, 8])
+            .padding([theme::space::XS, theme::space::M])
             .style(ui::styles::chip(is_thumb_preset_active(
                 editor.thumbnail_size,
                 THUMB_PRESET_XL
@@ -334,7 +334,7 @@ fn view_image_card<'a>(
             .spacing(theme::space::XS)
             .align_y(Alignment::Center),
         )
-        .padding([3, 7])
+        .padding([theme::space::XS, theme::space::S])
         .style(|_| container::Style {
             background: Some(Background::Color(Color::from_rgba(0.15, 0.62, 0.25, 0.95))),
             border: Border {
@@ -353,7 +353,7 @@ fn view_image_card<'a>(
             .spacing(theme::space::XS)
             .align_y(Alignment::Center),
         )
-        .padding([3, 7])
+        .padding([theme::space::XS, theme::space::S])
         .style(|_| container::Style {
             background: Some(Background::Color(Color::from_rgba(0.85, 0.20, 0.20, 0.95))),
             border: Border {
@@ -378,7 +378,7 @@ fn view_image_card<'a>(
             .spacing(theme::space::XS)
             .align_y(Alignment::Center),
         )
-        .padding([3, 7])
+        .padding([theme::space::XS, theme::space::S])
         .style(|_| container::Style {
             background: Some(Background::Color(Color::from_rgba(0.85, 0.55, 0.05, 0.95))),
             border: Border {
@@ -391,7 +391,7 @@ fn view_image_card<'a>(
     } else if has_loaded_thumb && img.rating > 0 {
         let stars = vec![ui::icons::STAR; img.rating as usize].join(" ");
         container(text(stars).font(ICON_FONT).size(theme::size::CAPTION))
-            .padding([3, 7])
+            .padding([theme::space::XS, theme::space::S])
             .style(|_| container::Style {
                 background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.65))),
                 border: Border {
@@ -424,13 +424,13 @@ fn view_image_card<'a>(
             .height(Length::Fill)
             .align_x(iced::alignment::Horizontal::Left)
             .align_y(iced::alignment::Vertical::Top)
-            .padding(8),
+            .padding(theme::space::M),
         container(top_right_badge)
             .width(Length::Fill)
             .height(Length::Fill)
             .align_x(iced::alignment::Horizontal::Right)
             .align_y(iced::alignment::Vertical::Top)
-            .padding(8),
+            .padding(theme::space::M),
     ];
 
     // Selection and hover live on the button so they *transition* (see
@@ -440,7 +440,7 @@ fn view_image_card<'a>(
         .on_press(Message::ImageSelected(img.id))
         .width(Length::Fixed(thumb_width + 14.0))
         .height(Length::Fixed(thumb_height + 14.0))
-        .padding(7)
+        .padding(theme::space::S)
         .clip(true)
         .key(img.id as u64)
         .style(move |_theme, status| card_style(is_selected, status))
@@ -514,7 +514,7 @@ fn view_filter_bar<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
     let chip = |label: Element<'a, Message>, rating: u8| {
         button(label)
             .on_press(Message::SetMinRating(rating))
-            .padding([4, 10])
+            .padding([theme::space::XS, theme::space::L])
             .style(ui::styles::chip(editor.min_filter_rating == rating))
     };
     let mut bar = row![chip(text("All").size(theme::size::SMALL).into(), 0)]
@@ -545,7 +545,7 @@ fn import_button(icon: &'static str, label: &'static str, msg: Message) -> Eleme
             .align_y(Alignment::Center),
     )
     .on_press(msg)
-    .padding([7, 10])
+    .padding([theme::space::S, theme::space::L])
     .width(Length::Fill)
     .style(ui::styles::NeutralButton::style)
     .into()
@@ -569,7 +569,7 @@ fn view_library_sidebar<'a>(
             .align_y(Alignment::Center)
         )
         .on_press(Message::SetLibraryFolderFilter(None))
-        .padding([7, 9])
+        .padding([theme::space::S, theme::space::M])
         .width(Length::Fill)
         .style(ui::styles::list_item(all_active)),
     ]
@@ -591,13 +591,13 @@ fn view_library_sidebar<'a>(
                     .align_y(Alignment::Center),
                 )
                 .on_press(Message::SetLibraryFolderFilter(Some(folder.clone())))
-                .padding([6, 8])
+                .padding([theme::space::S, theme::space::M])
                 .width(Length::Fill)
                 .style(ui::styles::list_item(is_active)),
                 // Forget this folder — catalogue only, files untouched.
                 button(text(ui::icons::TIMES).font(ICON_FONT).size(theme::size::CAPTION))
                     .on_press(Message::RemoveFolderRequested(folder.clone()))
-                    .padding([6, 8])
+                    .padding([theme::space::S, theme::space::M])
                     .style(ui::styles::ghost_button),
             ]
             .spacing(theme::space::XXS)
@@ -618,7 +618,7 @@ fn view_library_sidebar<'a>(
         .width(Length::Fill)
         .height(Length::Fill),
     )
-    .padding(10)
+    .padding(theme::space::L)
     .width(Length::Fixed(LIBRARY_SIDEBAR_WIDTH))
     .height(Length::Fill)
     .style(|_| container::Style {
@@ -643,7 +643,7 @@ fn view_library_toolbar<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
         .align_y(Alignment::Center),
     )
     .on_press(Message::OpenExportModal)
-    .padding([7, 14])
+    .padding([theme::space::S, theme::space::XL])
     .style(ui::styles::AccentButton::style);
 
     container(
@@ -661,7 +661,7 @@ fn view_library_toolbar<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
     // and the Export button needs ~37px. At 12px it got 32, and iced lays out
     // text given less than one line of height at zero width — the button
     // rendered as an empty pill.
-    .padding([8, 12])
+    .padding([theme::space::M, theme::space::XL])
     .style(|_| container::Style {
         background: Some(Background::Color(theme::colours().surface)),
         border: Border {
@@ -715,7 +715,7 @@ fn view_status_bar<'a>(
     )
     .width(Length::Fill)
     .height(Length::Fixed(LIBRARY_STATUS_HEIGHT))
-    .padding([0, 10])
+    .padding([0, theme::space::L])
     .clip(true)
     .align_y(iced::alignment::Vertical::Center)
     .style(|_| container::Style {
@@ -766,7 +766,7 @@ pub fn view_library(editor: &RawEditor) -> Element<'_, Message> {
                     )
                     .on_press(Message::ImportFolder)
                     .style(ui::styles::NeutralButton::style)
-                    .padding([10, 14]),
+                    .padding([theme::space::L, theme::space::XL]),
                 ]
                 .spacing(theme::space::XXL)
                 .align_x(Alignment::Center),

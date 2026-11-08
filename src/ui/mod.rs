@@ -1,6 +1,7 @@
 // UI module for custom widgets and renderers
 
-pub mod curve_editor; // Point curves (RGB + per channel)
+pub mod curve_editor;
+pub mod dialog; // The dialog frame, widths and action buttons // Point curves (RGB + per channel)
 pub mod filmstrip; // Phase 53: Image timeline for Develop tab
 pub mod histogram; // Phase 21: Real-time histogram
 pub mod icons; // Phase 58: Nerd Font icon constants

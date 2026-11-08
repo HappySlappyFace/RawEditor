@@ -2,12 +2,13 @@ use iced::widget::{
     checkbox, column, container, row, scrollable, stack, text, Space,
 };
 use crate::ui::widgets::button;
-use iced::{Alignment, Element, Length, Theme};
+use iced::{Element, Length, Theme};
 
 use crate::app::message::Message;
 use crate::app::state::RawEditor;
 use crate::ui;
 use crate::ui::theme;
+use crate::ui::dialog::{self, Kind};
 
 /// Wrap a modal's body in a dimmed, click-to-dismiss, screen-centred overlay
 /// that animates in and out (`ui::widgets::modal`). `key` identifies the
@@ -61,9 +62,8 @@ pub fn view_help_modal<'a>() -> Element<'a, Message> {
         .spacing(theme::space::M)
     };
 
-    column![
-        ui::text::title("Keyboard Shortcuts"),
-        iced::widget::horizontal_rule(1).style(ui::styles::rule),
+    dialog::frame(
+        "Keyboard Shortcuts",
         scrollable(column![
             text("Navigation")
                 .size(theme::size::SMALL)
@@ -135,14 +135,8 @@ pub fn view_help_modal<'a>() -> Element<'a, Message> {
         // The list outgrew a short window once View & Tools and Selection were
         // added; cap it so the Close button stays reachable.
         .height(Length::Fixed(420.0)),
-        button("Close")
-            .on_press(Message::CloseModal)
-            .padding(8)
-            .width(Length::Fill)
-            .style(ui::styles::NeutralButton::style)
-    ]
-    .spacing(theme::space::XL)
-    .width(420)
+        dialog::action("Close", Kind::Neutral).on_press(Message::CloseModal),
+    )
     .into()
 }
 
@@ -152,35 +146,17 @@ pub fn view_export_modal<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
     } else {
         editor.multi_selection.len()
     };
-    let export_btn = button(
-        text(if count == 1 { "Export 1 Image".to_string() } else { format!("Export {count} Images") })
-            .size(theme::size::BODY)
-            .width(Length::Fill)
-            .align_x(iced::alignment::Horizontal::Center),
-    )
-    .on_press(Message::ExportConfirmed)
-    .width(Length::Fill)
-    .padding(10)
-    .style(ui::styles::AccentButton::style);
+    let label = if count == 1 { "Export 1 Image".to_string() } else { format!("Export {count} Images") };
 
-    column![
-        ui::text::title("Export"),
-        iced::widget::horizontal_rule(1).style(ui::styles::rule),
+    dialog::frame(
+        "Export",
         // The same panel as the Export tab's, so the two can't drift apart.
         crate::app::views::export::settings_panel(editor),
-        iced::widget::vertical_space().height(10),
-        row![
-            button(text("Cancel").size(theme::size::BODY).width(Length::Fill).align_x(iced::alignment::Horizontal::Center))
-                .on_press(Message::CloseModal)
-                .padding(10)
-                .width(Length::Fill)
-                .style(ui::styles::NeutralButton::style),
-            export_btn
-        ]
-        .spacing(theme::space::L)
-    ]
-    .spacing(15)
-    .width(400)
+        dialog::actions([
+            dialog::action("Cancel", Kind::Neutral).on_press(Message::CloseModal).into(),
+            dialog::action(label, Kind::Primary).on_press(Message::ExportConfirmed).into(),
+        ]),
+    )
     .into()
 }
 
@@ -193,9 +169,7 @@ pub fn view_remove_folder_modal(editor: &RawEditor) -> Element<'_, Message> {
     let folder = editor.pending_remove_folder.clone().unwrap_or_default();
     let count = crate::app::handlers::library::folder_image_count(editor, &folder);
 
-    column![
-        ui::text::title("Remove Folder from Library"),
-        iced::widget::horizontal_rule(1).style(ui::styles::rule),
+    let body = column![
         text(folder.clone()).size(theme::size::SMALL).style(|_theme: &Theme| text::Style {
             color: Some(theme::colours().text_secondary)
         }),
@@ -212,23 +186,18 @@ pub fn view_remove_folder_modal(editor: &RawEditor) -> Element<'_, Message> {
             .style(|_theme: &Theme| text::Style {
                 color: Some(theme::colours().text_muted)
             }),
-        iced::widget::vertical_space().height(10),
-        row![
-            button(text("Cancel").align_x(iced::alignment::Horizontal::Center))
-                .on_press(Message::CloseModal)
-                .padding(10)
-                .width(Length::Fill)
-                .style(ui::styles::NeutralButton::style),
-            button(text("Remove from Library").align_x(iced::alignment::Horizontal::Center))
-                .on_press(Message::RemoveFolderConfirmed)
-                .padding(10)
-                .width(Length::Fill)
-                .style(ui::styles::AccentButton::style),
-        ]
-        .spacing(theme::space::L)
     ]
-    .spacing(theme::space::XL)
-    .width(460)
+    .spacing(theme::space::XL);
+
+    dialog::frame(
+        "Remove Folder from Library",
+        body,
+        dialog::actions([
+            dialog::action("Cancel", Kind::Neutral).on_press(Message::CloseModal).into(),
+            dialog::action("Remove from Library", Kind::Primary).on_press(Message::RemoveFolderConfirmed).into(),
+        ]),
+    )
+    .width(dialog::WIDE)
     .into()
 }
 
@@ -240,9 +209,7 @@ pub fn view_about_modal<'a>() -> Element<'a, Message> {
         })
     };
 
-    column![
-        ui::text::title("RawEditor"),
-        iced::widget::horizontal_rule(1).style(ui::styles::rule),
+    let body = column![
         line(format!("Version {}", env!("CARGO_PKG_VERSION"))),
         line("A native RAW photo editor written in Rust.".to_string()),
         line(format!("By {}", env!("CARGO_PKG_AUTHORS"))),
@@ -252,23 +219,17 @@ pub fn view_about_modal<'a>() -> Element<'a, Message> {
             .style(|_theme: &Theme| text::Style {
                 color: Some(theme::colours().text_muted)
             }),
-        iced::widget::vertical_space().height(10),
-        row![
-            button(text("Open Repository").align_x(iced::alignment::Horizontal::Center))
-                .on_press(Message::OpenRepository)
-                .padding(10)
-                .width(Length::Fill)
-                .style(ui::styles::NeutralButton::style),
-            button(text("Close").align_x(iced::alignment::Horizontal::Center))
-                .on_press(Message::CloseModal)
-                .padding(10)
-                .width(Length::Fill)
-                .style(ui::styles::AccentButton::style),
-        ]
-        .spacing(theme::space::L)
     ]
-    .spacing(theme::space::L)
-    .width(380)
+    .spacing(theme::space::L);
+
+    dialog::frame(
+        "RawEditor",
+        body,
+        dialog::actions([
+            dialog::action("Open Repository", Kind::Neutral).on_press(Message::OpenRepository).into(),
+            dialog::action("Close", Kind::Primary).on_press(Message::CloseModal).into(),
+        ]),
+    )
     .into()
 }
 
@@ -357,9 +318,7 @@ pub fn view_copy_settings_modal(editor: &RawEditor) -> Element<'_, Message> {
 
     let nothing_selected = cats.is_empty();
 
-    column![
-        ui::text::title("Copy Settings"),
-        iced::widget::horizontal_rule(1).style(ui::styles::rule),
+    let body = column![
         text("Only the ticked groups are pasted. Everything else on the target image is left alone.")
             .size(theme::size::CAPTION)
             .style(|_theme: &Theme| text::Style {
@@ -368,14 +327,14 @@ pub fn view_copy_settings_modal(editor: &RawEditor) -> Element<'_, Message> {
         list,
         mask_caution,
         row![
-            button(text("All").align_x(iced::alignment::Horizontal::Center))
+            button(text("All").size(theme::size::BODY).align_x(iced::alignment::Horizontal::Center))
                 .on_press(Message::SetAllCopyCategories(true))
-                .padding(6)
+                .padding([theme::space::S, theme::space::XL])
                 .width(Length::Fixed(70.0))
                 .style(ui::styles::NeutralButton::style),
-            button(text("None").align_x(iced::alignment::Horizontal::Center))
+            button(text("None").size(theme::size::BODY).align_x(iced::alignment::Horizontal::Center))
                 .on_press(Message::SetAllCopyCategories(false))
-                .padding(6)
+                .padding([theme::space::S, theme::space::XL])
                 .width(Length::Fixed(70.0))
                 .style(ui::styles::NeutralButton::style),
         ]
@@ -385,24 +344,20 @@ pub fn view_copy_settings_modal(editor: &RawEditor) -> Element<'_, Message> {
             .style(|_theme: &Theme| text::Style {
                 color: Some(theme::colours().text_muted)
             }),
-        iced::widget::vertical_space().height(10),
-        row![
-            button(text("Cancel").align_x(iced::alignment::Horizontal::Center))
-                .on_press(Message::CloseModal)
-                .padding(10)
-                .width(Length::Fill)
-                .style(ui::styles::NeutralButton::style),
-            button(text("Copy").align_x(iced::alignment::Horizontal::Center))
-                // Greyed out rather than allowing a copy that could paste nothing.
-                .on_press_maybe((!nothing_selected).then_some(Message::CopySettingsConfirmed))
-                .padding(10)
-                .width(Length::Fill)
-                .style(ui::styles::AccentButton::style),
-        ]
-        .spacing(theme::space::L)
     ]
-    .spacing(theme::space::XL)
-    .width(420)
+    .spacing(theme::space::XL);
+
+    dialog::frame(
+        "Copy Settings",
+        body,
+        dialog::actions([
+            dialog::action("Cancel", Kind::Neutral).on_press(Message::CloseModal).into(),
+            // Greyed out rather than allowing a copy that could paste nothing.
+            dialog::action("Copy", Kind::Primary)
+                .on_press_maybe((!nothing_selected).then_some(Message::CopySettingsConfirmed))
+                .into(),
+        ]),
+    )
     .into()
 }
 
@@ -420,9 +375,7 @@ pub fn view_delete_modal<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
         format!("{} images will be removed.", count)
     };
 
-    column![
-        ui::text::title("Delete Image"),
-        iced::widget::horizontal_rule(1).style(ui::styles::rule),
+    let body = column![
         text(body).size(theme::size::BODY).style(|_theme: &Theme| text::Style {
             color: Some(theme::colours().text_secondary)
         }),
@@ -431,28 +384,19 @@ pub fn view_delete_modal<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
             .style(|_theme: &Theme| text::Style {
                 color: Some(theme::colours().text_muted)
             }),
-        iced::widget::vertical_space().height(10),
-        row![
-            button(text("Cancel").align_x(iced::alignment::Horizontal::Center))
-                .on_press(Message::CloseModal)
-                .padding(10)
-                .width(Length::Fill)
-                .style(ui::styles::NeutralButton::style),
-            button(text("Mark for Removal").align_x(iced::alignment::Horizontal::Center))
-                .on_press(Message::MarkForRemovalConfirmed)
-                .padding(10)
-                .width(Length::Fill)
-                .style(ui::styles::AccentButton::style),
-            button(text("Delete from Disk").align_x(iced::alignment::Horizontal::Center))
-                .on_press(Message::DeleteFromDiskConfirmed)
-                .padding(10)
-                .width(Length::Fill)
-                .style(ui::styles::DangerButton::style),
-        ]
-        .spacing(theme::space::L)
     ]
-    .spacing(15)
-    .width(440)
+    .spacing(theme::space::XL);
+
+    dialog::frame(
+        "Delete Image",
+        body,
+        dialog::actions([
+            dialog::action("Cancel", Kind::Neutral).on_press(Message::CloseModal).into(),
+            dialog::action("Mark for Removal", Kind::Primary).on_press(Message::MarkForRemovalConfirmed).into(),
+            dialog::action("Delete from Disk", Kind::Danger).on_press(Message::DeleteFromDiskConfirmed).into(),
+        ]),
+    )
+    .width(dialog::WIDE)
     .into()
 }
 
@@ -471,35 +415,22 @@ pub fn view_ai_model_modal(editor: &RawEditor) -> Element<'_, Message> {
     let model = id.model();
     let job = editor.models.job.as_ref().filter(|(j, _)| *j == id);
     let actions: Element<'_, Message> = match job {
-        Some((_, progress)) => column![
-            iced::widget::progress_bar(0.0..=1.0, progress.fraction()).height(6),
-            row![
-                ui::text::tinted(format!(
-                        "Downloading… {} of {}",
-                        megabytes((progress.fraction() as f64 * model.total_bytes() as f64) as u64),
-                        megabytes(model.total_bytes())
-                    ), 12, theme::colours().text_muted),
-                iced::widget::horizontal_space(),
-                button(text("Cancel")).on_press(Message::ModelDownloadCancel).padding([6, 12])
-                    .style(ui::styles::NeutralButton::style),
-            ]
-            .align_y(Alignment::Center),
-        ]
-        .spacing(theme::space::L)
+        Some((_, progress)) => dialog::progress(
+            progress.fraction(),
+            format!(
+                "Downloading… {} of {}",
+                megabytes((progress.fraction() as f64 * model.total_bytes() as f64) as u64),
+                megabytes(model.total_bytes())
+            ),
+            dialog::inline_action("Cancel").on_press(Message::ModelDownloadCancel),
+        )
         .into(),
-        None => row![
-            button(text("Not Now").align_x(iced::alignment::Horizontal::Center))
-                .on_press(Message::CloseModal)
-                .padding(10)
-                .width(Length::Fill)
-                .style(ui::styles::NeutralButton::style),
-            button(text(format!("Download {}", megabytes(model.total_bytes()))).align_x(iced::alignment::Horizontal::Center))
+        None => dialog::actions([
+            dialog::action("Not Now", Kind::Neutral).on_press(Message::CloseModal).into(),
+            dialog::action(format!("Download {}", megabytes(model.total_bytes())), Kind::Primary)
                 .on_press(Message::ModelDownload(id))
-                .padding(10)
-                .width(Length::Fill)
-                .style(ui::styles::AccentButton::style),
-        ]
-        .spacing(theme::space::L)
+                .into(),
+        ])
         .into(),
     };
     let error = editor
@@ -509,21 +440,19 @@ pub fn view_ai_model_modal(editor: &RawEditor) -> Element<'_, Message> {
         .filter(|(e, _)| *e == id)
         .map(|(_, e)| text(e.clone()).size(theme::size::SMALL).style(|_theme: &Theme| text::Style { color: Some(theme::colours().error) }));
 
-    column![
-        ui::text::title(format!("{} needs a model", model.purpose)),
-        iced::widget::horizontal_rule(1).style(ui::styles::rule),
-        ui::text::tinted(format!("{} — {}", model.title, megabytes(model.total_bytes())), 13, theme::colours().text_secondary),
-        ui::text::tinted(format!("Licence: {}. Source: {}", model.licence, model.upstream), 11, theme::colours().text_muted),
+    let body = column![
+        ui::text::tinted(format!("{} — {}", model.title, megabytes(model.total_bytes())), theme::size::BODY, theme::colours().text_secondary),
+        ui::text::tinted(format!("Licence: {}. Source: {}", model.licence, model.upstream), theme::size::CAPTION, theme::colours().text_muted),
         ui::text::tinted("Downloaded once from this app's GitHub release and checked against a published checksum. \
              It runs on your computer — nothing is uploaded — and only while you use the feature."
-                .to_string(), 11, theme::colours().text_muted),
+                .to_string(), theme::size::CAPTION, theme::colours().text_muted),
     ]
     .push_maybe(error)
-    .push(iced::widget::vertical_space().height(6))
-    .push(actions)
-    .spacing(theme::space::XL)
-    .width(460)
-    .into()
+    .spacing(theme::space::XL);
+
+    dialog::frame(format!("{} needs a model", model.purpose), body, actions)
+        .width(dialog::WIDE)
+        .into()
 }
 
 pub fn view_ai_denoise_modal(editor: &RawEditor) -> Element<'_, Message> {
@@ -536,9 +465,7 @@ pub fn view_ai_denoise_modal(editor: &RawEditor) -> Element<'_, Message> {
 /// First run: may RawEditor check for updates at startup? Until this is
 /// answered the app makes no request (`handlers::updates`).
 pub fn view_update_prompt_modal(editor: &RawEditor) -> Element<'_, Message> {
-    column![
-        ui::text::title("Updates"),
-        iced::widget::horizontal_rule(1).style(ui::styles::rule),
+    let body = column![
         checkbox("Check for updates at startup", editor.updates.prompt_choice)
             .on_toggle(Message::UpdatePromptToggled)
             .size(16)
@@ -546,17 +473,16 @@ pub fn view_update_prompt_modal(editor: &RawEditor) -> Element<'_, Message> {
             .text_size(13)
             .style(ui::styles::checkbox_style),
         ui::text::tinted("Each time it starts, RawEditor asks GitHub whether a newer version has been released. \
-             Nothing is downloaded or installed: you choose whether to get it.", 12, theme::colours().text_muted),
-        ui::text::tinted("You can change this any time in Preferences › General.", 11, theme::colours().text_muted),
-        iced::widget::vertical_space().height(6),
-        button(text("Continue").align_x(iced::alignment::Horizontal::Center))
-            .on_press(Message::UpdatePromptConfirmed)
-            .padding(10)
-            .width(Length::Fill)
-            .style(ui::styles::AccentButton::style),
+             Nothing is downloaded or installed: you choose whether to get it.", theme::size::SMALL, theme::colours().text_muted),
+        ui::text::tinted("You can change this any time in Preferences › General.", theme::size::CAPTION, theme::colours().text_muted),
     ]
-    .spacing(theme::space::XL)
-    .width(420)
+    .spacing(theme::space::XL);
+
+    dialog::frame(
+        "Updates",
+        body,
+        dialog::action("Continue", Kind::Primary).on_press(Message::UpdatePromptConfirmed),
+    )
     .into()
 }
 
@@ -564,54 +490,40 @@ pub fn view_update_prompt_modal(editor: &RawEditor) -> Element<'_, Message> {
 pub fn view_update_modal(editor: &RawEditor) -> Element<'_, Message> {
     let st = &editor.updates;
     let current = crate::core::updates::current_version();
-    let close = |label: &str| {
-        button(text(label.to_string()).align_x(iced::alignment::Horizontal::Center))
-            .on_press(Message::CloseModal)
-            .padding(10)
-            .width(Length::Fill)
-            .style(ui::styles::NeutralButton::style)
-    };
+    let close = |label: &str| dialog::action(label.to_string(), Kind::Neutral).on_press(Message::CloseModal);
 
     let (title, body, actions): (&str, Element<'_, Message>, Element<'_, Message>) = if st.checking {
-        ("Checking for Updates", ui::text::tinted("Asking GitHub for the newest release…", 13, theme::colours().text_secondary).into(), close("Close").into())
+        ("Checking for Updates", ui::text::tinted("Asking GitHub for the newest release…", theme::size::BODY, theme::colours().text_secondary).into(), close("Close").into())
     } else if let Some(a) = &st.available {
         let date = a.published.get(..10).map(|d| format!(", released {d}")).unwrap_or_default();
         (
             "Update Available",
             column![
-                ui::text::tinted(format!("RawEditor {}{date}.", a.version), 14, theme::colours().text),
-                ui::text::tinted(format!("You have {current}."), 12, theme::colours().text_muted),
-                ui::text::tinted("The release page has what's new and a download for this computer.", 12, theme::colours().text_muted),
+                ui::text::tinted(format!("RawEditor {}{date}.", a.version), theme::size::LABEL, theme::colours().text),
+                ui::text::tinted(format!("You have {current}."), theme::size::SMALL, theme::colours().text_muted),
+                ui::text::tinted("The release page has what's new and a download for this computer.", theme::size::SMALL, theme::colours().text_muted),
             ]
             .spacing(theme::space::S)
             .into(),
-            row![
-                close("Not Now"),
-                button(text("Open Release Page").align_x(iced::alignment::Horizontal::Center))
-                    .on_press(Message::OpenUpdatePage)
-                    .padding(10)
-                    .width(Length::Fill)
-                    .style(ui::styles::AccentButton::style),
-            ]
-            .spacing(theme::space::L)
+            dialog::actions([
+                close("Not Now").into(),
+                dialog::action("Open Release Page", Kind::Primary).on_press(Message::OpenUpdatePage).into(),
+            ])
             .into(),
         )
     } else if let Some(Err(e)) = &st.shown {
         (
             "Couldn't Check for Updates",
-            column![ui::text::tinted(e.clone(), 13, theme::colours().text_secondary), ui::text::tinted(format!("You have {current}."), 12, theme::colours().text_muted)].spacing(theme::space::S).into(),
+            column![ui::text::tinted(e.clone(), theme::size::BODY, theme::colours().text_secondary), ui::text::tinted(format!("You have {current}."), theme::size::SMALL, theme::colours().text_muted)].spacing(theme::space::S).into(),
             close("Close").into(),
         )
     } else {
         (
             "You're Up to Date",
-            ui::text::tinted(format!("RawEditor {current} is the newest release."), 13, theme::colours().text_secondary).into(),
+            ui::text::tinted(format!("RawEditor {current} is the newest release."), theme::size::BODY, theme::colours().text_secondary).into(),
             close("Close").into(),
         )
     };
 
-    column![ui::text::title(title), iced::widget::horizontal_rule(1).style(ui::styles::rule), body, iced::widget::vertical_space().height(6), actions]
-        .spacing(theme::space::XL)
-        .width(420)
-        .into()
+    dialog::frame(title, body, actions).into()
 }
