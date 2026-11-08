@@ -4,11 +4,12 @@ use iced::widget::{
     text_input,
 };
 use crate::ui::widgets::button;
-use iced::{Alignment, Background, Border, Color, Element, Length, Theme};
+use iced::{Alignment, Color, Element, Length, Theme};
 
 use crate::app::message::Message;
 use crate::app::state::RawEditor;
 use crate::ui;
+use crate::ui::theme;
 
 /// Wrap a modal's body in a dimmed, click-to-dismiss, screen-centred overlay
 /// that animates in and out (`ui::widgets::modal`). `key` identifies the
@@ -54,66 +55,66 @@ pub fn view_help_modal<'a>() -> Element<'a, Message> {
                     ..Default::default()
                 })
                 .width(Length::Fixed(140.0))
-                .size(13)
+                .size(theme::size::BODY)
                 .style(|_| text::Style {
-                    color: Some(Color::from_rgb(0.7, 0.7, 0.7))
+                    color: Some(theme::colours().text_secondary)
                 }),
-            text(desc.to_string()).size(13).style(|_| text::Style {
-                color: Some(Color::from_rgb(0.5, 0.5, 0.5))
+            text(desc.to_string()).size(theme::size::BODY).style(|_| text::Style {
+                color: Some(theme::colours().text_muted)
             })
         ]
-        .spacing(8)
+        .spacing(theme::space::M)
     };
 
     column![
         text("Keyboard Shortcuts")
-            .size(18)
+            .size(theme::size::TITLE)
             .font(Font {
                 weight: Weight::Bold,
                 ..Default::default()
             })
             .style(|_| text::Style {
-                color: Some(Color::from_rgb(0.85, 0.85, 0.85))
+                color: Some(theme::colours().text)
             }),
         iced::widget::horizontal_rule(1.0).style(|_| iced::widget::rule::Style {
-            color: Color::from_rgb(0.3, 0.3, 0.3),
+            color: theme::colours().border_strong,
             width: 1,
             radius: 0.0.into(),
             fill_mode: iced::widget::rule::FillMode::Full
         }),
         scrollable(column![
             text("Navigation")
-                .size(12)
+                .size(theme::size::SMALL)
                 .font(Font {
                     weight: Weight::Bold,
                     ..Default::default()
                 })
                 .style(|_| text::Style {
-                    color: Some(Color::from_rgb(0.5, 0.5, 0.5))
+                    color: Some(theme::colours().text_muted)
                 }),
             shortcut("Arrow Keys", "Previous / Next Image"),
             shortcut("Space (hold)", "Compare with the original — Develop only"),
             shortcut("Esc", "Close dialog, or cancel the active tool"),
             text("Selection")
-                .size(12)
+                .size(theme::size::SMALL)
                 .font(Font {
                     weight: Weight::Bold,
                     ..Default::default()
                 })
                 .style(|_| text::Style {
-                    color: Some(Color::from_rgb(0.5, 0.5, 0.5))
+                    color: Some(theme::colours().text_muted)
                 }),
             shortcut("Ctrl + Click", "Add / remove one image"),
             shortcut("Shift + Click", "Select a range"),
             shortcut("Ctrl + A", "Select everything visible"),
             text("Rating & Culling")
-                .size(12)
+                .size(theme::size::SMALL)
                 .font(Font {
                     weight: Weight::Bold,
                     ..Default::default()
                 })
                 .style(|_| text::Style {
-                    color: Some(Color::from_rgb(0.5, 0.5, 0.5))
+                    color: Some(theme::colours().text_muted)
                 }),
             shortcut("0 - 5", "Star Rating"),
             shortcut("P", "Pick"),
@@ -123,13 +124,13 @@ pub fn view_help_modal<'a>() -> Element<'a, Message> {
             shortcut("D", "Mark for Removal (in Delete dialog)"),
             shortcut("Enter", "Confirm the open dialog"),
             text("Editing")
-                .size(12)
+                .size(theme::size::SMALL)
                 .font(Font {
                     weight: Weight::Bold,
                     ..Default::default()
                 })
                 .style(|_| text::Style {
-                    color: Some(Color::from_rgb(0.5, 0.5, 0.5))
+                    color: Some(theme::colours().text_muted)
                 }),
             shortcut("R", "Reset Edits"),
             shortcut("Ctrl + Z", "Undo"),
@@ -139,13 +140,13 @@ pub fn view_help_modal<'a>() -> Element<'a, Message> {
             shortcut("Ctrl + Shift + C", "Copy All Settings"),
             shortcut("Ctrl + V", "Paste Settings"),
             text("View & Tools")
-                .size(12)
+                .size(theme::size::SMALL)
                 .font(Font {
                     weight: Weight::Bold,
                     ..Default::default()
                 })
                 .style(|_| text::Style {
-                    color: Some(Color::from_rgb(0.5, 0.5, 0.5))
+                    color: Some(theme::colours().text_muted)
                 }),
             shortcut("C", "Crop mode — Develop only"),
             shortcut("W", "White balance eyedropper — Develop only"),
@@ -153,20 +154,20 @@ pub fn view_help_modal<'a>() -> Element<'a, Message> {
             shortcut("F3", "Performance HUD"),
             shortcut("F1 / ?", "This dialog"),
             text("Mouse")
-                .size(12)
+                .size(theme::size::SMALL)
                 .font(Font {
                     weight: Weight::Bold,
                     ..Default::default()
                 })
                 .style(|_| text::Style {
-                    color: Some(Color::from_rgb(0.5, 0.5, 0.5))
+                    color: Some(theme::colours().text_muted)
                 }),
             shortcut("Double Click", "Reset zoom and pan"),
             shortcut("Click slider value", "Type a number — Enter applies, Esc cancels"),
             shortcut("Dbl click slider", "Reset it (or Ctrl + click)"),
             shortcut("Scroll", "Zoom in Develop, scroll elsewhere"),
         ]
-        .spacing(6))
+        .spacing(theme::space::S))
         // The list outgrew a short window once View & Tools and Selection were
         // added; cap it so the Close button stays reachable.
         .height(Length::Fixed(420.0)),
@@ -176,7 +177,7 @@ pub fn view_help_modal<'a>() -> Element<'a, Message> {
             .width(Length::Fill)
             .style(ui::styles::NeutralButton::style)
     ]
-    .spacing(12)
+    .spacing(theme::space::XL)
     .width(420)
     .into()
 }
@@ -186,13 +187,13 @@ pub fn view_export_modal<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
 
     let format_section = column![
         text("File Format")
-            .size(12)
+            .size(theme::size::SMALL)
             .font(Font {
                 weight: Weight::Bold,
                 ..Default::default()
             })
             .style(|_theme: &Theme| text::Style {
-                color: Some(Color::from_rgb(0.5, 0.5, 0.5))
+                color: Some(theme::colours().text_muted)
             }),
         row![
             radio(
@@ -201,7 +202,7 @@ pub fn view_export_modal<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
                 Some(settings.format),
                 Message::SetExportFormat
             )
-            .size(14)
+            .size(theme::size::LABEL)
             .spacing(5)
             .text_size(13)
             .style(ui::styles::radio_style),
@@ -211,7 +212,7 @@ pub fn view_export_modal<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
                 Some(settings.format),
                 Message::SetExportFormat
             )
-            .size(14)
+            .size(theme::size::LABEL)
             .spacing(5)
             .text_size(13)
             .style(ui::styles::radio_style),
@@ -221,7 +222,7 @@ pub fn view_export_modal<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
                 Some(settings.format),
                 Message::SetExportFormat
             )
-            .size(14)
+            .size(theme::size::LABEL)
             .spacing(5)
             .text_size(13)
             .style(ui::styles::radio_style),
@@ -232,21 +233,21 @@ pub fn view_export_modal<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
                 column![
                     row![
                         text("Quality:")
-                            .size(13)
+                            .size(theme::size::BODY)
                             .style(|_theme: &Theme| text::Style {
-                                color: Some(Color::from_rgb(0.7, 0.7, 0.7))
+                                color: Some(theme::colours().text_secondary)
                             }),
                         text(format!("{}", settings.quality))
-                            .size(13)
+                            .size(theme::size::BODY)
                             .font(Font {
                                 weight: Weight::Bold,
                                 ..Default::default()
                             })
                             .style(|_theme: &Theme| text::Style {
-                                color: Some(Color::from_rgb(0.85, 0.85, 0.85))
+                                color: Some(theme::colours().text)
                             }),
                     ]
-                    .spacing(8)
+                    .spacing(theme::space::M)
                     .align_y(Alignment::Center),
                     slider(10..=100, settings.quality, Message::SetExportQuality).step(1),
                 ]
@@ -256,17 +257,17 @@ pub fn view_export_modal<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
             column![].into()
         }
     ]
-    .spacing(10);
+    .spacing(theme::space::L);
 
     let dimensions_section = column![
         text("Dimensions")
-            .size(12)
+            .size(theme::size::SMALL)
             .font(Font {
                 weight: Weight::Bold,
                 ..Default::default()
             })
             .style(|_theme: &Theme| text::Style {
-                color: Some(Color::from_rgb(0.5, 0.5, 0.5))
+                color: Some(theme::colours().text_muted)
             }),
         checkbox("Resize Long Edge", settings.resize)
             .on_toggle(Message::ToggleExportResize)
@@ -277,9 +278,9 @@ pub fn view_export_modal<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
             Element::from(
                 row![
                     text("Max Width (px):")
-                        .size(13)
+                        .size(theme::size::BODY)
                         .style(|_theme: &Theme| text::Style {
-                            color: Some(Color::from_rgb(0.7, 0.7, 0.7))
+                            color: Some(theme::colours().text_secondary)
                         }),
                     text_input("2048", &settings.max_width.to_string())
                         .on_input(|s| s
@@ -291,30 +292,30 @@ pub fn view_export_modal<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
                         .padding(5)
                         .style(ui::styles::text_input_style)
                 ]
-                .spacing(10)
+                .spacing(theme::space::L)
                 .align_y(Alignment::Center),
             )
         } else {
             row![].into()
         }
     ]
-    .spacing(10);
+    .spacing(theme::space::L);
 
     let destination_section = column![
         text("Destination")
-            .size(12)
+            .size(theme::size::SMALL)
             .font(Font {
                 weight: Weight::Bold,
                 ..Default::default()
             })
             .style(|_theme: &Theme| text::Style {
-                color: Some(Color::from_rgb(0.5, 0.5, 0.5))
+                color: Some(theme::colours().text_muted)
             }),
         row![
             text("Base Folder:")
-                .size(13)
+                .size(theme::size::BODY)
                 .style(|_theme: &Theme| text::Style {
-                    color: Some(Color::from_rgb(0.7, 0.7, 0.7))
+                    color: Some(theme::colours().text_secondary)
                 }),
             button(
                 row![
@@ -325,8 +326,8 @@ pub fn view_export_modal<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
                             .unwrap_or_default()
                             .to_string_lossy()
                     )
-                    .size(13),
-                    text("...").size(13)
+                    .size(theme::size::BODY),
+                    text("...").size(theme::size::BODY)
                 ]
                 .spacing(5)
                 .align_y(Alignment::Center)
@@ -335,32 +336,32 @@ pub fn view_export_modal<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
             .padding(5)
             .style(ui::styles::button_style),
         ]
-        .spacing(10)
+        .spacing(theme::space::L)
         .align_y(Alignment::Center),
         row![
             text("Subfolder:")
-                .size(13)
+                .size(theme::size::BODY)
                 .style(|_theme: &Theme| text::Style {
-                    color: Some(Color::from_rgb(0.7, 0.7, 0.7))
+                    color: Some(theme::colours().text_secondary)
                 }),
             text_input("Export", &settings.subfolder)
                 .on_input(Message::SetExportSubfolder)
                 .padding(5)
                 .style(ui::styles::text_input_style)
         ]
-        .spacing(10)
+        .spacing(theme::space::L)
         .align_y(Alignment::Center),
         text(format!(
             "Full Path: {}/{}",
             settings.base_path.display(),
             settings.subfolder
         ))
-        .size(11)
+        .size(theme::size::CAPTION)
         .style(|_theme: &Theme| text::Style {
-            color: Some(Color::from_rgb(0.5, 0.5, 0.5))
+            color: Some(theme::colours().text_muted)
         })
     ]
-    .spacing(10);
+    .spacing(theme::space::L);
 
     let count = if editor.multi_selection.is_empty() {
         1
@@ -373,28 +374,20 @@ pub fn view_export_modal<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
     .on_press(Message::ExportConfirmed)
     .width(Length::Fill)
     .padding(10)
-    .style(|theme, status| button::Style {
-        background: Some(Background::Color(Color::from_rgb(0.2, 0.6, 0.3))),
-        text_color: Color::WHITE,
-        border: Border {
-            radius: 4.0.into(),
-            ..Default::default()
-        },
-        ..button::primary(theme, status)
-    });
+    .style(ui::styles::AccentButton::style);
 
     column![
         text("Export Studio")
-            .size(18)
+            .size(theme::size::TITLE)
             .font(Font {
                 weight: Weight::Bold,
                 ..Default::default()
             })
             .style(|_| text::Style {
-                color: Some(Color::from_rgb(0.85, 0.85, 0.85))
+                color: Some(theme::colours().text)
             }),
         iced::widget::horizontal_rule(1.0).style(|_| iced::widget::rule::Style {
-            color: Color::from_rgb(0.3, 0.3, 0.3),
+            color: theme::colours().border_strong,
             width: 1,
             radius: 0.0.into(),
             fill_mode: iced::widget::rule::FillMode::Full
@@ -411,7 +404,7 @@ pub fn view_export_modal<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
                 .style(ui::styles::NeutralButton::style),
             export_btn
         ]
-        .spacing(10)
+        .spacing(theme::space::L)
     ]
     .spacing(15)
     .width(400)
@@ -428,33 +421,33 @@ pub fn view_remove_folder_modal(editor: &RawEditor) -> Element<'_, Message> {
     let count = crate::app::handlers::library::folder_image_count(editor, &folder);
 
     column![
-        text("Remove Folder from Library").size(18).font(Font {
+        text("Remove Folder from Library").size(theme::size::TITLE).font(Font {
             weight: Weight::Bold,
             ..Default::default()
         }).style(|_| text::Style {
-            color: Some(Color::from_rgb(0.85, 0.85, 0.85))
+            color: Some(theme::colours().text)
         }),
         iced::widget::horizontal_rule(1.0).style(|_| iced::widget::rule::Style {
-            color: Color::from_rgb(0.3, 0.3, 0.3),
+            color: theme::colours().border_strong,
             width: 1,
             radius: 0.0.into(),
             fill_mode: iced::widget::rule::FillMode::Full
         }),
-        text(folder.clone()).size(12).style(|_theme: &Theme| text::Style {
-            color: Some(Color::from_rgb(0.7, 0.7, 0.7))
+        text(folder.clone()).size(theme::size::SMALL).style(|_theme: &Theme| text::Style {
+            color: Some(theme::colours().text_secondary)
         }),
         text(format!(
             "{count} image{} will be removed from the catalogue, along with any edits made to them.",
             if count == 1 { "" } else { "s" }
         ))
-        .size(13)
+        .size(theme::size::BODY)
         .style(|_theme: &Theme| text::Style {
-            color: Some(Color::from_rgb(0.75, 0.75, 0.75))
+            color: Some(theme::colours().text_secondary)
         }),
         text("Your RAW files are NOT deleted — they stay exactly where they are on disk, and the folder can be imported again at any time. Only cached previews are cleared.")
-            .size(11)
+            .size(theme::size::CAPTION)
             .style(|_theme: &Theme| text::Style {
-                color: Some(Color::from_rgb(0.5, 0.5, 0.5))
+                color: Some(theme::colours().text_muted)
             }),
         iced::widget::vertical_space().height(10),
         row![
@@ -469,9 +462,9 @@ pub fn view_remove_folder_modal(editor: &RawEditor) -> Element<'_, Message> {
                 .width(Length::Fill)
                 .style(ui::styles::AccentButton::style),
         ]
-        .spacing(10)
+        .spacing(theme::space::L)
     ]
-    .spacing(12)
+    .spacing(theme::space::XL)
     .width(460)
     .into()
 }
@@ -479,20 +472,20 @@ pub fn view_remove_folder_modal(editor: &RawEditor) -> Element<'_, Message> {
 /// Help > About. Version comes from Cargo so it can't drift.
 pub fn view_about_modal<'a>() -> Element<'a, Message> {
     let line = |s: String| {
-        text(s).size(13).style(|_theme: &Theme| text::Style {
-            color: Some(Color::from_rgb(0.75, 0.75, 0.75)),
+        text(s).size(theme::size::BODY).style(|_theme: &Theme| text::Style {
+            color: Some(theme::colours().text_secondary),
         })
     };
 
     column![
-        text("RAW Editor").size(18).font(Font {
+        text("RAW Editor").size(theme::size::TITLE).font(Font {
             weight: Weight::Bold,
             ..Default::default()
         }).style(|_| text::Style {
-            color: Some(Color::from_rgb(0.85, 0.85, 0.85))
+            color: Some(theme::colours().text)
         }),
         iced::widget::horizontal_rule(1.0).style(|_| iced::widget::rule::Style {
-            color: Color::from_rgb(0.3, 0.3, 0.3),
+            color: theme::colours().border_strong,
             width: 1,
             radius: 0.0.into(),
             fill_mode: iced::widget::rule::FillMode::Full
@@ -502,9 +495,9 @@ pub fn view_about_modal<'a>() -> Element<'a, Message> {
         line(format!("By {}", env!("CARGO_PKG_AUTHORS"))),
         line("MIT licensed.".to_string()),
         text(crate::app::handlers::window::REPO_URL)
-            .size(11)
+            .size(theme::size::CAPTION)
             .style(|_theme: &Theme| text::Style {
-                color: Some(Color::from_rgb(0.5, 0.5, 0.5))
+                color: Some(theme::colours().text_muted)
             }),
         iced::widget::vertical_space().height(10),
         row![
@@ -519,9 +512,9 @@ pub fn view_about_modal<'a>() -> Element<'a, Message> {
                 .width(Length::Fill)
                 .style(ui::styles::AccentButton::style),
         ]
-        .spacing(10)
+        .spacing(theme::space::L)
     ]
-    .spacing(10)
+    .spacing(theme::space::L)
     .width(380)
     .into()
 }
@@ -572,7 +565,7 @@ pub fn view_copy_settings_modal(editor: &RawEditor) -> Element<'_, Message> {
         ));
     }
 
-    let mut list = column![].spacing(8);
+    let mut list = column![].spacing(theme::space::M);
     for (label, description, checked, category) in rows {
         // Nothing to copy → nothing to tick.
         let enabled = category != CopyCategory::Masks || mask_count > 0;
@@ -587,12 +580,12 @@ pub fn view_copy_settings_modal(editor: &RawEditor) -> Element<'_, Message> {
             column![
                 cb,
                 text(description)
-                    .size(11)
+                    .size(theme::size::CAPTION)
                     .style(|_theme: &Theme| text::Style {
-                        color: Some(Color::from_rgb(0.45, 0.45, 0.45))
+                        color: Some(theme::colours().text_hint)
                     }),
             ]
-            .spacing(2),
+            .spacing(theme::space::XXS),
         );
     }
 
@@ -600,9 +593,9 @@ pub fn view_copy_settings_modal(editor: &RawEditor) -> Element<'_, Message> {
     // somewhere else on a frame with a different shape.
     let mask_caution: Element<'_, Message> = if cats.masks && mask_count > 0 {
         text("Mask positions are relative to the frame — pasting onto a different aspect ratio will shift them.")
-            .size(11)
+            .size(theme::size::CAPTION)
             .style(|_theme: &Theme| text::Style {
-                color: Some(Color::from_rgb(0.85, 0.55, 0.2))
+                color: Some(theme::colours().warn)
             })
             .into()
     } else {
@@ -612,22 +605,22 @@ pub fn view_copy_settings_modal(editor: &RawEditor) -> Element<'_, Message> {
     let nothing_selected = cats.is_empty();
 
     column![
-        text("Copy Settings").size(18).font(Font {
+        text("Copy Settings").size(theme::size::TITLE).font(Font {
             weight: Weight::Bold,
             ..Default::default()
         }).style(|_| text::Style {
-            color: Some(Color::from_rgb(0.85, 0.85, 0.85))
+            color: Some(theme::colours().text)
         }),
         iced::widget::horizontal_rule(1.0).style(|_| iced::widget::rule::Style {
-            color: Color::from_rgb(0.3, 0.3, 0.3),
+            color: theme::colours().border_strong,
             width: 1,
             radius: 0.0.into(),
             fill_mode: iced::widget::rule::FillMode::Full
         }),
         text("Only the ticked groups are pasted. Everything else on the target image is left alone.")
-            .size(11)
+            .size(theme::size::CAPTION)
             .style(|_theme: &Theme| text::Style {
-                color: Some(Color::from_rgb(0.5, 0.5, 0.5))
+                color: Some(theme::colours().text_muted)
             }),
         list,
         mask_caution,
@@ -643,11 +636,11 @@ pub fn view_copy_settings_modal(editor: &RawEditor) -> Element<'_, Message> {
                 .width(Length::Fixed(70.0))
                 .style(ui::styles::NeutralButton::style),
         ]
-        .spacing(8),
+        .spacing(theme::space::M),
         text("Enter copies, Escape cancels. Ctrl+Shift+C copies everything without this dialog.")
-            .size(11)
+            .size(theme::size::CAPTION)
             .style(|_theme: &Theme| text::Style {
-                color: Some(Color::from_rgb(0.5, 0.5, 0.5))
+                color: Some(theme::colours().text_muted)
             }),
         iced::widget::vertical_space().height(10),
         row![
@@ -663,9 +656,9 @@ pub fn view_copy_settings_modal(editor: &RawEditor) -> Element<'_, Message> {
                 .width(Length::Fill)
                 .style(ui::styles::AccentButton::style),
         ]
-        .spacing(10)
+        .spacing(theme::space::L)
     ]
-    .spacing(12)
+    .spacing(theme::space::XL)
     .width(420)
     .into()
 }
@@ -685,25 +678,25 @@ pub fn view_delete_modal<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
     };
 
     column![
-        text("Delete Image").size(18).font(Font {
+        text("Delete Image").size(theme::size::TITLE).font(Font {
             weight: Weight::Bold,
             ..Default::default()
         }).style(|_| text::Style {
-            color: Some(Color::from_rgb(0.85, 0.85, 0.85))
+            color: Some(theme::colours().text)
         }),
         iced::widget::horizontal_rule(1.0).style(|_| iced::widget::rule::Style {
-            color: Color::from_rgb(0.3, 0.3, 0.3),
+            color: theme::colours().border_strong,
             width: 1,
             radius: 0.0.into(),
             fill_mode: iced::widget::rule::FillMode::Full
         }),
-        text(body).size(13).style(|_theme: &Theme| text::Style {
-            color: Some(Color::from_rgb(0.75, 0.75, 0.75))
+        text(body).size(theme::size::BODY).style(|_theme: &Theme| text::Style {
+            color: Some(theme::colours().text_secondary)
         }),
         text("\"Mark\" hides it from Develop but keeps it (and the file) untouched. \"Delete from Disk\" moves the RAW and cache files to the system trash and removes it from the library. Enter confirms Delete from Disk, D confirms Mark for Removal.")
-            .size(11)
+            .size(theme::size::CAPTION)
             .style(|_theme: &Theme| text::Style {
-                color: Some(Color::from_rgb(0.5, 0.5, 0.5))
+                color: Some(theme::colours().text_muted)
             }),
         iced::widget::vertical_space().height(10),
         row![
@@ -723,7 +716,7 @@ pub fn view_delete_modal<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
                 .width(Length::Fill)
                 .style(ui::styles::DangerButton::style),
         ]
-        .spacing(10)
+        .spacing(theme::space::L)
     ]
     .spacing(15)
     .width(440)
@@ -766,7 +759,7 @@ pub fn view_ai_model_modal(editor: &RawEditor) -> Element<'_, Message> {
             ]
             .align_y(Alignment::Center),
         ]
-        .spacing(10)
+        .spacing(theme::space::L)
         .into(),
         None => row![
             button(text("Not now").align_x(iced::alignment::Horizontal::Center))
@@ -780,7 +773,7 @@ pub fn view_ai_model_modal(editor: &RawEditor) -> Element<'_, Message> {
                 .width(Length::Fill)
                 .style(ui::styles::AccentButton::style),
         ]
-        .spacing(10)
+        .spacing(theme::space::L)
         .into(),
     };
     let error = editor
@@ -788,13 +781,13 @@ pub fn view_ai_model_modal(editor: &RawEditor) -> Element<'_, Message> {
         .error
         .as_ref()
         .filter(|(e, _)| *e == id)
-        .map(|(_, e)| text(e.clone()).size(12).style(|_theme: &Theme| text::Style { color: Some(Color::from_rgb(0.95, 0.4, 0.35)) }));
+        .map(|(_, e)| text(e.clone()).size(theme::size::SMALL).style(|_theme: &Theme| text::Style { color: Some(theme::colours().error) }));
 
     column![
-        text(format!("{} needs a model", model.purpose)).size(18).font(Font { weight: Weight::Bold, ..Default::default() })
-            .style(|_| text::Style { color: Some(Color::from_rgb(0.85, 0.85, 0.85)) }),
+        text(format!("{} needs a model", model.purpose)).size(theme::size::TITLE).font(Font { weight: Weight::Bold, ..Default::default() })
+            .style(|_| text::Style { color: Some(theme::colours().text) }),
         iced::widget::horizontal_rule(1.0).style(|_| iced::widget::rule::Style {
-            color: Color::from_rgb(0.3, 0.3, 0.3),
+            color: theme::colours().text_faint,
             width: 1,
             radius: 0.0.into(),
             fill_mode: iced::widget::rule::FillMode::Full
@@ -812,7 +805,7 @@ pub fn view_ai_model_modal(editor: &RawEditor) -> Element<'_, Message> {
     .push_maybe(error)
     .push(iced::widget::vertical_space().height(6))
     .push(actions)
-    .spacing(12)
+    .spacing(theme::space::XL)
     .width(460)
     .into()
 }
@@ -823,14 +816,14 @@ pub fn view_ai_denoise_modal(editor: &RawEditor) -> Element<'_, Message> {
 
 fn modal_title<'a>(s: &str) -> iced::widget::Text<'a> {
     text(s.to_string())
-        .size(18)
+        .size(theme::size::TITLE)
         .font(Font { weight: Weight::Bold, ..Default::default() })
-        .style(|_| text::Style { color: Some(Color::from_rgb(0.85, 0.85, 0.85)) })
+        .style(|_| text::Style { color: Some(theme::colours().text) })
 }
 
 fn modal_rule<'a>() -> iced::widget::Rule<'a> {
     iced::widget::horizontal_rule(1.0).style(|_| iced::widget::rule::Style {
-        color: Color::from_rgb(0.3, 0.3, 0.3),
+        color: theme::colours().border_strong,
         width: 1,
         radius: 0.0.into(),
         fill_mode: iced::widget::rule::FillMode::Full,
@@ -850,7 +843,7 @@ pub fn view_update_prompt_modal(editor: &RawEditor) -> Element<'_, Message> {
         checkbox("Check for updates at startup", editor.updates.prompt_choice)
             .on_toggle(Message::UpdatePromptToggled)
             .size(16)
-            .spacing(8)
+            .spacing(theme::space::M)
             .text_size(13)
             .style(ui::styles::checkbox_style),
         shade(
@@ -867,7 +860,7 @@ pub fn view_update_prompt_modal(editor: &RawEditor) -> Element<'_, Message> {
             .width(Length::Fill)
             .style(ui::styles::AccentButton::style),
     ]
-    .spacing(12)
+    .spacing(theme::space::XL)
     .width(420)
     .into()
 }
@@ -895,7 +888,7 @@ pub fn view_update_modal(editor: &RawEditor) -> Element<'_, Message> {
                 shade(format!("You have {current}."), 12, 0.6),
                 shade("The release page has what's new and a download for this computer.", 12, 0.6),
             ]
-            .spacing(6)
+            .spacing(theme::space::S)
             .into(),
             row![
                 close("Not Now"),
@@ -905,13 +898,13 @@ pub fn view_update_modal(editor: &RawEditor) -> Element<'_, Message> {
                     .width(Length::Fill)
                     .style(ui::styles::AccentButton::style),
             ]
-            .spacing(10)
+            .spacing(theme::space::L)
             .into(),
         )
     } else if let Some(Err(e)) = &st.shown {
         (
             "Couldn't Check for Updates",
-            column![shade(e.clone(), 13, 0.75), shade(format!("You have {current}."), 12, 0.6)].spacing(6).into(),
+            column![shade(e.clone(), 13, 0.75), shade(format!("You have {current}."), 12, 0.6)].spacing(theme::space::S).into(),
             close("Close").into(),
         )
     } else {
@@ -923,7 +916,7 @@ pub fn view_update_modal(editor: &RawEditor) -> Element<'_, Message> {
     };
 
     column![modal_title(title), modal_rule(), body, iced::widget::vertical_space().height(6), actions]
-        .spacing(12)
+        .spacing(theme::space::XL)
         .width(420)
         .into()
 }

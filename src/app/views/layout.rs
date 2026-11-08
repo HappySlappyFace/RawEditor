@@ -17,6 +17,7 @@ use super::modals::{
     view_export_modal, view_help_modal, view_remove_folder_modal,
 };
 use super::preferences::view_preferences_modal;
+use crate::ui::theme;
 
 /// Height of the custom title bar. Module-level because the menu bar has to be
 /// given this height explicitly — see `view_title_bar`.
@@ -122,7 +123,7 @@ fn view_splash(editor: &RawEditor) -> Element<'_, Message> {
     .height(Length::Fill)
     .style(|_theme| {
         container::Style {
-            background: Some(Background::Color(Color::from_rgb(0.08, 0.08, 0.08))),
+            background: Some(Background::Color(theme::colours().bg)),
             ..Default::default()
         }
     });
@@ -141,22 +142,22 @@ fn view_splash(editor: &RawEditor) -> Element<'_, Message> {
             container(
                 column![
                     text(&editor.status)
-                        .size(13)
+                        .size(theme::size::BODY)
                         .width(Length::Fill)
                         .align_x(iced::alignment::Horizontal::Center)
                         .style(|_| text::Style {
-                            color: Some(Color::from_rgb(0.82, 0.82, 0.82))
+                            color: Some(theme::colours().text)
                         }),
                 ]
-                .spacing(6)
+                .spacing(theme::space::S)
             )
             .padding([12, 14])
             .style(|_| container::Style {
-                background: Some(Background::Color(Color::from_rgb(0.11, 0.11, 0.11))),
+                background: Some(Background::Color(theme::colours().surface)),
                 border: iced::Border {
-                    radius: 10.0.into(),
+                    radius: theme::radius::DIALOG.into(),
                     width: 1.0,
-                    color: Color::from_rgb(0.18, 0.18, 0.18),
+                    color: theme::colours().border_subtle,
                 },
                 ..Default::default()
             })
@@ -164,18 +165,18 @@ fn view_splash(editor: &RawEditor) -> Element<'_, Message> {
             .max_width(360),
             Space::with_height(Length::Fixed(16.0)),
             text("Work in progress build")
-                .size(11)
+                .size(theme::size::CAPTION)
                 .width(Length::Fill)
                 .align_x(iced::alignment::Horizontal::Center)
                 .style(|_| text::Style {
-                    color: Some(Color::from_rgb(0.42, 0.42, 0.42))
+                    color: Some(theme::colours().text_disabled)
                 }),
             text(format!("Version {}", crate::app::APP_VERSION))
-                .size(11)
+                .size(theme::size::CAPTION)
                 .width(Length::Fill)
                 .align_x(iced::alignment::Horizontal::Center)
                 .style(|_| text::Style {
-                    color: Some(Color::from_rgb(0.38, 0.38, 0.38))
+                    color: Some(theme::colours().text_disabled)
                 }),
             Space::with_height(Length::Fill),
         ]
@@ -187,7 +188,7 @@ fn view_splash(editor: &RawEditor) -> Element<'_, Message> {
     .height(Length::Fill)
     .style(|_theme| {
         container::Style {
-            background: Some(Background::Color(Color::from_rgb(0.08, 0.08, 0.08))),
+            background: Some(Background::Color(theme::colours().bg)),
             ..Default::default()
         }
     });
@@ -209,7 +210,7 @@ fn view_main(editor: &RawEditor) -> Element<'_, Message> {
     // whole workspace does once, as the splash hands over).
     let content = crate::ui::widgets::transition::fade_through(
         tab_index(editor.current_tab) as u64,
-        APP_BACKGROUND,
+        app_background(),
         content,
     );
     
@@ -257,15 +258,17 @@ fn view_main(editor: &RawEditor) -> Element<'_, Message> {
     .width(Length::Fill)
     .height(Length::Fill)
     .style(|_theme| container::Style {
-        background: Some(Background::Color(APP_BACKGROUND)),
-        text_color: Some(Color::WHITE),
+        background: Some(Background::Color(app_background())),
+        text_color: Some(theme::colours().text_strong),
         ..Default::default()
     })
     .into()
 }
 
 /// The workspace background, which tab content fades up from.
-const APP_BACKGROUND: Color = Color::from_rgb(0.08, 0.08, 0.08);
+fn app_background() -> Color {
+    theme::colours().bg
+}
 
 /// Title bar tabs, in order. Their position is what the sliding indicator
 /// animates between.
@@ -289,15 +292,15 @@ fn tab_index(tab: AppTab) -> usize {
 /// check mark column so toggles and plain actions line up.
 fn menu_entry<'a>(label: &'a str, checked: Option<bool>, msg: Message) -> Element<'a, Message> {
     let mark = match checked {
-        Some(true) => text(ui::icons::CHECK).font(ICON_FONT).size(11),
-        Some(false) | None => text(" ").size(11),
+        Some(true) => text(ui::icons::CHECK).font(ICON_FONT).size(theme::size::CAPTION),
+        Some(false) | None => text(" ").size(theme::size::CAPTION),
     };
     button(
         row![
             container(mark).width(Length::Fixed(16.0)),
-            text(label).size(13),
+            text(label).size(theme::size::BODY),
         ]
-        .spacing(4)
+        .spacing(theme::space::XS)
         .align_y(Alignment::Center),
     )
     .width(Length::Fill)
@@ -310,7 +313,7 @@ fn menu_entry<'a>(label: &'a str, checked: Option<bool>, msg: Message) -> Elemen
 /// A thin rule used to group menu entries.
 fn menu_separator<'a>() -> Element<'a, Message> {
     container(iced::widget::horizontal_rule(1.0).style(|_| iced::widget::rule::Style {
-        color: Color::from_rgb(0.25, 0.25, 0.25),
+        color: theme::colours().border,
         width: 1,
         radius: 0.0.into(),
         fill_mode: iced::widget::rule::FillMode::Full,
@@ -326,7 +329,7 @@ fn view_title_bar(editor: &RawEditor) -> Element<'_, Message> {
     // until something is clicked.
     let label = |name: &'static str| {
         button(
-            container(text(name).size(13))
+            container(text(name).size(theme::size::BODY))
                 .height(Length::Fill)
                 .align_x(iced::alignment::Horizontal::Center)
                 .align_y(iced::alignment::Vertical::Center),
@@ -419,11 +422,11 @@ fn view_title_bar(editor: &RawEditor) -> Element<'_, Message> {
         bar_background_expand: 0.into(),
 
         // Dropdown panels match the modal card so the app has one surface look.
-        menu_background: Background::Color(Color::from_rgb(0.12, 0.12, 0.12)),
+        menu_background: Background::Color(theme::colours().surface_raised),
         menu_border: Border {
-            radius: 6.0.into(),
+            radius: theme::radius::CARD.into(),
             width: 1.0,
-            color: Color::from_rgb(0.28, 0.28, 0.28),
+            color: theme::colours().border_strong,
         },
         menu_shadow: iced::Shadow {
             color: Color::from_rgba(0.0, 0.0, 0.0, 0.5),
@@ -432,9 +435,9 @@ fn view_title_bar(editor: &RawEditor) -> Element<'_, Message> {
         },
         menu_background_expand: 4.into(),
 
-        path: Background::Color(Color::from_rgb(0.22, 0.22, 0.22)),
+        path: Background::Color(theme::colours().control_hover),
         path_border: Border {
-            radius: 4.0.into(),
+            radius: theme::radius::CONTROL.into(),
             ..Default::default()
         },
     });
@@ -466,8 +469,8 @@ fn view_title_bar(editor: &RawEditor) -> Element<'_, Message> {
         tabs.push(
             button(
                 container(
-                    row![text(icon).font(ICON_FONT).size(14), text(label).size(14)]
-                        .spacing(8)
+                    row![text(icon).font(ICON_FONT).size(theme::size::LABEL), text(label).size(theme::size::LABEL)]
+                        .spacing(theme::space::M)
                         .align_y(Alignment::Center),
                 )
                 .height(Length::Fill)
@@ -487,8 +490,8 @@ fn view_title_bar(editor: &RawEditor) -> Element<'_, Message> {
         tab_index(editor.current_tab),
         TAB_WIDTH,
         crate::ui::widgets::indicator::Appearance {
-            fill: Color::from_rgb(0.13, 0.13, 0.13),
-            accent: ui::palette::accent(),
+            fill: theme::colours().surface_raised,
+            accent: theme::colours().accent,
             accent_height: 2.0,
             accent_inset: 22.0,
         },
@@ -502,10 +505,10 @@ fn view_title_bar(editor: &RawEditor) -> Element<'_, Message> {
     let controls = row![
         container(Image::new(logo()).height(Length::Fixed(24.0)).content_fit(iced::ContentFit::Contain)).height(Length::Fill).align_y(iced::alignment::Vertical::Center).padding([8,15]),
         iced::widget::Space::with_width(Length::Fixed(5.0)),
-        button(container(text(ui::icons::MINIMIZE).font(ICON_FONT).size(14)).width(Length::Fill).height(Length::Fill).align_x(iced::alignment::Horizontal::Center).align_y(iced::alignment::Vertical::Center)).on_press(Message::MinimizeWindow).style(ui::styles::WindowControlButton::style).width(Length::Fixed(45.0)).height(Length::Fill),
-        button(container(text(ui::icons::MAXIMIZE).font(ICON_FONT).size(14)).width(Length::Fill).height(Length::Fill).align_x(iced::alignment::Horizontal::Center).align_y(iced::alignment::Vertical::Center)).on_press(Message::MaximizeWindow).style(ui::styles::WindowControlButton::style).width(Length::Fixed(45.0)).height(Length::Fill),
-        button(container(text(ui::icons::CLOSE).font(ICON_FONT).size(14)).width(Length::Fill).height(Length::Fill).align_x(iced::alignment::Horizontal::Center).align_y(iced::alignment::Vertical::Center)).on_press(Message::CloseWindow)
-            .style(|_theme, status| if status == button::Status::Hovered { button::Style { background: Some(Background::Color(Color::from_rgb(0.9, 0.2, 0.2))), text_color: Color::WHITE, ..button::Style::default() } } else { button::Style { text_color: Color::from_rgb(0.7, 0.7, 0.7), ..button::text(_theme, status) } })
+        button(container(text(ui::icons::MINIMIZE).font(ICON_FONT).size(theme::size::LABEL)).width(Length::Fill).height(Length::Fill).align_x(iced::alignment::Horizontal::Center).align_y(iced::alignment::Vertical::Center)).on_press(Message::MinimizeWindow).style(ui::styles::WindowControlButton::style).width(Length::Fixed(45.0)).height(Length::Fill),
+        button(container(text(ui::icons::MAXIMIZE).font(ICON_FONT).size(theme::size::LABEL)).width(Length::Fill).height(Length::Fill).align_x(iced::alignment::Horizontal::Center).align_y(iced::alignment::Vertical::Center)).on_press(Message::MaximizeWindow).style(ui::styles::WindowControlButton::style).width(Length::Fixed(45.0)).height(Length::Fill),
+        button(container(text(ui::icons::CLOSE).font(ICON_FONT).size(theme::size::LABEL)).width(Length::Fill).height(Length::Fill).align_x(iced::alignment::Horizontal::Center).align_y(iced::alignment::Vertical::Center)).on_press(Message::CloseWindow)
+            .style(|_theme, status| if status == button::Status::Hovered { button::Style { background: Some(Background::Color(theme::colours().danger_hover)), text_color: theme::colours().text_strong, ..button::Style::default() } } else { button::Style { text_color: theme::colours().text_secondary, ..button::text(_theme, status) } })
             .width(Length::Fixed(45.0)).height(Length::Fill),
     ].spacing(0).height(Length::Fill).align_y(Alignment::Center);
 
@@ -524,7 +527,7 @@ fn view_title_bar(editor: &RawEditor) -> Element<'_, Message> {
                 .padding(0),
             navigation,
         ]
-    ).height(Length::Fixed(35.0)).style(|_theme| container::Style { background: Some(Background::Color(Color::from_rgb(0.05, 0.05, 0.05))), ..Default::default() }).into()
+    ).height(Length::Fixed(35.0)).style(|_theme| container::Style { background: Some(Background::Color(theme::colours().chrome)), ..Default::default() }).into()
 }
 
 /// "Update available" in the title bar, after a check found a newer
@@ -535,10 +538,10 @@ fn update_badge(editor: &RawEditor) -> Option<Element<'_, Message>> {
         container(
             button(
                 row![
-                    text("\u{f0aa}").font(ICON_FONT).size(12), // arrow-circle-up
-                    text(format!("Update {}", available.version)).size(12),
+                    text("\u{f0aa}").font(ICON_FONT).size(theme::size::SMALL), // arrow-circle-up
+                    text(format!("Update {}", available.version)).size(theme::size::SMALL),
                 ]
-                .spacing(6)
+                .spacing(theme::space::S)
                 .align_y(Alignment::Center),
             )
             .on_press(Message::OpenModal(Modal::Update))
@@ -554,5 +557,5 @@ fn update_badge(editor: &RawEditor) -> Option<Element<'_, Message>> {
 
 /// Set the application theme
 pub fn theme(_: &RawEditor) -> Theme {
-    Theme::Dark
+    crate::ui::theme::iced_theme()
 }

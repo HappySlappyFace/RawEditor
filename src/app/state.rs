@@ -985,14 +985,13 @@ impl RawEditor {
                 is_painting: false,
                 show_mask_overlay: false,
                 color_picking_mask: None,
-                // Lens and defringe start folded: they are set-once tools, and
-                // the sidebar is long enough without them open.
-                collapsed_sections: [
-                    crate::app::message::SidebarSection::Lens,
-                    crate::app::message::SidebarSection::Defringe,
-                ]
-                .into_iter()
-                .collect(),
+                collapsed_sections: match &settings.develop_folded {
+                    Some(names) => names
+                        .iter()
+                        .filter_map(|n| crate::app::message::SidebarSection::from_name(n))
+                        .collect(),
+                    None => crate::app::message::SidebarSection::FOLDED_BY_DEFAULT.into_iter().collect(),
+                },
                 drag_mode: DragMode::None,
                 pending_loads: HashSet::new(),
                 queued_loads: Vec::new(),
@@ -1509,6 +1508,13 @@ impl RawEditor {
             reduce_motion: self.reduce_motion,
             camera_profile_defaults: self.camera_profile_defaults.clone(),
             update_check: self.update_check,
+            develop_folded: Some(
+                crate::app::message::SidebarSection::ALL
+                    .into_iter()
+                    .filter(|s| self.collapsed_sections.contains(s))
+                    .map(|s| s.name().to_string())
+                    .collect(),
+            ),
         };
 
         if let Err(e) = settings.save() {

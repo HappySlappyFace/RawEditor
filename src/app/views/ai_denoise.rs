@@ -10,6 +10,7 @@ use crate::app::message::Message;
 use crate::app::state::RawEditor;
 use crate::ui;
 use crate::ui::widgets::button;
+use crate::ui::theme;
 
 fn dim<'a>(s: impl Into<String>, size: u16, shade: f32) -> iced::widget::Text<'a> {
     text(s.into()).size(size).style(move |_theme: &Theme| text::Style { color: Some(Color::from_rgb(shade, shade, shade)) })
@@ -42,11 +43,11 @@ pub fn view(editor: &RawEditor) -> Element<'_, Message> {
             if let Some(b) = badge {
                 layers = layers.push(
                     container(
-                        container(text(b).size(11).font(Font::MONOSPACE))
+                        container(text(b).size(theme::size::CAPTION).font(Font::MONOSPACE))
                             .padding([3, 8])
                             .style(|_| container::Style {
                                 background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.7).into()),
-                                text_color: Some(Color::WHITE),
+                                text_color: Some(theme::colours().text_strong),
                                 ..Default::default()
                             }),
                     )
@@ -61,7 +62,7 @@ pub fn view(editor: &RawEditor) -> Element<'_, Message> {
             .into(),
     };
     let picture = container(picture).style(|_| container::Style {
-        border: Border { color: Color::from_rgb(0.25, 0.25, 0.25), width: 1.0, radius: 0.0.into() },
+        border: Border { color: theme::colours().border, width: 1.0, radius: 0.0.into() },
         ..Default::default()
     });
 
@@ -71,17 +72,17 @@ pub fn view(editor: &RawEditor) -> Element<'_, Message> {
         slider(0.0..=100.0, st.amount * 100.0, |v: f32| Message::AiDenoiseAmount(v / 100.0)).step(1.0_f32),
         dim(format!("{:.0}%", st.amount * 100.0), 12, 0.7).font(Font::MONOSPACE).width(Length::Fixed(44.0)),
     ]
-    .spacing(10)
+    .spacing(theme::space::L)
     .align_y(Alignment::Center);
 
     // Hold to compare: press shows the original, release goes back.
     let before = mouse_area(
-        container(text("Hold for Before").size(12))
+        container(text("Hold for Before").size(theme::size::SMALL))
             .padding([6, 12])
             .style(move |_| container::Style {
-                background: Some(Color::from_rgb(0.16, 0.16, 0.17).into()),
-                text_color: Some(Color::from_rgb(0.85, 0.85, 0.85)),
-                border: Border { color: Color::from_rgb(0.3, 0.3, 0.3), width: 1.0, radius: 0.0.into() },
+                background: Some(theme::colours().control.into()),
+                text_color: Some(theme::colours().text),
+                border: Border { color: theme::colours().border_strong, width: 1.0, radius: 0.0.into() },
                 ..Default::default()
             }),
     )
@@ -95,20 +96,20 @@ pub fn view(editor: &RawEditor) -> Element<'_, Message> {
             row![
                 dim(format!("Denoising the whole image… {:.0}%", progress.fraction() * 100.0), 12, 0.6),
                 Space::with_width(Length::Fill),
-                button(text("Stop").size(13))
+                button(text("Stop").size(theme::size::BODY))
                     .on_press(Message::AiDenoiseCancel)
                     .padding([8, 14])
                     .style(ui::styles::NeutralButton::style),
             ]
             .align_y(Alignment::Center),
         ]
-        .spacing(10)
+        .spacing(theme::space::L)
         .into(),
         None => {
-            let mut r = row![].spacing(10).align_y(Alignment::Center);
+            let mut r = row![].spacing(theme::space::L).align_y(Alignment::Center);
             if applied > 0.0 {
                 r = r.push(
-                    button(text("Remove").size(13))
+                    button(text("Remove").size(theme::size::BODY))
                         .on_press(Message::AiDenoiseRemove)
                         .padding([8, 14])
                         .style(ui::styles::NeutralButton::style),
@@ -116,13 +117,13 @@ pub fn view(editor: &RawEditor) -> Element<'_, Message> {
             }
             r.push(Space::with_width(Length::Fill))
                 .push(
-                    button(text("Cancel").size(13))
+                    button(text("Cancel").size(theme::size::BODY))
                         .on_press(Message::AiDenoiseCancel)
                         .padding([8, 14])
                         .style(ui::styles::NeutralButton::style),
                 )
                 .push(
-                    button(text("Apply").size(13).align_x(iced::alignment::Horizontal::Center))
+                    button(text("Apply").size(theme::size::BODY).align_x(iced::alignment::Horizontal::Center))
                         .on_press_maybe(ready.then_some(Message::AiDenoiseApply))
                         .padding([8, 14])
                         .width(Length::Fixed(110.0))
@@ -133,22 +134,22 @@ pub fn view(editor: &RawEditor) -> Element<'_, Message> {
     };
 
     column![
-        text("AI Denoise").size(18).font(Font { weight: Weight::Bold, ..Default::default() })
-            .style(|_| text::Style { color: Some(Color::from_rgb(0.85, 0.85, 0.85)) }),
+        text("AI Denoise").size(theme::size::TITLE).font(Font { weight: Weight::Bold, ..Default::default() })
+            .style(|_| text::Style { color: Some(theme::colours().text) }),
         dim("Shown at 1:1 with every other edit. Drag the preview to look elsewhere.", 12, 0.55),
         row![picture].width(Length::Fill).align_y(Alignment::Center),
         amount_row,
         row![before, Space::with_width(Length::Fill), dim("PMRID · runs on this computer", 11, 0.45)]
             .align_y(Alignment::Center),
         iced::widget::horizontal_rule(1.0).style(|_| iced::widget::rule::Style {
-            color: Color::from_rgb(0.3, 0.3, 0.3),
+            color: theme::colours().border_strong,
             width: 1,
             radius: 0.0.into(),
             fill_mode: iced::widget::rule::FillMode::Full
         }),
         actions,
     ]
-    .spacing(12)
+    .spacing(theme::space::XL)
     .width(Length::Fixed(PREVIEW_SIZE + 2.0))
     .into()
 }

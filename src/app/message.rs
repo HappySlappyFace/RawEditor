@@ -78,14 +78,64 @@ pub enum DefringeParam {
     GreenHue,
 }
 
-/// Collapsible Develop sidebar sections (UI state only).
+/// The Develop sidebar's foldable sections, top to bottom (UI state only).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SidebarSection {
-    /// The 1:1 detail loupe above Noise Reduction.
-    DetailPreview,
+    Light,
     ToneCurve,
+    ToneMapping,
+    Colour,
+    Presence,
+    /// Noise reduction, AI Denoise and sharpening.
+    Detail,
+    /// The 1:1 detail loupe inside Detail. It renders only while both are
+    /// open (`handlers::loupe`).
+    DetailPreview,
+    Geometry,
+    /// Lens profile corrections and defringe.
     Lens,
-    Defringe,
+    Masks,
+}
+
+impl SidebarSection {
+    pub const ALL: [SidebarSection; 10] = [
+        Self::Light,
+        Self::ToneCurve,
+        Self::ToneMapping,
+        Self::Colour,
+        Self::Presence,
+        Self::Detail,
+        Self::DetailPreview,
+        Self::Geometry,
+        Self::Lens,
+        Self::Masks,
+    ];
+
+    /// Folded on first launch: the set-once tools, and the two tallest
+    /// blocks (the curve and the loupe).
+    pub const FOLDED_BY_DEFAULT: [SidebarSection; 4] =
+        [Self::ToneCurve, Self::DetailPreview, Self::Geometry, Self::Lens];
+
+    /// The stable name saved in settings (`AppSettings::develop_folded`).
+    /// Never rename one: a saved name that no longer matches is dropped.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Light => "light",
+            Self::ToneCurve => "tone_curve",
+            Self::ToneMapping => "tone_mapping",
+            Self::Colour => "colour",
+            Self::Presence => "presence",
+            Self::Detail => "detail",
+            Self::DetailPreview => "detail_preview",
+            Self::Geometry => "geometry",
+            Self::Lens => "lens",
+            Self::Masks => "masks",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|s| s.name() == name)
+    }
 }
 
 /// Which group of adjustments a Copy Settings checkbox targets.
@@ -211,6 +261,8 @@ pub enum Message {
     DefringeChanged(DefringeParam, f32),
     /// Expand/collapse a Develop sidebar section.
     ToggleSection(SidebarSection),
+    /// A section header's reset: that section's edits back to default.
+    ResetSection(SidebarSection),
     /// Select the tone mapping operator (see `core::tonemap`).
     ToneMapperChanged(crate::core::tonemap::ToneMapper),
     /// Adjust one of the GT curve's shape parameters.

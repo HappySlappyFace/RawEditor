@@ -12,20 +12,42 @@ use crate::database::models::Image as ImageData;
 use crate::ui;
 use crate::ui::icons::ICON_FONT;
 use crate::ui::widgets::transition::entrance;
+use crate::ui::theme;
 
 /// The edit sidebar's background — also what folding sections fade from.
-const SIDEBAR_BACKGROUND: Color = Color::from_rgb(0.15, 0.15, 0.15);
+fn sidebar_background() -> Color {
+    theme::colours().panel
+}
+
+/// The sidebar's width. Fixed for now; see the Develop sidebar notes in
+/// CLAUDE.md before making it resizable (HiDPI).
+const SIDEBAR_WIDTH: f32 = 300.0;
+
+/// A slider row's label and value columns. Labels are SMALL monospace
+/// (~7.2 px a character), so 80 px holds "Blue/Yellow"; what's left is track.
+const LABEL_WIDTH: f32 = 80.0;
+const VALUE_WIDTH: f32 = 44.0;
 
 /// Build the Develop tab view (full-screen editor with preview)
 pub fn view_develop(editor: &RawEditor) -> Element<'_, Message> {
-    let sidebar = view_sidebar(editor);
+    // Pinned histogram, the sections in between, pinned actions. Only the
+    // middle scrolls, so the histogram and Export stay in view however far
+    // down the user is.
     let sidebar_container = container(
-        scrollable(sidebar)
-            .width(Length::Fixed(300.0))
-            .height(Length::Fill),
+        column![
+            column![].push_maybe(sidebar_histogram(editor)),
+            scrollable(view_sidebar(editor))
+                .direction(scrollable::Direction::Vertical(
+                    scrollable::Scrollbar::new().width(4).scroller_width(4).margin(2),
+                ))
+                .height(Length::Fill),
+            sidebar_actions(editor),
+        ]
+        .width(Length::Fixed(SIDEBAR_WIDTH))
+        .height(Length::Fill),
     )
     .style(|_theme| container::Style {
-        background: Some(Background::Color(SIDEBAR_BACKGROUND)),
+        background: Some(Background::Color(sidebar_background())),
         ..Default::default()
     });
 
@@ -60,446 +82,385 @@ pub fn view_develop(editor: &RawEditor) -> Element<'_, Message> {
     content
 }
 
-fn view_sidebar(editor: &RawEditor) -> iced::widget::Column<'_, Message> {
-    // Slider reset targets (Ctrl/Cmd+click).
-    let d = crate::core::types::EditParams::default();
-    let histogram_toggle =
-        checkbox("Show Histogram", editor.histogram_enabled).on_toggle(Message::HistogramToggled);
-
-    let histogram_section = if editor.histogram_enabled {
-        let histogram_widget = iced::widget::canvas::Canvas::new(crate::ui::histogram::Histogram {
-            data: *editor.histogram_data.borrow(),
-        })
-        .width(iced::Length::Fill)
-        .height(iced::Length::Fixed(120.0));
-        Some(container(histogram_widget).padding(5).style(|_theme| {
-            iced::widget::container::Style {
-                background: Some(iced::Background::Color(iced::Color::from_rgb(
-                    0.1, 0.1, 0.1,
-                ))),
-                border: iced::Border {
-                    color: iced::Color::from_rgb(0.3, 0.3, 0.3),
-                    width: 1.0,
-                    radius: 4.0.into(),
-                },
-                ..Default::default()
-            }
-        }))
-    } else {
-        None
-    };
-
-    let mut sidebar = column![text("Edit Controls").size(16), camera_profile_block(editor), histogram_toggle];
-    if let Some(hist) = histogram_section {
-        sidebar = sidebar.push(hist);
-    }
-
-    sidebar = sidebar
-        .push(text("Tone").size(14))
-        .push(slider_row(editor, 
-            "Exposure",
-            editor.current_edit_params.exposure, d.exposure,
-            -5.0..=5.0,
-            0.1,
-            Message::ExposureChanged,
-        ))
-        .push(slider_row(editor, 
-            "Contrast",
-            editor.current_edit_params.contrast, d.contrast,
-            -10.0..=10.0,
-            0.005,
-            Message::ContrastChanged,
-        ))
-        .push(slider_row(editor, 
-            "Highlights",
-            editor.current_edit_params.highlights, d.highlights,
-            -1.0..=1.0,
-            0.01,
-            Message::HighlightsChanged,
-        ))
-        .push(slider_row(editor, 
-            "Shadows",
-            editor.current_edit_params.shadows, d.shadows,
-            -1.0..=1.0,
-            0.01,
-            Message::ShadowsChanged,
-        ))
-        .push(slider_row(editor, 
-            "Whites",
-            editor.current_edit_params.whites, d.whites,
-            0.8..=1.2,
-            0.01,
-            Message::WhitesChanged,
-        ))
-        .push(slider_row(editor, 
-            "Blacks",
-            editor.current_edit_params.blacks, d.blacks,
-            0.0..=0.2,
-            0.005,
-            Message::BlacksChanged,
-        ))
-        .push(collapsible_section(editor, "Tone Curve", SidebarSection::ToneCurve, curve_section(editor)))
-        .push(text("Tone Mapping").size(14))
-        .push(tone_mapper_selector(editor))
-        .push(tone_mapper_hint(editor))
-        .push(tone_shape_controls(editor))
-        .push(text("Color").size(14))
-        .push({
-            // Real WB readout: sliders pivot around the camera's as-shot values.
-            let (as_k, as_t) = editor.as_shot_wb.unwrap_or((5000.0, 0.0));
-            row![
-                text(format!("As Shot  {:.0}K · tint {:+.0}", as_k, as_t))
-                    .size(11)
-                    .width(Length::Fill)
-                    .style(|_theme| text::Style {
-                        color: Some(Color::from_rgb(0.45, 0.45, 0.45)),
-                    }),
-                button(
-                    text(if editor.is_wb_picking { "Picking…" } else { "WB Picker" }).size(11),
-                )
-                .style(if editor.is_wb_picking {
-                    ui::styles::AccentButton::style
-                } else {
-                    ui::styles::NeutralButton::style
-                })
-                .on_press(Message::ToggleWbPicker),
-            ]
-            .spacing(6)
-            .align_y(Alignment::Center)
-        })
-        .push({
-            let (as_k, _) = editor.as_shot_wb.unwrap_or((5000.0, 0.0));
-            let kelvin = editor.current_edit_params.kelvin_from_anchor(as_k);
-            slider_row_display(editor, 
-                "Temp",
-                editor.current_edit_params.temperature, d.temperature,
-                -1.0..=1.0,
-                0.01,
-                format!("{:.0}K", kelvin),
-                // Inverse of `kelvin_from_anchor`, as the WB picker solves it.
-                move |k| (1.0e6 / as_k.clamp(1500.0, 50000.0) - 1.0e6 / k.max(1.0)) / 120.0,
-                Message::TemperatureChanged,
-            )
-        })
-        .push({
-            let (_, as_t) = editor.as_shot_wb.unwrap_or((5000.0, 0.0));
-            let tint = editor.current_edit_params.tint_from_anchor(as_t);
-            slider_row_display(editor, 
-                "Tint",
-                editor.current_edit_params.tint, d.tint,
-                -1.0..=1.0,
-                0.01,
-                format!("{:+.0}", tint),
-                move |t| (t - as_t) / 50.0,
-                Message::TintChanged,
-            )
-        })
-        .push(slider_row(editor, 
-            "Vibrance",
-            editor.current_edit_params.vibrance, d.vibrance,
-            -1.0..=1.0,
-            0.01,
-            Message::VibranceChanged,
-        ))
-        .push(slider_row(editor, 
-            "Saturation",
-            editor.current_edit_params.saturation, d.saturation,
-            -100.0..=100.0,
-            1.0,
-            Message::SaturationChanged,
-        ))
-        .push(text("Presence").size(14))
-        .push(slider_row(editor, 
-            "Texture",
-            editor.current_edit_params.texture, d.texture,
-            -1.0..=1.0,
-            0.01,
-            Message::TextureChanged,
-        ))
-        .push(slider_row(editor, 
-            "Clarity",
-            editor.current_edit_params.clarity, d.clarity,
-            -1.0..=1.0,
-            0.01,
-            Message::ClarityChanged,
-        ))
-        .push(slider_row(editor, 
-            "Dehaze",
-            editor.current_edit_params.dehaze, d.dehaze,
-            -1.0..=1.0,
-            0.01,
-            Message::DehazeChanged,
-        ))
-        .push(collapsible_section(
-            editor,
-            "Detail Preview",
-            SidebarSection::DetailPreview,
-            loupe_section(editor),
-        ))
-        .push(text("Noise Reduction").size(14))
-        .push(slider_row(editor, 
-            "Luminance",
-            editor.current_edit_params.luma_noise, d.luma_noise,
-            0.0..=1.0,
-            0.01,
-            Message::LumaNoiseChanged,
-        ))
-        .push(slider_row(editor, 
-            "Detail",
-            editor.current_edit_params.luma_detail, d.luma_detail,
-            0.0..=1.0,
-            0.01,
-            Message::LumaDetailChanged,
-        ))
-        .push(slider_row(editor, 
-            "Color",
-            editor.current_edit_params.color_noise, d.color_noise,
-            0.0..=1.0,
-            0.01,
-            Message::ColorNoiseChanged,
-        ))
-        .push(ai_denoise_row(editor))
-        .push(text("Detail").size(14))
-        .push(slider_row(editor, 
-            "Sharpen",
-            editor.current_edit_params.sharpening, d.sharpening,
-            0.0..=2.0,
-            0.01,
-            Message::SharpeningChanged,
-        ))
-        .push(slider_row(editor, 
-            "Masking",
-            editor.current_edit_params.sharpen_masking, d.sharpen_masking,
-            0.0..=1.0,
-            0.01,
-            Message::SharpenMaskingChanged,
-        ))
-        .push(text("Geometry").size(14))
-        .push(geometry_tools(editor))
-        .push(slider_row_display(
-            editor,
-            "Straighten",
-            editor.current_edit_params.rotation, d.rotation,
-            -45.0..=45.0,
-            0.05,
-            format!("{:.1}°", editor.current_edit_params.rotation),
-            |v| v,
-            Message::RotationChanged,
-        ))
-        .push(
-            row![
-                button(text(ui::icons::COPY).font(ICON_FONT).size(16))
-                    .style(ui::styles::NeutralButton::style)
-                    .on_press(Message::CopySettings)
-                    .padding(8),
-                button(text(ui::icons::PASTE).font(ICON_FONT).size(16))
-                    .style(ui::styles::NeutralButton::style)
-                    .on_press_maybe(
-                        editor
-                            .edit_clipboard
-                            .as_ref()
-                            .map(|_| Message::PasteSettings)
-                    )
-                    .padding(8),
-                iced::widget::Space::with_width(Length::Fill),
-                button(
-                    row![
-                        text(ui::icons::RESET).font(ICON_FONT).size(14),
-                        text("Reset").size(14)
-                    ]
-                    .spacing(5)
-                )
-                .style(ui::styles::NeutralButton::style)
-                .on_press(Message::ResetEdits)
-                .padding([8, 12]),
-            ]
-            .spacing(10)
-            .width(Length::Fill),
-        )
-        .push(text("Crop").size(14).font(Font {
-            weight: Weight::Bold,
-            ..Default::default()
-        }))
-        .push(
-            button(
-                row![
-                    text(if editor.is_cropping {
-                        "Done"
-                    } else {
-                        "Crop Tool"
-                    })
-                    .size(14),
-                    text(ui::icons::CROP).font(ICON_FONT).size(14)
-                ]
-                .spacing(5)
-                .align_y(Alignment::Center),
-            )
-            .style(if editor.is_cropping {
-                ui::styles::AccentButton::style
-            } else {
-                ui::styles::NeutralButton::style
-            })
-            .on_press(Message::ToggleCrop)
-            .width(Length::Fill),
-        )
-        .push(
-            row![
-                button(text("Reset").size(12))
-                    .style(ui::styles::NeutralButton::style)
-                    .on_press(Message::SetCrop([0.0, 0.0, 1.0, 1.0])),
-                aspect_crop_button(editor, "1:1", 1.0),
-                aspect_crop_button(editor, "16:9", 16.0 / 9.0),
-                aspect_crop_button(editor, "2:3", 2.0 / 3.0),
-            ]
-            .spacing(5),
-        );
-
-    sidebar = sidebar
-        .push(collapsible_section(editor, "Lens Corrections", SidebarSection::Lens, lens_section(editor)))
-        .push(collapsible_section(editor, "Defringe", SidebarSection::Defringe, defringe_section(editor)));
-
-    sidebar = push_mask_section(sidebar, editor);
-
-    if crate::debug::SHOW_SENSOR_CORRECTION {
-        sidebar = sidebar
-            .push(text("Sensor Correction").size(14))
-            .push(
-                checkbox(
-                    "Shift Grid X",
-                    editor.current_edit_params.black_phase_x != 0,
-                )
-                .on_toggle(|checked| {
-                    Message::BlackPhaseChanged(false, if checked { 1 } else { 0 })
-                }),
-            )
-            .push(
-                checkbox(
-                    "Shift Grid Y",
-                    editor.current_edit_params.black_phase_y != 0,
-                )
-                .on_toggle(|checked| Message::BlackPhaseChanged(true, if checked { 1 } else { 0 })),
-            )
-            .push(
-                text(format!(
-                    "Black TL (Red): {:.1}",
-                    editor.current_edit_params.black_offsets[0]
-                ))
-                .size(12),
-            )
-            .push(
-                slider(
-                    -50.0..=50.0,
-                    editor.current_edit_params.black_offsets[0],
-                    |v| Message::BlackOffsetChanged(0, v),
-                )
-                .step(0.1_f32),
-            )
-            .push(
-                text(format!(
-                    "Black TR (Green): {:.1}",
-                    editor.current_edit_params.black_offsets[1]
-                ))
-                .size(12),
-            )
-            .push(
-                slider(
-                    -50.0..=50.0,
-                    editor.current_edit_params.black_offsets[1],
-                    |v| Message::BlackOffsetChanged(1, v),
-                )
-                .step(0.1_f32),
-            )
-            .push(
-                text(format!(
-                    "Black BL (Green): {:.1}",
-                    editor.current_edit_params.black_offsets[2]
-                ))
-                .size(12),
-            )
-            .push(
-                slider(
-                    -50.0..=50.0,
-                    editor.current_edit_params.black_offsets[2],
-                    |v| Message::BlackOffsetChanged(2, v),
-                )
-                .step(0.1_f32),
-            )
-            .push(
-                text(format!(
-                    "Black BR (Blue): {:.1}",
-                    editor.current_edit_params.black_offsets[3]
-                ))
-                .size(12),
-            )
-            .push(
-                slider(
-                    -50.0..=50.0,
-                    editor.current_edit_params.black_offsets[3],
-                    |v| Message::BlackOffsetChanged(3, v),
-                )
-                .step(0.1_f32),
-            );
-    }
-
-    sidebar
-        .push(
-            button(
-                row![
-                    text(ui::icons::SAVE).font(ICON_FONT).size(14),
-                    text(" Export Image").size(14)
-                ]
-                .spacing(5)
-                .align_y(Alignment::Center),
-            )
-            .style(ui::styles::AccentButton::style)
-            .on_press(Message::OpenExportModal)
-            .padding(12)
-            .width(Length::Fill),
-        )
-        .spacing(10)
-        .padding(15)
+/// An icon with a hover label, for buttons too small to carry their name.
+fn with_tooltip<'a>(content: impl Into<Element<'a, Message>>, label: &'a str) -> Element<'a, Message> {
+    iced::widget::tooltip(
+        content,
+        container(text(label).size(theme::size::CAPTION)).padding([3, 6]).style(ui::styles::tooltip_style),
+        iced::widget::tooltip::Position::Bottom,
+    )
+    .gap(4)
+    .into()
 }
 
-/// Quarter turns and the level tool, above the Straighten slider. Both need
-/// the open image's GPU resources (a turn reads its shape).
+/// The pinned top of the sidebar: the histogram, when it is on.
+fn sidebar_histogram(editor: &RawEditor) -> Option<Element<'_, Message>> {
+    if !editor.histogram_enabled {
+        return None;
+    }
+    let histogram = iced::widget::canvas::Canvas::new(crate::ui::histogram::Histogram {
+        data: *editor.histogram_data.borrow(),
+    })
+    .width(Length::Fill)
+    .height(Length::Fixed(96.0));
+    let framed = container(histogram).padding(4).style(|_theme| container::Style {
+        background: Some(Background::Color(theme::colours().surface)),
+        border: Border { color: theme::colours().border, width: 1.0, radius: theme::radius::CONTROL.into() },
+        ..Default::default()
+    });
+    Some(container(framed).padding(iced::Padding { top: 10.0, right: 12.0, bottom: 2.0, left: 12.0 }).into())
+}
+
+/// The pinned bottom of the sidebar: the actions on the whole edit, and
+/// Export.
+fn sidebar_actions(editor: &RawEditor) -> Element<'_, Message> {
+    let icon = |glyph: &'static str, label: &'static str, active: bool, msg: Option<Message>| {
+        with_tooltip(
+            button(text(glyph).font(ICON_FONT).size(theme::size::BODY).align_x(iced::alignment::Horizontal::Center))
+                .style(if active { ui::styles::AccentButton::style } else { ui::styles::NeutralButton::style })
+                .on_press_maybe(msg)
+                .padding([7, 0])
+                .width(Length::Fixed(32.0)),
+            label,
+        )
+    };
+    let export = button(
+        container(
+            row![
+                text(ui::icons::SAVE).font(ICON_FONT).size(theme::size::BODY),
+                text("Export").size(theme::size::BODY),
+            ]
+            .spacing(theme::space::S)
+            .align_y(Alignment::Center),
+        )
+        .center_x(Length::Fill),
+    )
+    .style(ui::styles::AccentButton::style)
+    .on_press(Message::OpenExportModal)
+    .padding([7, 0])
+    .width(Length::Fill);
+    let row = row![
+        icon(
+            ui::icons::HISTOGRAM,
+            "Histogram",
+            editor.histogram_enabled,
+            Some(Message::HistogramToggled(!editor.histogram_enabled)),
+        ),
+        icon(ui::icons::COPY, "Copy settings", false, Some(Message::CopySettings)),
+        icon(ui::icons::PASTE, "Paste settings", false, editor.edit_clipboard.as_ref().map(|_| Message::PasteSettings)),
+        icon(ui::icons::RESET, "Reset all edits", false, Some(Message::ResetEdits)),
+        export,
+    ]
+    .spacing(theme::space::XS)
+    .align_y(Alignment::Center);
+    container(row)
+        .padding([10, 12])
+        .width(Length::Fill)
+        .into()
+}
+
+/// A foldable sidebar section: a header (fold arrow and title, an optional
+/// control or readout, and a reset once the section holds edits) over a body
+/// that folds away (`ui::widgets::collapse`).
+///
+/// Header and body are a single sidebar item, with the gap between them
+/// inside the body: a folded section then adds no spacing of its own, and
+/// the gap folds away with the body instead of snapping.
+fn section<'a>(
+    editor: &'a RawEditor,
+    title: impl Into<String>,
+    which: SidebarSection,
+    trailing: Option<Element<'a, Message>>,
+    body: Element<'a, Message>,
+) -> Element<'a, Message> {
+    let open = expanded(editor, which);
+    let edited = crate::app::handlers::develop::section_edited(which, &editor.current_edit_params);
+    let toggle = button(
+        row![
+            text(if open { ui::icons::CARET_DOWN } else { ui::icons::CARET_RIGHT })
+                .font(ICON_FONT)
+                .size(theme::size::SMALL)
+                .width(Length::Fixed(10.0))
+                .style(|_| text::Style { color: Some(theme::colours().text_muted) }),
+            // The loupe's header sits inside Detail, so it reads one step down.
+            text(title.into()).size(if which == SidebarSection::DetailPreview { theme::size::SMALL } else { theme::size::LABEL }),
+        ]
+        .spacing(theme::space::S)
+        .align_y(Alignment::Center),
+    )
+    .style(ui::styles::ghost_button)
+    .padding([5, 4])
+    .width(Length::Fill)
+    .on_press(Message::ToggleSection(which));
+
+    let mut header = row![toggle].spacing(theme::space::XS).align_y(Alignment::Center);
+    if let Some(t) = trailing {
+        header = header.push(t);
+    }
+    // Masks have no section reset (it would delete them), and the loupe has
+    // no edits of its own.
+    if edited && !matches!(which, SidebarSection::Masks | SidebarSection::DetailPreview) {
+        header = header.push(with_tooltip(
+            button(text(ui::icons::RESET).font(ICON_FONT).size(theme::size::CAPTION))
+                .style(ui::styles::ghost_button)
+                .padding([5, 6])
+                .on_press(Message::ResetSection(which)),
+            "Reset this section",
+        ));
+    }
+
+    let body = container(body).padding(iced::Padding { top: 4.0, bottom: 10.0, left: 4.0, right: 0.0 });
+    column![
+        header,
+        crate::ui::widgets::collapse::collapse(open, body).veil(sidebar_background()),
+    ]
+    .into()
+}
+
+fn expanded(editor: &RawEditor, section: SidebarSection) -> bool {
+    !editor.collapsed_sections.contains(&section)
+}
+
+/// A muted caption that labels a group of rows inside a section.
+fn group_label<'a>(label: &'a str) -> Element<'a, Message> {
+    container(text(label).size(theme::size::CAPTION).style(|_| text::Style { color: Some(theme::colours().text_muted) }))
+        .padding(iced::Padding { top: 4.0, ..iced::Padding::ZERO })
+        .into()
+}
+
+/// A column of rows at the sidebar's row spacing.
+fn rows<'a>(items: impl IntoIterator<Item = Element<'a, Message>>) -> Element<'a, Message> {
+    iced::widget::Column::with_children(items).spacing(theme::space::S).into()
+}
+
+fn view_sidebar(editor: &RawEditor) -> iced::widget::Column<'_, Message> {
+    let p = &editor.current_edit_params;
+    let d = crate::core::types::EditParams::default();
+
+    let light = rows([
+        slider_row(editor, "Exposure", p.exposure, d.exposure, -5.0..=5.0, 0.1, Message::ExposureChanged),
+        slider_row(editor, "Contrast", p.contrast, d.contrast, -10.0..=10.0, 0.005, Message::ContrastChanged),
+        slider_row(editor, "Highlights", p.highlights, d.highlights, -1.0..=1.0, 0.01, Message::HighlightsChanged),
+        slider_row(editor, "Shadows", p.shadows, d.shadows, -1.0..=1.0, 0.01, Message::ShadowsChanged),
+        slider_row(editor, "Whites", p.whites, d.whites, 0.8..=1.2, 0.01, Message::WhitesChanged),
+        slider_row(editor, "Blacks", p.blacks, d.blacks, 0.0..=0.2, 0.005, Message::BlacksChanged),
+    ]);
+
+    let tone_mapping = rows([tone_mapper_hint(editor), tone_shape_controls(editor)]);
+
+    // WB sliders pivot around the camera's as-shot values, shown in the
+    // header; double-clicking either slider returns to them.
+    let (as_k, as_t) = editor.as_shot_wb.unwrap_or((5000.0, 0.0));
+    let kelvin = p.kelvin_from_anchor(as_k);
+    let tint = p.tint_from_anchor(as_t);
+    let colour = rows([
+        slider_row_display(
+            editor,
+            "Temp",
+            p.temperature,
+            d.temperature,
+            -1.0..=1.0,
+            0.01,
+            format!("{:.0}K", kelvin),
+            // Inverse of `kelvin_from_anchor`, as the WB picker solves it.
+            move |k| (1.0e6 / as_k.clamp(1500.0, 50000.0) - 1.0e6 / k.max(1.0)) / 120.0,
+            Message::TemperatureChanged,
+        ),
+        slider_row_display(
+            editor,
+            "Tint",
+            p.tint,
+            d.tint,
+            -1.0..=1.0,
+            0.01,
+            format!("{:+.0}", tint),
+            move |t| (t - as_t) / 50.0,
+            Message::TintChanged,
+        ),
+        slider_row(editor, "Vibrance", p.vibrance, d.vibrance, -1.0..=1.0, 0.01, Message::VibranceChanged),
+        slider_row(editor, "Saturation", p.saturation, d.saturation, -100.0..=100.0, 1.0, Message::SaturationChanged),
+    ]);
+    // The picker lives in the header, so it works with Colour folded.
+    let wb_picker = with_tooltip(
+        button(text(ui::icons::EYEDROPPER).font(ICON_FONT).size(theme::size::SMALL))
+            .style(if editor.is_wb_picking { ui::styles::AccentButton::style } else { ui::styles::ghost_button })
+            .padding([4, 7])
+            .on_press(Message::ToggleWbPicker),
+        "Pick white balance",
+    );
+    let colour_header: Element<'_, Message> = row![
+        text(format!("As shot {:.0}K", as_k))
+            .size(theme::size::CAPTION)
+            .style(|_| text::Style { color: Some(theme::colours().text_hint) }),
+        wb_picker,
+    ]
+    .spacing(theme::space::S)
+    .align_y(Alignment::Center)
+    .into();
+
+    let presence = rows([
+        slider_row(editor, "Texture", p.texture, d.texture, -1.0..=1.0, 0.01, Message::TextureChanged),
+        slider_row(editor, "Clarity", p.clarity, d.clarity, -1.0..=1.0, 0.01, Message::ClarityChanged),
+        slider_row(editor, "Dehaze", p.dehaze, d.dehaze, -1.0..=1.0, 0.01, Message::DehazeChanged),
+    ]);
+
+    let detail = rows([
+        section(editor, "Detail Preview", SidebarSection::DetailPreview, None, loupe_section(editor)),
+        group_label("Noise reduction"),
+        slider_row(editor, "Luminance", p.luma_noise, d.luma_noise, 0.0..=1.0, 0.01, Message::LumaNoiseChanged),
+        slider_row(editor, "Detail", p.luma_detail, d.luma_detail, 0.0..=1.0, 0.01, Message::LumaDetailChanged),
+        slider_row(editor, "Colour", p.color_noise, d.color_noise, 0.0..=1.0, 0.01, Message::ColorNoiseChanged),
+        ai_denoise_row(editor),
+        group_label("Sharpening"),
+        slider_row(editor, "Amount", p.sharpening, d.sharpening, 0.0..=2.0, 0.01, Message::SharpeningChanged),
+        slider_row(editor, "Masking", p.sharpen_masking, d.sharpen_masking, 0.0..=1.0, 0.01, Message::SharpenMaskingChanged),
+    ]);
+
+    let geometry = rows([
+        geometry_tools(editor),
+        slider_row_display(
+            editor,
+            "Straighten",
+            p.rotation,
+            d.rotation,
+            -45.0..=45.0,
+            0.05,
+            format!("{:.1}°", p.rotation),
+            |v| v,
+            Message::RotationChanged,
+        ),
+        crop_presets(editor),
+    ]);
+
+    let lens = rows([lens_section(editor), group_label("Defringe"), defringe_section(editor)]);
+
+    let mask_count = p.mask_count as usize;
+    let masks_title = if mask_count > 0 { format!("Masks ({mask_count})") } else { "Masks".to_string() };
+
+    let mut sidebar = column![
+        container(camera_profile_block(editor)).padding(iced::Padding { bottom: 6.0, ..iced::Padding::ZERO }),
+        section(editor, "Light", SidebarSection::Light, None, light),
+        section(editor, "Tone Curve", SidebarSection::ToneCurve, None, curve_section(editor)),
+        section(editor, "Tone Mapping", SidebarSection::ToneMapping, Some(tone_mapper_selector(editor)), tone_mapping),
+        section(editor, "Colour", SidebarSection::Colour, Some(colour_header), colour),
+        section(editor, "Presence", SidebarSection::Presence, None, presence),
+        section(editor, "Detail", SidebarSection::Detail, None, detail),
+        section(editor, "Geometry", SidebarSection::Geometry, None, geometry),
+        section(editor, "Lens", SidebarSection::Lens, None, lens),
+        section(editor, masks_title, SidebarSection::Masks, None, mask_section(editor)),
+    ];
+
+    if crate::debug::SHOW_SENSOR_CORRECTION {
+        sidebar = sidebar.push(sensor_correction(editor));
+    }
+
+    sidebar.spacing(theme::space::XXS).padding(iced::Padding { top: 10.0, right: 12.0, bottom: 12.0, left: 8.0 })
+}
+
+/// Debug-only black-level controls (`debug::SHOW_SENSOR_CORRECTION`).
+fn sensor_correction(editor: &RawEditor) -> Element<'_, Message> {
+    let p = &editor.current_edit_params;
+    let mut col = column![
+        group_label("Sensor correction"),
+        checkbox("Shift Grid X", p.black_phase_x != 0)
+            .on_toggle(|checked| Message::BlackPhaseChanged(false, if checked { 1 } else { 0 })),
+        checkbox("Shift Grid Y", p.black_phase_y != 0)
+            .on_toggle(|checked| Message::BlackPhaseChanged(true, if checked { 1 } else { 0 })),
+    ]
+    .spacing(theme::space::S);
+    for (i, name) in ["Black TL (Red)", "Black TR (Green)", "Black BL (Green)", "Black BR (Blue)"].into_iter().enumerate() {
+        col = col
+            .push(text(format!("{name}: {:.1}", p.black_offsets[i])).size(theme::size::SMALL))
+            .push(
+                slider(-50.0..=50.0, p.black_offsets[i], move |v| Message::BlackOffsetChanged(i, v))
+                    .step(0.1_f32)
+                    .style(ui::styles::ProSlider::style),
+            );
+    }
+    col.into()
+}
+
+/// The crop tool (also on `C`), then the centred aspect presets.
+fn crop_presets(editor: &RawEditor) -> Element<'_, Message> {
+    let tool = button(
+        container(
+            row![
+                text(ui::icons::CROP).font(ICON_FONT).size(theme::size::SMALL),
+                text(if editor.is_cropping { "Done" } else { "Crop Tool" }).size(theme::size::SMALL),
+            ]
+            .spacing(theme::space::S)
+            .align_y(Alignment::Center),
+        )
+        .center_x(Length::Fill),
+    )
+    .style(if editor.is_cropping { ui::styles::AccentButton::style } else { ui::styles::NeutralButton::style })
+    .on_press(Message::ToggleCrop)
+    .padding([4, 0])
+    .width(Length::Fill);
+    column![
+        row![
+            text("Crop")
+                .width(Length::Fixed(LABEL_WIDTH))
+                .size(theme::size::SMALL)
+                .style(|_| text::Style { color: Some(theme::colours().text_secondary) }),
+            tool,
+        ]
+        .spacing(theme::space::XS)
+        .align_y(Alignment::Center),
+        row![
+            iced::widget::Space::with_width(Length::Fixed(LABEL_WIDTH)),
+            aspect_crop_button(editor, "1:1", 1.0),
+            aspect_crop_button(editor, "16:9", 16.0 / 9.0),
+            aspect_crop_button(editor, "2:3", 2.0 / 3.0),
+            button(text("Full").size(theme::size::CAPTION).align_x(iced::alignment::Horizontal::Center))
+                .style(ui::styles::NeutralButton::style)
+                .on_press(Message::SetCrop([0.0, 0.0, 1.0, 1.0]))
+                .padding([4, 0])
+                .width(Length::Fill),
+        ]
+        .spacing(theme::space::XS),
+    ]
+    .spacing(theme::space::XS)
+    .into()
+}
+
 fn geometry_tools(editor: &RawEditor) -> Element<'_, Message> {
     let ready = editor
         .image_resources
         .as_ref()
         .is_some_and(|r| Some(r.image_id) == editor.selected_image_id);
-    let turn = |icon: &'static str, clockwise: bool| {
-        button(text(icon).font(ICON_FONT).size(15))
-            .style(ui::styles::NeutralButton::style)
-            .on_press_maybe(ready.then_some(Message::TurnImage { clockwise }))
-            .padding([5, 10])
+    let turn = |icon: &'static str, label: &'static str, clockwise: bool| {
+        with_tooltip(
+            button(text(icon).font(ICON_FONT).size(theme::size::BODY))
+                .style(ui::styles::NeutralButton::style)
+                .on_press_maybe(ready.then_some(Message::TurnImage { clockwise }))
+                .padding([4, 12]),
+            label,
+        )
     };
     let level = button(
         row![
-            text(ui::icons::LEVEL).font(ICON_FONT).size(13),
+            text(ui::icons::LEVEL).font(ICON_FONT).size(theme::size::SMALL),
             // Armed shows as the accent style; the status line says what to do.
-            text("Level").size(12),
+            text("Level").size(theme::size::SMALL),
         ]
-        .spacing(6)
+        .spacing(theme::space::S)
         .align_y(Alignment::Center),
     )
-    .style(if editor.is_leveling {
-        ui::styles::AccentButton::style
-    } else {
-        ui::styles::NeutralButton::style
-    })
+    .style(if editor.is_leveling { ui::styles::AccentButton::style } else { ui::styles::NeutralButton::style })
     .on_press_maybe(ready.then_some(Message::ToggleLevelTool))
-    .padding([6, 10]);
+    .padding([4, 10]);
     row![
         text("Rotate")
-            .width(Length::Fixed(90.0))
-            .size(13)
-            .style(|_| text::Style { color: Some(Color::from_rgb(0.7, 0.7, 0.7)) }),
-        turn(ui::icons::ROTATE_LEFT, false),
-        turn(ui::icons::ROTATE_RIGHT, true),
+            .width(Length::Fixed(LABEL_WIDTH))
+            .size(theme::size::SMALL)
+            .style(|_| text::Style { color: Some(theme::colours().text_secondary) }),
+        turn(ui::icons::ROTATE_LEFT, "Rotate left", false),
+        turn(ui::icons::ROTATE_RIGHT, "Rotate right", true),
         iced::widget::Space::with_width(Length::Fill),
         level,
     ]
-    .spacing(6)
+    .spacing(theme::space::XS)
     .align_y(Alignment::Center)
     .into()
 }
@@ -509,8 +470,10 @@ fn geometry_tools(editor: &RawEditor) -> Element<'_, Message> {
 /// raw sensor dims are landscape even for a portrait shot, which turned
 /// "16:9" into a tall sliver on every vertical frame.
 fn aspect_crop_button<'a>(editor: &RawEditor, label: &'a str, ratio: f32) -> Element<'a, Message> {
-    button(text(label).size(12))
+    button(text(label).size(theme::size::CAPTION).align_x(iced::alignment::Horizontal::Center))
         .style(ui::styles::NeutralButton::style)
+        .padding([4, 0])
+        .width(Length::Fill)
         .on_press_maybe(editor.image_resources.as_ref().map(|res| {
             let (w, h) = res.oriented_dims(editor.current_edit_params.quarter_turns);
             Message::SetCrop(RawEditor::calculate_center_crop(ratio, w, h))
@@ -532,11 +495,11 @@ fn prepare_preview(editor: &RawEditor) -> (bool, Option<Element<'_, Message>>) {
                 column![row![
                     text(ui::icons::HOURGLASS)
                         .font(ICON_FONT)
-                        .size(14)
+                        .size(theme::size::LABEL)
                         .style(|_| text::Style {
                             color: Some(Color::WHITE)
                         }),
-                    text(" Loading RAW...").size(14).style(|_| text::Style {
+                    text(" Loading RAW...").size(theme::size::LABEL).style(|_| text::Style {
                         color: Some(Color::WHITE)
                     })
                 ]]
@@ -545,7 +508,7 @@ fn prepare_preview(editor: &RawEditor) -> (bool, Option<Element<'_, Message>>) {
             .style(|_theme| container::Style {
                 background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.5))),
                 border: Border {
-                    radius: 4.0.into(),
+                    radius: theme::radius::CONTROL.into(),
                     ..Default::default()
                 },
                 ..Default::default()
@@ -571,12 +534,12 @@ fn prepare_preview(editor: &RawEditor) -> (bool, Option<Element<'_, Message>>) {
             let overlay = container(
                 column![
                     row![
-                        text(ui::icons::TIMES).font(ICON_FONT).size(24),
-                        text(" Preview Failed").size(24)
+                        text(ui::icons::TIMES).font(ICON_FONT).size(theme::size::DISPLAY),
+                        text(" Preview Failed").size(theme::size::DISPLAY)
                     ],
                     text("").size(20),
                     text(error.clone())
-                        .size(14)
+                        .size(theme::size::LABEL)
                         .style(|theme: &Theme| text::Style {
                             color: Some(theme.palette().danger)
                         })
@@ -600,7 +563,7 @@ fn view_main_content<'a>(
                 text("No Image Selected").size(32),
                 text("").size(20),
                 text("← Switch to Library tab to select an image")
-                    .size(18)
+                    .size(theme::size::TITLE)
                     .style(|theme: &Theme| text::Style {
                         color: Some(theme.palette().text.scale_alpha(0.6))
                     })
@@ -710,16 +673,14 @@ fn view_main_content<'a>(
                     container(
                         container(
                             text("BEFORE")
-                                .size(11)
+                                .size(theme::size::CAPTION)
                                 .font(Font { weight: Weight::Bold, ..Default::default() })
-                                .style(|_theme| text::Style { color: Some(Color::WHITE) }),
+                                .style(|_theme| text::Style { color: Some(theme::colours().text_strong) }),
                         )
                         .padding([4, 10])
                         .style(|_theme| container::Style {
-                            background: Some(Background::Color(Color::from_rgb(
-                                0.98, 0.45, 0.09,
-                            ))),
-                            border: Border { radius: 3.0.into(), ..Default::default() },
+                            background: Some(Background::Color(theme::colours().accent)),
+                            border: Border { radius: theme::radius::CONTROL.into(), ..Default::default() },
                             ..Default::default()
                         }),
                     )
@@ -778,8 +739,8 @@ fn view_main_content<'a>(
 
             info_panel(
                 column![
-                    text("CACHE").size(12).style(|_| text::Style {
-                        color: Some(Color::from_rgb(0.98, 0.45, 0.09))
+                    text("CACHE").size(theme::size::SMALL).style(|_| text::Style {
+                        color: Some(theme::colours().accent)
                     }),
                     info_line(format!(
                         "RAW  {} files  {:.0} / {} MB  ({:.0}%)",
@@ -805,7 +766,7 @@ fn view_main_content<'a>(
                     )),
                     info_line(format!("This image  {}", selected_cached)),
                 ]
-                .spacing(2)
+                .spacing(theme::space::XXS)
                 .into(),
             )
             .into()
@@ -814,12 +775,12 @@ fn view_main_content<'a>(
             let mut lines = column![
                 // 100% = one sensor pixel per screen pixel, not "fitted".
                 text(format!("Zoom {:.0}%", editor.zoom_percent()))
-                    .size(12)
+                    .size(theme::size::SMALL)
                     .style(|_| text::Style {
-                        color: Some(Color::from_rgb(0.98, 0.45, 0.09))
+                        color: Some(theme::colours().accent)
                     }),
             ]
-            .spacing(2);
+            .spacing(theme::space::XXS);
             for line in metadata_lines(editor) {
                 lines = lines.push(info_line(line));
             }
@@ -835,7 +796,7 @@ fn view_main_content<'a>(
                 .map(|img| img.filename.clone())
                 .unwrap_or_default(),
         )
-        .size(12)
+        .size(theme::size::SMALL)
         .style(|_| text::Style {
             color: Some(Color::WHITE),
         }),
@@ -844,7 +805,7 @@ fn view_main_content<'a>(
     .style(|_| container::Style {
         background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.4))),
         border: iced::border::Border {
-            radius: 3.0.into(),
+            radius: theme::radius::CONTROL.into(),
             ..Default::default()
         },
         ..Default::default()
@@ -894,7 +855,7 @@ fn view_main_content<'a>(
             // The shader quad now covers exactly the on-screen image rect (no
             // more, no less), so this container background IS the letterbox
             // color on every side, including portrait side bars.
-            background: Some(Background::Color(Color::from_rgb(0.12, 0.12, 0.12))),
+            background: Some(Background::Color(theme::colours().surface_raised)),
             ..Default::default()
         })
         .into()
@@ -902,7 +863,14 @@ fn view_main_content<'a>(
 
 /// "Local Masks" sidebar section: add-mask buttons, the mask list, and the
 /// per-mask adjustment sliders for the selected mask.
-fn push_mask_section<'a>(
+fn mask_section(editor: &RawEditor) -> Element<'_, Message> {
+    let sidebar = mask_rows(column![].spacing(theme::space::S), editor);
+    sidebar.into()
+}
+
+/// The Masks section's rows: add buttons, the mask list, then the selected
+/// mask's settings.
+fn mask_rows<'a>(
     mut sidebar: iced::widget::Column<'a, Message>,
     editor: &'a RawEditor,
 ) -> iced::widget::Column<'a, Message> {
@@ -913,11 +881,6 @@ fn push_mask_section<'a>(
     let params = &editor.current_edit_params;
     let count = params.mask_count as usize;
 
-    sidebar = sidebar.push(text("Local Masks").size(14).font(Font {
-        weight: Weight::Bold,
-        ..Default::default()
-    }));
-
     // Add-mask buttons. Linear/radial toggle placement mode (the next
     // click-drag on the preview places the mask); brush and range masks have
     // no geometry and are created straight away. Disabled at the mask limit,
@@ -925,25 +888,35 @@ fn push_mask_section<'a>(
     let can_add = count < MAX_MASKS;
     let linear_active = editor.mask_tool == MaskTool::PlacingLinear;
     let radial_active = editor.mask_tool == MaskTool::PlacingRadial;
-    let add_button = |label: &'static str, active: bool, kind: u32| {
-        button(text(if active { "Click image…" } else { label }).size(12))
+    let add_button = |label: &'static str, active: bool, msg: Option<Message>| {
+        button(text(label).size(theme::size::CAPTION).align_x(iced::alignment::Horizontal::Center))
             .style(if active {
                 ui::styles::AccentButton::style
             } else {
                 ui::styles::NeutralButton::style
             })
-            .on_press_maybe((can_add || active).then_some(Message::ToggleMaskPlacement(kind)))
+            .on_press_maybe(msg)
+            .padding([5, 0])
             .width(Length::Fill)
     };
-    sidebar = sidebar
-        .push(row![add_button("+ Linear", linear_active, 0), add_button("+ Radial", radial_active, 1)].spacing(5))
-        .push(row![add_button("+ Brush", false, MASK_BRUSH), add_button("+ Range", false, MASK_RANGE)].spacing(5))
-        .push(
-            button(text("+ AI Select").size(12))
-                .style(ui::styles::NeutralButton::style)
-                .on_press_maybe((can_add && editor.ai_select.is_none()).then_some(Message::AiSelectStart))
-                .width(Length::Fill),
-        );
+    let place = |kind: u32, active: bool| (can_add || active).then_some(Message::ToggleMaskPlacement(kind));
+    sidebar = sidebar.push(
+        row![
+            add_button("Linear", linear_active, place(0, linear_active)),
+            add_button("Radial", radial_active, place(1, radial_active)),
+            add_button("Brush", false, place(MASK_BRUSH, false)),
+            add_button("Range", false, place(MASK_RANGE, false)),
+            add_button(
+                "AI",
+                editor.ai_select.is_some(),
+                (can_add && editor.ai_select.is_none()).then_some(Message::AiSelectStart),
+            ),
+        ]
+        .spacing(theme::space::XS),
+    );
+    if linear_active || radial_active {
+        sidebar = sidebar.push(hint("Drag on the image to place the mask.".to_string()));
+    }
 
     // An open AI selection owns the canvas: say what clicks do, and how to
     // finish.
@@ -960,25 +933,25 @@ fn push_mask_section<'a>(
         sidebar = sidebar.push(
             container(
                 column![
-                    text("AI Select").size(12).font(Font { weight: Weight::Bold, ..Default::default() }),
-                    text(status).size(11).style(|_| text::Style { color: Some(Color::from_rgb(0.65, 0.65, 0.65)) }),
+                    text("AI Select").size(theme::size::SMALL).font(Font { weight: Weight::Bold, ..Default::default() }),
+                    text(status).size(theme::size::CAPTION).style(|_| text::Style { color: Some(theme::colours().text_secondary) }),
                     row![
-                        button(text("Cancel").size(12))
+                        button(text("Cancel").size(theme::size::SMALL))
                             .style(ui::styles::NeutralButton::style)
                             .on_press(Message::AiSelectCancel)
                             .width(Length::Fill),
-                        button(text("Done").size(12))
+                        button(text("Done").size(theme::size::SMALL))
                             .style(ui::styles::AccentButton::style)
                             .on_press(Message::AiSelectDone)
                             .width(Length::Fill),
                     ]
                     .spacing(5),
                 ]
-                .spacing(6),
+                .spacing(theme::space::S),
             )
             .padding(8)
             .style(|_| container::Style {
-                border: Border { color: Color::from_rgb(0.976, 0.451, 0.086), width: 1.0, radius: 0.0.into() },
+                border: Border { color: theme::colours().accent, width: 1.0, radius: 0.0.into() },
                 ..Default::default()
             }),
         );
@@ -1008,7 +981,7 @@ fn push_mask_section<'a>(
         let label = format!("{kind} {}{extras}", i + 1);
         sidebar = sidebar.push(
             row![
-                button(text(label).size(12))
+                button(text(label).size(theme::size::SMALL))
                     .style(if selected {
                         ui::styles::AccentButton::style
                     } else {
@@ -1019,7 +992,7 @@ fn push_mask_section<'a>(
                 checkbox("", m.enabled != 0)
                     .on_toggle(move |checked| Message::ToggleMaskEnabled(i, checked))
                     .size(16),
-                button(text(ui::icons::TIMES).font(ICON_FONT).size(12))
+                button(text(ui::icons::TIMES).font(ICON_FONT).size(theme::size::SMALL))
                     .style(ui::styles::NeutralButton::style)
                     .on_press(Message::DeleteMask(i))
                     .padding(6),
@@ -1035,18 +1008,18 @@ fn push_mask_section<'a>(
     };
     let m = params.masks[i];
     let small = |label: &'a str, on: bool| {
-        checkbox(label, on).size(16).text_size(13)
+        checkbox(label, on).size(14).text_size(theme::size::SMALL).style(ui::styles::checkbox_style)
     };
     sidebar = sidebar.push(
         row![
             small("Invert", m.invert != 0).on_toggle(Message::ToggleMaskInvert),
             small("Show overlay", editor.show_mask_overlay).on_toggle(Message::ToggleMaskOverlay),
         ]
-        .spacing(12),
+        .spacing(theme::space::XL),
     );
     if m.mask_type == MASK_AI && editor.ai_select.is_none() {
         sidebar = sidebar.push(
-            button(text("Refine selection").size(11))
+            button(text("Refine selection").size(theme::size::CAPTION))
                 .style(ui::styles::NeutralButton::style)
                 .on_press(Message::AiSelectRefine(i)),
         );
@@ -1056,10 +1029,10 @@ fn push_mask_section<'a>(
     // (add / erase) for any other.
     let b = editor.brush_settings;
     let is_brush = m.mask_type == MASK_BRUSH;
-    let mut brush_row = row![].spacing(4).align_y(Alignment::Center);
+    let mut brush_row = row![].spacing(theme::space::XS).align_y(Alignment::Center);
     if !is_brush {
         brush_row = brush_row.push(
-            button(text(if editor.brush_armed { "Brushing" } else { "Brush" }).size(11))
+            button(text(if editor.brush_armed { "Brushing" } else { "Brush" }).size(theme::size::CAPTION))
                 .style(if editor.brush_armed {
                     ui::styles::AccentButton::style
                 } else {
@@ -1071,7 +1044,7 @@ fn push_mask_section<'a>(
     if editor.brush_armed {
         for (label, erase) in [("Paint", false), ("Erase", true)] {
             brush_row = brush_row.push(
-                button(text(label).size(11))
+                button(text(label).size(theme::size::CAPTION))
                     .style(if b.erase == erase {
                         ui::styles::AccentButton::style
                     } else {
@@ -1084,7 +1057,7 @@ fn push_mask_section<'a>(
     brush_row = brush_row.push(iced::widget::Space::with_width(Length::Fill));
     if params.brush.has_strokes_for(i) {
         brush_row = brush_row.push(
-            button(text("Clear brush").size(11))
+            button(text("Clear brush").size(theme::size::CAPTION))
                 .style(ui::styles::NeutralButton::style)
                 .on_press(Message::ClearMaskBrush),
         );
@@ -1123,7 +1096,7 @@ fn push_mask_section<'a>(
         row![
             small("Color range", m.color_range != 0 || picking).on_toggle(Message::ToggleMaskColorRange),
             iced::widget::Space::with_width(Length::Fill),
-            button(text(if picking { "Picking…" } else { "Pick color" }).size(11))
+            button(text(if picking { "Picking…" } else { "Pick color" }).size(theme::size::CAPTION))
                 .style(if picking { ui::styles::AccentButton::style } else { ui::styles::NeutralButton::style })
                 .on_press(Message::PickMaskColor),
         ]
@@ -1137,7 +1110,7 @@ fn push_mask_section<'a>(
 
     // Adjustments.
     sidebar = sidebar
-        .push(text("Adjustments").size(12))
+        .push(text("Adjustments").size(theme::size::SMALL))
         .push(slider_row(editor, "Exposure", m.exposure, 0.0, -4.0..=4.0, 0.05, |v| {
             Message::MaskAdjustmentChanged(MaskAdjustment::Exposure, v)
         }))
@@ -1192,56 +1165,13 @@ fn ai_denoise_row(editor: &RawEditor) -> Element<'_, Message> {
     let amount = editor.current_edit_params.ai_denoise;
     let label = if amount > 0.0 { format!("AI Denoise · {:.0}%", amount * 100.0) } else { "AI Denoise…".to_string() };
     button(
-        row![text("\u{f0d0}").font(ICON_FONT).size(12), text(label).size(12)]
-            .spacing(8)
+        row![text(ui::icons::MAGIC).font(ICON_FONT).size(theme::size::SMALL), text(label).size(theme::size::SMALL)]
+            .spacing(theme::space::M)
             .align_y(Alignment::Center),
     )
     .style(if amount > 0.0 { ui::styles::AccentButton::style } else { ui::styles::NeutralButton::style })
     .on_press(Message::OpenAiDenoise)
     .width(Length::Fill)
-    .into()
-}
-
-/// A section title that folds its body away (`ui::widgets::collapse`).
-///
-/// Header and body are a single sidebar item, with the gap between them
-/// inside the body: a folded section then adds no spacing of its own, and
-/// the gap folds away with the body instead of snapping.
-fn collapsible_section<'a>(
-    editor: &RawEditor,
-    title: &'a str,
-    section: SidebarSection,
-    body: Element<'a, Message>,
-) -> Element<'a, Message> {
-    let body = container(body).padding(iced::Padding { top: 10.0, ..iced::Padding::ZERO });
-    column![
-        section_header(editor, title, section),
-        crate::ui::widgets::collapse::collapse(expanded(editor, section), body)
-            .veil(SIDEBAR_BACKGROUND),
-    ]
-    .into()
-}
-
-fn expanded(editor: &RawEditor, section: SidebarSection) -> bool {
-    !editor.collapsed_sections.contains(&section)
-}
-
-/// A clickable section title with a disclosure arrow.
-fn section_header<'a>(editor: &RawEditor, title: &'a str, section: SidebarSection) -> Element<'a, Message> {
-    let arrow = if expanded(editor, section) { "▾" } else { "▸" };
-    button(
-        row![text(arrow).size(12), text(title).size(14)]
-            .spacing(6)
-            .align_y(Alignment::Center),
-    )
-    .padding([2, 0])
-    .width(Length::Fill)
-    .style(|_theme, _status| button::Style {
-        background: None,
-        text_color: Color::WHITE,
-        ..Default::default()
-    })
-    .on_press(Message::ToggleSection(section))
     .into()
 }
 
@@ -1276,18 +1206,18 @@ fn loupe_section(editor: &RawEditor) -> Element<'_, Message> {
         }
     };
     let framed = container(picture).padding(1).style(|_theme| container::Style {
-        background: Some(Background::Color(Color::from_rgb(0.1, 0.1, 0.1))),
-        border: Border { color: Color::from_rgb(0.3, 0.3, 0.3), width: 1.0, radius: 0.0.into() },
+        background: Some(Background::Color(theme::colours().surface)),
+        border: Border { color: theme::colours().border_strong, width: 1.0, radius: 0.0.into() },
         ..Default::default()
     });
 
     let targeting = editor.loupe.targeting;
     let pick = button(
         row![
-            text("\u{f05b}").font(ICON_FONT).size(12), // crosshairs
-            text(if targeting { "Click the image…" } else { "Pick Point" }).size(11),
+            text(ui::icons::CROSSHAIRS).font(ICON_FONT).size(theme::size::SMALL), // crosshairs
+            text(if targeting { "Click the image…" } else { "Pick Point" }).size(theme::size::CAPTION),
         ]
-        .spacing(6)
+        .spacing(theme::space::S)
         .align_y(Alignment::Center),
     )
     .style(if targeting { ui::styles::AccentButton::style } else { ui::styles::NeutralButton::style })
@@ -1299,7 +1229,7 @@ fn loupe_section(editor: &RawEditor) -> Element<'_, Message> {
         pick,
         hint("Shown at 1:1 — drag to move it. Noise reduction reaches the main image when its slider pauses.".to_string()),
     ]
-    .spacing(6)
+    .spacing(theme::space::S)
     .into()
 }
 
@@ -1358,7 +1288,7 @@ fn camera_profile_block(editor: &RawEditor) -> Element<'_, Message> {
     let selected = options.iter().find(|o| o.choice == current).or(options.first()).cloned();
 
     row![
-        text("Profile").size(13).width(Length::Fixed(60.0)),
+        text("Profile").size(theme::size::BODY).width(Length::Fixed(60.0)),
         iced::widget::pick_list(options, selected, |o: ProfileOption| Message::CameraProfileSelected(o.choice))
             .text_size(12)
             .padding([4, 8])
@@ -1366,7 +1296,7 @@ fn camera_profile_block(editor: &RawEditor) -> Element<'_, Message> {
             .style(ui::styles::pick_list_style)
             .menu_style(ui::styles::pick_list_menu_style),
     ]
-    .spacing(8)
+    .spacing(theme::space::M)
     .align_y(Alignment::Center)
     .into()
 }
@@ -1377,47 +1307,47 @@ fn missing_profile_prompt(editor: &RawEditor, camera: String) -> Element<'_, Mes
     use crate::app::state::ProfileJob;
     let state = &editor.camera_profiles;
     let unavailable = state.unavailable.as_deref() == Some(camera.as_str());
-    let warn = Color::from_rgb(0.9, 0.55, 0.3);
+    let warn = theme::colours().warn;
 
     let download = button(
         row![
-            text("\u{f019}").font(ICON_FONT).size(12), // download
-            text(if state.busy == Some(ProfileJob::Downloading) { "Downloading…" } else { "Download" }).size(12),
+            text(ui::icons::DOWNLOAD).font(ICON_FONT).size(theme::size::SMALL), // download
+            text(if state.busy == Some(ProfileJob::Downloading) { "Downloading…" } else { "Download" }).size(theme::size::SMALL),
         ]
-        .spacing(6)
+        .spacing(theme::space::S)
         .align_y(Alignment::Center),
     )
     .style(ui::styles::AccentButton::style)
     .on_press_maybe((state.busy.is_none() && !unavailable).then_some(Message::DownloadCameraProfile))
     .padding([5, 10]);
-    let import = button(text("Import…").size(12))
+    let import = button(text("Import…").size(theme::size::SMALL))
         .style(ui::styles::NeutralButton::style)
         .on_press_maybe(state.busy.is_none().then_some(Message::ImportCameraProfiles))
         .padding([5, 10]);
 
     let mut col = column![
-        text("No DCP profile found").size(13),
+        text("No DCP profile found").size(theme::size::BODY),
         hint(format!(
             "{camera} is using the default colour pipeline. Would you like to download an open-source profile for it?"
         )),
-        row![download, import].spacing(6),
+        row![download, import].spacing(theme::space::S),
     ]
-    .spacing(6);
+    .spacing(theme::space::S);
     if unavailable {
         col = col.push(
             text(format!("The RawTherapee project has no profile for {camera}. You can import one of your own instead."))
-                .size(10)
+                .size(theme::size::CAPTION)
                 .style(move |_theme| text::Style { color: Some(warn) }),
         );
     } else if let Some(Err(e)) = &state.notice {
-        col = col.push(text(e.clone()).size(10).style(move |_theme| text::Style { color: Some(warn) }));
+        col = col.push(text(e.clone()).size(theme::size::CAPTION).style(move |_theme| text::Style { color: Some(warn) }));
     }
     container(col)
         .padding(10)
         .width(Length::Fill)
         .style(|_theme| container::Style {
-            background: Some(Background::Color(Color::from_rgb(0.12, 0.12, 0.12))),
-            border: Border { color: ui::palette::accent_selection_border(), width: 1.0, radius: 4.0.into() },
+            background: Some(Background::Color(theme::colours().surface_raised)),
+            border: Border { color: theme::colours().accent_selection_border, width: 1.0, radius: theme::radius::CONTROL.into() },
             ..Default::default()
         })
         .into()
@@ -1430,10 +1360,10 @@ fn missing_database_prompt(editor: &RawEditor) -> Element<'_, Message> {
     let downloading = editor.lensfun.busy == Some(LensfunJob::Downloading);
     let download = button(
         row![
-            text("\u{f019}").font(ICON_FONT).size(13), // download
-            text(if downloading { "Downloading…" } else { "Download Lens Profiles" }).size(12),
+            text(ui::icons::DOWNLOAD).font(ICON_FONT).size(theme::size::BODY), // download
+            text(if downloading { "Downloading…" } else { "Download Lens Profiles" }).size(theme::size::SMALL),
         ]
-        .spacing(6)
+        .spacing(theme::space::S)
         .align_y(Alignment::Center),
     )
     .style(ui::styles::AccentButton::style)
@@ -1447,12 +1377,12 @@ fn missing_database_prompt(editor: &RawEditor) -> Element<'_, Message> {
             crate::core::paths::lensfun_dir().display()
         )),
     ]
-    .spacing(6);
+    .spacing(theme::space::S);
     if let Some(Err(e)) = &editor.lensfun.installed {
         col = col.push(
             text(format!("Download failed: {e}"))
-                .size(10)
-                .style(|_theme| text::Style { color: Some(Color::from_rgb(0.9, 0.55, 0.3)) }),
+                .size(theme::size::CAPTION)
+                .style(|_theme| text::Style { color: Some(theme::colours().warn) }),
         );
     }
     col.into()
@@ -1460,8 +1390,8 @@ fn missing_database_prompt(editor: &RawEditor) -> Element<'_, Message> {
 
 fn hint<'a>(s: String) -> Element<'a, Message> {
     text(s)
-        .size(10)
-        .style(|_theme| text::Style { color: Some(Color::from_rgb(0.45, 0.45, 0.45)) })
+        .size(theme::size::CAPTION)
+        .style(|_theme| text::Style { color: Some(theme::colours().text_hint) })
         .into()
 }
 
@@ -1490,18 +1420,20 @@ fn lens_section(editor: &RawEditor) -> Element<'_, Message> {
     };
 
     let mut col = column![
-        text(lens_name).size(12),
+        text(lens_name).size(theme::size::SMALL),
         status,
         checkbox("Enable profile corrections", l.profile)
             .on_toggle_maybe(has_profile.then_some(|on| Message::LensToggled(LensToggle::Profile, on)))
-            .size(16)
-            .text_size(13),
+            .size(14)
+            .text_size(theme::size::SMALL)
+            .style(ui::styles::checkbox_style),
         checkbox("Remove chromatic aberration", l.profile_ca)
             .on_toggle_maybe(has_profile.then_some(|on| Message::LensToggled(LensToggle::ProfileCa, on)))
-            .size(16)
-            .text_size(13),
+            .size(14)
+            .text_size(theme::size::SMALL)
+            .style(ui::styles::checkbox_style),
     ]
-    .spacing(6);
+    .spacing(theme::space::S);
     if l.profile && has_profile {
         col = col
             .push(slider_row_display(editor, 
@@ -1523,24 +1455,25 @@ fn lens_section(editor: &RawEditor) -> Element<'_, Message> {
                 |v| Message::LensParamChanged(LensParam::ProfileVignetting, v),
             ));
     }
-    col.push(text("Manual").size(12))
+    col.push(group_label("Manual"))
         .push(slider_row(editor, "Distortion", l.distortion, d.distortion, -1.0..=1.0, 0.01, |v| {
             Message::LensParamChanged(LensParam::Distortion, v)
         }))
         .push(slider_row(editor, "Vignetting", l.vignetting, d.vignetting, -1.0..=1.0, 0.01, |v| {
             Message::LensParamChanged(LensParam::Vignetting, v)
         }))
-        .push(slider_row(editor, "Red / Cyan", l.ca_red, d.ca_red, -1.0..=1.0, 0.01, |v| {
+        .push(slider_row(editor, "Red/Cyan", l.ca_red, d.ca_red, -1.0..=1.0, 0.01, |v| {
             Message::LensParamChanged(LensParam::CaRed, v)
         }))
-        .push(slider_row(editor, "Blue / Yellow", l.ca_blue, d.ca_blue, -1.0..=1.0, 0.01, |v| {
+        .push(slider_row(editor, "Blue/Yellow", l.ca_blue, d.ca_blue, -1.0..=1.0, 0.01, |v| {
             Message::LensParamChanged(LensParam::CaBlue, v)
         }))
         .push(
             checkbox("Constrain (no empty borders)", l.constrain)
                 .on_toggle(|on| Message::LensToggled(LensToggle::Constrain, on))
-                .size(16)
-                .text_size(13),
+                .size(14)
+                .text_size(theme::size::SMALL)
+                .style(ui::styles::checkbox_style),
         )
         .into()
 }
@@ -1562,19 +1495,19 @@ fn defringe_section(editor: &RawEditor) -> Element<'_, Message> {
             Message::DefringeChanged(DefringeParam::GreenHue, v)
         }),
     ]
-    .spacing(6)
+    .spacing(theme::space::S)
     .into()
 }
 
 /// Channel tabs, the curve canvas and a reset for the shown channel.
 fn curve_section(editor: &RawEditor) -> Element<'_, Message> {
     use crate::core::curves::CurveChannel;
-    let mut tabs = row![].spacing(4).align_y(Alignment::Center);
+    let mut tabs = row![].spacing(theme::space::XS).align_y(Alignment::Center);
     for ch in CurveChannel::ALL {
         let edited = !editor.current_edit_params.curves.get(ch).is_identity();
         let label = if edited { format!("{}•", ch.label()) } else { ch.label().to_string() };
         tabs = tabs.push(
-            button(text(label).size(11))
+            button(text(label).size(theme::size::CAPTION))
                 .width(Length::Fill)
                 .style(if editor.curve_channel == ch {
                     ui::styles::AccentButton::style
@@ -1585,7 +1518,7 @@ fn curve_section(editor: &RawEditor) -> Element<'_, Message> {
         );
     }
     tabs = tabs.push(
-        button(text(ui::icons::RESET).font(ICON_FONT).size(11))
+        button(text(ui::icons::RESET).font(ICON_FONT).size(theme::size::CAPTION))
             .style(ui::styles::NeutralButton::style)
             .on_press(Message::ResetCurve),
     );
@@ -1596,41 +1529,20 @@ fn curve_section(editor: &RawEditor) -> Element<'_, Message> {
     })
     .width(Length::Fill)
     .height(Length::Fixed(230.0));
-    column![tabs, canvas].spacing(6).into()
+    column![tabs, canvas].spacing(theme::space::S).into()
 }
 
-/// Operator picker: two rows of small buttons, the active one accented.
-///
-/// Buttons rather than a `pick_list` because the whole sidebar is already
-/// built from this vocabulary (see the WB Picker toggle) and a stock dropdown
-/// would need styling from scratch to not look pasted in. It also keeps every
-/// option visible, which matters when the options are looks to compare.
+/// Operator picker, in the Tone Mapping header so it stays reachable with
+/// the section folded. The hint under it says what the choice does.
 fn tone_mapper_selector(editor: &RawEditor) -> Element<'_, Message> {
     use crate::core::tonemap::ToneMapper;
-    let active = editor.current_edit_params.tone_mapper;
-
-    let make = |m: ToneMapper| -> Element<'_, Message> {
-        button(text(m.label()).size(11))
-            .width(Length::Fill)
-            .style(if m == active {
-                ui::styles::AccentButton::style
-            } else {
-                ui::styles::NeutralButton::style
-            })
-            .on_press(Message::ToneMapperChanged(m))
-            .into()
-    };
-
-    let mut top = row![].spacing(4);
-    let mut bottom = row![].spacing(4);
-    for (i, m) in ToneMapper::ALL.into_iter().enumerate() {
-        if i < 3 {
-            top = top.push(make(m));
-        } else {
-            bottom = bottom.push(make(m));
-        }
-    }
-    column![top, bottom].spacing(4).into()
+    iced::widget::pick_list(ToneMapper::ALL, Some(editor.current_edit_params.tone_mapper), Message::ToneMapperChanged)
+        .text_size(theme::size::SMALL)
+        .padding([3, 8])
+        .width(Length::Fixed(112.0))
+        .style(ui::styles::pick_list_style)
+        .menu_style(ui::styles::pick_list_menu_style)
+        .into()
 }
 
 /// One line of plain language about what the current selection actually does.
@@ -1648,9 +1560,9 @@ fn tone_mapper_hint(editor: &RawEditor) -> Element<'_, Message> {
         ToneMapper::Gt => "Gran Turismo — linear mids, shaped toe and shoulder",
     };
     text(hint)
-        .size(10)
+        .size(theme::size::CAPTION)
         .style(|_theme| text::Style {
-            color: Some(Color::from_rgb(0.45, 0.45, 0.45)),
+            color: Some(theme::colours().text_hint),
         })
         .into()
 }
@@ -1665,8 +1577,8 @@ fn tone_shape_controls(editor: &RawEditor) -> Element<'_, Message> {
     let p = &editor.current_edit_params;
     let d = crate::core::types::EditParams::default();
     match p.tone_mapper {
-        ToneMapper::Camera => column![slider_row(editor, 
-            "Profile Curve",
+        ToneMapper::Camera => column![slider_row(editor,
+            "Strength",
             p.profile_curve, d.profile_curve,
             0.0..=1.0,
             0.01,
@@ -1687,7 +1599,7 @@ fn tone_shape_controls(editor: &RawEditor) -> Element<'_, Message> {
                 Message::GtParamChanged(GtParam::BlackTightness, v)
             }),
         ]
-        .spacing(6)
+        .spacing(theme::space::S)
         .into(),
         _ => column![].into(),
     }
@@ -1704,7 +1616,7 @@ fn info_panel<'a>(body: Element<'a, Message>) -> Container<'a, Message> {
         .style(|_| container::Style {
             background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.6))),
             border: iced::border::Border {
-                radius: 5.0.into(),
+                radius: theme::radius::CONTROL.into(),
                 ..Default::default()
             },
             ..Default::default()
@@ -1731,8 +1643,8 @@ pub(crate) fn metadata_lines(editor: &RawEditor) -> [String; 3] {
 
 fn info_line<'a>(s: String) -> Element<'a, Message> {
     text(s)
-        .size(12)
-        .style(|_| text::Style { color: Some(Color::WHITE) })
+        .size(theme::size::SMALL)
+        .style(|_| text::Style { color: Some(theme::colours().text_strong) })
         .into()
 }
 
@@ -1835,7 +1747,7 @@ fn slider_field<'a>(
     from_display: impl Fn(f32) -> f32 + 'a,
     on_change: impl Fn(f32) -> Message + 'a,
 ) -> Element<'a, Message> {
-    let grey = |_: &Theme| text::Style { color: Some(Color::from_rgb(0.7, 0.7, 0.7)) };
+    let grey = |_: &Theme| text::Style { color: Some(theme::colours().text_secondary) };
     let key = slider_key(&on_change);
     let commit = default.is_some();
     let (lo, hi) = (*range.start(), *range.end());
@@ -1852,17 +1764,17 @@ fn slider_field<'a>(
                 .id(slider_entry_id())
                 .on_input(Message::SliderEntryChanged)
                 .on_submit(submit)
-                .size(13)
+                .size(theme::size::SMALL)
                 .padding([1, 4])
-                .width(Length::Fixed(52.0))
+                .width(Length::Fixed(VALUE_WIDTH))
                 .align_x(iced::alignment::Horizontal::Right)
                 .style(ui::styles::text_input_style)
                 .into()
         }
         None => mouse_area(
             text(display.clone())
-                .width(Length::Fixed(52.0))
-                .size(13)
+                .width(Length::Fixed(VALUE_WIDTH))
+                .size(theme::size::SMALL)
                 .align_x(iced::alignment::Horizontal::Right)
                 .style(grey),
         )
@@ -1879,8 +1791,8 @@ fn slider_field<'a>(
     if let Some(d) = default {
         track = track.default(d).on_release(Message::CommitEdit);
     }
-    let label_and_track = row![text(label).width(Length::Fixed(90.0)).size(13).style(grey), track]
-        .spacing(10)
+    let label_and_track = row![text(label).width(Length::Fixed(LABEL_WIDTH)).size(theme::size::SMALL).style(grey), track]
+        .spacing(theme::space::S)
         .align_y(iced::Alignment::Center);
     let label_and_track: Element<'a, Message> = match reset {
         Some(reset) => ui::widgets::double_click::double_click(label_and_track, reset).into(),
@@ -1888,7 +1800,7 @@ fn slider_field<'a>(
     };
 
     row![label_and_track, value_cell]
-        .spacing(10)
+        .spacing(theme::space::S)
         .align_y(iced::Alignment::Center)
         .into()
 }

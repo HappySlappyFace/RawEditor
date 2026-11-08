@@ -34,6 +34,7 @@ fn physical_size(editor: &RawEditor) -> u32 {
 /// Showing, with a loaded image to show? Nothing renders otherwise.
 fn visible(editor: &RawEditor) -> bool {
     editor.current_tab == AppTab::Develop
+        && !editor.collapsed_sections.contains(&SidebarSection::Detail)
         && !editor.collapsed_sections.contains(&SidebarSection::DetailPreview)
         && editor
             .image_resources

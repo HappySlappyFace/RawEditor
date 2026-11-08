@@ -14,6 +14,7 @@ use iced::{Color, Point, Rectangle, Size};
 
 use crate::app::message::Message;
 use crate::core::curves::{Curve, CurveChannel, ToneCurves};
+use super::theme;
 
 /// Inset so points at 0 and 1 are fully visible and grabbable.
 const PAD: f32 = 8.0;
@@ -172,7 +173,7 @@ impl canvas::Program<Message> for CurveEditor {
     ) -> Vec<canvas::Geometry> {
         let mut frame = Frame::new(renderer, bounds.size());
         let r = plot(bounds.size());
-        frame.fill_rectangle(Point::ORIGIN, bounds.size(), Color::from_rgb(0.09, 0.09, 0.10));
+        frame.fill_rectangle(Point::ORIGIN, bounds.size(), theme::colours().bg);
 
         // Histogram of the edited channel (luma-ish max for the master).
         let hist: Vec<f32> = (0..256)
@@ -243,7 +244,7 @@ impl canvas::Program<Message> for CurveEditor {
             let p = to_screen(&r, q[0], q[1]);
             let active = state.dragging == Some(i) || hover == Some(i);
             let s = if active { 9.0 } else { 7.0 };
-            let fill = if active { Color::from_rgb(0.976, 0.451, 0.086) } else { Color::WHITE };
+            let fill = if active { theme::colours().accent } else { Color::WHITE };
             frame.fill_rectangle(Point::new(p.x - s / 2.0, p.y - s / 2.0), Size::new(s, s), fill);
             frame.stroke(
                 &Path::rectangle(Point::new(p.x - s / 2.0, p.y - s / 2.0), Size::new(s, s)),

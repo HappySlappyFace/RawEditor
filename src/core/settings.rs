@@ -41,6 +41,11 @@ pub struct AppSettings {
     /// see above.
     #[serde(default)]
     pub update_check: Option<bool>,
+    /// The Develop sidebar sections the user has folded, by name
+    /// (`SidebarSection::name`). `None` until they first fold or open one,
+    /// which keeps the defaults; names this version doesn't know are ignored.
+    #[serde(default)]
+    pub develop_folded: Option<Vec<String>>,
 }
 
 fn default_min_free_ram_mb() -> u32 {
@@ -64,6 +69,7 @@ impl Default for AppSettings {
             reduce_motion: false,
             camera_profile_defaults: Default::default(),
             update_check: None,
+            develop_folded: None,
         }
     }
 }

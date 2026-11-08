@@ -18,6 +18,7 @@ use crate::core::paths::AppFolder;
 use crate::ui;
 use crate::ui::icons::ICON_FONT;
 use crate::ui::widgets::button;
+use crate::ui::theme;
 
 const MENU_WIDTH: f32 = 200.0;
 const MENU_ROW: f32 = 34.0;
@@ -85,8 +86,8 @@ pub fn view_preferences_modal(editor: &RawEditor) -> Element<'_, Message> {
     );
 
     column![
-        text("Preferences").size(18).font(bold()).style(|_| text::Style {
-            color: Some(Color::from_rgb(0.85, 0.85, 0.85))
+        text("Preferences").size(theme::size::TITLE).font(bold()).style(|_| text::Style {
+            color: Some(theme::colours().text)
         }),
         rule(),
         row![menu(section), vertical_rule(1).style(rule_style), content]
@@ -95,12 +96,12 @@ pub fn view_preferences_modal(editor: &RawEditor) -> Element<'_, Message> {
         rule(),
         row![
             // Resets every page, not just the one showing — the label says so.
-            button(text("Reset All to Defaults").size(13))
+            button(text("Reset All to Defaults").size(theme::size::BODY))
                 .on_press(Message::ResetPreferences)
                 .padding([8, 14])
                 .style(ui::styles::NeutralButton::style),
             Space::with_width(Length::Fill),
-            button(text("Close").size(13).align_x(iced::alignment::Horizontal::Center))
+            button(text("Close").size(theme::size::BODY).align_x(iced::alignment::Horizontal::Center))
                 .on_press(Message::CloseModal)
                 .padding([8, 14])
                 .width(Length::Fixed(110.0))
@@ -108,7 +109,7 @@ pub fn view_preferences_modal(editor: &RawEditor) -> Element<'_, Message> {
         ]
         .align_y(Alignment::Center),
     ]
-    .spacing(12)
+    .spacing(theme::space::XL)
     .width(CARD_WIDTH)
     .into()
 }
@@ -124,12 +125,12 @@ fn menu(active: PreferencesSection) -> Element<'static, Message> {
                     row![
                         text(section.icon())
                             .font(ICON_FONT)
-                            .size(13)
+                            .size(theme::size::BODY)
                             .width(Length::Fixed(18.0))
                             .align_x(iced::alignment::Horizontal::Center),
-                        text(section.label()).size(13),
+                        text(section.label()).size(theme::size::BODY),
                     ]
-                    .spacing(10)
+                    .spacing(theme::space::L)
                     .align_y(Alignment::Center),
                 )
                 .height(Length::Fill)
@@ -147,8 +148,8 @@ fn menu(active: PreferencesSection) -> Element<'static, Message> {
         active.index(),
         MENU_ROW,
         crate::ui::widgets::indicator::Appearance {
-            fill: Color::from_rgb(0.15, 0.15, 0.15),
-            accent: ui::palette::accent(),
+            fill: theme::colours().control,
+            accent: theme::colours().accent,
             accent_height: 2.0,
             accent_inset: 8.0,
         },
@@ -172,60 +173,60 @@ fn general(editor: &RawEditor) -> Element<'_, Message> {
             checkbox("Auto-Advance on Rate/Flag", editor.auto_advance)
                 .on_toggle(|_| Message::ToggleAutoAdvance)
                 .size(16)
-                .spacing(8)
+                .spacing(theme::space::M)
                 .text_size(13)
                 .style(checkbox_style),
             hint("After rating or flagging an image, move on to the next one."),
         ]
-        .spacing(4),
+        .spacing(theme::space::XS),
         // Animations are short and never block input, but some people find
         // motion uncomfortable; this lands every one on its end state.
         column![
             checkbox("Reduce motion", editor.reduce_motion)
                 .on_toggle(|_| Message::ToggleReduceMotion)
                 .size(16)
-                .spacing(8)
+                .spacing(theme::space::M)
                 .text_size(13)
                 .style(checkbox_style),
             hint("Transitions and animations jump straight to their end state."),
         ]
-        .spacing(4),
+        .spacing(theme::space::XS),
         group_label("Updates"),
         column![
             checkbox("Check for updates at startup", editor.update_check == Some(true))
                 .on_toggle(|_| Message::ToggleUpdateCheck)
                 .size(16)
-                .spacing(8)
+                .spacing(theme::space::M)
                 .text_size(13)
                 .style(checkbox_style),
             hint("One small request to GitHub when RawEditor starts. Nothing is downloaded or installed."),
         ]
-        .spacing(4),
+        .spacing(theme::space::XS),
         row![
-            button(text("Check Now").size(13))
+            button(text("Check Now").size(theme::size::BODY))
                 .on_press_maybe((!editor.updates.checking).then_some(Message::CheckForUpdates))
                 .padding([6, 12])
                 .style(ui::styles::NeutralButton::style),
             text(format!("Version {}", crate::core::updates::current_version()))
-                .size(12)
+                .size(theme::size::SMALL)
                 .font(iced::Font::MONOSPACE)
-                .style(|_| text::Style { color: Some(Color::from_rgb(0.55, 0.55, 0.55)) }),
+                .style(|_| text::Style { color: Some(theme::colours().text_muted) }),
         ]
-        .spacing(12)
+        .spacing(theme::space::XL)
         .align_y(Alignment::Center),
     ]
     .push_maybe(update_status(editor))
-    .spacing(12)
+    .spacing(theme::space::XL)
     .into()
 }
 
 /// The last Check Now's result, under its button.
 fn update_status(editor: &RawEditor) -> Option<Element<'_, Message>> {
     let st = &editor.updates;
-    let warn = Color::from_rgb(0.85, 0.55, 0.35);
-    let ok = Color::from_rgb(0.6, 0.6, 0.6);
+    let warn = theme::colours().warn;
+    let ok = theme::colours().text_secondary;
     let line = |s: String, color: Color| -> Element<'_, Message> {
-        text(s).size(12).style(move |_| text::Style { color: Some(color) }).into()
+        text(s).size(theme::size::SMALL).style(move |_| text::Style { color: Some(color) }).into()
     };
     if st.checking {
         return Some(line("Checking…".into(), ok));
@@ -233,13 +234,13 @@ fn update_status(editor: &RawEditor) -> Option<Element<'_, Message>> {
     if let Some(a) = &st.available {
         return Some(
             row![
-                line(format!("RawEditor {} is available.", a.version), ui::palette::accent_text()),
-                button(text("Open Release Page").size(12))
+                line(format!("RawEditor {} is available.", a.version), theme::colours().accent_text),
+                button(text("Open Release Page").size(theme::size::SMALL))
                     .on_press(Message::OpenUpdatePage)
                     .padding([4, 10])
                     .style(ui::styles::AccentButton::style),
             ]
-            .spacing(10)
+            .spacing(theme::space::L)
             .align_y(Alignment::Center)
             .into(),
         );
@@ -327,7 +328,7 @@ fn performance(editor: &RawEditor) -> Element<'_, Message> {
         ),
         hint("How many full RAWs are pre-decoded for faster Develop navigation."),
     ]
-    .spacing(8)
+    .spacing(theme::space::M)
     .into()
 }
 
@@ -361,7 +362,7 @@ fn memory(editor: &RawEditor) -> Element<'_, Message> {
         readout(available),
         hint("Batch export pauses if free memory drops below this, after first dropping its own caches. 0 disables the check."),
     ]
-    .spacing(8)
+    .spacing(theme::space::M)
     .into()
 }
 
@@ -424,15 +425,15 @@ fn camera_profiles(editor: &RawEditor) -> Element<'_, Message> {
                 };
                 rows.push(
                     row![
-                        text(p.name.clone()).size(12).style(|_| text::Style {
-                            color: Some(Color::from_rgb(0.8, 0.8, 0.8))
+                        text(p.name.clone()).size(theme::size::SMALL).style(|_| text::Style {
+                            color: Some(theme::colours().text)
                         }),
                         Space::with_width(Length::Fill),
-                        text(format!("{origin} · {}", p.file_name)).size(11).style(|_| text::Style {
-                            color: Some(Color::from_rgb(0.5, 0.5, 0.5))
+                        text(format!("{origin} · {}", p.file_name)).size(theme::size::CAPTION).style(|_| text::Style {
+                            color: Some(theme::colours().text_muted)
                         }),
                     ]
-                    .spacing(8)
+                    .spacing(theme::space::M)
                     .align_y(Alignment::Center),
                 )
             });
@@ -441,23 +442,23 @@ fn camera_profiles(editor: &RawEditor) -> Element<'_, Message> {
                     row![
                         card_title_owned(camera),
                         Space::with_width(Length::Fill),
-                        text("Default").size(11).style(|_| text::Style {
-                            color: Some(Color::from_rgb(0.5, 0.5, 0.5))
+                        text("Default").size(theme::size::CAPTION).style(|_| text::Style {
+                            color: Some(theme::colours().text_muted)
                         }),
                         default,
                     ]
-                    .spacing(8)
+                    .spacing(theme::space::M)
                     .align_y(Alignment::Center),
                     rows,
                 ]
-                .spacing(6),
+                .spacing(theme::space::S),
             )
         })
         .into(),
     };
 
-    let warn = Color::from_rgb(0.9, 0.55, 0.3);
-    let ok = Color::from_rgb(0.55, 0.75, 0.55);
+    let warn = theme::colours().warn;
+    let ok = theme::colours().ok;
     let status: Option<(String, Color)> = match state.busy {
         Some(ProfileJob::Downloading) => Some(("Downloading…".into(), ok)),
         Some(ProfileJob::Importing) => Some(("Importing…".into(), ok)),
@@ -471,15 +472,15 @@ fn camera_profiles(editor: &RawEditor) -> Element<'_, Message> {
 
     // Download for the image open in Develop, when there is one.
     let open_camera = editor.current_metadata.as_ref().map(|m| camera_name(&m.make, &m.model));
-    let mut actions = row![].spacing(8);
+    let mut actions = row![].spacing(theme::space::M);
     if let Some(camera) = &open_camera {
         actions = actions.push(
             button(
                 row![
-                    text("\u{f019}").font(ICON_FONT).size(13), // download
-                    text(format!("Download for {camera}")).size(13),
+                    text("\u{f019}").font(ICON_FONT).size(theme::size::BODY), // download
+                    text(format!("Download for {camera}")).size(theme::size::BODY),
                 ]
-                .spacing(8)
+                .spacing(theme::space::M)
                 .align_y(Alignment::Center),
             )
             .on_press_maybe(idle.then_some(Message::DownloadCameraProfile))
@@ -488,7 +489,7 @@ fn camera_profiles(editor: &RawEditor) -> Element<'_, Message> {
         );
     }
     actions = actions.push(
-        button(text("Update Downloaded").size(13))
+        button(text("Update Downloaded").size(theme::size::BODY))
             .on_press_maybe(idle.then_some(Message::UpdateCameraProfiles))
             .padding([6, 12])
             .style(ui::styles::NeutralButton::style),
@@ -498,9 +499,9 @@ fn camera_profiles(editor: &RawEditor) -> Element<'_, Message> {
         hint("The RawTherapee project publishes free camera profiles for about 160 cameras. When an image's camera has no profile, Develop offers to download its one; RawEditor goes online only when you click."),
         actions,
     ]
-    .spacing(10);
+    .spacing(theme::space::L);
     if let Some((line, color)) = status {
-        open_source = open_source.push(text(line).size(12).style(move |_| text::Style { color: Some(color) }));
+        open_source = open_source.push(text(line).size(theme::size::SMALL).style(move |_| text::Style { color: Some(color) }));
     }
 
     let own_dir = crate::core::paths::profiles_dir();
@@ -508,48 +509,48 @@ fn camera_profiles(editor: &RawEditor) -> Element<'_, Message> {
         row![
             card_title("Your Own Profiles"),
             Space::with_width(Length::Fill),
-            button(text("Rescan").size(13))
+            button(text("Rescan").size(theme::size::BODY))
                 .on_press_maybe(idle.then_some(Message::RescanCameraProfiles))
                 .padding([6, 12])
                 .style(ui::styles::NeutralButton::style),
-            button(text("Import…").size(13))
+            button(text("Import…").size(theme::size::BODY))
                 .on_press_maybe(idle.then_some(Message::ImportCameraProfiles))
                 .padding([6, 12])
                 .style(ui::styles::NeutralButton::style),
             button(
-                row![text(ui::icons::FOLDER_OPEN).font(ICON_FONT).size(13), text("Open Folder").size(13)]
-                    .spacing(8)
+                row![text(ui::icons::FOLDER_OPEN).font(ICON_FONT).size(theme::size::BODY), text("Open Folder").size(theme::size::BODY)]
+                    .spacing(theme::space::M)
                     .align_y(Alignment::Center),
             )
             .on_press(Message::OpenAppFolder(AppFolder::Profiles))
             .padding([6, 12])
             .style(ui::styles::NeutralButton::style),
         ]
-        .spacing(8)
+        .spacing(theme::space::M)
         .align_y(Alignment::Center),
-        text(own_dir.display().to_string()).size(12).style(|_| text::Style {
-            color: Some(ui::palette::accent_text())
+        text(own_dir.display().to_string()).size(theme::size::SMALL).style(|_| text::Style {
+            color: Some(theme::colours().accent_text)
         }),
         hint("Any DNG camera profile (.dcp) works. Your own profiles are offered before downloaded ones; Rescan after copying files in by hand."),
     ]
-    .spacing(10);
+    .spacing(theme::space::L);
 
     column![
         heading("Camera Profiles"),
         hint("A camera profile (DCP) describes how a sensor records colour. Each image can pick its own in Develop; the default below is used otherwise."),
-        card(column![card_title("Installed"), installed].spacing(12)),
+        card(column![card_title("Installed"), installed].spacing(theme::space::XL)),
         card(open_source),
         card(own),
     ]
-    .spacing(12)
+    .spacing(theme::space::XL)
     .into()
 }
 
 fn card_title_owned(title: String) -> Element<'static, Message> {
     text(title)
-        .size(14)
+        .size(theme::size::LABEL)
         .font(bold())
-        .style(|_| text::Style { color: Some(Color::from_rgb(0.88, 0.88, 0.88)) })
+        .style(|_| text::Style { color: Some(theme::colours().text) })
         .into()
 }
 
@@ -574,7 +575,7 @@ fn lens_profiles(editor: &RawEditor) -> Element<'_, Message> {
             "No lens profiles are installed yet. Download the lensfun database below — or add XML files by hand.",
         ),
         Some(db) => {
-            let sources = db.sources.iter().fold(column![].spacing(6), |list, s| {
+            let sources = db.sources.iter().fold(column![].spacing(theme::space::S), |list, s| {
                 let origin = if s.dir == own_dir {
                     "Your own files"
                 } else if s.dir == downloaded_dir {
@@ -590,27 +591,27 @@ fn lens_profiles(editor: &RawEditor) -> Element<'_, Message> {
                 list.push(
                     column![
                         row![
-                            text(origin).size(12).style(|_| text::Style {
-                                color: Some(Color::from_rgb(0.8, 0.8, 0.8))
+                            text(origin).size(theme::size::SMALL).style(|_| text::Style {
+                                color: Some(theme::colours().text)
                             }),
                             Space::with_width(Length::Fill),
-                            text(detail).size(11).style(|_| text::Style {
-                                color: Some(Color::from_rgb(0.5, 0.5, 0.5))
+                            text(detail).size(theme::size::CAPTION).style(|_| text::Style {
+                                color: Some(theme::colours().text_muted)
                             }),
                         ]
                         .align_y(Alignment::Center),
-                        text(s.dir.display().to_string()).size(11).style(|_| text::Style {
-                            color: Some(ui::palette::accent_text())
+                        text(s.dir.display().to_string()).size(theme::size::CAPTION).style(|_| text::Style {
+                            color: Some(theme::colours().accent_text)
                         }),
                     ]
-                    .spacing(2),
+                    .spacing(theme::space::XXS),
                 )
             });
             column![
                 readout(format!("{} lenses · {} cameras", db.lenses.len(), db.cameras.len())),
                 sources,
             ]
-            .spacing(10)
+            .spacing(theme::space::L)
             .into()
         }
     };
@@ -618,8 +619,8 @@ fn lens_profiles(editor: &RawEditor) -> Element<'_, Message> {
     // The newest copy on disk, for "up to date?".
     let newest_local = db.as_ref().and_then(|d| d.sources.iter().filter_map(|s| s.timestamp).max());
     let has_download = db.as_ref().is_some_and(|d| d.sources.iter().any(|s| s.dir == downloaded_dir));
-    let warn = Color::from_rgb(0.9, 0.55, 0.3);
-    let ok = Color::from_rgb(0.55, 0.75, 0.55);
+    let warn = theme::colours().warn;
+    let ok = theme::colours().ok;
     let status: Option<(String, Color)> = match busy {
         Some(LensfunJob::Checking) => Some(("Checking lensfun.github.io…".into(), ok)),
         Some(LensfunJob::Downloading) => Some(("Downloading…".into(), ok)),
@@ -636,7 +637,7 @@ fn lens_profiles(editor: &RawEditor) -> Element<'_, Message> {
             }
             (None, Some(Ok(r))) => Some((
                 format!("A newer database is available, published {}", format_date(r.timestamp)),
-                ui::palette::accent_text(),
+                theme::colours().accent_text,
             )),
             (None, None) => None,
         },
@@ -644,38 +645,38 @@ fn lens_profiles(editor: &RawEditor) -> Element<'_, Message> {
     let idle = busy.is_none();
     let download = button(
         row![
-            text("\u{f019}").font(ICON_FONT).size(13), // download
-            text(if has_download { "Update Now" } else { "Download Lens Profiles" }).size(13),
+            text("\u{f019}").font(ICON_FONT).size(theme::size::BODY), // download
+            text(if has_download { "Update Now" } else { "Download Lens Profiles" }).size(theme::size::BODY),
         ]
-        .spacing(8)
+        .spacing(theme::space::M)
         .align_y(Alignment::Center),
     )
     .on_press_maybe(idle.then_some(Message::LensfunDownload))
     .padding([6, 12])
     .style(ui::styles::AccentButton::style);
-    let check = button(text("Check for Updates").size(13))
+    let check = button(text("Check for Updates").size(theme::size::BODY))
         .on_press_maybe(idle.then_some(Message::LensfunCheck))
         .padding([6, 12])
         .style(ui::styles::NeutralButton::style);
     let mut updates = column![
         card_title("Download & Updates"),
-        row![download, check].spacing(8),
+        row![download, check].spacing(theme::space::M),
     ]
-    .spacing(10);
+    .spacing(theme::space::L);
     if let Some((line, color)) = status {
-        updates = updates.push(text(line).size(12).style(move |_| text::Style { color: Some(color) }));
+        updates = updates.push(text(line).size(theme::size::SMALL).style(move |_| text::Style { color: Some(color) }));
     }
     updates = updates.push(hint(
         "About 0.4 MB from the lensfun project's site (lensfun.github.io). RawEditor goes online only when you click.",
     ));
 
-    let rescan = button(text("Rescan").size(13))
+    let rescan = button(text("Rescan").size(theme::size::BODY))
         .on_press_maybe(idle.then_some(Message::LensfunRescan))
         .padding([6, 12])
         .style(ui::styles::NeutralButton::style);
     let open = button(
-        row![text(ui::icons::FOLDER_OPEN).font(ICON_FONT).size(13), text("Open Folder").size(13)]
-            .spacing(8)
+        row![text(ui::icons::FOLDER_OPEN).font(ICON_FONT).size(theme::size::BODY), text("Open Folder").size(theme::size::BODY)]
+            .spacing(theme::space::M)
             .align_y(Alignment::Center),
     )
     .on_press(Message::OpenAppFolder(AppFolder::Lensfun))
@@ -685,23 +686,23 @@ fn lens_profiles(editor: &RawEditor) -> Element<'_, Message> {
     column![
         heading("Lens Profiles"),
         hint("Profile corrections for distortion, vignetting and chromatic aberration use calibrations from the open lensfun database."),
-        card(column![card_title("Installed"), installed].spacing(10)),
+        card(column![card_title("Installed"), installed].spacing(theme::space::L)),
         card(updates),
         card(
             column![
                 row![card_title("Your Own Profiles"), Space::with_width(Length::Fill), rescan, open]
-                    .spacing(8)
+                    .spacing(theme::space::M)
                     .align_y(Alignment::Center),
-                text(own_dir.display().to_string()).size(12).style(|_| text::Style {
-                    color: Some(ui::palette::accent_text())
+                text(own_dir.display().to_string()).size(theme::size::SMALL).style(|_| text::Style {
+                    color: Some(theme::colours().accent_text)
                 }),
                 hint("Put lensfun XML files here — they take priority over the downloaded database. Rescan after adding them."),
             ]
-            .spacing(10),
+            .spacing(theme::space::L),
         ),
         hint("Lens profiles © the lensfun contributors, CC BY-SA 3.0."),
     ]
-    .spacing(12)
+    .spacing(theme::space::XL)
     .into()
 }
 
@@ -712,7 +713,7 @@ fn ai_models(editor: &RawEditor) -> Element<'_, Message> {
     use crate::app::views::modals::megabytes;
     use crate::ml::models::{is_installed, ALL};
 
-    let cards = ALL.iter().fold(column![].spacing(12), |list, model| {
+    let cards = ALL.iter().fold(column![].spacing(theme::space::XL), |list, model| {
         let id = model.id;
         let installed = is_installed(id);
         let job = editor.models.job.as_ref().filter(|(j, _)| *j == id);
@@ -720,25 +721,25 @@ fn ai_models(editor: &RawEditor) -> Element<'_, Message> {
         let action: Element<'_, Message> = match (job, installed) {
             (Some((_, progress)), _) => row![
                 iced::widget::progress_bar(0.0..=1.0, progress.fraction()).height(6).width(Length::Fixed(160.0)),
-                button(text("Cancel").size(13))
+                button(text("Cancel").size(theme::size::BODY))
                     .on_press(Message::ModelDownloadCancel)
                     .padding([6, 12])
                     .style(ui::styles::NeutralButton::style),
             ]
-            .spacing(8)
+            .spacing(theme::space::M)
             .align_y(Alignment::Center)
             .into(),
-            (None, true) => button(text("Remove").size(13))
+            (None, true) => button(text("Remove").size(theme::size::BODY))
                 .on_press(Message::ModelRemove(id))
                 .padding([6, 12])
                 .style(ui::styles::NeutralButton::style)
                 .into(),
             (None, false) => button(
                 row![
-                    text("\u{f019}").font(ICON_FONT).size(13), // download
-                    text(format!("Download {}", megabytes(model.total_bytes()))).size(13),
+                    text("\u{f019}").font(ICON_FONT).size(theme::size::BODY), // download
+                    text(format!("Download {}", megabytes(model.total_bytes()))).size(theme::size::BODY),
                 ]
-                .spacing(8)
+                .spacing(theme::space::M)
                 .align_y(Alignment::Center),
             )
             .on_press_maybe((!busy).then_some(Message::ModelDownload(id)))
@@ -749,15 +750,15 @@ fn ai_models(editor: &RawEditor) -> Element<'_, Message> {
         let state = if installed { "Installed" } else { "Not installed" };
         let mut body = column![
             row![card_title(model.purpose), Space::with_width(Length::Fill), action]
-                .spacing(8)
+                .spacing(theme::space::M)
                 .align_y(Alignment::Center),
             readout(format!("{} · {} · {state}", model.title, megabytes(model.total_bytes()))),
             hint(model.licence),
         ]
-        .spacing(8);
+        .spacing(theme::space::M);
         if let Some((_, e)) = editor.models.error.as_ref().filter(|(e, _)| *e == id) {
-            body = body.push(text(format!("Download failed: {e}")).size(12).style(|_| text::Style {
-                color: Some(Color::from_rgb(0.9, 0.55, 0.3)),
+            body = body.push(text(format!("Download failed: {e}")).size(theme::size::SMALL).style(|_| text::Style {
+                color: Some(theme::colours().warn),
             }));
         }
         list.push(card(body))
@@ -770,8 +771,8 @@ fn ai_models(editor: &RawEditor) -> Element<'_, Message> {
         row![
             Space::with_width(Length::Fill),
             button(
-                row![text(ui::icons::FOLDER_OPEN).font(ICON_FONT).size(13), text("Open Folder").size(13)]
-                    .spacing(8)
+                row![text(ui::icons::FOLDER_OPEN).font(ICON_FONT).size(theme::size::BODY), text("Open Folder").size(theme::size::BODY)]
+                    .spacing(theme::space::M)
                     .align_y(Alignment::Center),
             )
             .on_press(Message::OpenAppFolder(AppFolder::Models))
@@ -779,15 +780,15 @@ fn ai_models(editor: &RawEditor) -> Element<'_, Message> {
             .style(ui::styles::NeutralButton::style),
         ],
     ]
-    .spacing(12)
+    .spacing(theme::space::XL)
     .into()
 }
 
 fn card_title(title: &str) -> Element<'_, Message> {
     text(title)
-        .size(14)
+        .size(theme::size::LABEL)
         .font(bold())
-        .style(|_| text::Style { color: Some(Color::from_rgb(0.88, 0.88, 0.88)) })
+        .style(|_| text::Style { color: Some(theme::colours().text) })
         .into()
 }
 
@@ -819,7 +820,7 @@ fn folders() -> Element<'static, Message> {
             "Safe to delete while RawEditor is closed: anything missing is rebuilt.",
         ),
     ]
-    .spacing(12)
+    .spacing(theme::space::XL)
     .into()
 }
 
@@ -835,24 +836,24 @@ fn folder_card(
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| "Not available on this platform".to_string());
 
-    let listing = contents.iter().fold(column![].spacing(4), |list, &(name, what)| {
+    let listing = contents.iter().fold(column![].spacing(theme::space::XS), |list, &(name, what)| {
         list.push(
             row![
-                text(name).size(12).width(Length::Fixed(120.0)).style(|_| text::Style {
-                    color: Some(Color::from_rgb(0.8, 0.8, 0.8))
+                text(name).size(theme::size::SMALL).width(Length::Fixed(120.0)).style(|_| text::Style {
+                    color: Some(theme::colours().text)
                 }),
-                text(what).size(11).style(|_| text::Style {
-                    color: Some(Color::from_rgb(0.5, 0.5, 0.5))
+                text(what).size(theme::size::CAPTION).style(|_| text::Style {
+                    color: Some(theme::colours().text_muted)
                 }),
             ]
-            .spacing(8)
+            .spacing(theme::space::M)
             .align_y(Alignment::Center),
         )
     });
 
     let open = button(
-        row![text(ui::icons::FOLDER_OPEN).font(ICON_FONT).size(13), text("Open Folder").size(13)]
-            .spacing(8)
+        row![text(ui::icons::FOLDER_OPEN).font(ICON_FONT).size(theme::size::BODY), text("Open Folder").size(theme::size::BODY)]
+            .spacing(theme::space::M)
             .align_y(Alignment::Center),
     )
     .on_press_maybe(path.is_some().then_some(Message::OpenAppFolder(folder)))
@@ -862,20 +863,20 @@ fn folder_card(
     card(
         column![
             row![
-                text(title).size(14).font(bold()).style(|_| text::Style {
-                    color: Some(Color::from_rgb(0.88, 0.88, 0.88))
+                text(title).size(theme::size::LABEL).font(bold()).style(|_| text::Style {
+                    color: Some(theme::colours().text)
                 }),
                 Space::with_width(Length::Fill),
                 open,
             ]
             .align_y(Alignment::Center),
-            text(path_text).size(12).style(|_| text::Style {
-                color: Some(ui::palette::accent_text())
+            text(path_text).size(theme::size::SMALL).style(|_| text::Style {
+                color: Some(theme::colours().accent_text)
             }),
             listing,
             hint(note),
         ]
-        .spacing(10),
+        .spacing(theme::space::L),
     )
 }
 
@@ -1007,21 +1008,21 @@ const LICENSE_TEXT: &str = include_str!("../../../LICENSE");
 
 fn licenses() -> Element<'static, Message> {
     let list = |credits: &'static [Credit]| {
-        credits.iter().fold(column![].spacing(2), |list, c| list.push(credit_row(c)))
+        credits.iter().fold(column![].spacing(theme::space::XXS), |list, c| list.push(credit_row(c)))
     };
 
     column![
         heading("Licenses"),
         row![
-            text(format!("RawEditor {}", env!("CARGO_PKG_VERSION"))).size(14).font(bold()).style(
-                |_| text::Style { color: Some(Color::from_rgb(0.88, 0.88, 0.88)) }
+            text(format!("RawEditor {}", env!("CARGO_PKG_VERSION"))).size(theme::size::LABEL).font(bold()).style(
+                |_| text::Style { color: Some(theme::colours().text) }
             ),
             Space::with_width(Length::Fill),
-            text("MIT").size(11).style(|_| text::Style { color: Some(ui::palette::accent_text()) }),
+            text("MIT").size(theme::size::CAPTION).style(|_| text::Style { color: Some(theme::colours().accent_text) }),
         ]
         .align_y(Alignment::Center),
-        card(text(LICENSE_TEXT.trim()).size(11).style(|_| text::Style {
-            color: Some(Color::from_rgb(0.6, 0.6, 0.6))
+        card(text(LICENSE_TEXT.trim()).size(theme::size::CAPTION).style(|_| text::Style {
+            color: Some(theme::colours().text_muted)
         })),
         group_label("Bundled"),
         list(BUNDLED),
@@ -1035,7 +1036,7 @@ fn licenses() -> Element<'static, Message> {
         list(EXTERNAL),
         hint("None of these is bundled. Lens and camera profiles are downloaded only when you ask; profiles you add stay yours."),
     ]
-    .spacing(8)
+    .spacing(theme::space::M)
     .into()
 }
 
@@ -1044,20 +1045,20 @@ fn licenses() -> Element<'static, Message> {
 fn credit_row(c: &'static Credit) -> Element<'static, Message> {
     let body = row![
         column![
-            text(c.name).size(13).font(bold()).style(|_| text::Style {
-                color: Some(Color::from_rgb(0.85, 0.85, 0.85))
+            text(c.name).size(theme::size::BODY).font(bold()).style(|_| text::Style {
+                color: Some(theme::colours().text)
             }),
-            text(c.purpose).size(11).style(|_| text::Style {
-                color: Some(Color::from_rgb(0.5, 0.5, 0.5))
+            text(c.purpose).size(theme::size::CAPTION).style(|_| text::Style {
+                color: Some(theme::colours().text_muted)
             }),
         ]
-        .spacing(2)
+        .spacing(theme::space::XXS)
         .width(Length::Fill),
-        text(c.license).size(11).style(|_| text::Style {
-            color: Some(ui::palette::accent_text())
+        text(c.license).size(theme::size::CAPTION).style(|_| text::Style {
+            color: Some(theme::colours().accent_text)
         }),
     ]
-    .spacing(12)
+    .spacing(theme::space::XL)
     .align_y(Alignment::Center);
 
     match c.url {
@@ -1082,15 +1083,15 @@ fn bold() -> Font {
 
 fn heading(label: &str) -> Element<'_, Message> {
     text(label)
-        .size(16)
+        .size(theme::size::HEADING)
         .font(bold())
-        .style(|_| text::Style { color: Some(Color::from_rgb(0.9, 0.9, 0.9)) })
+        .style(|_| text::Style { color: Some(theme::colours().text) })
         .into()
 }
 
 fn group_label(label: &str) -> Element<'_, Message> {
-    container(text(label).size(12).font(bold()).style(|_| text::Style {
-        color: Some(Color::from_rgb(0.5, 0.5, 0.5))
+    container(text(label).size(theme::size::SMALL).font(bold()).style(|_| text::Style {
+        color: Some(theme::colours().text_muted)
     }))
     .padding(iced::Padding { top: 8.0, ..Default::default() })
     .into()
@@ -1098,28 +1099,28 @@ fn group_label(label: &str) -> Element<'_, Message> {
 
 fn hint(s: &str) -> Element<'_, Message> {
     text(s)
-        .size(11)
-        .style(|_| text::Style { color: Some(Color::from_rgb(0.45, 0.45, 0.45)) })
+        .size(theme::size::CAPTION)
+        .style(|_| text::Style { color: Some(theme::colours().text_hint) })
         .into()
 }
 
 fn readout(s: String) -> Element<'static, Message> {
     text(s)
-        .size(12)
-        .style(|_| text::Style { color: Some(Color::from_rgb(0.55, 0.75, 0.55)) })
+        .size(theme::size::SMALL)
+        .style(|_| text::Style { color: Some(theme::colours().ok) })
         .into()
 }
 
 fn value_row(label: &str, value: String) -> Element<'_, Message> {
     row![
-        text(label).size(13).style(|_| text::Style {
-            color: Some(Color::from_rgb(0.7, 0.7, 0.7))
+        text(label).size(theme::size::BODY).style(|_| text::Style {
+            color: Some(theme::colours().text_secondary)
         }),
-        text(value).size(13).font(bold()).style(|_| text::Style {
-            color: Some(Color::from_rgb(0.85, 0.85, 0.85))
+        text(value).size(theme::size::BODY).font(bold()).style(|_| text::Style {
+            color: Some(theme::colours().text)
         }),
     ]
-    .spacing(8)
+    .spacing(theme::space::M)
     .align_y(Alignment::Center)
     .into()
 }
@@ -1129,12 +1130,12 @@ fn labelled_slider<'a>(
     slider: impl Into<Element<'a, Message>>,
 ) -> Element<'a, Message> {
     row![
-        text(label).size(11).width(Length::Fixed(52.0)).style(|_| text::Style {
-            color: Some(Color::from_rgb(0.5, 0.5, 0.5))
+        text(label).size(theme::size::CAPTION).width(Length::Fixed(52.0)).style(|_| text::Style {
+            color: Some(theme::colours().text_muted)
         }),
         slider.into(),
     ]
-    .spacing(8)
+    .spacing(theme::space::M)
     .align_y(Alignment::Center)
     .into()
 }
@@ -1144,11 +1145,11 @@ fn card<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
         .padding(12)
         .width(Length::Fill)
         .style(|_| container::Style {
-            background: Some(Background::Color(Color::from_rgb(0.13, 0.13, 0.13))),
+            background: Some(Background::Color(theme::colours().surface_raised)),
             border: Border {
-                color: Color::from_rgb(0.2, 0.2, 0.2),
+                color: theme::colours().border_subtle,
                 width: 1.0,
-                radius: 6.0.into(),
+                radius: theme::radius::CARD.into(),
             },
             ..Default::default()
         })
@@ -1161,7 +1162,7 @@ fn rule() -> Element<'static, Message> {
 
 fn rule_style(_theme: &Theme) -> iced::widget::rule::Style {
     iced::widget::rule::Style {
-        color: Color::from_rgb(0.3, 0.3, 0.3),
+        color: theme::colours().border_strong,
         width: 1,
         radius: 0.0.into(),
         fill_mode: iced::widget::rule::FillMode::Full,
@@ -1170,14 +1171,14 @@ fn rule_style(_theme: &Theme) -> iced::widget::rule::Style {
 
 fn checkbox_style(_theme: &Theme, _status: checkbox::Status) -> checkbox::Style {
     checkbox::Style {
-        background: Background::Color(Color::from_rgb(0.2, 0.2, 0.2)),
-        icon_color: Color::from_rgb(0.85, 0.85, 0.85),
+        background: Background::Color(theme::colours().control_hover),
+        icon_color: theme::colours().text,
         border: Border {
-            color: Color::from_rgb(0.4, 0.4, 0.4),
+            color: theme::colours().border_control,
             width: 1.0,
-            radius: 3.0.into(),
+            radius: theme::radius::CONTROL.into(),
         },
-        text_color: Some(Color::from_rgb(0.7, 0.7, 0.7)),
+        text_color: Some(theme::colours().text_secondary),
     }
 }
 

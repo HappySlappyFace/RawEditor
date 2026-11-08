@@ -12,7 +12,7 @@ use crate::app::state::RawEditor;
 use crate::database::models::{Image as ImageData, MARKED_FOR_REMOVAL_RATING};
 use crate::ui;
 use crate::ui::icons::ICON_FONT;
-use crate::ui::palette;
+use crate::ui::theme;
 
 const THUMB_PRESET_SMALL: f32 = 150.0;
 const THUMB_PRESET_MEDIUM: f32 = 190.0;
@@ -156,23 +156,23 @@ fn is_image_selected(editor: &RawEditor, image_id: i64) -> bool {
 fn metric_pill<'a>(label: &'a str, value: impl ToString, color: Color) -> Element<'a, Message> {
     container(
         row![
-            text(label).size(11).style(|_| text::Style {
-                color: Some(Color::from_rgb(0.68, 0.68, 0.68))
+            text(label).size(theme::size::CAPTION).style(|_| text::Style {
+                color: Some(theme::colours().text_secondary)
             }),
             text(value.to_string())
-                .size(11)
+                .size(theme::size::CAPTION)
                 .style(move |_| text::Style { color: Some(color) }),
         ]
-        .spacing(6)
+        .spacing(theme::space::S)
         .align_y(Alignment::Center),
     )
     .padding([4, 8])
     .style(|_| container::Style {
-        background: Some(Background::Color(Color::from_rgb(0.13, 0.13, 0.13))),
+        background: Some(Background::Color(theme::colours().surface_raised)),
         border: Border {
-            radius: 12.0.into(),
+            radius: theme::radius::DIALOG.into(),
             width: 1.0,
-            color: Color::from_rgb(0.20, 0.20, 0.20),
+            color: theme::colours().border_subtle,
         },
         ..Default::default()
     })
@@ -182,32 +182,32 @@ fn metric_pill<'a>(label: &'a str, value: impl ToString, color: Color) -> Elemen
 fn style_toolbar_button(_theme: &Theme, status: button::Status) -> button::Style {
     match status {
         button::Status::Hovered => button::Style {
-            background: Some(Background::Color(Color::from_rgb(0.30, 0.30, 0.30))),
-            text_color: Color::WHITE,
+            background: Some(Background::Color(theme::colours().control_active)),
+            text_color: theme::colours().text_strong,
             border: Border {
-                radius: 8.0.into(),
+                radius: theme::radius::CARD.into(),
                 width: 1.0,
-                color: Color::from_rgb(0.45, 0.45, 0.45),
+                color: theme::colours().border_control,
             },
             ..Default::default()
         },
         button::Status::Pressed => button::Style {
-            background: Some(Background::Color(Color::from_rgb(0.17, 0.17, 0.17))),
-            text_color: Color::WHITE,
+            background: Some(Background::Color(theme::colours().control)),
+            text_color: theme::colours().text_strong,
             border: Border {
-                radius: 8.0.into(),
+                radius: theme::radius::CARD.into(),
                 width: 1.0,
-                color: Color::from_rgb(0.35, 0.35, 0.35),
+                color: theme::colours().border_strong,
             },
             ..Default::default()
         },
         _ => button::Style {
-            background: Some(Background::Color(Color::from_rgb(0.20, 0.20, 0.20))),
-            text_color: Color::from_rgb(0.88, 0.88, 0.88),
+            background: Some(Background::Color(theme::colours().control_hover)),
+            text_color: theme::colours().text,
             border: Border {
-                radius: 8.0.into(),
+                radius: theme::radius::CARD.into(),
                 width: 1.0,
-                color: Color::from_rgb(0.30, 0.30, 0.30),
+                color: theme::colours().border_strong,
             },
             ..Default::default()
         },
@@ -218,34 +218,34 @@ fn style_chip(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style 
     move |_theme, status| {
         if active {
             button::Style {
-                background: Some(Background::Color(palette::accent_chip_fill())),
-                text_color: Color::WHITE,
+                background: Some(Background::Color(theme::colours().accent_fill)),
+                text_color: theme::colours().text_strong,
                 border: Border {
-                    radius: 14.0.into(),
+                    radius: theme::radius::PILL.into(),
                     width: 1.0,
-                    color: palette::accent_chip_border(),
+                    color: theme::colours().accent_border,
                 },
                 ..Default::default()
             }
         } else {
             match status {
                 button::Status::Hovered => button::Style {
-                    background: Some(Background::Color(Color::from_rgb(0.22, 0.22, 0.22))),
-                    text_color: Color::from_rgb(0.90, 0.90, 0.90),
+                    background: Some(Background::Color(theme::colours().control_hover)),
+                    text_color: theme::colours().text,
                     border: Border {
-                        radius: 14.0.into(),
+                        radius: theme::radius::PILL.into(),
                         width: 1.0,
-                        color: Color::from_rgb(0.30, 0.30, 0.30),
+                        color: theme::colours().border_strong,
                     },
                     ..Default::default()
                 },
                 _ => button::Style {
-                    background: Some(Background::Color(Color::from_rgb(0.16, 0.16, 0.16))),
-                    text_color: Color::from_rgb(0.72, 0.72, 0.72),
+                    background: Some(Background::Color(theme::colours().control)),
+                    text_color: theme::colours().text_secondary,
                     border: Border {
-                        radius: 14.0.into(),
+                        radius: theme::radius::PILL.into(),
                         width: 1.0,
-                        color: Color::from_rgb(0.24, 0.24, 0.24),
+                        color: theme::colours().border,
                     },
                     ..Default::default()
                 },
@@ -258,34 +258,34 @@ fn style_sidebar_button(active: bool) -> impl Fn(&Theme, button::Status) -> butt
     move |_theme, status| {
         if active {
             button::Style {
-                background: Some(Background::Color(palette::accent_sidebar_fill())),
-                text_color: Color::WHITE,
+                background: Some(Background::Color(theme::colours().accent_fill_hover)),
+                text_color: theme::colours().text_strong,
                 border: Border {
-                    radius: 6.0.into(),
+                    radius: theme::radius::CARD.into(),
                     width: 1.0,
-                    color: palette::accent_sidebar_border(),
+                    color: theme::colours().accent_border_hover,
                 },
                 ..Default::default()
             }
         } else {
             match status {
                 button::Status::Hovered => button::Style {
-                    background: Some(Background::Color(Color::from_rgb(0.20, 0.20, 0.20))),
-                    text_color: Color::from_rgb(0.92, 0.92, 0.92),
+                    background: Some(Background::Color(theme::colours().control_hover)),
+                    text_color: theme::colours().text,
                     border: Border {
-                        radius: 6.0.into(),
+                        radius: theme::radius::CARD.into(),
                         width: 1.0,
-                        color: Color::from_rgb(0.28, 0.28, 0.28),
+                        color: theme::colours().border_strong,
                     },
                     ..Default::default()
                 },
                 _ => button::Style {
-                    background: Some(Background::Color(Color::from_rgb(0.14, 0.14, 0.14))),
-                    text_color: Color::from_rgb(0.74, 0.74, 0.74),
+                    background: Some(Background::Color(theme::colours().control)),
+                    text_color: theme::colours().text_secondary,
                     border: Border {
-                        radius: 6.0.into(),
+                        radius: theme::radius::CARD.into(),
                         width: 1.0,
-                        color: Color::from_rgb(0.20, 0.20, 0.20),
+                        color: theme::colours().border_subtle,
                     },
                     ..Default::default()
                 },
@@ -297,30 +297,30 @@ fn style_sidebar_button(active: bool) -> impl Fn(&Theme, button::Status) -> butt
 fn style_sidebar_action_button(_theme: &Theme, status: button::Status) -> button::Style {
     match status {
         button::Status::Hovered => button::Style {
-            background: Some(Background::Color(Color::from_rgb(0.24, 0.24, 0.24))),
-            text_color: Color::from_rgb(0.94, 0.94, 0.94),
+            background: Some(Background::Color(theme::colours().control_active)),
+            text_color: theme::colours().text,
             border: Border {
-                radius: 6.0.into(),
+                radius: theme::radius::CARD.into(),
                 width: 0.0,
                 color: Color::TRANSPARENT,
             },
             ..Default::default()
         },
         button::Status::Pressed => button::Style {
-            background: Some(Background::Color(Color::from_rgb(0.16, 0.16, 0.16))),
-            text_color: Color::from_rgb(0.90, 0.90, 0.90),
+            background: Some(Background::Color(theme::colours().control)),
+            text_color: theme::colours().text,
             border: Border {
-                radius: 6.0.into(),
+                radius: theme::radius::CARD.into(),
                 width: 0.0,
                 color: Color::TRANSPARENT,
             },
             ..Default::default()
         },
         _ => button::Style {
-            background: Some(Background::Color(Color::from_rgb(0.19, 0.19, 0.19))),
-            text_color: Color::from_rgb(0.84, 0.84, 0.84),
+            background: Some(Background::Color(theme::colours().control_hover)),
+            text_color: theme::colours().text,
             border: Border {
-                radius: 6.0.into(),
+                radius: theme::radius::CARD.into(),
                 width: 0.0,
                 color: Color::TRANSPARENT,
             },
@@ -385,30 +385,30 @@ fn is_thumb_preset_active(current: f32, preset: f32) -> bool {
 fn view_thumbnail_size_presets<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
     row![
         text("Card size")
-            .size(12)
-            .style(|_| text::Style { color: Some(Color::from_rgb(0.62, 0.62, 0.62)) }),
-        button(text("S").size(11))
+            .size(theme::size::SMALL)
+            .style(|_| text::Style { color: Some(theme::colours().text_secondary) }),
+        button(text("S").size(theme::size::CAPTION))
             .on_press(Message::SetThumbnailSize(THUMB_PRESET_SMALL))
             .padding([4, 8])
             .style(style_chip(is_thumb_preset_active(
                 editor.thumbnail_size,
                 THUMB_PRESET_SMALL
             ))),
-        button(text("M").size(11))
+        button(text("M").size(theme::size::CAPTION))
             .on_press(Message::SetThumbnailSize(THUMB_PRESET_MEDIUM))
             .padding([4, 8])
             .style(style_chip(is_thumb_preset_active(
                 editor.thumbnail_size,
                 THUMB_PRESET_MEDIUM
             ))),
-        button(text("L").size(11))
+        button(text("L").size(theme::size::CAPTION))
             .on_press(Message::SetThumbnailSize(THUMB_PRESET_LARGE))
             .padding([4, 8])
             .style(style_chip(is_thumb_preset_active(
                 editor.thumbnail_size,
                 THUMB_PRESET_LARGE
             ))),
-        button(text("XL").size(11))
+        button(text("XL").size(theme::size::CAPTION))
             .on_press(Message::SetThumbnailSize(THUMB_PRESET_XL))
             .padding([4, 8])
             .style(style_chip(is_thumb_preset_active(
@@ -416,7 +416,7 @@ fn view_thumbnail_size_presets<'a>(editor: &'a RawEditor) -> Element<'a, Message
                 THUMB_PRESET_XL
             ))),
     ]
-    .spacing(6)
+    .spacing(theme::space::S)
     .align_y(Alignment::Center)
     .into()
 }
@@ -449,12 +449,12 @@ fn view_image_card<'a>(
         };
         container(
             column![
-                text(ui::icons::TH_LARGE).font(ICON_FONT).size(24),
-                text(placeholder_label).size(11).style(|_| text::Style {
-                    color: Some(Color::from_rgb(0.88, 0.88, 0.88))
+                text(ui::icons::TH_LARGE).font(ICON_FONT).size(theme::size::DISPLAY),
+                text(placeholder_label).size(theme::size::CAPTION).style(|_| text::Style {
+                    color: Some(theme::colours().text)
                 })
             ]
-            .spacing(6)
+            .spacing(theme::space::S)
             .align_x(Alignment::Center),
         )
         .width(Length::Fill)
@@ -478,17 +478,17 @@ fn view_image_card<'a>(
     let top_left_badge: Element<'a, Message> = if has_loaded_thumb && img.flag == 1 {
         container(
             row![
-                text(ui::icons::CHECK).font(ICON_FONT).size(11),
-                text("Pick").size(11)
+                text(ui::icons::CHECK).font(ICON_FONT).size(theme::size::CAPTION),
+                text("Pick").size(theme::size::CAPTION)
             ]
-            .spacing(4)
+            .spacing(theme::space::XS)
             .align_y(Alignment::Center),
         )
         .padding([3, 7])
         .style(|_| container::Style {
             background: Some(Background::Color(Color::from_rgba(0.15, 0.62, 0.25, 0.95))),
             border: Border {
-                radius: 10.0.into(),
+                radius: theme::radius::DIALOG.into(),
                 ..Default::default()
             },
             ..Default::default()
@@ -497,17 +497,17 @@ fn view_image_card<'a>(
     } else if has_loaded_thumb && img.flag == -1 {
         container(
             row![
-                text(ui::icons::TIMES).font(ICON_FONT).size(11),
-                text("Reject").size(11)
+                text(ui::icons::TIMES).font(ICON_FONT).size(theme::size::CAPTION),
+                text("Reject").size(theme::size::CAPTION)
             ]
-            .spacing(4)
+            .spacing(theme::space::XS)
             .align_y(Alignment::Center),
         )
         .padding([3, 7])
         .style(|_| container::Style {
             background: Some(Background::Color(Color::from_rgba(0.85, 0.20, 0.20, 0.95))),
             border: Border {
-                radius: 10.0.into(),
+                radius: theme::radius::DIALOG.into(),
                 ..Default::default()
             },
             ..Default::default()
@@ -522,17 +522,17 @@ fn view_image_card<'a>(
     {
         container(
             row![
-                text(ui::icons::TIMES).font(ICON_FONT).size(11),
-                text("Marked").size(11)
+                text(ui::icons::TIMES).font(ICON_FONT).size(theme::size::CAPTION),
+                text("Marked").size(theme::size::CAPTION)
             ]
-            .spacing(4)
+            .spacing(theme::space::XS)
             .align_y(Alignment::Center),
         )
         .padding([3, 7])
         .style(|_| container::Style {
             background: Some(Background::Color(Color::from_rgba(0.85, 0.55, 0.05, 0.95))),
             border: Border {
-                radius: 10.0.into(),
+                radius: theme::radius::DIALOG.into(),
                 ..Default::default()
             },
             ..Default::default()
@@ -540,12 +540,12 @@ fn view_image_card<'a>(
         .into()
     } else if has_loaded_thumb && img.rating > 0 {
         let stars = vec![ui::icons::STAR; img.rating as usize].join(" ");
-        container(text(stars).font(ICON_FONT).size(10))
+        container(text(stars).font(ICON_FONT).size(theme::size::CAPTION))
             .padding([3, 7])
             .style(|_| container::Style {
                 background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.65))),
                 border: Border {
-                    radius: 10.0.into(),
+                    radius: theme::radius::DIALOG.into(),
                     ..Default::default()
                 },
                 ..Default::default()
@@ -562,7 +562,7 @@ fn view_image_card<'a>(
             .clip(true)
             .style(|_| container::Style {
                 // The placeholder tone; a Cover-fit thumbnail hides it.
-                background: Some(Background::Color(Color::from_rgb(0.12, 0.12, 0.12))),
+                background: Some(Background::Color(theme::colours().surface_raised)),
                 border: Border {
                     radius: 0.0.into(),
                     ..Default::default()
@@ -601,15 +601,15 @@ fn view_image_card<'a>(
 fn card_style(is_selected: bool, status: button::Status) -> button::Style {
     let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
     let (fill, edge) = match (is_selected, hovered) {
-        (true, false) => (palette::accent_selection_fill(), palette::accent_selection_border()),
-        (true, true) => (palette::accent_selection_fill(), palette::accent_text()),
-        (false, false) => (Color::from_rgb(0.09, 0.09, 0.09), Color::from_rgb(0.17, 0.17, 0.17)),
-        (false, true) => (Color::from_rgb(0.12, 0.12, 0.12), Color::from_rgb(0.34, 0.34, 0.34)),
+        (true, false) => (theme::colours().accent_selection, theme::colours().accent_selection_border),
+        (true, true) => (theme::colours().accent_selection, theme::colours().accent_text),
+        (false, false) => (theme::colours().bg, theme::colours().border_subtle),
+        (false, true) => (theme::colours().surface_raised, theme::colours().border_strong),
     };
     button::Style {
         background: Some(Background::Color(fill)),
         border: Border { radius: 0.0.into(), width: 1.0, color: edge },
-        text_color: Color::WHITE,
+        text_color: theme::colours().text_strong,
         ..Default::default()
     }
 }
@@ -662,11 +662,11 @@ fn view_grid<'a>(editor: &'a RawEditor, images: &[&'a ImageData]) -> Element<'a,
 
 fn view_filter_bar<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
     row![
-        button(text("All").size(12))
+        button(text("All").size(theme::size::SMALL))
             .on_press(Message::SetMinRating(0))
             .padding([5, 10])
             .style(style_chip(editor.min_filter_rating == 0)),
-        button(row![text(ui::icons::STAR).font(ICON_FONT).size(11), text("1+")].spacing(4))
+        button(row![text(ui::icons::STAR).font(ICON_FONT).size(theme::size::CAPTION), text("1+")].spacing(theme::space::XS))
             .on_press(Message::SetMinRating(1))
             .padding([5, 10])
             .style(style_chip(editor.min_filter_rating == 1)),
@@ -674,10 +674,10 @@ fn view_filter_bar<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
             row![
                 text(format!("{} {}", ui::icons::STAR, ui::icons::STAR))
                     .font(ICON_FONT)
-                    .size(11),
+                    .size(theme::size::CAPTION),
                 text("2+")
             ]
-            .spacing(4)
+            .spacing(theme::space::XS)
         )
         .on_press(Message::SetMinRating(2))
         .padding([5, 10])
@@ -686,10 +686,10 @@ fn view_filter_bar<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
             row![
                 text(format!("{} {} {}", ui::icons::STAR, ui::icons::STAR, ui::icons::STAR))
                     .font(ICON_FONT)
-                    .size(11),
+                    .size(theme::size::CAPTION),
                 text("3+")
             ]
-            .spacing(4)
+            .spacing(theme::space::XS)
         )
         .on_press(Message::SetMinRating(3))
         .padding([5, 10])
@@ -706,10 +706,10 @@ fn view_filter_bar<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
                     )
                 )
                 .font(ICON_FONT)
-                .size(11),
+                .size(theme::size::CAPTION),
                 text("4+")
             ]
-            .spacing(4)
+            .spacing(theme::space::XS)
         )
         .on_press(Message::SetMinRating(4))
         .padding([5, 10])
@@ -727,16 +727,16 @@ fn view_filter_bar<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
                     )
                 )
                 .font(ICON_FONT)
-                .size(11),
+                .size(theme::size::CAPTION),
                 text("5")
             ]
-            .spacing(4)
+            .spacing(theme::space::XS)
         )
         .on_press(Message::SetMinRating(5))
         .padding([5, 10])
         .style(style_chip(editor.min_filter_rating == 5)),
     ]
-    .spacing(6)
+    .spacing(theme::space::S)
     .align_y(Alignment::Center)
     .into()
 }
@@ -752,9 +752,9 @@ fn view_library_sidebar<'a>(
     let mut folders_column = column![
         button(
             row![
-                text("All Photos").size(12),
+                text("All Photos").size(theme::size::SMALL),
                 Space::with_width(Length::Fill),
-                text(total_count.to_string()).size(11)
+                text(total_count.to_string()).size(theme::size::CAPTION)
             ]
             .align_y(Alignment::Center)
         )
@@ -763,7 +763,7 @@ fn view_library_sidebar<'a>(
         .width(Length::Fill)
         .style(style_sidebar_button(all_active)),
     ]
-    .spacing(6);
+    .spacing(theme::space::S);
 
     for (folder, count) in folder_stats {
         let is_active = selected_filter
@@ -774,9 +774,9 @@ fn view_library_sidebar<'a>(
             row![
                 button(
                     row![
-                        text(compact_path(folder)).size(11),
+                        text(compact_path(folder)).size(theme::size::CAPTION),
                         Space::with_width(Length::Fill),
-                        text(count.to_string()).size(10)
+                        text(count.to_string()).size(theme::size::CAPTION)
                     ]
                     .align_y(Alignment::Center),
                 )
@@ -785,23 +785,23 @@ fn view_library_sidebar<'a>(
                 .width(Length::Fill)
                 .style(style_sidebar_button(is_active)),
                 // Forget this folder — catalogue only, files untouched.
-                button(text(ui::icons::TIMES).font(ICON_FONT).size(10))
+                button(text(ui::icons::TIMES).font(ICON_FONT).size(theme::size::CAPTION))
                     .on_press(Message::RemoveFolderRequested(folder.clone()))
                     .padding([6, 8])
                     .style(style_sidebar_button(false)),
             ]
-            .spacing(2)
+            .spacing(theme::space::XXS)
             .align_y(Alignment::Center),
         );
     }
 
     container(
         column![
-            text("Library Sources").size(14),
+            text("Library Sources").size(theme::size::LABEL),
             text("Projects and locations")
-                .size(11)
+                .size(theme::size::CAPTION)
                 .style(|_| text::Style {
-                    color: Some(Color::from_rgb(0.58, 0.58, 0.58))
+                    color: Some(theme::colours().text_muted)
                 }),
             Space::with_height(Length::Fixed(8.0)),
             button(
@@ -809,7 +809,7 @@ fn view_library_sidebar<'a>(
                     text(ui::icons::FOLDER_OPEN).font(ICON_FONT),
                     text("Import Folder")
                 ]
-                .spacing(8)
+                .spacing(theme::space::M)
                 .align_y(Alignment::Center)
             )
             .on_press(Message::ImportFolder)
@@ -821,7 +821,7 @@ fn view_library_sidebar<'a>(
                     text(ui::icons::FOLDER).font(ICON_FONT),
                     text("Import from Camera")
                 ]
-                .spacing(8)
+                .spacing(theme::space::M)
                 .align_y(Alignment::Center)
             )
             .on_press(Message::ImportFromCamera)
@@ -829,12 +829,12 @@ fn view_library_sidebar<'a>(
             .width(Length::Fill)
             .style(style_sidebar_action_button),
             Space::with_height(Length::Fixed(10.0)),
-            text("Folders").size(12).style(|_| text::Style {
-                color: Some(Color::from_rgb(0.68, 0.68, 0.68))
+            text("Folders").size(theme::size::SMALL).style(|_| text::Style {
+                color: Some(theme::colours().text_secondary)
             }),
             scrollable(folders_column).height(Length::Fill),
         ]
-        .spacing(6)
+        .spacing(theme::space::S)
         .width(Length::Fill)
         .height(Length::Fill),
     )
@@ -842,10 +842,10 @@ fn view_library_sidebar<'a>(
     .width(Length::Fixed(LIBRARY_SIDEBAR_WIDTH))
     .height(Length::Fill)
     .style(|_| container::Style {
-        background: Some(Background::Color(Color::from_rgb(0.09, 0.09, 0.09))),
+        background: Some(Background::Color(theme::colours().bg)),
         border: Border {
             width: 1.0,
-            color: Color::from_rgb(0.16, 0.16, 0.16),
+            color: theme::colours().border_subtle,
             radius: 0.0.into(),
         },
         ..Default::default()
@@ -856,7 +856,7 @@ fn view_library_sidebar<'a>(
 fn view_library_toolbar<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
     let export_btn = button(
         row![text(ui::icons::SAVE).font(ICON_FONT), text("Export")]
-            .spacing(8)
+            .spacing(theme::space::M)
             .align_y(Alignment::Center),
     )
     .on_press(Message::OpenExportModal)
@@ -870,7 +870,7 @@ fn view_library_toolbar<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
             Space::with_width(Length::Fill),
             export_btn,
         ]
-        .spacing(10)
+        .spacing(theme::space::L)
         .align_y(Alignment::Center)
         .width(Length::Fill),
     )
@@ -880,10 +880,10 @@ fn view_library_toolbar<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
     // rendered as an empty pill.
     .padding([8, 12])
     .style(|_| container::Style {
-        background: Some(Background::Color(Color::from_rgb(0.10, 0.10, 0.10))),
+        background: Some(Background::Color(theme::colours().surface)),
         border: Border {
             width: 1.0,
-            color: Color::from_rgb(0.16, 0.16, 0.16),
+            color: theme::colours().border_subtle,
             radius: 0.0.into(),
         },
         ..Default::default()
@@ -910,36 +910,36 @@ fn view_status_bar<'a>(
             metric_pill(
                 "Items",
                 format!("{}/{}", filtered_count, total_count),
-                Color::from_rgb(0.82, 0.82, 0.82),
+                theme::colours().text,
             ),
-            text("|").size(12).style(|_| text::Style {
-                color: Some(Color::from_rgb(0.28, 0.28, 0.28))
+            text("|").size(theme::size::SMALL).style(|_| text::Style {
+                color: Some(theme::colours().text_faint)
             }),
-            metric_pill("Selected", selected_count, palette::accent_text()),
-            text("|").size(12).style(|_| text::Style {
-                color: Some(Color::from_rgb(0.28, 0.28, 0.28))
+            metric_pill("Selected", selected_count, theme::colours().accent_text),
+            text("|").size(theme::size::SMALL).style(|_| text::Style {
+                color: Some(theme::colours().text_faint)
             }),
             metric_pill(
                 "Cached",
                 format!("{}/{}", cached_count, filtered_count),
-                Color::from_rgb(0.54, 0.78, 0.58),
+                theme::colours().ok,
             ),
-            text("|").size(12).style(|_| text::Style {
-                color: Some(Color::from_rgb(0.28, 0.28, 0.28))
+            text("|").size(theme::size::SMALL).style(|_| text::Style {
+                color: Some(theme::colours().text_faint)
             }),
-            metric_pill("Deleted", deleted_count, Color::from_rgb(0.94, 0.45, 0.45)),
-            text("|").size(12).style(|_| text::Style {
-                color: Some(Color::from_rgb(0.28, 0.28, 0.28))
+            metric_pill("Deleted", deleted_count, theme::colours().error),
+            text("|").size(theme::size::SMALL).style(|_| text::Style {
+                color: Some(theme::colours().text_faint)
             }),
-            metric_pill("Folder", folder_label, Color::from_rgb(0.82, 0.82, 0.82)),
+            metric_pill("Folder", folder_label, theme::colours().text),
             iced::widget::horizontal_space(),
             view_thumbnail_size_presets(editor),
             Space::with_width(Length::Fixed(8.0)),
-            text(&editor.status).size(12).style(|_| text::Style {
-                color: Some(Color::from_rgb(0.62, 0.62, 0.62))
+            text(&editor.status).size(theme::size::SMALL).style(|_| text::Style {
+                color: Some(theme::colours().text_secondary)
             }),
         ]
-        .spacing(12)
+        .spacing(theme::space::XL)
         .align_y(Alignment::Center),
     )
     .width(Length::Fill)
@@ -948,10 +948,10 @@ fn view_status_bar<'a>(
     .clip(true)
     .align_y(iced::alignment::Vertical::Center)
     .style(|_| container::Style {
-        background: Some(Background::Color(Color::from_rgb(0.07, 0.07, 0.07))),
+        background: Some(Background::Color(theme::colours().bg)),
         border: Border {
             width: 1.0,
-            color: Color::from_rgb(0.14, 0.14, 0.14),
+            color: theme::colours().border_subtle,
             radius: 0.0.into(),
         },
         ..Default::default()
@@ -985,24 +985,24 @@ pub fn view_library(editor: &RawEditor) -> Element<'_, Message> {
         container(
             container(
                 column![
-                    text("No images match this filter").size(24),
+                    text("No images match this filter").size(theme::size::DISPLAY),
                     text("Try another folder/rating or import a new directory.")
-                        .size(14)
+                        .size(theme::size::LABEL)
                         .style(|_| text::Style {
-                            color: Some(Color::from_rgb(0.55, 0.55, 0.55))
+                            color: Some(theme::colours().text_muted)
                         }),
                     button(
                         row![
                             text(ui::icons::FOLDER_OPEN).font(ICON_FONT),
                             text("Import Folder")
                         ]
-                        .spacing(8)
+                        .spacing(theme::space::M)
                     )
                     .on_press(Message::ImportFolder)
                     .style(style_toolbar_button)
                     .padding([10, 14]),
                 ]
-                .spacing(16)
+                .spacing(theme::space::XXL)
                 .align_x(Alignment::Center),
             )
             .center_x(Length::Fill)
@@ -1014,7 +1014,7 @@ pub fn view_library(editor: &RawEditor) -> Element<'_, Message> {
         .height(Length::Fill)
         .clip(true)
         .style(|_| container::Style {
-            background: Some(Background::Color(Color::from_rgb(0.08, 0.08, 0.08))),
+            background: Some(Background::Color(theme::colours().bg)),
             ..Default::default()
         })
         .into()
@@ -1024,7 +1024,7 @@ pub fn view_library(editor: &RawEditor) -> Element<'_, Message> {
         .height(Length::Fill)
         .clip(true)
         .style(|_| container::Style {
-            background: Some(Background::Color(Color::from_rgb(0.08, 0.08, 0.08))),
+            background: Some(Background::Color(theme::colours().bg)),
             ..Default::default()
         })
         .into()
@@ -1087,7 +1087,7 @@ pub fn view_library(editor: &RawEditor) -> Element<'_, Message> {
     .height(Length::Fill)
     .clip(true)
     .style(|_| container::Style {
-        background: Some(Background::Color(Color::from_rgb(0.08, 0.08, 0.08))),
+        background: Some(Background::Color(theme::colours().bg)),
         ..Default::default()
     })
     .into()

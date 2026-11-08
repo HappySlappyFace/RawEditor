@@ -57,3 +57,17 @@ pub const ROTATE_RIGHT: &str = "\u{f2f9}";
 
 /// Level tool: draw along a horizon to straighten
 pub const LEVEL: &str = "\u{f07e}";
+
+/// White-balance picker
+pub const EYEDROPPER: &str = "\u{f1fb}";
+/// Histogram toggle
+pub const HISTOGRAM: &str = "\u{f080}";
+/// Section disclosure: open / folded
+pub const CARET_DOWN: &str = "\u{f0d7}";
+pub const CARET_RIGHT: &str = "\u{f0da}";
+/// Download
+pub const DOWNLOAD: &str = "\u{f019}";
+/// AI features
+pub const MAGIC: &str = "\u{f0d0}";
+/// Pick a point on the image
+pub const CROSSHAIRS: &str = "\u{f05b}";

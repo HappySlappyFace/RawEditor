@@ -184,17 +184,8 @@ fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::DefringeChanged(which, v) => {
             handlers::lens::handle_defringe_changed(editor, which, v)
         }
-        Message::ToggleSection(section) => {
-            if !editor.collapsed_sections.remove(&section) {
-                editor.collapsed_sections.insert(section);
-            }
-            // Opening the loupe renders it (it does nothing while folded).
-            if section == crate::app::message::SidebarSection::DetailPreview {
-                handlers::loupe::request(editor)
-            } else {
-                Task::none()
-            }
-        }
+        Message::ToggleSection(section) => handlers::develop::handle_toggle_section(editor, section),
+        Message::ResetSection(section) => handlers::develop::handle_reset_section(editor, section),
         Message::ToneMapperChanged(m) => {
             handlers::develop::handle_tone_mapper_changed(editor, m)
         }

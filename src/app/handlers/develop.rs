@@ -1,4 +1,5 @@
-use crate::app::message::Message;
+use crate::app::message::{Message, SidebarSection};
+use crate::core::types::EditParams;
 use crate::app::state::{DragMode, RawEditor};
 use crate::core::tonemap::ToneSettings;
 use crate::ui::preview_renderer::CropHandle;
@@ -364,6 +365,110 @@ pub fn handle_redo(editor: &mut RawEditor) -> Task<Message> {
     } else {
         Task::none()
     }
+}
+
+/// Fold or open a Develop sidebar section, and remember it.
+pub fn handle_toggle_section(editor: &mut RawEditor, section: SidebarSection) -> Task<Message> {
+    if !editor.collapsed_sections.remove(&section) {
+        editor.collapsed_sections.insert(section);
+    }
+    editor.save_preferences();
+    // The loupe renders only while visible, so opening it (or the Detail
+    // section around it) is what starts it.
+    if matches!(section, SidebarSection::Detail | SidebarSection::DetailPreview) {
+        crate::app::handlers::loupe::request(editor)
+    } else {
+        Task::none()
+    }
+}
+
+/// The edits a sidebar section owns, set back to their defaults. Geometry is
+/// not here: undoing quarter turns needs the image's shape
+/// (`handle_reset_section`). Masks have no reset: that would delete them.
+pub fn reset_section(section: SidebarSection, p: &mut EditParams) {
+    let d = EditParams::default();
+    match section {
+        SidebarSection::Light => {
+            p.exposure = d.exposure;
+            p.contrast = d.contrast;
+            p.highlights = d.highlights;
+            p.shadows = d.shadows;
+            p.whites = d.whites;
+            p.blacks = d.blacks;
+        }
+        SidebarSection::ToneCurve => p.curves = d.curves,
+        SidebarSection::ToneMapping => {
+            p.tone_mapper = d.tone_mapper;
+            p.profile_curve = d.profile_curve;
+            p.gt = d.gt;
+        }
+        SidebarSection::Colour => {
+            p.temperature = d.temperature;
+            p.tint = d.tint;
+            p.vibrance = d.vibrance;
+            p.saturation = d.saturation;
+        }
+        SidebarSection::Presence => {
+            p.texture = d.texture;
+            p.clarity = d.clarity;
+            p.dehaze = d.dehaze;
+        }
+        SidebarSection::Detail => {
+            p.luma_noise = d.luma_noise;
+            p.luma_detail = d.luma_detail;
+            p.color_noise = d.color_noise;
+            p.ai_denoise = d.ai_denoise;
+            p.sharpening = d.sharpening;
+            p.sharpen_masking = d.sharpen_masking;
+        }
+        SidebarSection::Lens => {
+            p.lens = d.lens;
+            p.defringe = d.defringe;
+        }
+        SidebarSection::Geometry | SidebarSection::DetailPreview | SidebarSection::Masks => {}
+    }
+}
+
+/// Does this section hold any edits? Drives the header's reset button.
+pub fn section_edited(section: SidebarSection, p: &EditParams) -> bool {
+    let d = EditParams::default();
+    match section {
+        SidebarSection::Geometry => p.quarter_turns != 0 || p.rotation != d.rotation || p.crop != d.crop,
+        SidebarSection::Masks => p.mask_count > 0,
+        SidebarSection::DetailPreview => false,
+        _ => {
+            let mut reset = *p;
+            reset_section(section, &mut reset);
+            reset != *p
+        }
+    }
+}
+
+pub fn handle_reset_section(editor: &mut RawEditor, section: SidebarSection) -> Task<Message> {
+    if editor.active_modal != crate::app::state::Modal::None || !section_edited(section, &editor.current_edit_params) {
+        return Task::none();
+    }
+    if section == SidebarSection::Geometry {
+        // Turn back one quarter at a time, as the user turned it, so the
+        // crop, masks and strokes come back with the frame.
+        if let Some(res) = editor.image_resources.as_ref().filter(|r| Some(r.image_id) == editor.selected_image_id) {
+            while editor.current_edit_params.quarter_turns != 0 {
+                let (w, h) = res.oriented_dims(editor.current_edit_params.quarter_turns);
+                editor.current_edit_params.turn_quarter(false, w as f32 / h.max(1) as f32);
+            }
+        }
+        let d = EditParams::default();
+        editor.current_edit_params.rotation = d.rotation;
+        editor.current_edit_params.crop = d.crop;
+        editor.loupe.center = [0.5, 0.5];
+        editor.zoom = 1.0;
+        editor.pan_offset = cgmath::Vector2::new(0.0, 0.0);
+    } else {
+        reset_section(section, &mut editor.current_edit_params);
+    }
+    let task = update_pipeline(editor);
+    editor.commit_current_state();
+    task
 }
 
 pub fn handle_reset_edits(editor: &mut RawEditor) -> Task<Message> {
@@ -1203,5 +1308,49 @@ mod tests {
         let mut b = a;
         b.gt.contrast = 1.4;
         assert!(!dcp_memo_is_valid(5500.0, a, 5500.0, b));
+    }
+
+    /// Every section with edits, one field each (and a mask).
+    fn edited_everywhere() -> EditParams {
+        let mut p = EditParams::default();
+        p.exposure = 1.0;
+        p.curves.master = crate::core::curves::Curve::from_points(&[[0.0, 0.1], [1.0, 1.0]]);
+        p.profile_curve = 0.9;
+        p.temperature = 0.2;
+        p.clarity = 0.3;
+        p.sharpening = 0.5;
+        p.rotation = 2.0;
+        p.lens.profile = !p.lens.profile;
+        p.masks[0] = crate::core::types::MaskParams::new_radial(0.5, 0.5, 0.2, 0.2);
+        p.mask_count = 1;
+        p
+    }
+
+    #[test]
+    fn resetting_a_section_clears_it_and_nothing_else() {
+        let p = edited_everywhere();
+        for s in SidebarSection::ALL {
+            let expected = !matches!(s, SidebarSection::DetailPreview);
+            assert_eq!(section_edited(s, &p), expected, "{s:?} should start edited");
+        }
+        for s in SidebarSection::ALL {
+            if matches!(s, SidebarSection::Geometry | SidebarSection::Masks | SidebarSection::DetailPreview) {
+                continue; // reset by the handler (Geometry) or not at all
+            }
+            let mut q = p;
+            reset_section(s, &mut q);
+            assert!(!section_edited(s, &q), "{s:?} still edited after its reset");
+            for other in SidebarSection::ALL.into_iter().filter(|&o| o != s) {
+                assert_eq!(section_edited(other, &q), section_edited(other, &p), "resetting {s:?} touched {other:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn folded_sections_survive_a_save_by_name() {
+        for s in SidebarSection::ALL {
+            assert_eq!(SidebarSection::from_name(s.name()), Some(s));
+        }
+        assert_eq!(SidebarSection::from_name("defringe"), None, "an old name is dropped, not misread");
     }
 }

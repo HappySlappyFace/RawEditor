@@ -15,6 +15,7 @@ pub fn scroll_id() -> scrollable::Id {
 
 /// Thumbnail size, and the horizontal padding either side of each one.
 const THUMB_W: f32 = 140.0;
+use super::theme;
 const THUMB_H: f32 = 105.0;
 const ITEM_PAD_X: f32 = 16.0;
 /// Width of one filmstrip slot. Fixed, which is what lets the strip be
@@ -103,7 +104,7 @@ pub fn view<'a>(
             container(fade_image(img.id as u64, handle, THUMB_W, THUMB_H))
                 .style(move |_| container::Style {
                     background: waiting
-                        .then_some(Background::Color(Color::from_rgb(0.12, 0.12, 0.12))),
+                        .then_some(Background::Color(theme::colours().surface_raised)),
                     ..Default::default()
                 })
                 .into();
@@ -116,17 +117,17 @@ pub fn view<'a>(
             Element::from(container(
                 container(
                     row![
-                        text(icons::TIMES).size(12).font(crate::app::view::ICON_FONT),
-                        text("Marked").size(12),
+                        text(icons::TIMES).size(theme::size::SMALL).font(crate::app::view::ICON_FONT),
+                        text("Marked").size(theme::size::SMALL),
                     ]
-                    .spacing(4)
+                    .spacing(theme::space::XS)
                     .align_y(iced::Alignment::Center)
                 )
                 .padding(iced::Padding { top: 2.0, right: 4.0, bottom: 2.0, left: 4.0 })
                 .style(|_theme: &Theme| {
                     container::Style {
                         background: Some(Background::Color(Color::from_rgba(0.85, 0.55, 0.05, 0.9))),
-                        border: Border { radius: 3.0.into(), ..Default::default() },
+                        border: Border { radius: theme::radius::CONTROL.into(), ..Default::default() },
                         ..Default::default()
                     }
                 })
@@ -141,7 +142,7 @@ pub fn view<'a>(
             Element::from(container(
                 container(
                     text(stars_text)  // Space between stars
-                        .size(14)
+                        .size(theme::size::LABEL)
                         .color(Color::from_rgb(1.0, 0.8, 0.2))  // Gold
                         .font(crate::app::view::ICON_FONT)  // Phase 57: Use embedded font
                 )
@@ -155,7 +156,7 @@ pub fn view<'a>(
                     container::Style {
                         background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.6))),  // Dark semi-transparent
                         border: Border {
-                            radius: 3.0.into(),
+                            radius: theme::radius::CONTROL.into(),
                             ..Default::default()
                         },
                         ..Default::default()
@@ -206,7 +207,7 @@ pub fn view<'a>(
         if img.flag == -1 {
             // Rejected: Overlay a semi-transparent black box with "X"
             let reject_overlay = container(
-                text(icons::TIMES).font(crate::app::view::ICON_FONT).size(24).color(Color::from_rgba(1.0, 0.2, 0.2, 0.8))
+                text(icons::TIMES).font(crate::app::view::ICON_FONT).size(theme::size::DISPLAY).color(Color::from_rgba(1.0, 0.2, 0.2, 0.8))
             )
             .width(Length::Fill)
             .height(Length::Fill)
@@ -221,7 +222,7 @@ pub fn view<'a>(
         } else if img.flag == 1 {
              // Picked: Overlay a small green flag/check
             let pick_overlay = container(
-                text(icons::CHECK).font(crate::app::view::ICON_FONT).size(16).color(Color::from_rgba(0.2, 1.0, 0.2, 0.9))
+                text(icons::CHECK).font(crate::app::view::ICON_FONT).size(theme::size::HEADING).color(Color::from_rgba(0.2, 1.0, 0.2, 0.9))
             )
             .padding(4)
             .align_x(iced::alignment::Horizontal::Right)
@@ -244,16 +245,16 @@ pub fn view<'a>(
             .key(img.id as u64)
             .style(move |_theme: &Theme, status| {
                 let tint = match (is_selected, status) {
-                    (true, _) => Some(Color::from_rgb(0.3, 0.3, 0.3)),
+                    (true, _) => Some(theme::colours().control_active),
                     (false, button::Status::Hovered | button::Status::Pressed) => {
-                        Some(Color::from_rgb(0.17, 0.17, 0.17))
+                        Some(theme::colours().control)
                     }
                     (false, _) => None,
                 };
                 button::Style {
                     background: tint.map(Background::Color),
                     border: Border::default(),
-                    text_color: Color::WHITE,
+                    text_color: theme::colours().text_strong,
                     ..Default::default()
                 }
             })
@@ -288,22 +289,22 @@ pub fn view<'a>(
         .style(|_theme: &Theme, _status| {
             scrollable::Style {
                 container: container::Style {
-                    background: Some(Background::Color(Color::from_rgb(0.08, 0.08, 0.08))),
+                    background: Some(Background::Color(theme::colours().bg)),
                     ..Default::default()
                 },
                 vertical_rail: scrollable::Rail {
                     background: None,
                     border: Border::default(),
                     scroller: scrollable::Scroller {
-                        color: Color::from_rgb(0.3, 0.3, 0.3),
+                        color: theme::colours().border_strong,
                         border: Border::default(),
                     },
                 },
                 horizontal_rail: scrollable::Rail {
-                    background: Some(Background::Color(Color::from_rgb(0.1, 0.1, 0.1))), // Track color
+                    background: Some(Background::Color(theme::colours().surface)), // Track color
                     border: Border::default(),
                     scroller: scrollable::Scroller {
-                        color: Color::from_rgb(0.4, 0.4, 0.4), // Draggable scroller color
+                        color: theme::colours().border_control, // Draggable scroller color
                         border: Border::default(),
                     },
                 },
@@ -319,7 +320,7 @@ pub fn view<'a>(
         .clip(true)
         .style(|_theme: &Theme| {
             container::Style {
-                background: Some(Background::Color(Color::from_rgb(0.08, 0.08, 0.08))),
+                background: Some(Background::Color(theme::colours().bg)),
                 ..Default::default()
             }
         });

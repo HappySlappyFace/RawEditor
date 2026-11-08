@@ -6,6 +6,7 @@ use crate::ui;
 use crate::app::message::Message;
 use crate::app::state::RawEditor;
 use crate::database::models::Image as ImageData;
+use crate::ui::theme;
 
 // Phase 74: The Cull Interface (Fast review mode)
 pub fn view_cull(editor: &RawEditor) -> Element<'_, Message> {
@@ -27,10 +28,10 @@ pub fn view_cull(editor: &RawEditor) -> Element<'_, Message> {
             iced::widget::Space::with_width(Length::Fill),
             crate::ui::widgets::button(
                 iced::widget::row![
-                    text(ui::icons::SAVE).font(crate::ui::icons::ICON_FONT).size(12),
-                    text(format!("Export {selected}")).size(12)
+                    text(ui::icons::SAVE).font(crate::ui::icons::ICON_FONT).size(theme::size::SMALL),
+                    text(format!("Export {selected}")).size(theme::size::SMALL)
                 ]
-                .spacing(6)
+                .spacing(theme::space::S)
                 .align_y(iced::Alignment::Center)
             )
             .on_press(Message::OpenExportModal)
@@ -78,31 +79,31 @@ fn view_overlay(editor: &RawEditor, id: i64) -> Element<'_, Message> {
         crate::app::state::InfoOverlayState::Metadata => {
             let lines = super::develop::metadata_lines(editor)
                 .into_iter()
-                .fold(column![].spacing(2), |col, line| {
-                    col.push(text(line).size(12).style(|_| text::Style { color: Some(Color::WHITE) }))
+                .fold(column![].spacing(theme::space::XXS), |col, line| {
+                    col.push(text(line).size(theme::size::SMALL).style(|_| text::Style { color: Some(theme::colours().text_strong) }))
                 });
-            container(lines).padding(10).style(|_| container::Style { background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.6))), border: iced::border::Border { radius: 5.0.into(), ..Default::default() }, ..Default::default() }).into()
+            container(lines).padding(10).style(|_| container::Style { background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.6))), border: iced::border::Border { radius: theme::radius::CONTROL.into(), ..Default::default() }, ..Default::default() }).into()
         }
         crate::app::state::InfoOverlayState::CacheDebug => {
             let (before, after) = count_cached_neighbors(editor, id);
             container(
                 text(format!("-{} | +{}", before, after))
-                    .size(16)
-                    .style(|_| text::Style { color: Some(Color::WHITE) })
-            ).padding(10).style(|_| container::Style { background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.6))), border: iced::border::Border { radius: 5.0.into(), ..Default::default() }, ..Default::default() }).into()
+                    .size(theme::size::HEADING)
+                    .style(|_| text::Style { color: Some(theme::colours().text_strong) })
+            ).padding(10).style(|_| container::Style { background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.6))), border: iced::border::Border { radius: theme::radius::CONTROL.into(), ..Default::default() }, ..Default::default() }).into()
         }
     }
 }
 
 fn view_filename_overlay(editor: &RawEditor, id: i64) -> Element<'_, Message> {
-    container(text(editor.images.iter().find(|img| img.id == id).map(|img| img.filename.clone()).unwrap_or_default()).size(12).style(|_| text::Style { color: Some(Color::WHITE) })).padding(5).style(|_| container::Style { background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.4))), border: iced::border::Border { radius: 3.0.into(), ..Default::default() }, ..Default::default() }).into()
+    container(text(editor.images.iter().find(|img| img.id == id).map(|img| img.filename.clone()).unwrap_or_default()).size(theme::size::SMALL).style(|_| text::Style { color: Some(theme::colours().text_strong) })).padding(5).style(|_| container::Style { background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.4))), border: iced::border::Border { radius: theme::radius::CONTROL.into(), ..Default::default() }, ..Default::default() }).into()
 }
 
 fn view_empty_state() -> Element<'static, Message> {
     container(column![
         text("No Image Selected").size(32), 
         text("").size(20), 
-        text("← Switch to Library tab to select an image").size(18).style(|theme: &Theme| text::Style { color: Some(theme.palette().text.scale_alpha(0.6)) })
+        text("← Switch to Library tab to select an image").size(theme::size::TITLE).style(|theme: &Theme| text::Style { color: Some(theme.palette().text.scale_alpha(0.6)) })
     ].padding(40).align_x(Alignment::Center)).width(Length::Fill).height(Length::Fill).center_x(Length::Fill).center_y(Length::Fill).into()
 }
 
