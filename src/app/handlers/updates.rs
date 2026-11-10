@@ -34,6 +34,9 @@ impl Default for UpdatesState {
 /// Once the catalogue is open: ask the first-run question, or run the
 /// startup check if the user agreed to it.
 pub fn on_startup(editor: &mut RawEditor) -> Task<Message> {
+    if crate::core::updates::packaged().is_some() {
+        return Task::none();
+    }
     match editor.update_check {
         None => {
             if editor.active_modal == Modal::None {
@@ -47,7 +50,7 @@ pub fn on_startup(editor: &mut RawEditor) -> Task<Message> {
 }
 
 fn start(editor: &mut RawEditor, manual: bool) -> Task<Message> {
-    if editor.updates.checking {
+    if editor.updates.checking || crate::core::updates::packaged().is_some() {
         return Task::none();
     }
     editor.updates.checking = true;

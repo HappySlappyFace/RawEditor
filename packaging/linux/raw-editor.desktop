@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=RawEditor
+GenericName=RAW Photo Editor
+Comment=Edit and organise RAW photos
+Exec=raw-editor
+TryExec=raw-editor
+Icon=raw-editor
+Terminal=false
+Categories=Graphics;Photography;
+StartupWMClass=raw-editor

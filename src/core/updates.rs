@@ -62,6 +62,24 @@ pub fn platform() -> String {
     format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
 }
 
+/// What installed this copy, when that was a package manager: then the app
+/// never checks for updates (the package manager does), never asks about
+/// it, and writes no desktop entry of its own (the package ships one).
+///
+/// A source package names itself at build time (`RAWEDITOR_PACKAGED=AUR
+/// cargo build …`). A binary package repackages the release build, which
+/// can't, so on Linux a binary running from `/usr` counts too: only a
+/// package manager puts one there.
+pub fn packaged() -> Option<&'static str> {
+    static PACKAGED: std::sync::OnceLock<Option<&'static str>> = std::sync::OnceLock::new();
+    *PACKAGED.get_or_init(|| {
+        option_env!("RAWEDITOR_PACKAGED").or_else(|| {
+            let exe = std::env::current_exe().ok()?;
+            (cfg!(target_os = "linux") && exe.starts_with("/usr/")).then_some("your package manager")
+        })
+    })
+}
+
 pub fn current_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }

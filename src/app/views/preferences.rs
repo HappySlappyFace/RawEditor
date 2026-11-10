@@ -209,6 +209,26 @@ fn general(editor: &RawEditor) -> Element<'_, Message> {
         ]
         .spacing(theme::space::XS),
         group_label("Updates"),
+        update_controls(editor),
+    ]
+    .push_maybe(update_status(editor))
+    .spacing(theme::space::XL)
+    .into()
+}
+
+/// The Updates group: the startup check and Check Now, or, in a distro
+/// package, where its updates come from instead.
+fn update_controls(editor: &RawEditor) -> Element<'_, Message> {
+    let version = text(format!("Version {}", crate::core::updates::current_version()))
+        .size(theme::size::SMALL)
+        .font(iced::Font::MONOSPACE)
+        .style(|_| text::Style { color: Some(theme::colours().text_muted) });
+    if let Some(manager) = crate::core::updates::packaged() {
+        return column![version, ui::text::hint(format!("Installed from {manager}, which keeps it up to date."))]
+            .spacing(theme::space::XS)
+            .into();
+    }
+    column![
         column![
             checkbox("Check for updates at startup", editor.update_check == Some(true))
                 .on_toggle(|_| Message::ToggleUpdateCheck)
@@ -224,15 +244,11 @@ fn general(editor: &RawEditor) -> Element<'_, Message> {
                 .on_press_maybe((!editor.updates.checking).then_some(Message::CheckForUpdates))
                 .padding([theme::space::S, theme::space::XL])
                 .style(ui::styles::NeutralButton::style),
-            text(format!("Version {}", crate::core::updates::current_version()))
-                .size(theme::size::SMALL)
-                .font(iced::Font::MONOSPACE)
-                .style(|_| text::Style { color: Some(theme::colours().text_muted) }),
+            version,
         ]
         .spacing(theme::space::XL)
         .align_y(Alignment::Center),
     ]
-    .push_maybe(update_status(editor))
     .spacing(theme::space::XL)
     .into()
 }

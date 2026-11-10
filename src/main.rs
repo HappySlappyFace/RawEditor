@@ -22,13 +22,20 @@ use iced::Font;
 pub const APP_ICON_PNG: &[u8] = include_bytes!("../assets/icon.png");
 
 pub fn main() -> iced::Result {
+    if std::env::args().nth(1).is_some_and(|a| a == "--version" || a == "-V") {
+        println!("raw-editor {}", core::updates::current_version());
+        return Ok(());
+    }
     let _guard = core::logging::init();
+    // A packaged install ships its own entry in /usr/share/applications.
     #[cfg(target_os = "linux")]
-    std::thread::spawn(|| match core::desktop::install() {
-        Ok(true) => tracing::info!("Desktop entry installed for {}", core::desktop::APP_ID),
-        Ok(false) => {}
-        Err(e) => tracing::warn!("Desktop entry not installed: {e}"),
-    });
+    if core::updates::packaged().is_none() {
+        std::thread::spawn(|| match core::desktop::install() {
+            Ok(true) => tracing::info!("Desktop entry installed for {}", core::desktop::APP_ID),
+            Ok(false) => {}
+            Err(e) => tracing::warn!("Desktop entry not installed: {e}"),
+        });
+    }
     iced::application(
         app::state::RawEditor::title,
         app::update::update,

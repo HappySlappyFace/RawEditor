@@ -393,24 +393,28 @@ fn view_title_bar(editor: &RawEditor) -> Element<'_, Message> {
         ),
         Item::with_menu(
             label("Help"),
-            dropdown(vec![
-                Item::new(menu_entry(
-                    "Keyboard Shortcuts…",
-                    None,
-                    Message::OpenModal(crate::app::state::Modal::Help),
-                )),
-                Item::new(menu_entry(
-                    "Check for Updates",
-                    None,
-                    Message::CheckForUpdates,
-                )),
-                Item::new(menu_separator()),
-                Item::new(menu_entry(
-                    "About",
-                    None,
-                    Message::OpenModal(crate::app::state::Modal::About),
-                )),
-            ]),
+            dropdown(
+                [
+                    Some(Item::new(menu_entry(
+                        "Keyboard Shortcuts…",
+                        None,
+                        Message::OpenModal(crate::app::state::Modal::Help),
+                    ))),
+                    // A distro package is updated by its package manager.
+                    crate::core::updates::packaged().is_none().then(|| {
+                        Item::new(menu_entry("Check for Updates", None, Message::CheckForUpdates))
+                    }),
+                    Some(Item::new(menu_separator())),
+                    Some(Item::new(menu_entry(
+                        "About",
+                        None,
+                        Message::OpenModal(crate::app::state::Modal::About),
+                    ))),
+                ]
+                .into_iter()
+                .flatten()
+                .collect(),
+            ),
         ),
     ])
     .draw_path(iced_aw::menu::DrawPath::Backdrop)
