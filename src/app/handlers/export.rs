@@ -471,7 +471,13 @@ pub fn handle_export_pipeline_ready(
             // setting was never read, so the checkbox and the size field did
             // nothing at all.
             let (target_width, target_height) = resized_dims(cropped_w, cropped_h, &settings);
-            if let Err(e) = check_export_size(&context, target_width, target_height, settings.format) {
+            // The colour pass reads the source with one bilinear tap, so past a
+            // 2x reduction it skips pixels and fine detail aliases. Render at
+            // the largest whole multiple of the target that fits in the
+            // source and box-average down (`box_reduce`).
+            let factor = supersample_factor((cropped_w, cropped_h), (target_width, target_height));
+            let (render_w, render_h) = (target_width * factor, target_height * factor);
+            if let Err(e) = check_export_size(&context, render_w, render_h, settings.format) {
                 tracing::error!("Export of image {image_id} refused: {e}");
                 editor.status = format!("Export failed: {e}");
                 set_job_state(editor, image_id, crate::app::state::ExportJobState::Failed(e));
@@ -498,23 +504,23 @@ pub fn handle_export_pipeline_ready(
                         let (samples, _, _) = crate::gpu::render_functions::render_to_bytes_16bit(
                             &context,
                             &resources,
-                            target_width,
-                            target_height,
+                            render_w,
+                            render_h,
                         )
                         .await;
-                        ExportPixels::Rgb16(samples)
+                        ExportPixels::Rgb16(box_reduce(&samples, render_w, render_h, factor))
                     } else {
                         let (bytes, _, _) = crate::gpu::render_functions::render_to_vec(
                             &context,
                             &resources,
-                            target_width,
-                            target_height,
+                            render_w,
+                            render_h,
                             // Export always renders the whole cropped frame,
                             // never the on-screen window.
                             crate::gpu::params::FULL_VIEW_RECT,
                         )
                         .await;
-                        ExportPixels::Rgba8(bytes)
+                        ExportPixels::Rgba8(box_reduce(&bytes, render_w, render_h, factor))
                     };
                     save_export_async(filename, source, pixels, target_width, target_height, settings)
                         .await
@@ -586,6 +592,47 @@ fn resized_dims(width: u32, height: u32, settings: &ExportSettings) -> (u32, u32
         ((width as f64 * scale).round() as u32).max(1),
         ((height as f64 * scale).round() as u32).max(1),
     )
+}
+
+/// The whole-number multiple of the target size to render at: the largest
+/// factor whose render still fits inside the cropped source (never upscaling),
+/// and 1 when there is no reduction to speak of.
+fn supersample_factor(source: (u32, u32), target: (u32, u32)) -> u32 {
+    (source.0 / target.0.max(1)).min(source.1 / target.1.max(1)).max(1)
+}
+
+/// Average each `factor`×`factor` block of a `width`×`height` image (any
+/// channel count, inferred from the length) down to one pixel.
+fn box_reduce<T: Copy + Into<u32> + TryFrom<u32>>(
+    src: &[T],
+    width: u32,
+    height: u32,
+    factor: u32,
+) -> Vec<T> {
+    if factor <= 1 {
+        return src.to_vec();
+    }
+    let (w, h, f) = (width as usize, height as usize, factor as usize);
+    let channels = src.len() / (w * h).max(1);
+    let (ow, oh) = (w / f, h / f);
+    let area = (f * f) as u32;
+    let mut out = Vec::with_capacity(ow * oh * channels);
+    for y in 0..oh {
+        for x in 0..ow {
+            for c in 0..channels {
+                let mut sum = 0u32;
+                for dy in 0..f {
+                    let row = (y * f + dy) * w + x * f;
+                    for dx in 0..f {
+                        sum += src[(row + dx) * channels + c].into();
+                    }
+                }
+                let avg = (sum + area / 2) / area;
+                out.push(T::try_from(avg).unwrap_or(src[0]));
+            }
+        }
+    }
+    out
 }
 
 /// Reject an export the GPU or the encoder cannot produce, before any work.
@@ -938,5 +985,44 @@ mod tests {
         assert_eq!(png.file_name().unwrap(), "DSC_0001.png");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod downscale_tests {
+    use super::*;
+
+    #[test]
+    fn factor_is_a_whole_multiple_that_fits() {
+        assert_eq!(supersample_factor((6000, 4000), (1500, 1000)), 4);
+        assert_eq!(supersample_factor((6000, 4000), (4000, 2667)), 1);
+        assert_eq!(supersample_factor((6000, 4000), (6000, 4000)), 1);
+    }
+
+    /// A 1-pixel checkerboard is the worst case for a point sample: it reads
+    /// all black or all white. Averaged, it must come out mid-grey.
+    #[test]
+    fn box_reduce_averages_a_checkerboard() {
+        let (w, h) = (8u32, 8u32);
+        let mut px = Vec::new();
+        for y in 0..h {
+            for x in 0..w {
+                let v = if (x + y) % 2 == 0 { 0u8 } else { 255 };
+                px.extend_from_slice(&[v, v, v, 255]);
+            }
+        }
+        let out = box_reduce(&px, w, h, 4);
+        assert_eq!(out.len(), 2 * 2 * 4);
+        for p in out.chunks(4) {
+            assert!((p[0] as i32 - 128).abs() <= 1, "got {}", p[0]);
+            assert_eq!(p[3], 255);
+        }
+    }
+
+    #[test]
+    fn box_reduce_handles_sixteen_bit_rgb() {
+        let src: Vec<u16> = [0u16, 65535].iter().cycle().take(4 * 3).copied().collect();
+        let out = box_reduce(&src, 2, 2, 2);
+        assert_eq!(out.len(), 3);
     }
 }
