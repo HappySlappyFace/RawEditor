@@ -11,6 +11,9 @@ Rules for every task:
 - RawEditor is a Rust app (iced 0.13, wgpu, WGSL). Read `CLAUDE.md` first; its constraints
   override anything in the finding.
 - Never run `cargo fmt`.
+- ONE cargo command at a time across all agents: prefix every direct cargo call with
+  `tools/cargo-lock.sh` (e.g. `tools/cargo-lock.sh cargo test <name>`). `tools/check_branch.sh`
+  does it for you. If a call times out while queued, just run it again.
 - Verify with `tools/check_branch.sh` (run from your worktree root): it runs clippy
   (`-D warnings`, must stay at zero) and `cargo test` and prints only the failing lines. Use
   `cargo test <name>` while iterating. You may run an ignored GPU test by name

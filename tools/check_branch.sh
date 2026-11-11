@@ -12,8 +12,11 @@
 #   test   : cargo test                                  (ignored tests are skipped)
 #   --gpu  : also run the ignored GPU tests (needs a GPU or lavapipe; slow)
 #
+# Every cargo command goes through tools/cargo-lock.sh (one at a time machine-wide).
+#
 # Exit status: 0 all passed, 1 something failed, 2 usage error.
 set -u
+LOCK="$(cd "$(dirname "$0")" && pwd)/cargo-lock.sh"
 
 target=""
 gpu=0
@@ -54,7 +57,7 @@ fail=0
 run() { # run <label> <logfile> <command...>
   label=$1; out=$2; shift 2
   start=$(date +%s)
-  if "$@" >"$out" 2>&1; then
+  if "$LOCK" "$@" >"$out" 2>&1; then
     printf '  %-7s PASS  (%ss)\n' "$label" $(( $(date +%s) - start ))
     return 0
   fi
