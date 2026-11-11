@@ -1281,10 +1281,11 @@ impl RawEditor {
         for id in ids {
             self.edited_proxies.pop(id);
         }
+        let wanted: HashSet<i64> = ids.iter().copied().collect();
         let had_saved: Vec<i64> = self
             .images
             .iter()
-            .filter(|img| img.cache_path_edited.is_some() && ids.contains(&img.id))
+            .filter(|img| img.cache_path_edited.is_some() && wanted.contains(&img.id))
             .map(|img| img.id)
             .collect();
         if had_saved.is_empty() {
