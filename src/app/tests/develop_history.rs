@@ -159,13 +159,11 @@ fn paste_onto_a_selection_merges_into_each_image_and_its_history() {
     assert_invariants(&e);
 }
 
-/// KNOWN BUG (minor). Pasting onto a selection that includes a visited image
-/// whose edit the paste does not change (the copy's own source, typically)
-/// still pushes a step on its stack: `handle_paste_settings` pushes for every
-/// visited target, against `commit_current_state`'s "a release that changed
-/// nothing adds no step" rule. The next Undo there visibly does nothing.
+/// Pasting onto a selection that includes a visited image whose edit the
+/// paste does not change (the copy's own source, typically) adds no step to
+/// its stack, by `commit_current_state`'s "a release that changed nothing adds
+/// no step" rule; it used to, and the next Undo there visibly did nothing.
 #[test]
-#[ignore = "known bug: fix in develop::handle_paste_settings (skip unchanged targets)"]
 fn a_paste_that_changes_an_image_nothing_adds_no_step_to_it() {
     let mut e = develop_with_images(3);
     set_exposure(&mut e, 1.5);
