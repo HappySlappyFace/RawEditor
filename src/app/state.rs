@@ -873,8 +873,9 @@ impl RawEditor {
         tracing::info!("RAW Editor starting (instant splash screen)...");
 
         let settings = crate::core::settings::AppSettings::load_or_default();
-        // Not under test: the flag is process-global, tests build editors in
-        // parallel, and this reads the developer's real settings file.
+        // Not under test: the flag is process-global and tests build editors
+        // in parallel. (Under test `settings` are always the defaults —
+        // `AppSettings::load_or_default`.)
         let appearance = settings
             .appearance
             .as_deref()

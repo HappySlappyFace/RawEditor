@@ -81,6 +81,12 @@ impl Default for AppSettings {
 
 impl AppSettings {
     pub fn load_or_default() -> Self {
+        // Unit tests build editors (`RawEditor::new`) in parallel: they must
+        // neither depend on the developer's real settings file nor write to
+        // it (`save` below). Every test starts from the defaults.
+        if cfg!(test) {
+            return Self::default();
+        }
         match Self::load() {
             Ok(settings) => settings,
             Err(e) => {
@@ -103,6 +109,10 @@ impl AppSettings {
     }
 
     pub fn save(&self) -> Result<(), String> {
+        // See `load_or_default`: tests never touch the real settings file.
+        if cfg!(test) {
+            return Ok(());
+        }
         let path = Self::settings_path();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
