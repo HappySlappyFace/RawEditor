@@ -21,8 +21,14 @@ pub fn open_url(url: &str) {
         std::process::Command::new("xdg-open").arg(url).spawn()
     };
 
-    if let Err(e) = result {
-        tracing::error!("Failed to open {url}: {e}");
+    match result {
+        // Reaped off-thread so the finished opener is not left a zombie.
+        Ok(mut child) => {
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+        }
+        Err(e) => tracing::error!("Failed to open {url}: {e}"),
     }
 }
 
@@ -388,4 +394,29 @@ pub fn handle_histogram_toggled(editor: &mut RawEditor, enabled: bool) -> Task<M
     editor.histogram_enabled = enabled;
     editor.save_preferences();
     Task::none()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The close message the OS close request maps to (see
+    /// `RawEditor::subscription`) must persist an unreleased gesture.
+    #[test]
+    fn closing_the_window_saves_pending_edits() {
+        let dir = std::env::temp_dir().join(format!("raw-editor-close-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let lib = crate::database::library::Library::open_at(&dir.join("c.db")).unwrap();
+        let a = lib.import_image("/x/a.nef", "a.nef").unwrap();
+        let mut e = RawEditor::new().0;
+        e.library = Some(lib);
+        e.selected_image_id = Some(a);
+        e.current_edit_params.exposure = 1.5;
+        e.edits_dirty = true;
+        let _ = crate::app::update::update(&mut e, Message::CloseWindow);
+        let saved = e.library.as_ref().unwrap().load_edit_params(a).unwrap();
+        assert_eq!(saved.exposure, 1.5);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

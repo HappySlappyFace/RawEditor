@@ -91,7 +91,7 @@ fn build(
     // The previous image's loupe holds its full mosaic: let it go now.
     editor.loupe.gpu = None;
     editor.loupe.building = Some(image_id);
-    let cached = editor.raw_cache.peek(&image_id).cloned();
+    let cached = editor.raw_for(image_id);
     let path = editor.images.iter().find(|i| i.id == image_id).map(|i| i.path.clone());
     Task::perform(
         async move {

@@ -92,6 +92,7 @@ pub fn handle_download(editor: &mut RawEditor) -> Task<Message> {
     if !start(editor, ProfileJob::Downloading) {
         return Task::none();
     }
+    let camera_name = profiles::camera_name(&make, &model);
     background(
         move || {
             let result = profiles::download_for_camera(&make, &model);
@@ -100,13 +101,12 @@ pub fn handle_download(editor: &mut RawEditor) -> Task<Message> {
             }
             result
         },
-        |r| Message::CameraProfileDownloaded(r.and_then(|inner| inner)),
+        move |r| Message::CameraProfileDownloaded(camera_name.clone(), r.and_then(|inner| inner)),
     )
 }
 
-pub fn handle_downloaded(editor: &mut RawEditor, result: Result<Option<String>, String>) -> Task<Message> {
+pub fn handle_downloaded(editor: &mut RawEditor, camera_name: String, result: Result<Option<String>, String>) -> Task<Message> {
     editor.camera_profiles.busy = None;
-    let camera_name = camera(editor).map(|(make, model)| profiles::camera_name(&make, &model));
     match result {
         Ok(Some(file)) => {
             editor.status = format!("Camera profile downloaded: {file}");
@@ -115,7 +115,7 @@ pub fn handle_downloaded(editor: &mut RawEditor, result: Result<Option<String>, 
             catalog_changed(editor)
         }
         Ok(None) => {
-            let name = camera_name.unwrap_or_else(|| "this camera".to_string());
+            let name = camera_name;
             editor.camera_profiles.notice = Some(Err(format!("RawTherapee has no profile for {name}")));
             editor.camera_profiles.unavailable = Some(name);
             Task::none()
@@ -295,9 +295,11 @@ mod tests {
     fn a_missing_remote_profile_is_reported() {
         let (mut e, _) = RawEditor::new();
         e.camera_profiles.busy = Some(ProfileJob::Downloading);
-        let _ = handle_downloaded(&mut e, Ok(None));
+        // The name comes from the request, not from whichever image is open
+        // when the download finishes.
+        let _ = handle_downloaded(&mut e, "Nikon D3300".into(), Ok(None));
         assert_eq!(e.camera_profiles.busy, None);
-        assert!(e.camera_profiles.unavailable.is_some());
+        assert_eq!(e.camera_profiles.unavailable.as_deref(), Some("Nikon D3300"));
         assert!(matches!(e.camera_profiles.notice, Some(Err(_))));
     }
 

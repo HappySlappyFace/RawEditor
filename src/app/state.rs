@@ -528,6 +528,12 @@ pub struct RawEditor {
     pub raw_cache: LruCache<i64, Arc<raw::loader::RawDataResult>>,
     /// Approximate memory usage of raw_cache in bytes
     pub raw_cache_bytes: usize,
+    /// Cache workers currently running (`library::spawn_cache_workers` tops
+    /// this up to `CACHE_WORKERS`; a retiring worker gives its slot back).
+    pub cache_workers_live: usize,
+    /// The open image's RAW, held outside the preload budget (which can be 0,
+    /// or evict the open image first). Read through `raw_for`.
+    pub current_raw: Option<(i64, Arc<raw::loader::RawDataResult>)>,
     /// Number of previews to keep preloaded behind current image
     pub preview_preload_behind: usize,
     /// Number of previews to keep preloaded ahead of current image
@@ -913,6 +919,8 @@ impl RawEditor {
                 export_paused_for_memory: false,
                 raw_cache: LruCache::new(NonZeroUsize::new(RAW_CACHE_ENTRY_CAPACITY).unwrap()),
                 raw_cache_bytes: 0,
+                cache_workers_live: 0,
+                current_raw: None,
                 preview_preload_behind,
                 preview_preload_ahead,
                 raw_preload_behind,
@@ -1528,6 +1536,15 @@ impl RawEditor {
         }
     }
 
+    /// The decoded RAW of `image_id` if memory holds it: the open image's pin
+    /// first, then the preload cache. Does not touch LRU order.
+    pub fn raw_for(&self, image_id: i64) -> Option<Arc<raw::loader::RawDataResult>> {
+        match &self.current_raw {
+            Some((id, raw)) if *id == image_id => Some(raw.clone()),
+            _ => self.raw_cache.peek(&image_id).cloned(),
+        }
+    }
+
     pub fn insert_raw_cache(&mut self, image_id: i64, raw: Arc<raw::loader::RawDataResult>) {
         if self.raw_preload_budget_mb == 0 {
             return;
@@ -1549,6 +1566,9 @@ impl RawEditor {
     /// Drop a deleted image's entry from the raw cache, keeping
     /// `raw_cache_bytes` accounting correct.
     pub fn remove_from_raw_cache(&mut self, image_id: i64) {
+        if self.current_raw.as_ref().is_some_and(|(id, _)| *id == image_id) {
+            self.current_raw = None;
+        }
         if let Some(old) = self.raw_cache.pop(&image_id) {
             self.raw_cache_bytes = self
                 .raw_cache_bytes
@@ -1625,6 +1645,12 @@ impl RawEditor {
             ) = event
             {
                 return Some(Message::WindowResized(size));
+            }
+            // Alt+F4, a WM close binding, the taskbar and a session logout:
+            // with `exit_on_close_request(false)` they land here instead of
+            // exiting past the save points `handle_close_window` runs.
+            if let iced::Event::Window(iced::window::Event::CloseRequested) = event {
+                return Some(Message::CloseWindow);
             }
             // Only winit's X11, macOS and Windows backends deliver drops;
             // on native Wayland (winit 0.30) this never fires.

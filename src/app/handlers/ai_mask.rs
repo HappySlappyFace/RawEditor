@@ -172,7 +172,7 @@ fn open(editor: &mut RawEditor, slot: usize, created: bool) -> Task<Message> {
     editor.status = "AI Select: analysing the image…".into();
     let draw = crate::app::handlers::develop::update_pipeline(editor);
 
-    let cached = editor.raw_cache.peek(&image_id).cloned();
+    let cached = editor.raw_for(image_id);
     let path = editor.images.iter().find(|i| i.id == image_id).map(|i| i.path.clone());
     let black_offsets = params.black_offsets;
     let build = Task::perform(
