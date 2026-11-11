@@ -187,6 +187,8 @@ pub fn handle_turn_image(editor: &mut RawEditor, clockwise: bool) -> Task<Messag
         .as_ref()
         .filter(|r| Some(r.image_id) == editor.selected_image_id)
     else {
+        // Not silent: say why nothing turned.
+        editor.status = "Turn: the image is still loading".to_string();
         return Task::none();
     };
     let (w, h) = res.oriented_dims(editor.current_edit_params.quarter_turns);
@@ -479,11 +481,13 @@ pub fn handle_reset_edits(editor: &mut RawEditor) -> Task<Message> {
     // The masks just got wiped; drop the selection/tool that pointed at them.
     editor.selected_mask = None;
     editor.mask_tool = crate::app::state::MaskTool::Inactive;
-    if let Some(lib) = &editor.library {
-        if let Some(id) = editor.selected_image_id {
-            let _ = lib.delete_edits(id);
-        }
-    }
+    editor.brush_armed = false;
+    editor.color_picking_mask = None;
+    editor.ai_select = None;
+    editor.status = String::new();
+    // No `delete_edits` here: `update_pipeline` marks the (default) params
+    // dirty and `commit_current_state` flushes them, which would write the
+    // row straight back.
     let task = update_pipeline(editor);
     editor.commit_current_state();
     task
@@ -650,10 +654,18 @@ pub fn handle_paste_settings(editor: &mut RawEditor) -> Task<Message> {
             .multi_selection
             .iter()
             .filter(|&&id| Some(id) != editor.selected_image_id)
-            .map(|&id| {
-                let mut target = lib.load_edit_params(id).unwrap_or_default();
+            .filter_map(|&id| {
+                // An unreadable saved edit must not be merged into defaults
+                // and written back: skip the image and keep what it has.
+                let mut target = match lib.load_saved_edit(id) {
+                    Ok(saved) => saved.unwrap_or_default(),
+                    Err(e) => {
+                        tracing::error!("Paste skipped image {id}: unreadable saved edit: {e}");
+                        return None;
+                    }
+                };
                 crate::core::types::apply_categories(&mut target, &for_image(Some(id)), clip.categories);
-                (id, target)
+                Some((id, target))
             })
             .collect();
         match lib.save_edit_params_many(&merged) {
@@ -663,6 +675,29 @@ pub fn handle_paste_settings(editor: &mut RawEditor) -> Task<Message> {
         // Their edits changed unrendered: their edited thumbnails are stale.
         let pasted: Vec<i64> = merged.iter().map(|(id, _)| *id).collect();
         editor.invalidate_proxies(&pasted);
+        // An image already visited has an undo stack that knows nothing of
+        // the paste: put it on, so Undo there steps back to before it.
+        // (Unvisited images seed their stack from the saved edits.) A paste
+        // that left an image as it was adds no step, as for any commit
+        // (`commit_current_state`), or the next Undo there does nothing.
+        for (id, params) in &merged {
+            if let Some((stack, index)) = editor.history_map.get_mut(id) {
+                let unchanged = stack
+                    .get(*index)
+                    .is_some_and(|top| top.without_tool_state() == params.without_tool_state());
+                if unchanged {
+                    continue;
+                }
+                stack.truncate(*index + 1);
+                stack.push(*params);
+                *index += 1;
+                if stack.len() > crate::app::state::HISTORY_LIMIT {
+                    let excess = stack.len() - crate::app::state::HISTORY_LIMIT;
+                    stack.drain(..excess);
+                    *index -= excess;
+                }
+            }
+        }
     }
 
     editor.status = if others > 0 {
@@ -694,6 +729,9 @@ pub fn handle_render_finished(
     editor: &mut RawEditor,
     out: crate::app::message::RenderOutput,
 ) -> Task<Message> {
+    if editor.gpu_context.as_ref().is_some_and(|c| c.is_lost()) {
+        return handle_gpu_lost(editor);
+    }
     // A render of the image the user has since navigated away from: drop the
     // pixels, but still release the throttle below so the next render runs.
     let current = editor.image_resources.as_ref().map(|r| r.image_id);
@@ -744,6 +782,24 @@ pub fn handle_render_finished(
     Task::batch([save, loupe])
 }
 
+/// The GPU device is gone (driver reset, suspend/resume, eGPU unplug): every
+/// readback would fail from here on. Drop the context and the resources built
+/// on it, so the next load creates a fresh one (`loading::shared_context`
+/// would otherwise hand back the dead one from `gpu_init`), and reload the
+/// selected image.
+pub(crate) fn handle_gpu_lost(editor: &mut RawEditor) -> Task<Message> {
+    tracing::error!("GPU device lost; rebuilding the GPU context");
+    editor.status = "The GPU was reset; reloading the image.".into();
+    editor.gpu_context = None;
+    editor.gpu_init = std::sync::Arc::new(tokio::sync::OnceCell::new());
+    editor.image_resources = None;
+    editor.preview_resources = None;
+    editor.is_rendering = false;
+    editor.pending_render = false;
+    editor.deferred_push = None;
+    crate::app::handlers::navigation::reload_selected_image(editor)
+}
+
 /// What a develop render of the current view needs: window, target size,
 /// and how far the screen magnifies the texture's source pixels. The source
 /// is the develop texture itself (`image_display_dims`), so a subsampled
@@ -765,6 +821,7 @@ pub fn render_target(editor: &RawEditor) -> crate::core::viewport::RenderTarget 
 
 pub fn trigger_async_render(editor: &mut RawEditor) -> Task<Message> {
     let t_update_start = std::time::Instant::now();
+    apply_deferred_push(editor);
 
     // Oriented display dims of what is actually on screen — crop-aware, so the
     // render target takes the CROPPED aspect. Must be the same source the
@@ -931,6 +988,36 @@ pub fn handle_toggle_wb_picker(editor: &mut RawEditor) -> Task<Message> {
     update_pipeline(editor)
 }
 
+/// What mapping a click to the source position needs about an image: its
+/// lens context, EXIF orientation and full sensor size.
+pub(crate) struct SourceGeometry {
+    pub lens: std::sync::Arc<crate::core::lens::LensContext>,
+    pub exif_orientation: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// [`SourceGeometry`] of `image_id`, from its GPU resources (always there
+/// while it is shown in Develop) or else the RAW cache. Never only the RAW
+/// cache: an entry can be evicted while the image is open, and the brush and
+/// AI-select mappings then silently fell back to the un-straightened frame.
+pub(crate) fn source_geometry(editor: &RawEditor, image_id: i64) -> Option<SourceGeometry> {
+    if let Some(res) = editor.image_resources.as_ref().filter(|r| r.image_id == image_id) {
+        return Some(SourceGeometry {
+            lens: res.lens.clone(),
+            exif_orientation: res.orientation,
+            width: res.original_width,
+            height: res.original_height,
+        });
+    }
+    editor.raw_cache.peek(&image_id).map(|raw| SourceGeometry {
+        lens: raw.lens_context.clone(),
+        exif_orientation: raw.orientation,
+        width: raw.width,
+        height: raw.height,
+    })
+}
+
 /// Why a raw sample could not be taken.
 pub(crate) enum RawSampleError {
     /// No usable raw data (not in memory, or too small).
@@ -949,7 +1036,7 @@ pub(crate) fn sample_raw_rgb(
     u: f32,
     v: f32,
 ) -> Result<([f32; 3], bool, std::sync::Arc<crate::raw::loader::RawDataResult>), RawSampleError> {
-    let Some(raw) = editor.raw_cache.peek(&image_id).cloned() else {
+    let Some(raw) = editor.raw_for(image_id) else {
         return Err(RawSampleError::Missing("raw data not in memory (reopen the image)"));
     };
     // The 16×16 sample window below needs room on both sides; `clamp(8, w-9)`
@@ -958,16 +1045,19 @@ pub(crate) fn sample_raw_rgb(
         return Err(RawSampleError::Missing("no raw pixels available"));
     }
 
-    // Display UV → sensor UV: undo the crop remap (the vertex shader shows the
-    // crop sub-rect when not in crop mode), then the orientation mapping —
-    // EXIF's plus the user's quarter turns, the same transform the fragment
-    // shader applies.
-    let crop = editor.current_edit_params.crop;
-    let cu = crop[0] + u.clamp(0.0, 1.0) * crop[2];
-    let cv = crop[1] + v.clamp(0.0, 1.0) * crop[3];
+    // Display UV → sensor UV through the colour pass's own chain: crop remap,
+    // Straighten, EXIF orientation plus the user's quarter turns, lens remap.
     let orientation =
         crate::color::compose_orientation(raw.orientation, editor.current_edit_params.quarter_turns);
-    let (su, sv) = crate::color::display_to_sensor_uv(cu, cv, orientation);
+    let (su, sv) = crate::core::viewport::display_to_source_uv(
+        &editor.current_edit_params,
+        &raw.lens_context,
+        orientation,
+        raw.width,
+        raw.height,
+        u,
+        v,
+    );
 
     // Sample a 16×16 sensor window centred on the pick, per CFA channel.
     let w = raw.width as i64;
@@ -975,8 +1065,16 @@ pub(crate) fn sample_raw_rgb(
     let cx = ((su * w as f32) as i64).clamp(8, w - 9);
     let cy = ((sv * h as f32) as i64).clamp(8, h - 9);
 
-    let mean_black =
-        raw.black_levels.iter().sum::<u32>() as f32 / raw.black_levels.len() as f32;
+    // Each site's own black level plus the user's offset, exactly as the
+    // demosaic uploads them. (Reads `raw.data`: with AI denoise on, the shader
+    // sees the blended mosaic and this the original; a 16x16 mean hardly
+    // notices.)
+    let offsets = editor.current_edit_params.black_offsets;
+    let slots = crate::gpu::demosaic::tile_black_slots(raw.cfa_pattern);
+    let site_black = |x: i64, y: i64| {
+        let slot = slots[((y % 2) * 2 + (x % 2)) as usize];
+        raw.black_levels[slot] as f32 + offsets[slot]
+    };
     let clip_threshold = (raw.white_level as f32 * 0.98) as u16;
 
     let mut sums = [0.0f64; 3]; // R, G, B
@@ -993,12 +1091,18 @@ pub(crate) fn sample_raw_rgb(
                 (0, 1, 1) | (1, 1, 0) | (2, 0, 1) | (3, 0, 0) => 2, // B
                 _ => 1,                                             // G (both sites)
             };
-            sums[channel] += (value as f32 - mean_black).max(0.0) as f64;
+            sums[channel] += (value as f32 - site_black(x, y)).max(0.0) as f64;
             counts[channel] += 1;
         }
     }
     let mean = |c: usize| (sums[c] / counts[c].max(1) as f64) as f32;
     Ok(([mean(0), mean(1), mean(2)], clipped, raw))
+}
+
+/// Mean black level over the four sites including the user's offsets: the
+/// zero of the unit range `sample_raw_rgb`'s values divide by.
+pub(crate) fn mean_black(raw: &crate::raw::loader::RawDataResult, offsets: [f32; 4]) -> f32 {
+    raw.black_levels.iter().zip(offsets).map(|(&b, o)| b as f32 + o).sum::<f32>() / 4.0
 }
 
 /// WB eyedropper: `(u, v)` is the display-space UV of the click within the
@@ -1040,14 +1144,20 @@ pub fn handle_wb_picked(editor: &mut RawEditor, u: f32, v: f32) -> Task<Message>
     // Absolute Kelvin/tint → slider offsets around the as-shot anchor
     // (inverse of EditParams::kelvin_from_anchor / tint_from_anchor).
     let (anchor_kelvin, anchor_tint) = editor.as_shot_wb.unwrap_or((5000.0, 0.0));
-    let anchor_mired = 1.0e6 / anchor_kelvin.clamp(1500.0, 50000.0);
-    let temperature = ((anchor_mired - 1.0e6 / kelvin) / 120.0).clamp(-1.0, 1.0);
-    let tint_offset = ((tint - anchor_tint) / 50.0).clamp(-1.0, 1.0);
+    let temperature = crate::core::types::EditParams::temperature_for_kelvin(anchor_kelvin, kelvin);
+    let tint_offset = crate::core::types::EditParams::tint_slider_for(anchor_tint, tint);
 
     editor.is_wb_picking = false;
     editor.current_edit_params.temperature = temperature;
     editor.current_edit_params.tint = tint_offset;
-    editor.status = format!("WB picked: {:.0}K, tint {:+.0}", kelvin, tint);
+    // Report what the sliders now render, which differs from the pick when
+    // it was out of their range and got clamped.
+    let set = &editor.current_edit_params;
+    editor.status = format!(
+        "WB picked: {:.0}K, tint {:+.0}",
+        set.kelvin_from_anchor(anchor_kelvin),
+        set.tint_from_anchor(anchor_tint)
+    );
 
     let task = update_pipeline(editor);
     editor.commit_current_state();
@@ -1118,8 +1228,8 @@ pub fn resolve_wb_and_dcp(
     let tone = ToneSettings::from_params(params);
 
     if let Ok(memo) = editor.dcp_memo.try_borrow() {
-        if let Some((k, t, profile)) = memo.as_ref() {
-            if dcp_memo_is_valid(*k, *t, kelvin, tone) {
+        if let Some((k, t, profile, source)) = memo.as_ref() {
+            if std::sync::Arc::ptr_eq(source, dcp) && dcp_memo_is_valid(*k, *t, kelvin, tone) {
                 return (Some(profile.clone()), wb_override);
             }
         }
@@ -1129,10 +1239,29 @@ pub fn resolve_wb_and_dcp(
         dcp, kelvin, tone,
     ));
     if let Ok(mut memo) = editor.dcp_memo.try_borrow_mut() {
-        *memo = Some((kelvin, tone, interpolated.clone()));
+        *memo = Some((kelvin, tone, interpolated.clone(), dcp.clone()));
     }
 
     (Some(interpolated), wb_override)
+}
+
+/// Write `params` (with the resolved DCP and slider WB) to the uniforms. Only
+/// while no render is in flight — see `RawEditor::deferred_push`.
+fn push_uniforms(editor: &RawEditor, params: &crate::core::types::EditParams) {
+    if let (Some(ctx), Some(resources)) = (&editor.gpu_context, &editor.image_resources) {
+        // Phase 140: Interpolate DCP + resolve slider WB
+        let (interpolated, wb_override) = resolve_wb_and_dcp(editor, params);
+        resources.update_uniforms(ctx, params, interpolated.as_deref(), wb_override);
+    }
+}
+
+/// Apply a push that arrived mid-render. Runs at the start of every render,
+/// when the previous one has finished, so the uniform block has one writer.
+fn apply_deferred_push(editor: &mut RawEditor) {
+    let Some((id, params)) = editor.deferred_push.take() else { return };
+    if editor.image_resources.as_ref().map(|r| r.image_id) == Some(id) {
+        push_uniforms(editor, &params);
+    }
 }
 
 /// Push `params` to the GPU and render with them.
@@ -1161,11 +1290,17 @@ pub(crate) fn push_uniforms_and_render(
     if crate::app::handlers::ai_denoise::resources_stale(editor) {
         return crate::app::handlers::navigation::reload_selected_image(editor);
     }
-    if let (Some(ctx), Some(resources)) = (&editor.gpu_context, &editor.image_resources) {
-        // Phase 140: Interpolate DCP + resolve slider WB
-        let (interpolated, wb_override) = resolve_wb_and_dcp(editor, params);
-        resources.update_uniforms(ctx, params, interpolated.as_deref(), wb_override);
+    if editor.is_rendering {
+        // A render task is between its own uniform writes and submits: writing
+        // the block from here could land `view_rect = FULL` in its main pass,
+        // or change the params between its stages and its colour pass. Park
+        // the push; `trigger_async_render` applies it before the next frame.
+        if let Some(id) = editor.selected_image_id {
+            editor.deferred_push = Some((id, *params));
+        }
         editor.canvas_cache.clear();
+    } else {
+        push_uniforms(editor, params);
     }
 
     // The detail loupe follows every edit (it costs ~0.3 ms when the noise

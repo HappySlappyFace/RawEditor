@@ -324,14 +324,15 @@ pub enum Message {
     /// `editor.current_edit_params`, which is whatever image happens to be open
     /// in Develop — a batch export previously applied that one image's edits to
     /// every image in the queue.
+    /// (Boxed: `EditParams` is ~21 KB and would size every `Message`.)
     ExportRawLoaded(
         i64,
-        crate::core::types::EditParams,
+        Box<crate::core::types::EditParams>,
         Result<std::sync::Arc<raw::loader::RawDataResult>, String>,
     ),
     ExportPipelineReady(
         i64,
-        crate::core::types::EditParams,
+        Box<crate::core::types::EditParams>,
         Result<
             (
                 std::sync::Arc<crate::gpu::shared::SharedContext>,
@@ -564,7 +565,7 @@ pub enum Message {
     SetCameraProfileDefault(String, Option<String>),
     /// Download RawTherapee's profile for the open image's camera.
     DownloadCameraProfile,
-    CameraProfileDownloaded(Result<Option<String>, String>),
+    CameraProfileDownloaded(String, Result<Option<String>, String>),
     /// Pick `.dcp` files to import.
     ImportCameraProfiles,
     CameraProfilesPicked(Option<Vec<std::path::PathBuf>>),
@@ -606,6 +607,8 @@ pub enum Message {
 
     /// User selected an image from the grid
     ImageSelected(i64),
+    /// Selection made by the app, not a click: ignores the modifier keys.
+    ImageMoved(i64),
     // ========== Phase 59: Filtering ==========
     /// Set minimum rating filter (0 = all, 1-5 = show rating or higher)
     SetMinRating(u8),

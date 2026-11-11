@@ -83,7 +83,7 @@ fn app1_from(exif: &exif::Exif, color_space: u16) -> Option<Vec<u8>> {
     let software = Field {
         tag: Tag::Software,
         ifd_num: In::PRIMARY,
-        value: Value::Ascii(vec![format!("RAW Editor {}", env!("CARGO_PKG_VERSION")).into_bytes()]),
+        value: Value::Ascii(vec![format!("RawEditor {}", env!("CARGO_PKG_VERSION")).into_bytes()]),
     };
     let space = Field {
         tag: Tag::ColorSpace,

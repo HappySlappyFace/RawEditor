@@ -172,7 +172,7 @@ fn open(editor: &mut RawEditor, slot: usize, created: bool) -> Task<Message> {
     editor.status = "AI Select: analysing the image…".into();
     let draw = crate::app::handlers::develop::update_pipeline(editor);
 
-    let cached = editor.raw_cache.peek(&image_id).cloned();
+    let cached = editor.raw_for(image_id);
     let path = editor.images.iter().find(|i| i.id == image_id).map(|i| i.path.clone());
     let black_offsets = params.black_offsets;
     let build = Task::perform(
@@ -218,20 +218,46 @@ pub fn handle_engine_ready(editor: &mut RawEditor, token: u64, result: Result<En
 
 pub const HINT: &str = "AI Select: click to add · right-click or Alt-click to subtract · drag a box · Enter when done";
 
+/// Full-image display UV → the sensor UV of the content shown there, through
+/// the colour pass's Straighten and lens remap as well as the orientation, so
+/// SAM is prompted at the content that was clicked. The mask is read back at
+/// the same source position (`core::viewport::frame_to_layer_uv`).
+fn source_uv(editor: &RawEditor, u: f32, v: f32) -> (f32, f32) {
+    let Some(s) = editor.ai_select.as_ref() else { return (u, v) };
+    match crate::app::handlers::develop::source_geometry(editor, s.image_id) {
+        Some(geo) => {
+            crate::core::viewport::frame_to_source_uv(
+                &editor.current_edit_params,
+                &geo.lens,
+                s.orientation,
+                geo.width,
+                geo.height,
+                u,
+                v,
+            )
+            .0
+        }
+        None => crate::color::display_to_sensor_uv(u.clamp(0.0, 1.0), v.clamp(0.0, 1.0), s.orientation),
+    }
+}
+
 /// A click on the photo, in full-image display UV.
 pub fn handle_prompt(editor: &mut RawEditor, u: f32, v: f32, positive: bool) -> Task<Message> {
+    let (su, sv) = source_uv(editor, u, v);
     let Some(s) = editor.ai_select.as_mut() else { return Task::none() };
-    let (su, sv) = crate::color::display_to_sensor_uv(u.clamp(0.0, 1.0), v.clamp(0.0, 1.0), s.orientation);
     s.prompts.points.push(Point { u: su, v: sv, positive });
     decode(editor)
 }
 
-/// A dragged box, in full-image display UV.
+/// A dragged box, in full-image display UV. On a straightened image the
+/// box drawn on screen is a turned rectangle in the sensor frame, so SAM
+/// (whose boxes are axis-aligned) gets the bounds of all four corners.
 pub fn handle_rect(editor: &mut RawEditor, u0: f32, v0: f32, u1: f32, v1: f32) -> Task<Message> {
+    let corners = [(u0, v0), (u1, v0), (u1, v1), (u0, v1)].map(|(u, v)| source_uv(editor, u, v));
     let Some(s) = editor.ai_select.as_mut() else { return Task::none() };
-    let a = crate::color::display_to_sensor_uv(u0.clamp(0.0, 1.0), v0.clamp(0.0, 1.0), s.orientation);
-    let b = crate::color::display_to_sensor_uv(u1.clamp(0.0, 1.0), v1.clamp(0.0, 1.0), s.orientation);
-    s.prompts.rect = Some([a.0, a.1, b.0, b.1]);
+    let lo = corners.iter().fold((f32::MAX, f32::MAX), |m, c| (m.0.min(c.0), m.1.min(c.1)));
+    let hi = corners.iter().fold((f32::MIN, f32::MIN), |m, c| (m.0.max(c.0), m.1.max(c.1)));
+    s.prompts.rect = Some([lo.0, lo.1, hi.0, hi.1]);
     decode(editor)
 }
 
@@ -382,8 +408,14 @@ pub fn handle_bitmaps_loaded(
 pub fn track(editor: &mut RawEditor) -> Option<Task<Message>> {
     let mut tasks = Vec::new();
     if let Some(s) = &editor.ai_select {
-        let gone = editor.selected_image_id != Some(s.image_id)
-            || editor.current_tab != crate::app::message::AppTab::Develop
+        if editor.selected_image_id != Some(s.image_id) {
+            // The params are another image's now: only drop the session.
+            // (`handle_image_selected` ends it properly before the switch.)
+            editor.ai_select = None;
+            editor.status = String::new();
+            return track(editor);
+        }
+        let gone = editor.current_tab != crate::app::message::AppTab::Develop
             || editor
                 .image_resources
                 .as_ref()
@@ -425,20 +457,30 @@ pub fn track(editor: &mut RawEditor) -> Option<Task<Message>> {
     (!tasks.is_empty()).then(|| Task::batch(tasks))
 }
 
-/// The session's clicks in full-image display UV, for the overlay.
+/// The session's clicks in full-image display UV, for the overlay: where the
+/// picture SHOWS the content they were made on, through Straighten and the
+/// lens remap, so a dot stays on its subject (and under the cursor that made
+/// it) however the image is straightened.
 pub fn display_points(editor: &RawEditor) -> Vec<(f32, f32, bool)> {
-    editor
-        .ai_select
-        .as_ref()
-        .map(|s| {
-            s.prompts
-                .points
-                .iter()
-                .map(|p| {
-                    let (u, v) = crate::color::sensor_to_display_uv(p.u, p.v, s.orientation);
-                    (u, v, p.positive)
-                })
-                .collect()
+    let Some(s) = editor.ai_select.as_ref() else { return Vec::new() };
+    let geo = crate::app::handlers::develop::source_geometry(editor, s.image_id);
+    s.prompts
+        .points
+        .iter()
+        .map(|p| {
+            let (u, v) = match &geo {
+                Some(g) => crate::core::viewport::source_to_frame_uv(
+                    &editor.current_edit_params,
+                    &g.lens,
+                    s.orientation,
+                    g.width,
+                    g.height,
+                    p.u,
+                    p.v,
+                ),
+                None => crate::color::sensor_to_display_uv(p.u, p.v, s.orientation),
+            };
+            (u, v, p.positive)
         })
-        .unwrap_or_default()
+        .collect()
 }

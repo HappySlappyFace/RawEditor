@@ -418,6 +418,21 @@ pub struct EditedProxy {
 /// Edited proxies kept in memory. ~400 KB each (384px RGBA).
 pub const EDITED_PROXY_CAPACITY: usize = 128;
 
+/// `(kelvin, tone, interpolation, the profile it came from)`: the memo is
+/// valid only for the same profile (pointer-compared; kept alive here).
+pub type DcpMemo = (
+    f32,
+    crate::core::tonemap::ToneSettings,
+    Arc<crate::raw::dcp::InterpolatedProfile>,
+    Arc<crate::raw::dcp::DcpProfile>,
+);
+
+/// Shape assumed for the viewport before any preview or render exists.
+pub const PLACEHOLDER_DIMS: (u32, u32) = (1280, 853);
+
+/// Undo steps kept per image.
+pub const HISTORY_LIMIT: usize = 100;
+
 /// Main application state
 #[derive(Debug)]
 pub struct RawEditor {
@@ -513,6 +528,12 @@ pub struct RawEditor {
     pub raw_cache: LruCache<i64, Arc<raw::loader::RawDataResult>>,
     /// Approximate memory usage of raw_cache in bytes
     pub raw_cache_bytes: usize,
+    /// Cache workers currently running (`library::spawn_cache_workers` tops
+    /// this up to `CACHE_WORKERS`; a retiring worker gives its slot back).
+    pub cache_workers_live: usize,
+    /// The open image's RAW, held outside the preload budget (which can be 0,
+    /// or evict the open image first). Read through `raw_for`.
+    pub current_raw: Option<(i64, Arc<raw::loader::RawDataResult>)>,
     /// Number of previews to keep preloaded behind current image
     pub preview_preload_behind: usize,
     /// Number of previews to keep preloaded ahead of current image
@@ -539,13 +560,7 @@ pub struct RawEditor {
     /// `&RawEditor` signature: the crop and mask drag paths call it while
     /// holding an immutable borrow of `gpu_context`/`image_resources`.
     /// Cleared on image load, where `current_dcp_profile` changes.
-    pub dcp_memo: std::cell::RefCell<
-        Option<(
-            f32,
-            crate::core::tonemap::ToneSettings,
-            Arc<crate::raw::dcp::InterpolatedProfile>,
-        )>,
-    >,
+    pub dcp_memo: std::cell::RefCell<Option<DcpMemo>>,
     /// As-shot white balance of the current image as (Kelvin, Adobe tint),
     /// solved from the camera's WB multipliers via the color matrix (Robertson
     /// CCT). Anchor for the Temp/Tint sliders; None until a raw is loaded.
@@ -554,6 +569,10 @@ pub struct RawEditor {
     // Phase 95: Unified GPU Pipeline Architecture
     /// Shared GPU context (created once, reused for all images)
     pub gpu_context: Option<Arc<gpu::shared::SharedContext>>,
+    /// Where the context is created, exactly once (see
+    /// `handlers::loading::shared_context`): tasks started before the first
+    /// finishes would otherwise each build their own device.
+    pub gpu_init: Arc<tokio::sync::OnceCell<Arc<gpu::shared::SharedContext>>>,
     /// Current image resources (created per image, wrapped in Arc)
     pub image_resources: Option<Arc<gpu::shared::ImageResources>>,
     /// The subsampled develop preview of the same image, kept once
@@ -708,6 +727,9 @@ pub struct RawEditor {
     pub pending_raw_loads: HashSet<i64>,
     /// Throttled RAW preload queue
     pub queued_raw_loads: Vec<(i64, String)>,
+    /// Images whose selected-image RAW decode is in flight (started outside the
+    /// preload queue), so a second selection does not start a second decode.
+    pub direct_raw_loads: HashSet<i64>,
 
     /// Phase 104: Performance Profiler
     pub profiler: crate::core::profiler::Profiler,
@@ -718,6 +740,12 @@ pub struct RawEditor {
     /// Phase 106: Render Throttling
     pub is_rendering: bool,
     pub pending_render: bool,
+    /// Params pushed while a render was in flight, with the image they belong
+    /// to. The render task is the only writer of the uniform block while it
+    /// runs (it patches `view_rect` between its own submits, and the stages
+    /// read `stage_params` at render time), so the UI thread parks the push
+    /// here and `trigger_async_render` applies it before the next frame.
+    pub deferred_push: Option<(i64, crate::core::types::EditParams)>,
     /// True while a full-resolution resource rebuild is in flight. One at a
     /// time, across images: each holds a full-size working set on the GPU,
     /// and navigating quickly must not stack them. Cleared only by that
@@ -845,8 +873,9 @@ impl RawEditor {
         tracing::info!("RAW Editor starting (instant splash screen)...");
 
         let settings = crate::core::settings::AppSettings::load_or_default();
-        // Not under test: the flag is process-global, tests build editors in
-        // parallel, and this reads the developer's real settings file.
+        // Not under test: the flag is process-global and tests build editors
+        // in parallel. (Under test `settings` are always the defaults —
+        // `AppSettings::load_or_default`.)
         let appearance = settings
             .appearance
             .as_deref()
@@ -891,6 +920,8 @@ impl RawEditor {
                 export_paused_for_memory: false,
                 raw_cache: LruCache::new(NonZeroUsize::new(RAW_CACHE_ENTRY_CAPACITY).unwrap()),
                 raw_cache_bytes: 0,
+                cache_workers_live: 0,
+                current_raw: None,
                 preview_preload_behind,
                 preview_preload_ahead,
                 raw_preload_behind,
@@ -903,6 +934,7 @@ impl RawEditor {
 
                 // Phase 95: Unified GPU Pipeline Architecture
                 gpu_context: None, // Will be initialized on first image load
+                gpu_init: Arc::new(tokio::sync::OnceCell::new()),
                 image_resources: None,
                 preview_resources: None,
                 editor_readiness: EditorReadiness::NoSelection,
@@ -966,6 +998,7 @@ impl RawEditor {
                 profiler_cache: iced::widget::canvas::Cache::default(),
                 is_rendering: false,
                 pending_render: false,
+                deferred_push: None,
                 full_res_upgrading: false,
                 full_res_failed: None,
                 stage_drag: false,
@@ -1028,6 +1061,7 @@ impl RawEditor {
                 queued_loads: Vec::new(),
                 pending_raw_loads: HashSet::new(),
                 queued_raw_loads: Vec::new(),
+                direct_raw_loads: HashSet::new(),
             },
             // The splash stays up for at least SPLASH_MIN, however fast the
             // database opens: on a small catalogue it otherwise flashed for a
@@ -1105,6 +1139,13 @@ impl RawEditor {
             // Push new state
             stack.push(params_to_push);
             *index += 1;
+            // Each step is ~21 KB: keep the newest HISTORY_LIMIT per image
+            // (the oldest undo steps go first).
+            if stack.len() > HISTORY_LIMIT {
+                let excess = stack.len() - HISTORY_LIMIT;
+                stack.drain(..excess);
+                *index -= excess;
+            }
 
             tracing::debug!(
                 "History Commit: Stack size {}, Index {}",
@@ -1154,7 +1195,7 @@ impl RawEditor {
         } else if self.working_preview_bytes.is_some() {
             self.working_preview_dims
         } else {
-            (1280, 853)
+            PLACEHOLDER_DIMS
         }
     }
 
@@ -1268,10 +1309,11 @@ impl RawEditor {
         for id in ids {
             self.edited_proxies.pop(id);
         }
+        let wanted: HashSet<i64> = ids.iter().copied().collect();
         let had_saved: Vec<i64> = self
             .images
             .iter()
-            .filter(|img| img.cache_path_edited.is_some() && ids.contains(&img.id))
+            .filter(|img| img.cache_path_edited.is_some() && wanted.contains(&img.id))
             .map(|img| img.id)
             .collect();
         if had_saved.is_empty() {
@@ -1333,7 +1375,7 @@ impl RawEditor {
             return if self.working_preview_bytes.is_some() {
                 self.working_preview_dims
             } else {
-                (1280, 853)
+                PLACEHOLDER_DIMS
             };
         };
         let (w, h) = res.oriented_dims(self.current_edit_params.quarter_turns);
@@ -1495,6 +1537,15 @@ impl RawEditor {
         }
     }
 
+    /// The decoded RAW of `image_id` if memory holds it: the open image's pin
+    /// first, then the preload cache. Does not touch LRU order.
+    pub fn raw_for(&self, image_id: i64) -> Option<Arc<raw::loader::RawDataResult>> {
+        match &self.current_raw {
+            Some((id, raw)) if *id == image_id => Some(raw.clone()),
+            _ => self.raw_cache.peek(&image_id).cloned(),
+        }
+    }
+
     pub fn insert_raw_cache(&mut self, image_id: i64, raw: Arc<raw::loader::RawDataResult>) {
         if self.raw_preload_budget_mb == 0 {
             return;
@@ -1516,6 +1567,9 @@ impl RawEditor {
     /// Drop a deleted image's entry from the raw cache, keeping
     /// `raw_cache_bytes` accounting correct.
     pub fn remove_from_raw_cache(&mut self, image_id: i64) {
+        if self.current_raw.as_ref().is_some_and(|(id, _)| *id == image_id) {
+            self.current_raw = None;
+        }
         if let Some(old) = self.raw_cache.pop(&image_id) {
             self.raw_cache_bytes = self
                 .raw_cache_bytes
@@ -1592,6 +1646,12 @@ impl RawEditor {
             ) = event
             {
                 return Some(Message::WindowResized(size));
+            }
+            // Alt+F4, a WM close binding, the taskbar and a session logout:
+            // with `exit_on_close_request(false)` they land here instead of
+            // exiting past the save points `handle_close_window` runs.
+            if let iced::Event::Window(iced::window::Event::CloseRequested) = event {
+                return Some(Message::CloseWindow);
             }
             // Only winit's X11, macOS and Windows backends deliver drops;
             // on native Wayland (winit 0.30) this never fires.
@@ -1759,6 +1819,23 @@ mod tests {
     }
 
     #[test]
+    fn message_stays_small_and_history_is_capped() {
+        // EditParams is ~21 KB; it must not be carried by value in a Message.
+        assert!(std::mem::size_of::<Message>() < 1024, "{}", std::mem::size_of::<Message>());
+
+        let mut e = editor();
+        e.selected_image_id = Some(1);
+        for i in 0..(HISTORY_LIMIT + 20) {
+            e.current_edit_params.exposure = i as f32 * 0.01;
+            e.commit_current_state();
+        }
+        let (stack, index) = e.get_current_history().unwrap();
+        assert_eq!(stack.len(), HISTORY_LIMIT);
+        assert_eq!(*index, HISTORY_LIMIT - 1);
+        assert_eq!(stack[*index].exposure, (HISTORY_LIMIT + 19) as f32 * 0.01);
+    }
+
+    #[test]
     fn crop_dims_of_the_full_frame_is_the_frame() {
         assert_eq!(crop_dims(1280, 853, [0.0, 0.0, 1.0, 1.0]), (1280, 853));
     }
@@ -1826,6 +1903,17 @@ mod tests {
             img(5, "/photos/2024/e.NEF", marked),
         ];
         e
+    }
+
+    /// Auto-advance after a mark used to walk the unfiltered list and could
+    /// land on an image the rating filter hides (no filmstrip selection).
+    #[test]
+    fn next_unmarked_prefers_an_image_the_filter_shows() {
+        let mut e = catalog();
+        e.current_tab = AppTab::Develop;
+        e.min_filter_rating = 5;
+        assert_eq!(e.displayed_ids(), vec![3]);
+        assert_eq!(crate::app::handlers::navigation::find_next_unmarked_image_id(&e, 1), Some(3));
     }
 
     #[test]

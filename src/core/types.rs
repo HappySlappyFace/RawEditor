@@ -566,6 +566,18 @@ impl EditParams {
         (1.0e6 / mired).clamp(1500.0, 50000.0)
     }
 
+    /// Inverse of [`Self::kelvin_from_anchor`]: the slider value (clamped to
+    /// ±1) that renders `kelvin`.
+    pub fn temperature_for_kelvin(anchor_kelvin: f32, kelvin: f32) -> f32 {
+        let anchor_mired = 1.0e6 / anchor_kelvin.clamp(1500.0, 50000.0);
+        ((anchor_mired - 1.0e6 / kelvin) / 120.0).clamp(-1.0, 1.0)
+    }
+
+    /// Inverse of [`Self::tint_from_anchor`], clamped to ±1.
+    pub fn tint_slider_for(anchor_tint: f32, tint: f32) -> f32 {
+        ((tint - anchor_tint) / 50.0).clamp(-1.0, 1.0)
+    }
+
     /// Absolute Adobe-scale tint, anchored at the image's as-shot tint.
     /// Slider ±1 = ±50 tint units; positive = magenta (ACR convention).
     pub fn tint_from_anchor(&self, anchor_tint: f32) -> f32 {
@@ -647,6 +659,10 @@ impl EditParams {
             // Not a look you compare against: switching it rebuilds the GPU
             // resources, which a momentary peek must not do.
             camera_profile: self.camera_profile,
+            // The mosaic on the GPU is the AI-denoised one and a peek does not
+            // rebuild it. Dropping this made `DenoiseSettings::from_params` read
+            // the classic NR sliders again, stacking them on the AI result.
+            ai_denoise: self.ai_denoise,
             ..Self::default()
         }
     }
@@ -836,6 +852,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn wb_slider_inverses_round_trip() {
+        for anchor in [3200.0f32, 5500.0, 7500.0] {
+            for t in [-0.9f32, -0.2, 0.0, 0.4, 0.9] {
+                let mut p = EditParams::default();
+                p.temperature = t;
+                p.tint = t;
+                let k = p.kelvin_from_anchor(anchor);
+                assert!((EditParams::temperature_for_kelvin(anchor, k) - t).abs() < 1e-3);
+                let tint = p.tint_from_anchor(7.0);
+                assert!((EditParams::tint_slider_for(7.0, tint) - t).abs() < 1e-5);
+            }
+        }
+        // Out of range clamps.
+        assert_eq!(EditParams::temperature_for_kelvin(5500.0, 1500.0), -1.0);
+        assert_eq!(EditParams::tint_slider_for(0.0, 500.0), 1.0);
+    }
+
+    #[test]
     fn test_default_is_unedited() {
         let params = EditParams::default();
         assert!(params.is_unedited());
@@ -999,6 +1033,18 @@ mod tests {
             (b.luma_noise, b.luma_detail, b.color_noise),
             (p.luma_noise, p.luma_detail, p.color_noise)
         );
+    }
+
+    /// AI denoise is baked into the mosaic the peek renders from, so the peek
+    /// must keep it, or the classic NR sliders come back on top of it.
+    #[test]
+    fn before_reference_keeps_ai_denoise_and_so_classic_nr_stays_off() {
+        let mut p = fully_edited();
+        p.ai_denoise = 0.8;
+        p.color_noise = 0.6;
+        let b = p.before_reference();
+        assert_eq!(b.ai_denoise, p.ai_denoise);
+        assert!(!crate::gpu::denoise::DenoiseSettings::from_params(&b).is_active());
     }
 
     #[test]

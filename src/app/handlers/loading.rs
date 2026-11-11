@@ -10,6 +10,7 @@ pub fn handle_raw_data_loaded(
     image_id: i64,
     result: Result<raw::loader::RawDataResult, String>,
 ) -> Task<Message> {
+    editor.direct_raw_loads.remove(&image_id);
     match result {
         Ok(raw) => {
             let raw = Arc::new(raw);
@@ -49,6 +50,14 @@ pub fn handle_raw_preloaded(
         }
         Err(e) => {
             tracing::warn!("RAW preload failed for image {}: {}", image_id, e);
+            // Develop left the selection to this preload (it was already
+            // running when selected): its failure is the load's failure, as
+            // for a direct decode. Only logging it left `Loading` with nothing
+            // in flight. `Failed` makes a re-select decode it again.
+            if awaiting_raw(editor, image_id) {
+                editor.status = format!("Failed to load RAW: {}", e);
+                editor.editor_readiness = EditorReadiness::Failed(image_id, e);
+            }
             Task::none()
         }
     }
@@ -70,6 +79,7 @@ pub fn prepare_image_resources_from_raw(
     image_id: i64,
     raw: Arc<raw::loader::RawDataResult>,
 ) -> Task<Message> {
+    editor.current_raw = Some((image_id, raw.clone()));
     editor.current_metadata = Some(metadata_snapshot(&raw));
     editor.current_metadata_id = Some(image_id);
 
@@ -88,17 +98,15 @@ pub fn prepare_image_resources_from_raw(
     let params = editor.current_edit_params;
     let profile_defaults = editor.camera_profile_defaults.clone();
     let context = editor.gpu_context.clone();
+    let gpu_init = editor.gpu_init.clone();
 
     Task::perform(
         async move {
-            let ctx = if let Some(c) = context {
-                c
-            } else {
-                match gpu::shared::SharedContext::new().await {
-                    Ok(c) => Arc::new(c),
-                    Err(e) => return Err(e),
-                }
-            };
+            let ctx = shared_context(&gpu_init, context).await?;
+            // CPU-heavy (profile scan, mosaic blend, noise/haze analysis,
+            // texture uploads): on the blocking pool, not a tokio worker, so
+            // renders' `block_in_place` always finds a free worker.
+            tokio::task::spawn_blocking(move || {
 
             // The image's camera profile: its own choice, else its camera's
             // default, else the best installed match. Resolved here, off the
@@ -151,9 +159,30 @@ pub fn prepare_image_resources_from_raw(
                 }
                 Err(e) => Err(e),
             }
+            })
+            .await
+            .map_err(|e| format!("resource build panicked: {e}"))?
         },
         move |res| Message::ImageResourcesReady(image_id, res),
     )
+}
+
+/// The one `SharedContext`. Every path that needs a context goes through
+/// here: tasks started before the first finishes (select 1 → 2 → 1 during the
+/// first load, or an export beside a load) all get the same device, so
+/// resources built by one can be installed beside another's context.
+pub async fn shared_context(
+    cell: &tokio::sync::OnceCell<Arc<gpu::shared::SharedContext>>,
+    existing: Option<Arc<gpu::shared::SharedContext>>,
+) -> Result<Arc<gpu::shared::SharedContext>, String> {
+    cell.get_or_try_init(|| async {
+        match existing {
+            Some(c) => Ok(c),
+            None => gpu::shared::SharedContext::new().await.map(Arc::new),
+        }
+    })
+    .await
+    .cloned()
 }
 
 pub fn handle_image_resources_ready(editor: &mut RawEditor, image_id: i64, result: Result<(Arc<gpu::shared::SharedContext>, Arc<gpu::shared::ImageResources>), String>) -> Task<Message> {
@@ -279,7 +308,7 @@ pub fn trigger_full_res_upgrade(editor: &mut RawEditor) -> Task<Message> {
         return Task::none();
     }
 
-    let cached = editor.raw_cache.get(&image_id).cloned();
+    let cached = editor.raw_for(image_id);
     let path = match &cached {
         Some(_) => None,
         None => match editor.images.iter().find(|i| i.id == image_id) {
@@ -293,6 +322,7 @@ pub fn trigger_full_res_upgrade(editor: &mut RawEditor) -> Task<Message> {
     let profile_use = editor.image_resources.as_ref().and_then(|r| r.profile_use.clone());
     let profile_defaults = editor.camera_profile_defaults.clone();
     let context = editor.gpu_context.clone();
+    let gpu_init = editor.gpu_init.clone();
 
     tracing::info!(
         "Upgrading to full-res resources for image {} ({})",
@@ -307,14 +337,11 @@ pub fn trigger_full_res_upgrade(editor: &mut RawEditor) -> Task<Message> {
                 (None, Some(path)) => Arc::new(raw::loader::load_raw_data(path).await?),
                 (None, None) => return Err("no RAW to upgrade from".to_string()),
             };
-            let ctx = if let Some(c) = context {
-                c
-            } else {
-                match gpu::shared::SharedContext::new().await {
-                    Ok(c) => Arc::new(c),
-                    Err(e) => return Err(e),
-                }
-            };
+            let ctx = shared_context(&gpu_init, context).await?;
+            // CPU-heavy (profile scan, mosaic blend, noise/haze analysis,
+            // texture uploads): on the blocking pool, not a tokio worker, so
+            // renders' `block_in_place` always finds a free worker.
+            tokio::task::spawn_blocking(move || {
 
             // The profile the image already uses (resolved for its preview),
             // or — if the preview recorded none — resolved now.
@@ -362,6 +389,9 @@ pub fn trigger_full_res_upgrade(editor: &mut RawEditor) -> Task<Message> {
                 }
                 Err(e) => Err(e),
             }
+            })
+            .await
+            .map_err(|e| format!("resource build panicked: {e}"))?
         },
         move |res| Message::FullResReady(image_id, res),
     )
@@ -402,6 +432,26 @@ fn metadata_snapshot(raw: &raw::loader::RawDataResult) -> raw::loader::RawDataRe
 mod tests {
     use super::*;
     use crate::app::message::AppTab;
+
+    /// With the preload budget at 0 nothing enters `raw_cache`, yet the open
+    /// image's RAW must stay reachable (eyedroppers, loupe, AI tools). Runs
+    /// the real `RawDataLoaded` handler; `apply_raw_preload_cleanup` runs in it.
+    #[test]
+    fn the_open_images_raw_is_pinned_with_a_zero_preload_budget() {
+        let mut e = RawEditor::new().0;
+        e.raw_preload_budget_mb = 0;
+        e.selected_image_id = Some(1);
+        e.editor_readiness = EditorReadiness::Loading(1);
+        let raw = crate::ml::segment::tests::disc_raw(60, 40);
+        let _ = handle_raw_data_loaded(&mut e, 1, Ok(raw));
+        assert!(e.raw_cache.is_empty(), "budget 0 caches nothing");
+        assert!(e.raw_for(1).is_some(), "the open image's RAW was dropped");
+        assert!(e.raw_for(2).is_none());
+        assert!(crate::app::handlers::develop::sample_raw_rgb(&e, 1, 0.5, 0.5).is_ok());
+        // Deleting the image releases the pin.
+        e.remove_from_raw_cache(1);
+        assert!(e.raw_for(1).is_none());
+    }
 
     /// Zoom is kept across images and tabs, so a photo can load straight
     /// into a zoomed-in view. Only the zoom handler used to request full

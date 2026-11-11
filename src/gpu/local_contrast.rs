@@ -110,11 +110,13 @@ const MAX_PASSES: usize = 3 + 3 * MAX_LEVELS;
 
 /// Analysis size for a working texture of `w`×`h`.
 pub fn analysis_size(w: u32, h: u32) -> (u32, u32) {
-    if w.saturating_mul(h) > MAX_ANALYSIS_PIXELS {
-        (w.div_ceil(2), h.div_ceil(2))
-    } else {
-        (w, h)
+    let (mut w, mut h) = (w, h);
+    // Halve until it fits (a single halving left a 100 MP mosaic at 25 MP).
+    while w.saturating_mul(h) > MAX_ANALYSIS_PIXELS && w.max(h) > 1 {
+        w = w.div_ceil(2);
+        h = h.div_ceil(2);
     }
+    (w, h)
 }
 
 /// Clarity grid for an analysis texture of `w`×`h` (never finer than it).
@@ -656,5 +658,7 @@ mod tests {
         assert_eq!(analysis_size(2560, 1700), (2560, 1700));
         assert_eq!(analysis_size(6000, 4000), (3000, 2000));
         assert_eq!(analysis_size(6001, 4001), (3001, 2001));
+        // A 100 MP mosaic halves twice, so the cap really is a cap.
+        assert_eq!(analysis_size(10000, 10000), (2500, 2500));
     }
 }

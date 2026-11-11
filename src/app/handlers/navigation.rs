@@ -7,9 +7,28 @@ use crate::raw;
 use crate::ui::preview_renderer::{CropHandle, MaskHandle};
 
 pub fn handle_image_selected(editor: &mut RawEditor, image_id: i64) -> Task<Message> {
+    select_image(editor, image_id, true)
+}
+
+/// Selection the app makes itself (after a delete, auto-advance, a marked
+/// image): never reads the modifier keys, which may still be held from the
+/// shortcut that caused it and would turn "move on" into a range select or
+/// toggle the image out of the selection.
+pub fn handle_image_moved(editor: &mut RawEditor, image_id: i64) -> Task<Message> {
+    select_image(editor, image_id, false)
+}
+
+fn select_image(editor: &mut RawEditor, image_id: i64, from_click: bool) -> Task<Message> {
     // Must run BEFORE selected_image_id moves: flush_edits writes
     // current_edit_params against the currently-selected id, so flushing after
     // the switch would write this image's edits onto the next one.
+    // End an AI-select session where the image is left, while the params are
+    // still this image's (the clean-up edits masks by slot index).
+    let ai_done = if editor.selected_image_id != Some(image_id) {
+        crate::app::handlers::ai_mask::handle_done(editor)
+    } else {
+        Task::none()
+    };
     editor.flush_edits();
     // Leaving an image: bring its edited thumbnail on disk up to date. Also
     // before the selection moves — it checks against the outgoing edits.
@@ -21,8 +40,8 @@ pub fn handle_image_selected(editor: &mut RawEditor, image_id: i64) -> Task<Mess
     // The peek belongs to the outgoing image; carrying it across would show
     // the new image unedited with no way to notice why.
     editor.before_peek = false;
-    let shift = editor.last_modifiers.shift();
-    let command = editor.last_modifiers.command();
+    let shift = from_click && editor.last_modifiers.shift();
+    let command = from_click && editor.last_modifiers.command();
 
     if shift {
         // Range select from the anchor. Falls back to a plain click when
@@ -48,6 +67,18 @@ pub fn handle_image_selected(editor: &mut RawEditor, image_id: i64) -> Task<Mess
         editor.multi_selection.insert(image_id);
         editor.selection_anchor = Some(image_id);
     }
+    // `Loading(id)` promises a load of `id` that will finish it, and only a
+    // Develop selection starts one. Selecting another image anywhere else
+    // (Library, Cull) loads nothing, and the old image's result then lands
+    // unwanted — so coming back to it later found "already loading", started
+    // nothing, and Develop sat on "Loading" forever. Drop the promise with
+    // the selection; entering Develop on an image loads it afresh (a decode
+    // still running is reused, not repeated: `direct_raw_loads`).
+    if editor.current_tab != AppTab::Develop
+        && matches!(editor.editor_readiness, EditorReadiness::Loading(id) if id != image_id)
+    {
+        editor.editor_readiness = EditorReadiness::NoSelection;
+    }
     editor.selected_image_id = Some(image_id);
     editor.canvas_cache.clear();
     // Mask selection is an index into the previous image's mask list — clear
@@ -56,7 +87,17 @@ pub fn handle_image_selected(editor: &mut RawEditor, image_id: i64) -> Task<Mess
     editor.mask_tool = crate::app::state::MaskTool::Inactive;
 
     if let Some(library) = &editor.library {
-        editor.current_edit_params = library.load_edit_params(image_id).unwrap_or_default();
+        editor.current_edit_params = match library.load_saved_edit(image_id) {
+            Ok(saved) => saved.unwrap_or_default(),
+            Err(e) => {
+                // The library backs the old JSON up before the next flush
+                // replaces it with these defaults.
+                tracing::error!("Could not read the saved edit for image {image_id}: {e}");
+                editor.status =
+                    "This image's saved edit could not be read, so it opens unedited. The old edit is kept as a backup.".to_string();
+                Default::default()
+            }
+        };
         // Crop mode survives the switch, so the freshly loaded params (which
         // never carry the flag) must pick it up before anything renders them.
         editor.sync_tool_flags();
@@ -78,10 +119,10 @@ pub fn handle_image_selected(editor: &mut RawEditor, image_id: i64) -> Task<Mess
         };
 
         if needs_load {
-            return Task::batch([persist, trigger_image_load(editor, image_id), reveal]);
+            return Task::batch([ai_done, persist, trigger_image_load(editor, image_id), reveal]);
         }
     }
-    Task::batch([persist, reveal])
+    Task::batch([ai_done, persist, reveal])
 }
 
 /// Scroll the current tab's grid or filmstrip so the selection is visible.
@@ -256,13 +297,21 @@ pub fn handle_select_all(editor: &mut RawEditor) -> Task<Message> {
 pub fn find_next_unmarked_image_id(editor: &RawEditor, from_id: i64) -> Option<i64> {
     let idx = editor.images.iter().position(|i| i.id == from_id)?;
     let len = editor.images.len();
+    // Prefer an image the active filter shows, so the filmstrip has a
+    // selection to draw; fall back to any unmarked one rather than none.
+    let shown: std::collections::HashSet<i64> = editor.displayed_ids().into_iter().collect();
+    let mut any = None;
     for step in 1..=len {
         let candidate = &editor.images[(idx + step) % len];
-        if candidate.rating != crate::database::models::MARKED_FOR_REMOVAL_RATING {
+        if candidate.rating == crate::database::models::MARKED_FOR_REMOVAL_RATING {
+            continue;
+        }
+        if shown.contains(&candidate.id) {
             return Some(candidate.id);
         }
+        any.get_or_insert(candidate.id);
     }
-    None
+    any
 }
 
 /// True when Develop is active and its current selection is marked for
@@ -296,7 +345,7 @@ pub fn ensure_develop_selection_not_marked(editor: &mut RawEditor) -> Task<Messa
     };
 
     if let Some(next_id) = find_next_unmarked_image_id(editor, sel) {
-        Task::done(Message::ImageSelected(next_id))
+        Task::done(Message::ImageMoved(next_id))
     } else {
         editor.selected_image_id = None;
         editor.editor_readiness = EditorReadiness::NoSelection;
@@ -310,7 +359,7 @@ pub fn ensure_develop_selection_not_marked(editor: &mut RawEditor) -> Task<Messa
 /// Previously these indexed the unfiltered `editor.images`, so arrow keys
 /// happily navigated to images the active filter was hiding — and in Develop,
 /// to images marked for removal that the tab refuses to show.
-fn step_selection(editor: &RawEditor, forward: bool) -> Option<i64> {
+pub(crate) fn step_selection(editor: &RawEditor, forward: bool) -> Option<i64> {
     let ids = editor.displayed_ids();
     if ids.is_empty() {
         return None;
@@ -332,7 +381,7 @@ pub fn handle_select_next_image(editor: &mut RawEditor) -> Task<Message> {
         return Task::none();
     }
     match step_selection(editor, true) {
-        Some(next) => Task::done(Message::ImageSelected(next)),
+        Some(next) => Task::done(Message::ImageMoved(next)),
         None => Task::none(),
     }
 }
@@ -342,7 +391,7 @@ pub fn handle_select_previous_image(editor: &mut RawEditor) -> Task<Message> {
         return Task::none();
     }
     match step_selection(editor, false) {
-        Some(prev) => Task::done(Message::ImageSelected(prev)),
+        Some(prev) => Task::done(Message::ImageMoved(prev)),
         None => Task::none(),
     }
 }
@@ -813,6 +862,10 @@ fn trigger_image_load(editor: &mut RawEditor, image_id: i64) -> Task<Message> {
     // previous image may still be building, and starting this one's
     // alongside it would hold two full-size working sets. Its result
     // releases the guard and re-checks this image (`handle_full_res_ready`).
+    // The pin belongs to the image being left.
+    if editor.current_raw.as_ref().is_some_and(|(id, _)| *id != image_id) {
+        editor.current_raw = None;
+    }
     let develop = editor.current_tab == AppTab::Develop;
     if develop {
         // The outgoing image's GPU resources and render must not stay on
@@ -900,18 +953,34 @@ fn trigger_image_load(editor: &mut RawEditor, image_id: i64) -> Task<Message> {
                     cached_raw.clone(),
                 ));
             } else if !editor.pending_raw_loads.contains(&image_id) {
-                tasks.push(Task::perform(
+                // One direct decode per image: stepping A -> B -> A used to
+                // decode A twice, and a held arrow key one image per step.
+                if editor.direct_raw_loads.insert(image_id) {
+                    tasks.push(Task::perform(
                     raw::loader::load_raw_data(raw_path),
                     move |res| Message::RawDataLoaded(image_id, res),
-                ));
-            } else if let Some(pos) = editor
-                .queued_raw_loads
-                .iter()
-                .position(|(queued_id, _)| *queued_id == image_id)
-            {
-                let prioritized = editor.queued_raw_loads.remove(pos);
-                editor.queued_raw_loads.insert(0, prioritized);
+                    ));
+                }
+            } else if claim_queued(
+                &mut editor.queued_raw_loads,
+                &mut editor.pending_raw_loads,
+                image_id,
+                crate::app::loader::MAX_CONCURRENT_RAW_LOADS,
+            ) {
+                // Waiting in the preload queue's tail: decode it now. Moving it
+                // within the tail is not enough, because `schedule_raw_preloads`
+                // runs right after and rebuilds the tail without the selected
+                // image, which would drop it and leave Develop on "Loading".
+                if editor.direct_raw_loads.insert(image_id) {
+                    tasks.push(Task::perform(
+                        raw::loader::load_raw_data(raw_path),
+                        move |res| Message::RawDataLoaded(image_id, res),
+                    ));
+                }
             }
+            // Otherwise the preload for it is already running (the first
+            // `MAX_CONCURRENT_RAW_LOADS` queue entries): its result completes
+            // the load.
         }
         
         // Schedule preloads for adjacent images
@@ -951,6 +1020,9 @@ fn schedule_raw_preloads(editor: &mut RawEditor) -> Task<Message> {
         neighbours(editor, editor.raw_preload_behind, editor.raw_preload_ahead)
             .into_iter()
             .filter(|img| !editor.raw_cache.contains(&img.id))
+            // A direct decode of it is already running (an image stepped
+            // past): queueing it as well would decode it twice.
+            .filter(|img| !editor.direct_raw_loads.contains(&img.id))
             .map(|img| (img.id, img.path.clone()))
             .collect();
     requeue(
@@ -1015,6 +1087,28 @@ fn neighbours(editor: &RawEditor, behind: usize, ahead: usize) -> Vec<&ImageData
     out
 }
 
+/// Take `id` out of the not-yet-started part of a load queue.
+///
+/// Returns true if it was waiting there (so the caller should load it itself).
+/// The first `in_flight` entries are the running decodes: those are left alone
+/// and report false, since their result will arrive on its own.
+fn claim_queued(
+    queue: &mut Vec<(i64, String)>,
+    pending: &mut std::collections::HashSet<i64>,
+    id: i64,
+    in_flight: usize,
+) -> bool {
+    let Some(pos) = queue.iter().position(|(queued, _)| *queued == id) else {
+        return false;
+    };
+    if pos < in_flight {
+        return false; // already running
+    }
+    queue.remove(pos);
+    pending.remove(&id);
+    true
+}
+
 /// Replace a load queue's not-yet-started tail with `wanted`, in order.
 ///
 /// The loader subscription runs the first `in_flight` entries, so those stay
@@ -1057,7 +1151,7 @@ async fn load_image_handle(
             let preview = crate::app::state::CachedPreview { width: w, height: h, bytes: pixels.into() };
             (id, preview.to_handle(), Some(preview.bytes), (w, h))
         }
-        Err(_) => (id, iced::widget::image::Handle::from_path(path), None, (1280, 853)),
+        Err(_) => (id, iced::widget::image::Handle::from_path(path), None, crate::app::state::PLACEHOLDER_DIMS),
     }
 }
 
@@ -1087,6 +1181,28 @@ mod tests {
         e.current_tab = AppTab::Library;
         e.images = ids.iter().map(|i| img(*i, "/p/x.NEF")).collect();
         e
+    }
+
+    /// A move the app makes (after a delete, auto-advance) must not be read as
+    /// a Shift/Ctrl click because a key from the triggering shortcut is
+    /// still held; a real click still is.
+    #[test]
+    fn app_driven_selection_ignores_held_modifiers() {
+        let mut e = editor_with(&[1, 2, 3]);
+        let _ = handle_image_selected(&mut e, 1);
+        e.last_modifiers = iced::keyboard::Modifiers::SHIFT;
+        let _ = crate::app::update::update(&mut e, Message::ImageMoved(3));
+        assert_eq!(e.multi_selection, [3].into_iter().collect(), "a range select");
+        assert_eq!(e.selected_image_id, Some(3));
+
+        e.last_modifiers = iced::keyboard::Modifiers::CTRL;
+        let _ = crate::app::update::update(&mut e, Message::ImageMoved(2));
+        assert_eq!(e.multi_selection, [2].into_iter().collect(), "toggled out");
+
+        // A real Shift-click still extends.
+        e.last_modifiers = iced::keyboard::Modifiers::SHIFT;
+        let _ = crate::app::update::update(&mut e, Message::ImageSelected(3));
+        assert_eq!(e.multi_selection.len(), 2);
     }
 
     #[test]
@@ -1165,5 +1281,56 @@ mod tests {
         e.selected_image_id = Some(1);
         assert_eq!(step_selection(&e, true), Some(3));
         assert_eq!(step_selection(&e, false), Some(3)); // wraps backwards
+    }
+}
+
+#[cfg(test)]
+mod claim_tests {
+    use super::{claim_queued, requeue};
+    use std::collections::HashSet;
+
+    fn q(ids: &[i64]) -> Vec<(i64, String)> {
+        ids.iter().map(|i| (*i, String::new())).collect()
+    }
+    fn ids(q: &[(i64, String)]) -> Vec<i64> {
+        q.iter().map(|(i, _)| *i).collect()
+    }
+
+    #[test]
+    fn a_waiting_image_is_taken_out_of_the_queue_and_pending() {
+        let mut queue = q(&[1, 2, 3, 4]);
+        let mut pending: HashSet<i64> = [1, 2, 3, 4].into();
+        assert!(claim_queued(&mut queue, &mut pending, 4, 2));
+        assert_eq!(ids(&queue), vec![1, 2, 3]);
+        assert!(!pending.contains(&4));
+    }
+
+    #[test]
+    fn a_running_head_is_left_alone() {
+        let mut queue = q(&[1, 2, 3]);
+        let mut pending: HashSet<i64> = [1, 2, 3].into();
+        assert!(!claim_queued(&mut queue, &mut pending, 2, 2));
+        assert_eq!(ids(&queue), vec![1, 2, 3]);
+        assert!(pending.contains(&2));
+    }
+
+    #[test]
+    fn an_absent_image_reports_false() {
+        let mut queue = q(&[1, 2]);
+        let mut pending: HashSet<i64> = [1, 2].into();
+        assert!(!claim_queued(&mut queue, &mut pending, 9, 2));
+    }
+
+    /// The bug: the selected image moved within the tail was then dropped by
+    /// the requeue that follows every selection, so nothing ever decoded it.
+    #[test]
+    fn a_claimed_image_is_not_lost_to_the_requeue_that_follows() {
+        let mut queue = q(&[1, 2, 7, 3]);
+        let mut pending: HashSet<i64> = [1, 2, 7, 3].into();
+        assert!(claim_queued(&mut queue, &mut pending, 7, 2));
+        // the selected image is never in the wanted list
+        requeue(&mut queue, &mut pending, vec![(3, String::new()), (4, String::new())], 2);
+        assert_eq!(ids(&queue), vec![1, 2, 3, 4]);
+        assert!(!pending.contains(&7), "7 is the caller's to decode, not a preload");
     }
 }

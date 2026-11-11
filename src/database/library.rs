@@ -120,40 +120,37 @@ impl Library {
             [],
         )?;
 
-        // Phase 28: Multi-tier cache system
-        // Add 3 cache path columns for different resolution tiers
-        let _ = self.conn.execute(
-            "ALTER TABLE images ADD COLUMN cache_path_thumb TEXT", // 256px
-            [],
-        );
-        let _ = self.conn.execute(
-            "ALTER TABLE images ADD COLUMN cache_path_instant TEXT", // 384px
-            [],
-        );
-        let _ = self.conn.execute(
-            "ALTER TABLE images ADD COLUMN cache_path_working TEXT", // 1280px
-            [],
-        );
+        // Column migrations. A column is added only when `PRAGMA table_info`
+        // says it is missing, so a real failure (read-only file, full disk,
+        // locked database) is returned here instead of being swallowed as if
+        // it were "duplicate column" and surfacing later as a baffling query error.
+        // Phase 28: multi-tier cache paths (256px / 384px / 1280px).
+        self.add_column_if_missing("images", "cache_path_thumb", "TEXT")?;
+        self.add_column_if_missing("images", "cache_path_instant", "TEXT")?;
+        self.add_column_if_missing("images", "cache_path_working", "TEXT")?;
         // Edited proxy: a 384px render of the image as edited.
-        let _ = self.conn.execute("ALTER TABLE images ADD COLUMN cache_path_edited TEXT", []);
+        self.add_column_if_missing("images", "cache_path_edited", "TEXT")?;
+        // Phase 56: 0-5 star ratings.
+        self.add_column_if_missing("images", "rating", "INTEGER DEFAULT 0")?;
+        // Tracks deleted files.
+        self.add_column_if_missing("images", "file_status", "TEXT DEFAULT 'exists'")?;
+        // Phase 83: 0=Unflagged, 1=Pick, -1=Reject.
+        self.add_column_if_missing("images", "flag", "INTEGER DEFAULT 0")?;
+        // A saved edit that no longer parses is copied here before anything
+        // can overwrite it (see `load_saved_edit`).
+        self.add_column_if_missing("edits", "settings_json_backup", "TEXT")?;
 
-        // Phase 56: Ratings & Culling
-        // Add rating column for 0-5 star ratings
-        let _ = self
-            .conn
-            .execute("ALTER TABLE images ADD COLUMN rating INTEGER DEFAULT 0", []);
-
-        // Add file_status column for tracking deleted files
-        let _ = self.conn.execute(
-            "ALTER TABLE images ADD COLUMN file_status TEXT DEFAULT 'exists'",
+        // One edit row per image. Older databases may hold duplicates (a
+        // failed lookup used to insert a second row); keep the newest, which
+        // is the one every reader already took.
+        self.conn.execute(
+            "DELETE FROM edits WHERE id NOT IN (SELECT MAX(id) FROM edits GROUP BY image_id)",
             [],
-        );
-
-        // Phase 83: Culling Flags
-        // Add flag column: 0=Unflagged, 1=Pick, -1=Reject
-        let _ = self
-            .conn
-            .execute("ALTER TABLE images ADD COLUMN flag INTEGER DEFAULT 0", []);
+        )?;
+        self.conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_edits_image_unique ON edits(image_id)",
+            [],
+        )?;
 
         // Create index for cache_status to quickly find pending thumbnails
         self.conn.execute(
@@ -167,14 +164,50 @@ impl Library {
         Ok(())
     }
 
+    /// `ALTER TABLE .. ADD COLUMN`, but only when the column is absent.
+    fn add_column_if_missing(&self, table: &str, column: &str, decl: &str) -> SqlResult<()> {
+        let mut stmt = self.conn.prepare(&format!("PRAGMA table_info({table})"))?;
+        let present = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<SqlResult<Vec<_>>>()?
+            .iter()
+            .any(|name| name == column);
+        if !present {
+            self.conn
+                .execute(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"), [])?;
+        }
+        Ok(())
+    }
+
     /// Get the path to the database file
     pub fn path(&self) -> &PathBuf {
         &self.db_path
     }
 
-    /// Get a reference to the database connection
-    pub fn conn(&self) -> &Connection {
-        &self.conn
+    /// Test fixtures: write an edit row's JSON verbatim, and read the backup column.
+    #[cfg(test)]
+    pub fn set_raw_edit_json(&self, image_id: i64, json: &str) -> SqlResult<()> {
+        self.conn.execute(
+            "INSERT INTO edits (image_id, settings_json) VALUES (?1, ?2)
+             ON CONFLICT(image_id) DO UPDATE SET settings_json = excluded.settings_json",
+            rusqlite::params![image_id, json],
+        )?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub fn edit_backup(&self, image_id: i64) -> Option<String> {
+        self.conn
+            .query_row("SELECT settings_json_backup FROM edits WHERE image_id = ?1", [image_id], |r| r.get(0))
+            .ok()
+            .flatten()
+    }
+
+    /// Mark an image whose cache job failed (it is retried at the next start-up).
+    pub fn mark_cache_failed(&self, image_id: i64) -> SqlResult<()> {
+        self.conn
+            .execute("UPDATE images SET cache_status = 'failed' WHERE id = ?1", [image_id])
+            .map(|_| ())
     }
 
     /// Import a single image (test fixture; the app imports whole folders
@@ -219,7 +252,7 @@ impl Library {
                 cache_path_working: row.get(5)?,
                 file_status: row.get(6)?,
                 rating: row.get(7)?,           // Phase 56
-                flag: row.get(8).unwrap_or(0), // Phase 83
+                flag: row.get(8)?, // Phase 83 (COALESCEd in the query)
                 cache_path_edited: row.get(9)?,
             })
         })?;
@@ -408,29 +441,12 @@ impl Library {
             .to_json()
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
 
-        // Check if an edit record already exists for this image
-        let existing_id: Option<i64> = self
-            .conn
-            .query_row(
-                "SELECT id FROM edits WHERE image_id = ?1 ORDER BY id DESC LIMIT 1",
-                [image_id],
-                |row| row.get(0),
-            )
-            .ok();
-
-        if let Some(edit_id) = existing_id {
-            // Update existing edit
-            self.conn.execute(
-                "UPDATE edits SET settings_json = ?1 WHERE id = ?2",
-                rusqlite::params![json, edit_id],
-            )?;
-        } else {
-            // Create new edit
-            self.conn.execute(
-                "INSERT INTO edits (image_id, settings_json) VALUES (?1, ?2)",
-                rusqlite::params![image_id, json],
-            )?;
-        }
+        // One statement; `idx_edits_image_unique` makes image_id the key.
+        self.conn.execute(
+            "INSERT INTO edits (image_id, settings_json) VALUES (?1, ?2)
+             ON CONFLICT(image_id) DO UPDATE SET settings_json = excluded.settings_json",
+            rusqlite::params![image_id, json],
+        )?;
 
         Ok(())
     }
@@ -454,25 +470,41 @@ impl Library {
         Ok(out)
     }
 
-    /// Load edit parameters for an image from the database
-    /// Returns Default if no edits exist for this image
-    pub fn load_edit_params(&self, image_id: i64) -> SqlResult<EditParams> {
-        let json: String = self.conn.query_row(
-            "SELECT settings_json FROM edits WHERE image_id = ?1 ORDER BY id DESC LIMIT 1",
-            [image_id],
-            |row| row.get(0),
-        )?;
-
-        // Parse JSON to EditParams
-        EditParams::from_json(&json)
-            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+    /// Load an image's saved edit. `Ok(None)` means there is no row (never
+    /// edited); `Err` means a row exists but cannot be read. In that case the
+    /// unreadable JSON is first copied to `settings_json_backup` (never
+    /// overwriting an earlier backup), because the caller will go on with
+    /// defaults and the next flush saves those over the row.
+    pub fn load_saved_edit(&self, image_id: i64) -> SqlResult<Option<EditParams>> {
+        use rusqlite::OptionalExtension;
+        let json: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT settings_json FROM edits WHERE image_id = ?1 ORDER BY id DESC LIMIT 1",
+                [image_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(json) = json else { return Ok(None) };
+        match EditParams::from_json(&json) {
+            Ok(p) => Ok(Some(p)),
+            Err(e) => {
+                tracing::error!("Saved edit for image {image_id} is unreadable: {e}");
+                let _ = self.conn.execute(
+                    "UPDATE edits SET settings_json_backup = ?2
+                     WHERE image_id = ?1 AND settings_json_backup IS NULL",
+                    rusqlite::params![image_id, json],
+                );
+                Err(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+            }
+        }
     }
 
-    /// Delete all edits for an image (reset to unedited)
-    pub fn delete_edits(&self, image_id: i64) -> SqlResult<()> {
-        self.conn
-            .execute("DELETE FROM edits WHERE image_id = ?1", [image_id])?;
-        Ok(())
+    /// Load edit parameters for an image; `Err` when there is no row or it is
+    /// unreadable. App code uses `load_saved_edit` to tell those apart.
+    #[cfg(test)]
+    pub fn load_edit_params(&self, image_id: i64) -> SqlResult<EditParams> {
+        self.load_saved_edit(image_id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)
     }
 
     /// Rate a whole selection in ONE transaction.
@@ -852,6 +884,80 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM edits WHERE image_id = ?1", [id], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 1, "Must have exactly one edit row, not {}", count);
+    }
+
+    // ── unreadable edits are told apart from missing ones and backed up ───────
+
+    #[test]
+    fn unreadable_saved_edit_is_an_error_and_is_backed_up() {
+        let lib = in_memory_library();
+        let id = lib.import_image("/bad.nef", "bad.nef").unwrap();
+        assert!(lib.load_saved_edit(id).unwrap().is_none(), "no row is Ok(None)");
+
+        let mut p = crate::core::types::EditParams::default();
+        p.exposure = 1.0;
+        lib.save_edit_params(id, &p).unwrap();
+        let damaged = r#"{"exposure": "not a number"}"#;
+        lib.conn.execute("UPDATE edits SET settings_json = ?1", [damaged]).unwrap();
+
+        assert!(lib.load_saved_edit(id).is_err(), "damaged JSON must be an Err");
+        // What the app does next: carry on with defaults and flush them.
+        lib.save_edit_params(id, &crate::core::types::EditParams::default()).unwrap();
+        let backup: String = lib
+            .conn
+            .query_row("SELECT settings_json_backup FROM edits WHERE image_id = ?1", [id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(backup, damaged, "the unreadable edit must survive the overwrite");
+        assert!(lib.load_saved_edit(id).unwrap().is_some());
+    }
+
+    // ── one edit row per image, migrated from databases with duplicates ───────
+
+    #[test]
+    fn migration_collapses_duplicate_edit_rows_and_enforces_uniqueness() {
+        let mut lib = in_memory_library();
+        let id = lib.import_image("/dup.nef", "dup.nef").unwrap();
+        lib.conn.execute("DROP INDEX idx_edits_image_unique", []).unwrap();
+        let mut old = crate::core::types::EditParams::default();
+        old.exposure = 1.0;
+        let mut new = old;
+        new.exposure = 2.0;
+        for p in [&old, &new] {
+            lib.conn
+                .execute(
+                    "INSERT INTO edits (image_id, settings_json) VALUES (?1, ?2)",
+                    rusqlite::params![id, p.to_json().unwrap()],
+                )
+                .unwrap();
+        }
+        lib.init_schema().unwrap();
+        let count: i64 = lib.conn.query_row("SELECT COUNT(*) FROM edits", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(lib.load_edit_params(id).unwrap().exposure, 2.0, "newest row wins");
+        assert!(lib
+            .conn
+            .execute("INSERT INTO edits (image_id, settings_json) VALUES (?1, '{}')", [id])
+            .is_err());
+    }
+
+    // ── migrations add what is missing, and only that ─────────────────────────
+
+    #[test]
+    fn migration_adds_missing_columns_to_an_old_database() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute(
+            "CREATE TABLE images (id INTEGER PRIMARY KEY AUTOINCREMENT, path TEXT NOT NULL UNIQUE,
+             filename TEXT NOT NULL, width INTEGER, height INTEGER, imported_at INTEGER NOT NULL,
+             cache_status TEXT DEFAULT 'pending')",
+            [],
+        )
+        .unwrap();
+        let mut lib = Library { conn, db_path: std::path::PathBuf::from(":memory:") };
+        lib.init_schema().unwrap();
+        lib.init_schema().unwrap(); // re-running is a no-op
+        let id = lib.import_image("/old.nef", "old.nef").unwrap();
+        lib.set_image_cache_paths(id, "/t.jpg", "/i.jpg", "/w.jpg").unwrap();
+        assert!(lib.get_all_images().is_ok());
     }
 
     // ── set_image_cache_paths marks status as cached ──────────────────────────

@@ -778,3 +778,290 @@ fn ai_denoise_vs_classical_nr() {
         }
     });
 }
+
+/// Pixel-anchored masks (brush, AI) must stay on the CONTENT they were made
+/// on through Straighten, quarter turns, crop and lens correction. A red
+/// marker disc sits in the scene; a brush dab (or an AI bitmap) is placed on
+/// it the way the app stores it — the stroke at `core::viewport::
+/// frame_to_layer_uv` of where the marker is on screen, the AI bitmap at the
+/// marker's sensor position — and the mask's exposure lift must land on the
+/// marker in the render.
+///
+/// Run with `cargo test --release masks_follow_the_picture -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn masks_follow_the_picture() {
+    use crate::core::lens::{LensContext, LensParams};
+    use crate::core::types::MaskParams;
+    let (w, h) = (900usize, 600usize);
+    // Marker in SENSOR UV (off-centre, so every rotation moves it).
+    let (mu, mv) = (0.68f32, 0.34f32);
+    let marker_r = 0.05f32; // fraction of the height
+    let lin = (0..w * h)
+        .map(|i| {
+            let (x, y) = ((i % w) as f32 + 0.5, (i / w) as f32 + 0.5);
+            let d = ((x / w as f32 - mu) * w as f32 / h as f32).hypot(y / h as f32 - mv);
+            if d < marker_r { [0.4, 0.03, 0.03] } else { [0.18; 3] }
+        })
+        .collect();
+    let scene = Scene { w, h, lin };
+    let data = mosaic(&scene, 0.0, 0.0, 1);
+    let lens = LensContext::default();
+    // Sensor-frame AI bitmap: the same disc.
+    let bitmap = {
+        let (bw, bh) = (450u32, 300u32);
+        let data = (0..bw * bh)
+            .map(|i| {
+                let (x, y) = ((i % bw) as f32 + 0.5, (i / bw) as f32 + 0.5);
+                let d = ((x / bw as f32 - mu) * bw as f32 / bh as f32).hypot(y / bh as f32 - mv);
+                if d < marker_r { 255u8 } else { 0 }
+            })
+            .collect();
+        std::sync::Arc::new(crate::ml::masks::Bitmap { width: bw, height: bh, data })
+    };
+    // Centroid (in output pixels) of the pixels `pick` selects.
+    let centroid = |img: &[u8], rw: u32, pick: &dyn Fn(usize) -> bool| -> Option<(f32, f32, usize)> {
+        let (mut sx, mut sy, mut n) = (0.0f64, 0.0f64, 0usize);
+        for i in 0..(rw as usize * img.len() / 4 / rw as usize) {
+            if pick(i) {
+                sx += (i % rw as usize) as f64 + 0.5;
+                sy += (i / rw as usize) as f64 + 0.5;
+                n += 1;
+            }
+        }
+        (n > 20).then(|| ((sx / n as f64) as f32, (sy / n as f64) as f32, n))
+    };
+    let luma = |img: &[u8], i: usize| img[i * 4] as i32 + img[i * 4 + 1] as i32 + img[i * 4 + 2] as i32;
+
+    runtime().block_on(async {
+        let ctx = SharedContext::new().await.expect("gpu");
+        let cases: Vec<(&str, f32, u32, [f32; 4], f32)> = vec![
+            ("plain", 0.0, 0, [0.0, 0.0, 1.0, 1.0], 0.0),
+            ("straighten 10", 10.0, 0, [0.0, 0.0, 1.0, 1.0], 0.0),
+            ("straighten -30", -30.0, 0, [0.0, 0.0, 1.0, 1.0], 0.0),
+            ("straighten 30 + turn", 30.0, 1, [0.0, 0.0, 1.0, 1.0], 0.0),
+            ("straighten 10 + crop", 10.0, 0, [0.2, 0.1, 0.7, 0.6], 0.0),
+            ("straighten 10 + turn + crop + lens", 10.0, 3, [0.1, 0.15, 0.8, 0.7], -0.5),
+        ];
+        let mut failures = Vec::new();
+        for (name, rotation, turns, crop, distortion) in cases {
+            let base = EditParams {
+                rotation,
+                quarter_turns: turns,
+                crop,
+                lens: LensParams { distortion, ..LensParams::default() },
+                color_noise: 0.0,
+                ..EditParams::default()
+            };
+            let orientation = crate::color::compose_orientation(1, turns);
+            let (plain, rw, rh) = render(&ctx, &data, w, h, &base, None).await;
+            // Red marker against grey (the rotation's black corners are neither).
+            let red = |img: &[u8], i: usize| img[i * 4] as i32 - img[i * 4 + 1] as i32 > 60;
+            let Some((mx, my, _)) = centroid(&plain, rw, &|i| red(&plain, i)) else {
+                failures.push(format!("{name}: marker not visible"));
+                continue;
+            };
+            // Where the marker is on screen, as FULL-image display UV (what
+            // the canvas reports for a click there).
+            let fu = crop[0] + mx / rw as f32 * crop[2];
+            let fv = crop[1] + my / rh as f32 * crop[3];
+            let (lu, lv) = crate::core::viewport::frame_to_layer_uv(&base, &lens, orientation, w as u32, h as u32, fu, fv);
+
+            // A stroke painted on the marker BEFORE Straighten and the lens
+            // were applied: stored at the marker's plain display position.
+            let before = crate::color::sensor_to_display_uv(mu, mv, orientation);
+            for kind in ["brush", "brush made before", "ai"] {
+                let mut p = base;
+                p.mask_count = 1;
+                p.masks[0] = if kind == "ai" { MaskParams::new_ai() } else { MaskParams::new_brush() };
+                p.masks[0].exposure = 2.0;
+                if kind != "ai" {
+                    let at = if kind == "brush" { [lu, lv] } else { [before.0, before.1] };
+                    p.brush.begin(0, false, marker_r, 0.0, 1.0);
+                    p.brush.extend(at, 1.0);
+                } else {
+                    p.masks[0].ai_id = 7;
+                }
+                let res = ImageResources::new(
+                    &ctx, 1, &data, w as u32, h as u32, &p, WB,
+                    [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+                    0, [BLACK as u32; 4], WHITE as u32, None, None, 1,
+                    std::sync::Arc::new(LensContext::default()),
+                )
+                .expect("image resources");
+                let mut map = super::ai_mask::AiBitmaps::new();
+                map.insert(7, bitmap.clone());
+                res.set_ai_bitmaps(std::sync::Arc::new(map));
+                res.update_uniforms(&ctx, &p, None, None);
+                let (bytes, _, _) = render_to_bytes(&ctx, &res, rw, rh, FULL_VIEW_RECT).await;
+                let masked = bytes.to_vec();
+                ctx.reclaim();
+                let Some((kx, ky, n)) = centroid(&masked, rw, &|i| luma(&masked, i) - luma(&plain, i) > 30) else {
+                    failures.push(format!("{name} [{kind}]: the mask lifted nothing"));
+                    continue;
+                };
+                let off = (kx - mx).hypot(ky - my);
+                eprintln!("{name:>36} [{kind:>17}]: marker ({mx:.1}, {my:.1}), mask ({kx:.1}, {ky:.1}) n={n}, off {off:.1} px");
+                if off > 4.0 {
+                    failures.push(format!("{name} [{kind}]: mask {off:.1} px off the marker"));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
+    });
+}
+
+/// The UI thread must not write the uniform block while a render is in
+/// flight (it would land `view_rect = FULL` or newer params in the render's
+/// main pass). A push made mid-render is parked and applied by the next
+/// render, which is its only writer.
+#[test]
+#[ignore]
+fn a_push_during_a_render_waits_for_the_next_render() {
+    use crate::app::handlers::develop::{push_uniforms_and_render, trigger_async_render};
+    use crate::app::state::RawEditor;
+    let scene = Scene::default_scene(200);
+    let data = mosaic(&scene, 0.0, 0.0, 1);
+    runtime().block_on(async {
+        let ctx = std::sync::Arc::new(SharedContext::new().await.expect("gpu"));
+        let res = ImageResources::new(
+            &ctx, 1, &data, scene.w as u32, scene.h as u32, &EditParams::default(), WB,
+            [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], 0, [BLACK as u32; 4], WHITE as u32,
+            None, None, 1, std::sync::Arc::new(crate::core::lens::LensContext::default()),
+        )
+        .expect("image resources");
+        res.update_uniforms(&ctx, &EditParams::default(), None, None);
+        let mut e = RawEditor::new().0;
+        e.selected_image_id = Some(1);
+        e.gpu_context = Some(ctx);
+        e.image_resources = Some(std::sync::Arc::new(res));
+        e.viewport_size = (800.0, 600.0);
+        e.scale_factor = 1.0;
+
+        e.is_rendering = true; // a render task is in flight
+        let edit = EditParams { exposure: 1.5, ..EditParams::default() };
+        let _ = push_uniforms_and_render(&mut e, &edit);
+        let pushed = || e.image_resources.as_ref().unwrap().pushed_params().exposure;
+        assert_eq!(pushed(), 0.0, "the UI thread wrote the uniforms mid-render");
+        assert!(e.pending_render);
+
+        // The finished render's follow-up applies it before it renders.
+        e.is_rendering = true;
+        let _ = trigger_async_render(&mut e);
+        assert_eq!(e.image_resources.as_ref().unwrap().pushed_params().exposure, 1.5);
+    });
+}
+
+/// A lost device is detected, and the editor drops the dead context (and the
+/// `gpu_init` cell that would hand it back) so the next load builds a new one.
+#[test]
+#[ignore]
+fn a_lost_device_is_detected_and_the_context_replaced() {
+    use crate::app::state::RawEditor;
+    runtime().block_on(async {
+        let ctx = std::sync::Arc::new(SharedContext::new().await.expect("gpu"));
+        assert!(!ctx.is_lost());
+        ctx.device.destroy();
+        ctx.device.poll(iced_wgpu::wgpu::Maintain::Wait);
+        assert!(ctx.is_lost(), "destroying the device was not noticed");
+
+        let mut e = RawEditor::new().0;
+        e.gpu_context = Some(ctx.clone());
+        e.gpu_init.set(ctx.clone()).ok();
+        let _ = crate::app::handlers::develop::handle_gpu_lost(&mut e);
+        assert!(e.gpu_context.is_none());
+        assert!(e.gpu_init.get().is_none(), "the dead context would be handed out again");
+        assert!(e.status.contains("GPU"));
+    });
+}
+
+/// A readback that fails (here: the device was destroyed under the render) is
+/// an error the export can report, not an empty buffer.
+#[test]
+#[ignore]
+fn a_failed_readback_is_an_error() {
+    let scene = Scene::default_scene(64);
+    let data = mosaic(&scene, 0.0, 0.0, 1);
+    runtime().block_on(async {
+        let ctx = SharedContext::new().await.expect("gpu");
+        let res = ImageResources::new(
+            &ctx, 1, &data, scene.w as u32, scene.h as u32, &EditParams::default(), WB,
+            [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], 0, [BLACK as u32; 4], WHITE as u32,
+            None, None, 1, std::sync::Arc::new(crate::core::lens::LensContext::default()),
+        )
+        .expect("image resources");
+        res.update_uniforms(&ctx, &EditParams::default(), None, None);
+        let (w, h) = res.oriented_dims(0);
+        assert!(super::render_functions::render_to_vec(&ctx, &res, w, h, FULL_VIEW_RECT).await.is_ok());
+        ctx.device.destroy();
+        let r = super::render_functions::render_to_vec(&ctx, &res, w, h, FULL_VIEW_RECT).await;
+        assert!(r.is_err(), "a dead device returned {} bytes", r.map(|v| v.0.len()).unwrap_or(0));
+    });
+}
+
+/// Redrawing only the changed brush layers must leave every layer exactly as
+/// a from-scratch rasterisation of the same strokes would.
+/// Run with `cargo test brush_incremental_matches_full_redraw -- --ignored`.
+#[test]
+#[ignore]
+fn brush_incremental_matches_full_redraw() {
+    use crate::core::brush::BrushData;
+    use crate::core::types::MAX_MASKS;
+    use iced_wgpu::wgpu;
+    let stroke = |b: &mut BrushData, mask: u32, erase: bool, pts: &[[f32; 2]]| {
+        b.begin(mask, erase, 0.06, 0.5, 0.8).unwrap();
+        for p in pts {
+            b.push_raw(*p);
+        }
+    };
+    let mut a = BrushData::default();
+    stroke(&mut a, 0, false, &[[0.1, 0.2], [0.4, 0.5], [0.8, 0.3]]);
+    stroke(&mut a, 3, false, &[[0.2, 0.8], [0.7, 0.7]]);
+    let mut b = a;
+    stroke(&mut b, 3, true, &[[0.4, 0.6], [0.5, 0.9]]);
+    stroke(&mut b, 5, false, &[[0.5, 0.5]]);
+
+    runtime().block_on(async {
+        let ctx = SharedContext::new().await.expect("gpu");
+        let (w, h) = (96u32, 64u32);
+        let read = |layers: &super::brush::BrushLayers| -> Vec<u8> {
+            let bpr = 256u32; // 96 px * 2 B = 192, padded
+            let size = (bpr * h) as u64 * MAX_MASKS as u64;
+            let buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            let mut enc = ctx.device.create_command_encoder(&Default::default());
+            enc.copy_texture_to_buffer(
+                wgpu::ImageCopyTexture {
+                    texture: layers.texture(),
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::ImageCopyBuffer {
+                    buffer: &buf,
+                    layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(bpr), rows_per_image: Some(h) },
+                },
+                wgpu::Extent3d { width: w, height: h, depth_or_array_layers: MAX_MASKS as u32 },
+            );
+            ctx.queue.submit(Some(enc.finish()));
+            let (tx, rx) = std::sync::mpsc::channel();
+            buf.slice(..).map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
+            ctx.device.poll(wgpu::Maintain::Wait);
+            rx.recv().unwrap().unwrap();
+            let v = buf.slice(..).get_mapped_range().to_vec();
+            v
+        };
+        let inc = ctx.brush.layers(&ctx.device, w, h);
+        ctx.brush.rasterize(&ctx.device, &ctx.queue, &inc, &a, None);
+        ctx.brush.rasterize(&ctx.device, &ctx.queue, &inc, &b, Some(&a));
+        let full = ctx.brush.layers(&ctx.device, w, h);
+        ctx.brush.rasterize(&ctx.device, &ctx.queue, &full, &b, None);
+        let (ri, rf) = (read(&inc), read(&full));
+        assert!(ri.iter().any(|&x| x != 0), "nothing was drawn");
+        assert!(ri == rf, "incremental redraw differs from a full redraw");
+    });
+}
