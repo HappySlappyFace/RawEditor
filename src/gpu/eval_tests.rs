@@ -974,3 +974,27 @@ fn a_lost_device_is_detected_and_the_context_replaced() {
         assert!(e.status.contains("GPU"));
     });
 }
+
+/// A readback that fails (here: the device was destroyed under the render) is
+/// an error the export can report, not an empty buffer.
+#[test]
+#[ignore]
+fn a_failed_readback_is_an_error() {
+    let scene = Scene::default_scene(64);
+    let data = mosaic(&scene, 0.0, 0.0, 1);
+    runtime().block_on(async {
+        let ctx = SharedContext::new().await.expect("gpu");
+        let res = ImageResources::new(
+            &ctx, 1, &data, scene.w as u32, scene.h as u32, &EditParams::default(), WB,
+            [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], 0, [BLACK as u32; 4], WHITE as u32,
+            None, None, 1, std::sync::Arc::new(crate::core::lens::LensContext::default()),
+        )
+        .expect("image resources");
+        res.update_uniforms(&ctx, &EditParams::default(), None, None);
+        let (w, h) = res.oriented_dims(0);
+        assert!(super::render_functions::render_to_vec(&ctx, &res, w, h, FULL_VIEW_RECT).await.is_ok());
+        ctx.device.destroy();
+        let r = super::render_functions::render_to_vec(&ctx, &res, w, h, FULL_VIEW_RECT).await;
+        assert!(r.is_err(), "a dead device returned {} bytes", r.map(|v| v.0.len()).unwrap_or(0));
+    });
+}

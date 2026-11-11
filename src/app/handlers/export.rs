@@ -521,7 +521,7 @@ pub fn handle_export_pipeline_ready(
                             render_w,
                             render_h,
                         )
-                        .await;
+                        .await?;
                         ExportPixels::Rgb16(box_reduce(&samples, render_w, render_h, factor))
                     } else {
                         let (bytes, _, _) = crate::gpu::render_functions::render_to_vec(
@@ -533,7 +533,7 @@ pub fn handle_export_pipeline_ready(
                             // never the on-screen window.
                             crate::gpu::params::FULL_VIEW_RECT,
                         )
-                        .await;
+                        .await?;
                         ExportPixels::Rgba8(box_reduce(&bytes, render_w, render_h, factor))
                     };
                     save_export_async(filename, source, pixels, target_width, target_height, settings)
