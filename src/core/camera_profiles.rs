@@ -217,9 +217,10 @@ impl Catalog {
         }
         // Untagged: the file name has to carry the model (the rule this
         // folder has always used, so existing setups keep working).
-        let file = p.file_name.to_lowercase();
-        let model = model.to_lowercase();
-        !model.is_empty() && (file.contains(&model) || file.replace(' ', "").contains(&model.replace(' ', "")))
+        // Whole tokens, so model "D5" does not match "Nikon D500.dcp".
+        let file = crate::core::lens::tokens(&p.file_name);
+        let model = crate::core::lens::tokens(model);
+        !model.is_empty() && model.is_subset(&file)
     }
 
     /// `candidate` names this camera — directly, or as a RawTherapee alias
@@ -246,7 +247,13 @@ impl Catalog {
         make: &str,
         model: &str,
     ) -> Option<&'a String> {
-        defaults.iter().find(|(camera, _)| self.same_camera(camera, make, model)).map(|(_, v)| v)
+        // Sorted, so two defaults matching one camera (a name and an alias)
+        // resolve the same way every run instead of by HashMap order.
+        defaults
+            .iter()
+            .filter(|(camera, _)| self.same_camera(camera, make, model))
+            .min_by(|a, b| a.0.cmp(b.0))
+            .map(|(_, v)| v)
     }
 
     /// The profile file named `file_name`, if installed (own first).
@@ -278,6 +285,10 @@ fn scan(own: &Path, downloaded: &Path) -> Catalog {
         for path in paths {
             let Some(profile) = crate::raw::dcp::load_profile(&path) else { continue };
             let file_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            if ProfileChoice::named(&file_name).is_none() {
+                tracing::warn!("camera profile {file_name:?} skipped: its name is too long to choose");
+                continue;
+            }
             catalog.profiles.push(describe(&file_name, path, &profile, origin));
         }
     }
@@ -541,11 +552,14 @@ fn write_atomically(path: &Path, bytes: &[u8]) -> Result<(), String> {
 /// Check that `bytes` are a usable DCP (written aside and parsed with the
 /// real parser).
 fn validate(bytes: &[u8], dir: &Path, name: &str) -> Result<(), String> {
-    let probe = dir.join(format!(".{}.probe", std::process::id()));
+    static PROBES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = PROBES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let probe = dir.join(format!(".{}-{n}.probe", std::process::id()));
     std::fs::write(&probe, bytes).map_err(|e| e.to_string())?;
     let parsed = crate::raw::dcp::parse_dcp(&probe);
     let _ = std::fs::remove_file(&probe);
     match parsed {
+        Ok(p) if !p.has_forward_matrix() => Err(format!("{name} has no ForwardMatrix")),
         Ok(p) if p.color_matrix_1 != [1., 0., 0., 0., 1., 0., 0., 0., 1.] => Ok(()),
         Ok(_) => Err(format!("{name} has no colour matrix")),
         Err(e) => Err(format!("{name} is not a usable profile: {e}")),
@@ -600,6 +614,8 @@ pub struct UpdateReport {
     pub updated: Vec<String>,
     /// Downloaded profiles it no longer publishes (kept: images may use them).
     pub withdrawn: Vec<String>,
+    /// Profiles whose download failed (the rest of the update still ran).
+    pub failed: Vec<String>,
     pub checked: usize,
 }
 
@@ -615,8 +631,13 @@ pub fn update_downloaded() -> Result<UpdateReport, String> {
     for (name, sha) in &manifest {
         match remote.profiles.iter().find(|p| &p.file_name == name) {
             Some(p) if &p.sha != sha => {
-                download(&remote, p, &dir)?;
-                report.updated.push(name.clone());
+                match download(&remote, p, &dir) {
+                    Ok(()) => report.updated.push(name.clone()),
+                    Err(e) => {
+                        tracing::warn!("camera profile {name} not updated: {e}");
+                        report.failed.push(name.clone());
+                    }
+                }
             }
             Some(_) => {}
             None => report.withdrawn.push(name.clone()),
@@ -656,6 +677,34 @@ pub fn import(files: &[PathBuf]) -> (Vec<String>, Vec<String>) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn untagged_profiles_match_whole_model_tokens() {
+        let mk = |f: &str| ProfileInfo {
+            file_name: f.into(),
+            path: PathBuf::from(f),
+            name: String::new(),
+            camera: f.into(),
+            camera_tagged: false,
+            origin: Origin::Own,
+        };
+        let c = Catalog::default();
+        assert!(!c.matches(&mk("Nikon D500.dcp"), "NIKON", "D5"));
+        assert!(!c.matches(&mk("Nikon D5000.dcp"), "NIKON", "D5"));
+        assert!(c.matches(&mk("Nikon D5 Camera Standard.dcp"), "NIKON", "D5"));
+        assert!(c.matches(&mk("Canon EOS 5D Mark II.dcp"), "Canon", "EOS 5D"));
+    }
+
+    #[test]
+    fn default_for_is_deterministic() {
+        let c = Catalog::default();
+        let mut d = HashMap::new();
+        d.insert("Nikon D3300".to_string(), "b".to_string());
+        d.insert("NIKON D3300".to_string(), "a".to_string());
+        for _ in 0..20 {
+            assert_eq!(c.default_for(&d, "NIKON CORPORATION", "NIKON D3300").map(String::as_str), Some("a"));
+        }
+    }
+
     use super::*;
 
     #[test]
