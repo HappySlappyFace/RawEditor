@@ -212,53 +212,58 @@ fn run_fuzz(seeds: std::ops::Range<u64>, steps: usize, tabs: bool, preload_failu
     }
 }
 
-/// Decodes and builds may fail; RAW preloads always succeed (a failed one
-/// is a known bug, below).
+/// Decodes and builds may fail; RAW preloads always succeed.
 #[test]
 fn fuzz_develop_selection_never_strands_loading() {
     run_fuzz(0..160, 120, false, false);
 }
 
-/// The same, with failing preloads. Fails today: see
-/// `a_failed_preload_of_the_selection_strands_it`.
+/// The same, with failing preloads (see
+/// `a_failed_preload_of_the_selection_fails_it`).
 #[test]
-#[ignore = "known bug: a failed preload of the awaited image strands Loading"]
 fn fuzz_with_failing_preloads_never_strands_loading() {
     run_fuzz(0..160, 120, false, true);
 }
 
-/// The same, with Library / Cull / Develop tab switches mixed in. Fails
-/// today (see `selecting_elsewhere_while_develop_loads_strands_it`).
+/// The same, with Library / Cull / Develop tab switches mixed in (see
+/// `selecting_elsewhere_while_develop_loads_reloads_it`).
 #[test]
-#[ignore = "known bug: a selection made in Library or Cull strands Develop's Loading"]
 fn fuzz_with_tab_switches_never_strands_loading() {
     run_fuzz(0..160, 120, true, false);
 }
 
-/// KNOWN BUG (found by the fuzz). The selection is already preloading, so
-/// Develop waits on that preload instead of decoding it again — but
-/// `handle_raw_preloaded` only logs a failed preload. A direct decode's
-/// failure sets `Failed`; this one leaves `Loading` with nothing in flight,
-/// and Develop shows "Loading" forever.
+/// Found by the fuzz. The selection is already preloading, so Develop waits
+/// on that preload instead of decoding it again — and `handle_raw_preloaded`
+/// used to only log a failed preload, leaving `Loading` with nothing in
+/// flight. Its failure now fails the load, like a direct decode's, and a
+/// re-select retries it.
 #[test]
-#[ignore = "known bug: fix in loading::handle_raw_preloaded (fail the awaited image)"]
-fn a_failed_preload_of_the_selection_strands_it() {
+fn a_failed_preload_of_the_selection_fails_it() {
     let mut e = develop_with_images(10);
     send(&mut e, Message::ImageSelected(2)); // left to its running preload
     assert!(running_raw_preloads(&e).contains(&2));
     send(&mut e, Message::RawPreloaded(2, Err("unreadable".into())));
+    assert!(matches!(e.editor_readiness, EditorReadiness::Failed(2, _)));
+    assert_invariants(&e);
+
+    send(&mut e, Message::ImageSelected(3));
+    send(&mut e, Message::ImageSelected(2));
+    assert_eq!(e.editor_readiness, EditorReadiness::Loading(2));
+    assert!(
+        e.direct_raw_loads.contains(&2) || running_raw_preloads(&e).contains(&2),
+        "a failed preload is never retried"
+    );
     assert_invariants(&e);
 }
 
-/// KNOWN BUG (found by the fuzz above). Develop starts loading image 1; the
-/// user goes to Library (or Cull) and selects image 2 there — which loads
-/// nothing and leaves `Loading(1)` in place — and 1's decode lands meanwhile,
-/// unwanted because 1 is no longer selected. Back on 1 and into Develop,
-/// `load_for_tab` sees "already loading 1", starts nothing, and Develop
-/// shows "Loading" forever.
+/// Found by the fuzz above. Develop starts loading image 1; the user goes to
+/// Library (or Cull) and selects image 2 there — which loads nothing — and
+/// 1's decode lands meanwhile, unwanted because 1 is no longer selected. Back
+/// on 1 and into Develop, `load_for_tab` used to see "already loading 1",
+/// start nothing, and Develop showed "Loading" forever. The selection now
+/// drops the stale promise, so Develop loads 1 again (from the cache here).
 #[test]
-#[ignore = "known bug: fix in navigation::load_for_tab / handle_image_selected"]
-fn selecting_elsewhere_while_develop_loads_strands_it() {
+fn selecting_elsewhere_while_develop_loads_reloads_it() {
     let mut e = develop_with_images(10);
     assert_eq!(e.editor_readiness, EditorReadiness::Loading(1));
     send(&mut e, Message::TabChanged(AppTab::Library));
@@ -266,16 +271,61 @@ fn selecting_elsewhere_while_develop_loads_strands_it() {
     send(&mut e, Message::RawDataLoaded(1, Ok(raw("1"))));
     send(&mut e, Message::ImageSelected(1));
     send(&mut e, Message::TabChanged(AppTab::Develop));
+    assert_eq!(e.editor_readiness, EditorReadiness::Loading(1));
+    assert_eq!(e.current_metadata_id, Some(1), "the cached RAW was not built");
     assert_invariants(&e);
 }
 
-/// KNOWN BUG. Setting the RAW preload budget to 0 (Preferences) clears the
-/// preload queue, cancelling the running preload Develop is waiting on.
+/// The same trip with 1's decode still running on the way back: Develop
+/// waits on that decode instead of starting a second.
 #[test]
-#[ignore = "known bug: fix in window::handle_set_raw_preload_budget"]
-fn turning_raw_preloads_off_mid_load_strands_it() {
+fn returning_to_an_image_whose_decode_still_runs_reuses_it() {
+    let mut e = develop_with_images(10);
+    send(&mut e, Message::TabChanged(AppTab::Cull));
+    send(&mut e, Message::ImageSelected(2));
+    send(&mut e, Message::ImageSelected(1));
+    send(&mut e, Message::TabChanged(AppTab::Develop));
+    assert_eq!(e.editor_readiness, EditorReadiness::Loading(1));
+    assert!(e.direct_raw_loads.contains(&1));
+    assert!(!queue(&e).contains(&1), "decoded twice");
+    assert_invariants(&e);
+    send(&mut e, Message::RawDataLoaded(1, Ok(raw("1"))));
+    assert_eq!(e.current_metadata_id, Some(1));
+    assert_invariants(&e);
+}
+
+/// An image whose direct decode is still running (the user stepped past it)
+/// used to be queued again as the new selection's neighbour by
+/// `schedule_raw_preloads`, and decoded twice.
+#[test]
+fn a_running_direct_decode_is_not_queued_again_as_a_preload() {
+    let mut e = develop_with_images(10);
+    assert!(e.direct_raw_loads.contains(&1));
+    send(&mut e, Message::ImageSelected(2)); // 1 is now its neighbour behind
+    assert!(e.direct_raw_loads.contains(&1));
+    assert!(!queue(&e).contains(&1), "a running decode was queued again: {:?}", queue(&e));
+    assert_invariants(&e);
+
+    // Its result is still kept for when the user steps back.
+    send(&mut e, Message::RawDataLoaded(1, Ok(raw("1"))));
+    assert!(e.raw_cache.contains(&1));
+    send(&mut e, Message::ImageSelected(1));
+    assert_eq!(e.current_metadata_id, Some(1));
+    assert_invariants(&e);
+}
+
+/// Setting the RAW preload budget to 0 (Preferences) clears the preload
+/// queue; it used to cancel the running preload Develop was waiting on too.
+/// That one stays, the neighbours go, and its result completes the load.
+#[test]
+fn turning_raw_preloads_off_mid_load_keeps_the_awaited_preload() {
     let mut e = develop_with_images(10);
     send(&mut e, Message::ImageSelected(2)); // left to its running preload
     send(&mut e, Message::SetRawPreloadBudget(0.0));
+    assert_eq!(queue(&e), vec![2]);
+    assert_invariants(&e);
+    send(&mut e, Message::RawPreloaded(2, Ok(Arc::new(raw("2")))));
+    assert_eq!(e.current_metadata_id, Some(2));
+    assert!(e.raw_for(2).is_some(), "the open image's RAW is not pinned");
     assert_invariants(&e);
 }

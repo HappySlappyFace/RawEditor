@@ -316,8 +316,16 @@ pub fn handle_set_raw_preload_budget(editor: &mut RawEditor, val: f32) -> Task<M
     if budget_mb == 0 {
         editor.raw_cache.clear();
         editor.raw_cache_bytes = 0;
-        editor.pending_raw_loads.clear();
-        editor.queued_raw_loads.clear();
+        // Cancel the neighbours' preloads, but not one Develop is waiting on:
+        // the selection is left to its running preload rather than decoded
+        // twice, so dropping it would leave `Loading` with nothing in flight.
+        // (It stays in the running head: anything ahead of it only goes.)
+        let awaited = match editor.editor_readiness {
+            crate::app::state::EditorReadiness::Loading(id) if editor.selected_image_id == Some(id) => Some(id),
+            _ => None,
+        };
+        editor.queued_raw_loads.retain(|(id, _)| Some(*id) == awaited);
+        editor.pending_raw_loads.retain(|id| Some(*id) == awaited);
     } else {
         editor.evict_raw_cache_to_budget();
     }
