@@ -364,7 +364,6 @@ pub fn handle_export_raw_loaded(
                         profile_use.profile.as_deref(),
                         raw_data.color_matrix,
                     );
-                    let wb_final = wb_override.unwrap_or(raw_data.wb_multipliers);
 
                     let (forward_matrix, interpolated_dcp) = if let Some(dcp) = &profile_use.profile {
                         let interpolated = crate::raw::dcp::interpolate_at_temperature(
@@ -392,7 +391,10 @@ pub fn handle_export_raw_loaded(
                         raw_data.width,
                         raw_data.height,
                         &params,
-                        wb_final,
+                        // As-shot, exactly like the develop load: this is the
+                        // space the demosaic and every analysis work in. The
+                        // edited WB is applied below as the uniform override.
+                        raw_data.wb_multipliers,
                         forward_matrix,
                         raw_data.cfa_pattern,
                         raw_data.black_levels,
@@ -403,6 +405,7 @@ pub fn handle_export_raw_loaded(
                         raw_data.lens_context.clone(),
                     )
                     .map(|res| {
+                        res.update_uniforms(&context, &params, interpolated_dcp.as_ref(), wb_override);
                         // Export's resources are its own: give them the AI
                         // masks' bitmaps, or those masks would export empty.
                         if params.ai_masks().next().is_some() {
