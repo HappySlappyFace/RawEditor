@@ -8,10 +8,11 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
     // for that click but no `on_release`, so the CommitEdit every other slider
     // gesture ends with never arrives — commit it here instead. Holding the
     // modifier can't mean anything else: there is no Ctrl+drag on a slider.
-    let slider_reset = editor.last_modifiers.command() && is_slider_change(&message);
+    let slider_reset =
+        editor.last_modifiers.command() && is_slider_change(through_menu(&message));
     // iced's text field has no blur event, so a typed slider value is
     // abandoned as soon as the user does something else instead.
-    if editor.slider_entry.is_some() && ends_slider_entry(&message) {
+    if editor.slider_entry.is_some() && ends_slider_entry(through_wrappers(&message)) {
         editor.slider_entry = None;
     }
     let modal_before = editor.active_modal;
@@ -66,6 +67,24 @@ fn track_modal_exit(editor: &mut RawEditor, before: Modal) -> Option<Task<Messag
     ))
 }
 
+/// The message a `MenuItem` wrapper carries (itself otherwise). `dispatch`
+/// handles the inner message, so the cross-cutting steps in `update` must
+/// judge that one, not the wrapper.
+fn through_menu(message: &Message) -> &Message {
+    match message {
+        Message::MenuItem(inner) => through_menu(inner),
+        other => other,
+    }
+}
+
+/// [`through_menu`], and also the change a `SliderSet` carries.
+fn through_wrappers(message: &Message) -> &Message {
+    match through_menu(message) {
+        Message::SliderSet { change, .. } => through_menu(change),
+        other => other,
+    }
+}
+
 /// The user moved on from a slider's typed value: another slider, the image,
 /// a tool, or another photo or tab.
 fn ends_slider_entry(message: &Message) -> bool {
@@ -116,6 +135,9 @@ fn is_slider_change(message: &Message) -> bool {
             | Message::MaskAdjustmentChanged(..)
             | Message::LensParamChanged(..)
             | Message::DefringeChanged(..)
+            | Message::BlackOffsetChanged(..)
+            | Message::BrushSettingChanged(..)
+            | Message::AiDenoiseAmount(_)
     )
 }
 
@@ -339,10 +361,10 @@ fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::ExportConfirmed => handlers::export::handle_export_confirmed(editor),
         Message::ProcessNextExport => handlers::export::handle_process_next_export(editor),
         Message::ExportRawLoaded(id, params, res) => {
-            handlers::export::handle_export_raw_loaded(editor, id, params, res)
+            handlers::export::handle_export_raw_loaded(editor, id, *params, res)
         }
         Message::ExportPipelineReady(id, params, res) => {
-            handlers::export::handle_export_pipeline_ready(editor, id, params, res)
+            handlers::export::handle_export_pipeline_ready(editor, id, *params, res)
         }
         Message::ExportSaveComplete(id, res) => {
             handlers::export::handle_export_save_complete(editor, id, res)

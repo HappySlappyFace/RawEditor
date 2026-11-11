@@ -415,18 +415,23 @@ fn mask_shape(m: Mask, p: vec2<f32>, aspect: f32) -> f32 {
     return w;
 }
 
+// `q` is where the pixel-anchored layers (AI bitmap, brush) are read: the
+// display-frame UV of the SOURCE position this pixel shows, so they follow the
+// picture through Straighten and lens correction. It is `p` itself when
+// neither is active. Shapes stay in `p`, the frame the user places them in.
+//
 // Full weight of mask `idx` at `p`: shape, plus its brush layer (signed:
 // painting adds, erasing subtracts), times its range refinements, then
 // inverted if asked. `color0` is the pixel as it entered the mask stage
 // (linear sRGB) and `cam0` its camera-native value, for the luminance and
 // colour ranges respectively.
-fn mask_weight(m: Mask, idx: u32, p: vec2<f32>, aspect: f32, color0: vec3<f32>, cam0: vec3<f32>) -> f32 {
+fn mask_weight(m: Mask, idx: u32, p: vec2<f32>, q: vec2<f32>, aspect: f32, color0: vec3<f32>, cam0: vec3<f32>) -> f32 {
     var w = mask_shape(m, p, aspect);
     if (m.info.x > 3.5) {
-        w = textureSampleLevel(ai_layers, lut_sampler, p, i32(idx), 0.0).r;
+        w = textureSampleLevel(ai_layers, lut_sampler, q, i32(idx), 0.0).r;
     }
     if (m.adj2.y > 0.5) {
-        w = w + textureSampleLevel(brush_layers, lut_sampler, p, i32(idx), 0.0).r;
+        w = w + textureSampleLevel(brush_layers, lut_sampler, q, i32(idx), 0.0).r;
     }
     w = clamp(w, 0.0, 1.0);
     if (m.adj2.z > 0.5) {
@@ -1139,6 +1144,22 @@ fn color_pass(input: VertexOutput) -> vec4<f32> {
         }
     }
 
+    // Where the pixel-anchored mask layers are read (see mask_weight): back
+    // to the display frame from the source position. Exactly the plain
+    // display UV whenever neither Straighten nor the lens moved it.
+    var layer_uv = input.tex_coords;
+    if (abs(params.rotation) > 0.01 || lens_on) {
+        if (params.orientation == 6u) {
+            layer_uv = vec2<f32>(1.0 - tex_coords.y, tex_coords.x);
+        } else if (params.orientation == 8u) {
+            layer_uv = vec2<f32>(tex_coords.y, 1.0 - tex_coords.x);
+        } else if (params.orientation == 3u) {
+            layer_uv = vec2<f32>(1.0 - tex_coords.x, 1.0 - tex_coords.y);
+        } else {
+            layer_uv = tex_coords;
+        }
+    }
+
     // `tex_coords`, `uv_r` and `uv_b` stay in full-image sensor UV (the
     // local-contrast bands and haze map are whole-image textures); only reads
     // of the input go through the source mapping. Exact identity outside the
@@ -1641,7 +1662,7 @@ fn color_pass(input: VertexOutput) -> vec4<f32> {
         if (m.info.y < 0.5) {
             continue;
         }
-        let w = mask_weight(m, mi, input.tex_coords, mask_aspect, color0, cam0);
+        let w = mask_weight(m, mi, input.tex_coords, layer_uv, mask_aspect, color0, cam0);
         if (params.mask_overlay == mi + 1u) {
             overlay_w = w;
         }

@@ -76,7 +76,7 @@ pub fn tile_colors(cfa_pattern: u32) -> [u32; 4] {
 /// Which `[R, G1, G2, B]` black-level slot each tile position reads. This is
 /// the mapping the old single-pass debayer used, kept verbatim so per-channel
 /// black levels (and the sensor-correction offsets) land on the same sites.
-fn tile_black_slots(cfa_pattern: u32) -> [usize; 4] {
+pub fn tile_black_slots(cfa_pattern: u32) -> [usize; 4] {
     match cfa_pattern {
         1 => [1, 0, 3, 2],
         2 => [1, 3, 0, 2],
