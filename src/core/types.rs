@@ -659,6 +659,10 @@ impl EditParams {
             // Not a look you compare against: switching it rebuilds the GPU
             // resources, which a momentary peek must not do.
             camera_profile: self.camera_profile,
+            // The mosaic on the GPU is the AI-denoised one and a peek does not
+            // rebuild it. Dropping this made `DenoiseSettings::from_params` read
+            // the classic NR sliders again, stacking them on the AI result.
+            ai_denoise: self.ai_denoise,
             ..Self::default()
         }
     }
@@ -1029,6 +1033,18 @@ mod tests {
             (b.luma_noise, b.luma_detail, b.color_noise),
             (p.luma_noise, p.luma_detail, p.color_noise)
         );
+    }
+
+    /// AI denoise is baked into the mosaic the peek renders from, so the peek
+    /// must keep it, or the classic NR sliders come back on top of it.
+    #[test]
+    fn before_reference_keeps_ai_denoise_and_so_classic_nr_stays_off() {
+        let mut p = fully_edited();
+        p.ai_denoise = 0.8;
+        p.color_noise = 0.6;
+        let b = p.before_reference();
+        assert_eq!(b.ai_denoise, p.ai_denoise);
+        assert!(!crate::gpu::denoise::DenoiseSettings::from_params(&b).is_active());
     }
 
     #[test]

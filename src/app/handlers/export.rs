@@ -273,11 +273,17 @@ pub fn handle_process_next_export(editor: &mut RawEditor) -> Task<Message> {
             let mut params = if Some(image_id) == editor.selected_image_id {
                 editor.current_edit_params
             } else {
-                editor
-                    .library
-                    .as_ref()
-                    .and_then(|lib| lib.load_edit_params(image_id).ok())
-                    .unwrap_or_default()
+                match editor.library.as_ref().map(|lib| lib.load_saved_edit(image_id)) {
+                    Some(Ok(saved)) => saved.unwrap_or_default(),
+                    None => Default::default(),
+                    // Exporting defaults would silently produce the unedited frame.
+                    Some(Err(e)) => {
+                        tracing::error!("Export: unreadable saved edit for {}: {e}", img.filename);
+                        let msg = format!("saved edit for {} could not be read", img.filename);
+                        set_job_state(editor, image_id, crate::app::state::ExportJobState::Failed(msg));
+                        return Task::perform(async {}, |_| Message::ProcessNextExport);
+                    }
+                }
             };
             // Exporting while the crop tool is open must still produce the
             // cropped photo, not the tool's dimmed full-sensor preview.
