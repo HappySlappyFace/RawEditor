@@ -325,7 +325,7 @@ pub fn ensure_develop_selection_not_marked(editor: &mut RawEditor) -> Task<Messa
 /// Previously these indexed the unfiltered `editor.images`, so arrow keys
 /// happily navigated to images the active filter was hiding — and in Develop,
 /// to images marked for removal that the tab refuses to show.
-fn step_selection(editor: &RawEditor, forward: bool) -> Option<i64> {
+pub(crate) fn step_selection(editor: &RawEditor, forward: bool) -> Option<i64> {
     let ids = editor.displayed_ids();
     if ids.is_empty() {
         return None;
