@@ -263,13 +263,21 @@ pub fn handle_select_all(editor: &mut RawEditor) -> Task<Message> {
 pub fn find_next_unmarked_image_id(editor: &RawEditor, from_id: i64) -> Option<i64> {
     let idx = editor.images.iter().position(|i| i.id == from_id)?;
     let len = editor.images.len();
+    // Prefer an image the active filter shows, so the filmstrip has a
+    // selection to draw; fall back to any unmarked one rather than none.
+    let shown: std::collections::HashSet<i64> = editor.displayed_ids().into_iter().collect();
+    let mut any = None;
     for step in 1..=len {
         let candidate = &editor.images[(idx + step) % len];
-        if candidate.rating != crate::database::models::MARKED_FOR_REMOVAL_RATING {
+        if candidate.rating == crate::database::models::MARKED_FOR_REMOVAL_RATING {
+            continue;
+        }
+        if shown.contains(&candidate.id) {
             return Some(candidate.id);
         }
+        any.get_or_insert(candidate.id);
     }
-    None
+    any
 }
 
 /// True when Develop is active and its current selection is marked for

@@ -661,19 +661,19 @@ fn check_export_size(
 /// Two source folders commonly hold the same stems (DSC_0001 from two cards,
 /// or a re-export into the same folder). `File::create` truncates, so the
 /// previous behaviour silently destroyed the earlier export.
-fn unique_output_path(dir: &Path, stem: &str, extension: &str) -> PathBuf {
+fn unique_output_path(dir: &Path, stem: &str, extension: &str) -> Result<PathBuf, String> {
     let candidate = dir.join(format!("{stem}.{extension}"));
     if !candidate.exists() {
-        return candidate;
+        return Ok(candidate);
     }
     for n in 2..10_000u32 {
         let candidate = dir.join(format!("{stem} ({n}).{extension}"));
         if !candidate.exists() {
-            return candidate;
+            return Ok(candidate);
         }
     }
-    // Pathological: fall back to overwriting rather than looping forever.
-    dir.join(format!("{stem}.{extension}"))
+    // Pathological: refuse rather than overwrite an earlier export.
+    Err(format!("10,000 files named {stem} already exist in {}", dir.display()))
 }
 
 /// Carries either an 8-bit RGBA (JPEG/PNG) or 16-bit RGB (TIFF) sample
@@ -740,7 +740,7 @@ async fn save_export_async(
             ExportFormat::Tiff => "tiff",
         };
 
-        let output_path = unique_output_path(&output_dir, &filename, extension);
+        let output_path = unique_output_path(&output_dir, &filename, extension)?;
         let file = File::create(&output_path).map_err(|e| e.to_string())?;
         let mut writer = BufWriter::new(file);
 
@@ -969,19 +969,19 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("raw-editor-export-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("temp dir");
 
-        let first = unique_output_path(&dir, "DSC_0001", "jpg");
+        let first = unique_output_path(&dir, "DSC_0001", "jpg").unwrap();
         assert_eq!(first.file_name().unwrap(), "DSC_0001.jpg");
         std::fs::write(&first, b"x").expect("write");
 
-        let second = unique_output_path(&dir, "DSC_0001", "jpg");
+        let second = unique_output_path(&dir, "DSC_0001", "jpg").unwrap();
         assert_eq!(second.file_name().unwrap(), "DSC_0001 (2).jpg");
         std::fs::write(&second, b"x").expect("write");
 
-        let third = unique_output_path(&dir, "DSC_0001", "jpg");
+        let third = unique_output_path(&dir, "DSC_0001", "jpg").unwrap();
         assert_eq!(third.file_name().unwrap(), "DSC_0001 (3).jpg");
 
         // A different extension is a different file and must not be renamed.
-        let png = unique_output_path(&dir, "DSC_0001", "png");
+        let png = unique_output_path(&dir, "DSC_0001", "png").unwrap();
         assert_eq!(png.file_name().unwrap(), "DSC_0001.png");
 
         let _ = std::fs::remove_dir_all(&dir);

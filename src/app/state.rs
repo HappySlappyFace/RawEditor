@@ -1871,6 +1871,17 @@ mod tests {
         e
     }
 
+    /// Auto-advance after a mark used to walk the unfiltered list and could
+    /// land on an image the rating filter hides (no filmstrip selection).
+    #[test]
+    fn next_unmarked_prefers_an_image_the_filter_shows() {
+        let mut e = catalog();
+        e.current_tab = AppTab::Develop;
+        e.min_filter_rating = 5;
+        assert_eq!(e.displayed_ids(), vec![3]);
+        assert_eq!(crate::app::handlers::navigation::find_next_unmarked_image_id(&e, 1), Some(3));
+    }
+
     #[test]
     fn displayed_images_library_shows_marked_and_honours_the_folder_filter() {
         let mut e = catalog();
