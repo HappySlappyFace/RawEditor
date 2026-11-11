@@ -95,11 +95,13 @@ impl GpuDemosaicParams {
     ) -> Self {
         // Normalise to green = 1 so the green ceiling is exactly the sensor's.
         let g = if wb_multipliers[1] > 0.0 { wb_multipliers[1] } else { 1.0 };
-        let wb = [
-            (wb_multipliers[0] / g).clamp(0.05, 20.0),
-            1.0,
-            (wb_multipliers[2] / g).clamp(0.05, 20.0),
-        ];
+        // `clamp` passes NaN through, and every denoise/haze threshold divides
+        // by these, so a NaN multiplier from odd metadata becomes neutral.
+        let norm = |m: f32| {
+            let r = m / g;
+            if r.is_nan() { 1.0 } else { r.clamp(0.05, 20.0) }
+        };
+        let wb = [norm(wb_multipliers[0]), 1.0, norm(wb_multipliers[2])];
         let colors = tile_colors(cfa_pattern);
         let slots = tile_black_slots(cfa_pattern);
         let mut black = [0.0f32; 4];
@@ -604,6 +606,16 @@ impl Demosaic {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn degenerate_wb_multipliers_never_reach_the_ceiling() {
+        for bad in [f32::NAN, 0.0, -1.0, f32::INFINITY] {
+            let p = GpuDemosaicParams::new(0, [0; 4], [0.0; 4], 4000, [bad, 1.0, bad, 1.0]);
+            for c in [p.ceil[0], p.ceil[2], p.inv_wb[0], p.inv_wb[2]] {
+                assert!(c.is_finite() && c > 0.0, "{bad}: {c}");
+            }
+        }
+    }
 
     #[test]
     fn demosaic_shader_is_valid_wgsl() {
