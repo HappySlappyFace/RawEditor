@@ -418,6 +418,15 @@ pub struct EditedProxy {
 /// Edited proxies kept in memory. ~400 KB each (384px RGBA).
 pub const EDITED_PROXY_CAPACITY: usize = 128;
 
+/// `(kelvin, tone, interpolation, the profile it came from)`: the memo is
+/// valid only for the same profile (pointer-compared; kept alive here).
+pub type DcpMemo = (
+    f32,
+    crate::core::tonemap::ToneSettings,
+    Arc<crate::raw::dcp::InterpolatedProfile>,
+    Arc<crate::raw::dcp::DcpProfile>,
+);
+
 /// Main application state
 #[derive(Debug)]
 pub struct RawEditor {
@@ -539,13 +548,7 @@ pub struct RawEditor {
     /// `&RawEditor` signature: the crop and mask drag paths call it while
     /// holding an immutable borrow of `gpu_context`/`image_resources`.
     /// Cleared on image load, where `current_dcp_profile` changes.
-    pub dcp_memo: std::cell::RefCell<
-        Option<(
-            f32,
-            crate::core::tonemap::ToneSettings,
-            Arc<crate::raw::dcp::InterpolatedProfile>,
-        )>,
-    >,
+    pub dcp_memo: std::cell::RefCell<Option<DcpMemo>>,
     /// As-shot white balance of the current image as (Kelvin, Adobe tint),
     /// solved from the camera's WB multipliers via the color matrix (Robertson
     /// CCT). Anchor for the Temp/Tint sliders; None until a raw is loaded.

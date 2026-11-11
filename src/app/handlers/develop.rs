@@ -1118,8 +1118,8 @@ pub fn resolve_wb_and_dcp(
     let tone = ToneSettings::from_params(params);
 
     if let Ok(memo) = editor.dcp_memo.try_borrow() {
-        if let Some((k, t, profile)) = memo.as_ref() {
-            if dcp_memo_is_valid(*k, *t, kelvin, tone) {
+        if let Some((k, t, profile, source)) = memo.as_ref() {
+            if std::sync::Arc::ptr_eq(source, dcp) && dcp_memo_is_valid(*k, *t, kelvin, tone) {
                 return (Some(profile.clone()), wb_override);
             }
         }
@@ -1129,7 +1129,7 @@ pub fn resolve_wb_and_dcp(
         dcp, kelvin, tone,
     ));
     if let Ok(mut memo) = editor.dcp_memo.try_borrow_mut() {
-        *memo = Some((kelvin, tone, interpolated.clone()));
+        *memo = Some((kelvin, tone, interpolated.clone(), dcp.clone()));
     }
 
     (Some(interpolated), wb_override)
