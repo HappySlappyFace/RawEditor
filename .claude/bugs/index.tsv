@@ -1,0 +1,100 @@
+id	section	kind	unverified	title
+0101	1	BUG	false	Leaving an image mid AI-select can delete a mask on the next image (checked by reading, not reproduced)
+0102	1	BUG	false	Eyedroppers ignore Straighten and lens correction (checked by reading)
+0103	1	BUG	false	AI masks are prompted and drawn in the wrong frame on straightened or lens-corrected images (checked by reading)
+0104	1	RISK	false	`is_slider_change` is a hand-kept list and is already incomplete
+0105	1	RISK	false	`MenuItem` and `SliderSet` bypass the wrapper logic in `update`
+0106	1	RISK	false	`dcp_memo` is not keyed on the profile
+0107	1	RISK	false	`handle_reset_edits` leaves tools armed and saves twice
+0108	1	RISK	false	`sample_raw_rgb` black level handling
+0109	1	RISK	false	WB eyedropper reports a temperature it did not set
+0110	1	RISK	false	`handle_turn_image` is a silent no-op before resources load
+0111	1	PERF	false	Every `Message` is 21.8 KB, and undo history is unbounded
+0112	1	PERF	true	Paste runs SQLite on the UI thread per image
+0113	1	PERF	false	Small per-call costs that scale with the catalogue
+0114	1	CLEANUP	false	CLEANUP 1.14
+0201	2	BUG	false	The selected image's RAW decode is neither bounded nor deduplicated (checked by reading)
+0202	2	BUG	false	Prioritising a queued RAW can cancel a running decode (checked by reading)
+0203	2	RISK	true	`SharedContext` creation can race, and the loser's resources may be installed
+0204	2	BUG	true	Paste leaves the other images' undo history stale (checked by reading)
+0205	2	RISK	false	Heavy CPU work inside `async` blocks, not `spawn_blocking`
+0206	2	RISK	true	Export downscale is a plain bilinear tap
+0207	2	RISK	false	Smaller correctness points
+0208	2	PERF	false	Per-step and per-rebuild costs that scale with the catalogue
+0209	2	CLEANUP	false	CLEANUP 2.9
+0301	3	RISK	true	The UI thread rewrites the uniform buffer while a render is in flight (suspected, by reading)
+0302	3	RISK	false	Export demosaics and analyses in the edited white balance; the screen uses as-shot
+0303	3	RISK	false	No handling of a lost device
+0304	3	RISK	false	A failed readback is an empty buffer, not an error
+0305	3	PERF	false	Load-time CPU work is repeated and serial
+0306	3	CLEANUP	false	CLEANUP 3.6
+0401	4	BUG	false	The selected image's RAW is not pinned, so the eyedroppers can fail for good (checked by reading)
+0402	4	BUG	false	A hard delete can write the deleted image's edits onto its neighbour (checked by reading; narrow)
+0403	4	BUG	false	Closing the window from the OS skips the save points (checked by reading)
+0404	4	BUG	true	AI denoise is not regenerated for an image opened while another regeneration runs (suspected)
+0405	4	RISK	false	Smaller state leaks between asynchronous steps
+0406	4	RISK	false	UI-thread work in folder removal and cache bookkeeping
+0407	4	PERF	false	PERF 4.7
+0408	4	CLEANUP	false	CLEANUP 4.8
+0501	5	BUG	true	The before/after peek applies classic NR on top of AI denoise (read, not run)
+0502	5	RISK	false	An edit that fails to load is replaced by defaults, then saved over
+0503	5	RISK	false	`edits` allows several rows per image
+0504	5	RISK	false	Schema migration ignores every error
+0505	5	PERF	false	Start-up reconciliation runs before the catalogue is shown
+0506	5	CLEANUP	true	CLEANUP 5.6
+0601	6	BUG	true	A DCP without ForwardMatrix tags renders with the wrong matrix (suspected)
+0602	6	RISK	true	Loader edge cases that develop wrongly instead of failing (`raw/loader.rs`)
+0603	6	RISK	true	The thumbnail and Develop can disagree about rotation (suspected)
+0604	6	RISK	true	DCP parsing trusts the file (`raw/dcp.rs`)
+0605	6	RISK	false	Profile download and matching (`core/camera_profiles.rs`)
+0606	6	RISK	false	Export EXIF (`raw/exif.rs`)
+0607	6	PERF	true	Import reads far more than it needs (`raw/processor.rs`)
+0608	6	CLEANUP	false	CLEANUP 6.8
+0701	7	PERF	false	Every brush point redraws every stroke of every mask
+0702	7	PERF	false	Brush and AI layer arrays are all-or-nothing
+0703	7	PERF	false	Stage targets are never released
+0704	7	RISK	true	Brush capacity is shared and silent (not checked)
+0705	7	RISK	true	`denoise::plan` divides by the WB multipliers (not checked)
+0706	7	CLEANUP	true	Loupe
+0801	8	BUG	true	the Filmic operator turns very bright highlights grey, then black
+0802	8	RISK	true	(suspected): one dead-flat brightness bin can collapse the noise model
+0803	8	RISK	false	a curve whose points all sit on the diagonal is drawn but not applied
+0804	8	RISK	false	a settings file that fails to parse is silently replaced by defaults
+0805	8	PERF	true	the thumbnail-size slider writes the settings file on every step
+0806	8	RISK	false	"packaged" is decided by a path prefix that is too wide and too narrow
+0807	8	RISK	true	the memory gate does nothing on macOS
+0808	8	RISK	false	lensfun download
+0809	8	CLEANUP	false	lens database
+0901	9	RISK	false	Denoise cache can be applied to the wrong image
+0902	9	RISK	false	Denoise cache files are never removed
+0903	9	RISK	true	(suspected): model download timeout
+0904	9	BUG	false	Brush, range and AI masks draw radial handles at the image corner
+0905	9	RISK	true	ending an AI-select session after the image changed → see BUG 1.1
+0906	9	RISK	true	(minor): update check, lensfun reload
+0907	9	PERF	false	PERF / CLEANUP 9.7
+1001	10	RISK	false	single-letter shortcuts fire with a modifier held
+1002	10	RISK	true	(minor): a held arrow key is never released if the window loses focus
+1003	10	RISK	true	(minor): key repeat repeats the action
+1004	10	RISK	false	`without_ai_masks` trusts `mask_count`
+1005	10	RISK	true	(suspected, not checked): pasting masks onto an image with a different turn or shape
+1101	11	BUG	false	the fold-back in 8.1 is reachable on the default rendering path (settles 8.1's open question)
+1102	11	RISK	false	`textureSample` in non-uniform control flow
+1103	11	RISK	false	sharpening is measured in input texels
+1104	11	RISK	false	masks are evaluated in display UV, before Straighten and lens correction
+1201	12	RISK	false	one NaN in an edit makes the whole edit unreadable (the likeliest trigger for RISK 5.2)
+1202	12	RISK	true	(minor): Contrast has a flat spot at L = 1 on unbounded data
+1203	12	RISK	false	(minor): mask Hue pulls wide-gamut colours into sRGB
+1301	13	BUG	false	Ctrl/Cmd-click reset on a slider never commits
+1302	13	BUG	false	double-click reset on a slider track makes two undo steps
+1303	13	BUG	false	a triple-click in the curve editor removes two points
+1304	13	RISK	true	the stored scroll offset is not clamped to the scrollable's maximum
+1305	13	PERF	false	a mouse move over the Develop image rebuilds the whole view
+1306	13	PERF	false	per-rebuild walks over the whole catalogue in the views
+1307	13	PERF	false	the Develop sidebar builds every section every time
+1308	13	PERF	false	the curve editor re-tessellates on every redraw
+1309	13	BUG	false	deleting a mask during an AI-select session moves the session onto another mask
+1310	13	BUG	false	a typo in Export's "Max long edge" exports at full size
+1311	13	IDEA	false	export settings are not remembered
+1401	14	BUG	false	marking an image for removal throws away its star rating (checked by reading)
+1402	14	RISK	true	(suspected): the centred tabs overlap the menus and window buttons in a narrow window
+1403	14	RISK	false	the Sensor Correction controls never commit (debug-only panel)
