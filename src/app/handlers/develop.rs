@@ -708,6 +708,9 @@ pub fn handle_render_finished(
     editor: &mut RawEditor,
     out: crate::app::message::RenderOutput,
 ) -> Task<Message> {
+    if editor.gpu_context.as_ref().is_some_and(|c| c.is_lost()) {
+        return handle_gpu_lost(editor);
+    }
     // A render of the image the user has since navigated away from: drop the
     // pixels, but still release the throttle below so the next render runs.
     let current = editor.image_resources.as_ref().map(|r| r.image_id);
@@ -758,6 +761,24 @@ pub fn handle_render_finished(
     Task::batch([save, loupe])
 }
 
+/// The GPU device is gone (driver reset, suspend/resume, eGPU unplug): every
+/// readback would fail from here on. Drop the context and the resources built
+/// on it, so the next load creates a fresh one (`loading::shared_context`
+/// would otherwise hand back the dead one from `gpu_init`), and reload the
+/// selected image.
+pub(crate) fn handle_gpu_lost(editor: &mut RawEditor) -> Task<Message> {
+    tracing::error!("GPU device lost; rebuilding the GPU context");
+    editor.status = "The GPU was reset; reloading the image.".into();
+    editor.gpu_context = None;
+    editor.gpu_init = std::sync::Arc::new(tokio::sync::OnceCell::new());
+    editor.image_resources = None;
+    editor.preview_resources = None;
+    editor.is_rendering = false;
+    editor.pending_render = false;
+    editor.deferred_push = None;
+    crate::app::handlers::navigation::reload_selected_image(editor)
+}
+
 /// What a develop render of the current view needs: window, target size,
 /// and how far the screen magnifies the texture's source pixels. The source
 /// is the develop texture itself (`image_display_dims`), so a subsampled
@@ -779,6 +800,7 @@ pub fn render_target(editor: &RawEditor) -> crate::core::viewport::RenderTarget 
 
 pub fn trigger_async_render(editor: &mut RawEditor) -> Task<Message> {
     let t_update_start = std::time::Instant::now();
+    apply_deferred_push(editor);
 
     // Oriented display dims of what is actually on screen — crop-aware, so the
     // render target takes the CROPPED aspect. Must be the same source the
@@ -1202,6 +1224,25 @@ pub fn resolve_wb_and_dcp(
     (Some(interpolated), wb_override)
 }
 
+/// Write `params` (with the resolved DCP and slider WB) to the uniforms. Only
+/// while no render is in flight — see `RawEditor::deferred_push`.
+fn push_uniforms(editor: &RawEditor, params: &crate::core::types::EditParams) {
+    if let (Some(ctx), Some(resources)) = (&editor.gpu_context, &editor.image_resources) {
+        // Phase 140: Interpolate DCP + resolve slider WB
+        let (interpolated, wb_override) = resolve_wb_and_dcp(editor, params);
+        resources.update_uniforms(ctx, params, interpolated.as_deref(), wb_override);
+    }
+}
+
+/// Apply a push that arrived mid-render. Runs at the start of every render,
+/// when the previous one has finished, so the uniform block has one writer.
+fn apply_deferred_push(editor: &mut RawEditor) {
+    let Some((id, params)) = editor.deferred_push.take() else { return };
+    if editor.image_resources.as_ref().map(|r| r.image_id) == Some(id) {
+        push_uniforms(editor, &params);
+    }
+}
+
 /// Push `params` to the GPU and render with them.
 ///
 /// Deliberately does NOT mark edits dirty — the caller decides whether these
@@ -1228,11 +1269,17 @@ pub(crate) fn push_uniforms_and_render(
     if crate::app::handlers::ai_denoise::resources_stale(editor) {
         return crate::app::handlers::navigation::reload_selected_image(editor);
     }
-    if let (Some(ctx), Some(resources)) = (&editor.gpu_context, &editor.image_resources) {
-        // Phase 140: Interpolate DCP + resolve slider WB
-        let (interpolated, wb_override) = resolve_wb_and_dcp(editor, params);
-        resources.update_uniforms(ctx, params, interpolated.as_deref(), wb_override);
+    if editor.is_rendering {
+        // A render task is between its own uniform writes and submits: writing
+        // the block from here could land `view_rect = FULL` in its main pass,
+        // or change the params between its stages and its colour pass. Park
+        // the push; `trigger_async_render` applies it before the next frame.
+        if let Some(id) = editor.selected_image_id {
+            editor.deferred_push = Some((id, *params));
+        }
         editor.canvas_cache.clear();
+    } else {
+        push_uniforms(editor, params);
     }
 
     // The detail loupe follows every edit (it costs ~0.3 ms when the noise

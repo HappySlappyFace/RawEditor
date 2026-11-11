@@ -364,7 +364,6 @@ pub fn handle_export_raw_loaded(
                         profile_use.profile.as_deref(),
                         raw_data.color_matrix,
                     );
-                    let wb_final = wb_override.unwrap_or(raw_data.wb_multipliers);
 
                     let (forward_matrix, interpolated_dcp) = if let Some(dcp) = &profile_use.profile {
                         let interpolated = crate::raw::dcp::interpolate_at_temperature(
@@ -392,7 +391,10 @@ pub fn handle_export_raw_loaded(
                         raw_data.width,
                         raw_data.height,
                         &params,
-                        wb_final,
+                        // As-shot, exactly like the develop load: this is the
+                        // space the demosaic and every analysis work in. The
+                        // edited WB is applied below as the uniform override.
+                        raw_data.wb_multipliers,
                         forward_matrix,
                         raw_data.cfa_pattern,
                         raw_data.black_levels,
@@ -403,6 +405,7 @@ pub fn handle_export_raw_loaded(
                         raw_data.lens_context.clone(),
                     )
                     .map(|res| {
+                        res.update_uniforms(&context, &params, interpolated_dcp.as_ref(), wb_override);
                         // Export's resources are its own: give them the AI
                         // masks' bitmaps, or those masks would export empty.
                         if params.ai_masks().next().is_some() {
@@ -442,6 +445,17 @@ pub fn handle_export_pipeline_ready(
     >,
 ) -> Task<Message> {
     match result {
+        Ok((context, _)) if context.is_lost() => {
+            // A reset GPU renders nothing; forget it so the next image (or
+            // the next Develop load) builds a fresh context.
+            tracing::error!("Export of image {image_id}: GPU device lost");
+            editor.gpu_context = None;
+            editor.gpu_init = Arc::new(tokio::sync::OnceCell::new());
+            let e = "the GPU was reset; try again".to_string();
+            editor.status = format!("Export failed: {e}");
+            set_job_state(editor, image_id, crate::app::state::ExportJobState::Failed(e));
+            Task::perform(async {}, |_| Message::ProcessNextExport)
+        }
         Ok((context, resources)) => {
             // THE leak fix. `gpu_context` is otherwise only ever assigned on
             // the Develop image-load path (loading.rs), so exporting without
@@ -507,7 +521,7 @@ pub fn handle_export_pipeline_ready(
                             render_w,
                             render_h,
                         )
-                        .await;
+                        .await?;
                         ExportPixels::Rgb16(box_reduce(&samples, render_w, render_h, factor))
                     } else {
                         let (bytes, _, _) = crate::gpu::render_functions::render_to_vec(
@@ -519,7 +533,7 @@ pub fn handle_export_pipeline_ready(
                             // never the on-screen window.
                             crate::gpu::params::FULL_VIEW_RECT,
                         )
-                        .await;
+                        .await?;
                         ExportPixels::Rgba8(box_reduce(&bytes, render_w, render_h, factor))
                     };
                     save_export_async(filename, source, pixels, target_width, target_height, settings)

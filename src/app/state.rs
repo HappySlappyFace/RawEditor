@@ -734,6 +734,12 @@ pub struct RawEditor {
     /// Phase 106: Render Throttling
     pub is_rendering: bool,
     pub pending_render: bool,
+    /// Params pushed while a render was in flight, with the image they belong
+    /// to. The render task is the only writer of the uniform block while it
+    /// runs (it patches `view_rect` between its own submits, and the stages
+    /// read `stage_params` at render time), so the UI thread parks the push
+    /// here and `trigger_async_render` applies it before the next frame.
+    pub deferred_push: Option<(i64, crate::core::types::EditParams)>,
     /// True while a full-resolution resource rebuild is in flight. One at a
     /// time, across images: each holds a full-size working set on the GPU,
     /// and navigating quickly must not stack them. Cleared only by that
@@ -983,6 +989,7 @@ impl RawEditor {
                 profiler_cache: iced::widget::canvas::Cache::default(),
                 is_rendering: false,
                 pending_render: false,
+                deferred_push: None,
                 full_res_upgrading: false,
                 full_res_failed: None,
                 stage_drag: false,
