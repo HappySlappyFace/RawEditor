@@ -1056,14 +1056,20 @@ pub fn handle_wb_picked(editor: &mut RawEditor, u: f32, v: f32) -> Task<Message>
     // Absolute Kelvin/tint → slider offsets around the as-shot anchor
     // (inverse of EditParams::kelvin_from_anchor / tint_from_anchor).
     let (anchor_kelvin, anchor_tint) = editor.as_shot_wb.unwrap_or((5000.0, 0.0));
-    let anchor_mired = 1.0e6 / anchor_kelvin.clamp(1500.0, 50000.0);
-    let temperature = ((anchor_mired - 1.0e6 / kelvin) / 120.0).clamp(-1.0, 1.0);
-    let tint_offset = ((tint - anchor_tint) / 50.0).clamp(-1.0, 1.0);
+    let temperature = crate::core::types::EditParams::temperature_for_kelvin(anchor_kelvin, kelvin);
+    let tint_offset = crate::core::types::EditParams::tint_slider_for(anchor_tint, tint);
 
     editor.is_wb_picking = false;
     editor.current_edit_params.temperature = temperature;
     editor.current_edit_params.tint = tint_offset;
-    editor.status = format!("WB picked: {:.0}K, tint {:+.0}", kelvin, tint);
+    // Report what the sliders now render, which differs from the pick when
+    // it was out of their range and got clamped.
+    let set = &editor.current_edit_params;
+    editor.status = format!(
+        "WB picked: {:.0}K, tint {:+.0}",
+        set.kelvin_from_anchor(anchor_kelvin),
+        set.tint_from_anchor(anchor_tint)
+    );
 
     let task = update_pipeline(editor);
     editor.commit_current_state();
