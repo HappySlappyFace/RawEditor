@@ -21,8 +21,14 @@ pub fn open_url(url: &str) {
         std::process::Command::new("xdg-open").arg(url).spawn()
     };
 
-    if let Err(e) = result {
-        tracing::error!("Failed to open {url}: {e}");
+    match result {
+        // Reaped off-thread so the finished opener is not left a zombie.
+        Ok(mut child) => {
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+        }
+        Err(e) => tracing::error!("Failed to open {url}: {e}"),
     }
 }
 

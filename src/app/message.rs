@@ -565,7 +565,7 @@ pub enum Message {
     SetCameraProfileDefault(String, Option<String>),
     /// Download RawTherapee's profile for the open image's camera.
     DownloadCameraProfile,
-    CameraProfileDownloaded(Result<Option<String>, String>),
+    CameraProfileDownloaded(String, Result<Option<String>, String>),
     /// Pick `.dcp` files to import.
     ImportCameraProfiles,
     CameraProfilesPicked(Option<Vec<std::path::PathBuf>>),
@@ -607,6 +607,8 @@ pub enum Message {
 
     /// User selected an image from the grid
     ImageSelected(i64),
+    /// Selection made by the app, not a click: ignores the modifier keys.
+    ImageMoved(i64),
     // ========== Phase 59: Filtering ==========
     /// Set minimum rating filter (0 = all, 1-5 = show rating or higher)
     SetMinRating(u8),

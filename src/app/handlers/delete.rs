@@ -189,7 +189,7 @@ pub fn handle_hard_delete_complete(editor: &mut RawEditor, outcome: HardDeleteOu
             editor.preview_resources = None;
             editor.selected_image_id = fallback;
             if let Some(next_id) = fallback {
-                nav_task = Task::done(Message::ImageSelected(next_id));
+                nav_task = Task::done(Message::ImageMoved(next_id));
             } else {
                 editor.editor_readiness = EditorReadiness::NoSelection;
                 editor.working_preview = None;
@@ -340,7 +340,7 @@ mod tests {
         let outcome = HardDeleteOutcome { deleted_ids: vec![a], failed: vec![] };
         let _ = crate::app::update::update(&mut e, Message::HardDeleteComplete(outcome));
         assert_eq!(e.selected_image_id, Some(b));
-        let _ = crate::app::update::update(&mut e, Message::ImageSelected(b));
+        let _ = crate::app::update::update(&mut e, Message::ImageMoved(b));
 
         let saved = e.library.as_ref().unwrap().load_edit_params(b).unwrap_or_default();
         assert_eq!(saved.exposure, 0.0, "the deleted image's edits landed on its neighbour");

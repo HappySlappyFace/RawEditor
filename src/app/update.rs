@@ -94,6 +94,7 @@ fn ends_slider_entry(message: &Message) -> bool {
             Message::CommitEdit
                 | Message::MousePressed
                 | Message::ImageSelected(_)
+                | Message::ImageMoved(_)
                 | Message::TabChanged(_)
                 | Message::ResetEdits
                 | Message::Undo
@@ -155,6 +156,7 @@ fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
 
         // Navigation
         Message::ImageSelected(id) => handlers::navigation::handle_image_selected(editor, id),
+        Message::ImageMoved(id) => handlers::navigation::handle_image_moved(editor, id),
         Message::TabChanged(tab) => handlers::navigation::handle_tab_changed(editor, tab),
         Message::SelectNextImage => handlers::navigation::handle_select_next_image(editor),
         Message::SelectPreviousImage => handlers::navigation::handle_select_previous_image(editor),
@@ -454,7 +456,7 @@ fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
             handlers::camera_profiles::handle_set_default(editor, camera, value)
         }
         Message::DownloadCameraProfile => handlers::camera_profiles::handle_download(editor),
-        Message::CameraProfileDownloaded(r) => handlers::camera_profiles::handle_downloaded(editor, r),
+        Message::CameraProfileDownloaded(camera, r) => handlers::camera_profiles::handle_downloaded(editor, camera, r),
         Message::ImportCameraProfiles => handlers::camera_profiles::handle_import(editor),
         Message::CameraProfilesPicked(files) => handlers::camera_profiles::handle_picked(editor, files),
         Message::CameraProfilesImported(ok, failed) => {
