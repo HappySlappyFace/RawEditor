@@ -923,13 +923,26 @@ fn trigger_image_load(editor: &mut RawEditor, image_id: i64) -> Task<Message> {
                     move |res| Message::RawDataLoaded(image_id, res),
                     ));
                 }
-            } else {
-                prioritise(
-                    &mut editor.queued_raw_loads,
-                    image_id,
-                    crate::app::loader::MAX_CONCURRENT_RAW_LOADS,
-                );
+            } else if claim_queued(
+                &mut editor.queued_raw_loads,
+                &mut editor.pending_raw_loads,
+                image_id,
+                crate::app::loader::MAX_CONCURRENT_RAW_LOADS,
+            ) {
+                // Waiting in the preload queue's tail: decode it now. Moving it
+                // within the tail is not enough, because `schedule_raw_preloads`
+                // runs right after and rebuilds the tail without the selected
+                // image, which would drop it and leave Develop on "Loading".
+                if editor.direct_raw_loads.insert(image_id) {
+                    tasks.push(Task::perform(
+                        raw::loader::load_raw_data(raw_path),
+                        move |res| Message::RawDataLoaded(image_id, res),
+                    ));
+                }
             }
+            // Otherwise the preload for it is already running (the first
+            // `MAX_CONCURRENT_RAW_LOADS` queue entries): its result completes
+            // the load.
         }
         
         // Schedule preloads for adjacent images
@@ -1033,20 +1046,26 @@ fn neighbours(editor: &RawEditor, behind: usize, ahead: usize) -> Vec<&ImageData
     out
 }
 
-/// Move `id` to the front of the not-yet-started part of the queue.
+/// Take `id` out of the not-yet-started part of a load queue.
 ///
-/// The first `in_flight` entries are the running decodes; inserting at index 0
-/// would shove one of them out of the running window, and iced would drop its
-/// subscription and throw the half-finished decode away.
-fn prioritise(queue: &mut Vec<(i64, String)>, id: i64, in_flight: usize) {
+/// Returns true if it was waiting there (so the caller should load it itself).
+/// The first `in_flight` entries are the running decodes: those are left alone
+/// and report false, since their result will arrive on its own.
+fn claim_queued(
+    queue: &mut Vec<(i64, String)>,
+    pending: &mut std::collections::HashSet<i64>,
+    id: i64,
+    in_flight: usize,
+) -> bool {
     let Some(pos) = queue.iter().position(|(queued, _)| *queued == id) else {
-        return;
+        return false;
     };
     if pos < in_flight {
-        return; // already running
+        return false; // already running
     }
-    let entry = queue.remove(pos);
-    queue.insert(in_flight.min(queue.len()), entry);
+    queue.remove(pos);
+    pending.remove(&id);
+    true
 }
 
 /// Replace a load queue's not-yet-started tail with `wanted`, in order.
@@ -1203,8 +1222,9 @@ mod tests {
 }
 
 #[cfg(test)]
-mod prioritise_tests {
-    use super::prioritise;
+mod claim_tests {
+    use super::{claim_queued, requeue};
+    use std::collections::HashSet;
 
     fn q(ids: &[i64]) -> Vec<(i64, String)> {
         ids.iter().map(|i| (*i, String::new())).collect()
@@ -1214,16 +1234,40 @@ mod prioritise_tests {
     }
 
     #[test]
-    fn prioritising_keeps_running_heads() {
+    fn a_waiting_image_is_taken_out_of_the_queue_and_pending() {
         let mut queue = q(&[1, 2, 3, 4]);
-        prioritise(&mut queue, 4, 2);
-        assert_eq!(ids(&queue), vec![1, 2, 4, 3]);
+        let mut pending: HashSet<i64> = [1, 2, 3, 4].into();
+        assert!(claim_queued(&mut queue, &mut pending, 4, 2));
+        assert_eq!(ids(&queue), vec![1, 2, 3]);
+        assert!(!pending.contains(&4));
     }
 
     #[test]
-    fn prioritising_a_running_head_changes_nothing() {
+    fn a_running_head_is_left_alone() {
         let mut queue = q(&[1, 2, 3]);
-        prioritise(&mut queue, 2, 2);
+        let mut pending: HashSet<i64> = [1, 2, 3].into();
+        assert!(!claim_queued(&mut queue, &mut pending, 2, 2));
         assert_eq!(ids(&queue), vec![1, 2, 3]);
+        assert!(pending.contains(&2));
+    }
+
+    #[test]
+    fn an_absent_image_reports_false() {
+        let mut queue = q(&[1, 2]);
+        let mut pending: HashSet<i64> = [1, 2].into();
+        assert!(!claim_queued(&mut queue, &mut pending, 9, 2));
+    }
+
+    /// The bug: the selected image moved within the tail was then dropped by
+    /// the requeue that follows every selection, so nothing ever decoded it.
+    #[test]
+    fn a_claimed_image_is_not_lost_to_the_requeue_that_follows() {
+        let mut queue = q(&[1, 2, 7, 3]);
+        let mut pending: HashSet<i64> = [1, 2, 7, 3].into();
+        assert!(claim_queued(&mut queue, &mut pending, 7, 2));
+        // the selected image is never in the wanted list
+        requeue(&mut queue, &mut pending, vec![(3, String::new()), (4, String::new())], 2);
+        assert_eq!(ids(&queue), vec![1, 2, 3, 4]);
+        assert!(!pending.contains(&7), "7 is the caller's to decode, not a preload");
     }
 }
