@@ -50,6 +50,14 @@ pub fn handle_raw_preloaded(
         }
         Err(e) => {
             tracing::warn!("RAW preload failed for image {}: {}", image_id, e);
+            // Develop left the selection to this preload (it was already
+            // running when selected): its failure is the load's failure, as
+            // for a direct decode. Only logging it left `Loading` with nothing
+            // in flight. `Failed` makes a re-select decode it again.
+            if awaiting_raw(editor, image_id) {
+                editor.status = format!("Failed to load RAW: {}", e);
+                editor.editor_readiness = EditorReadiness::Failed(image_id, e);
+            }
             Task::none()
         }
     }

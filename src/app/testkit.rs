@@ -293,9 +293,8 @@ pub struct World {
     pub serial: u64,
     /// The last messages sent, for failure reports.
     pub log: Vec<String>,
-    /// Let RAW *preloads* fail. Off by default: a failed preload of the image
-    /// Develop is waiting on strands it today (see
-    /// `tests::loading::a_failed_preload_of_the_selection_strands_it`).
+    /// Let RAW *preloads* fail. Off by default (see
+    /// `tests::loading::a_failed_preload_of_the_selection_fails_it`).
     pub preload_failures: bool,
 }
 
