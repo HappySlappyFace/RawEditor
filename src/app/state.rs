@@ -528,6 +528,9 @@ pub struct RawEditor {
     pub raw_cache: LruCache<i64, Arc<raw::loader::RawDataResult>>,
     /// Approximate memory usage of raw_cache in bytes
     pub raw_cache_bytes: usize,
+    /// Cache workers currently running (`library::spawn_cache_workers` tops
+    /// this up to `CACHE_WORKERS`; a retiring worker gives its slot back).
+    pub cache_workers_live: usize,
     /// The open image's RAW, held outside the preload budget (which can be 0,
     /// or evict the open image first). Read through `raw_for`.
     pub current_raw: Option<(i64, Arc<raw::loader::RawDataResult>)>,
@@ -916,6 +919,7 @@ impl RawEditor {
                 export_paused_for_memory: false,
                 raw_cache: LruCache::new(NonZeroUsize::new(RAW_CACHE_ENTRY_CAPACITY).unwrap()),
                 raw_cache_bytes: 0,
+                cache_workers_live: 0,
                 current_raw: None,
                 preview_preload_behind,
                 preview_preload_ahead,
