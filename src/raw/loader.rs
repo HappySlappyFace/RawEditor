@@ -129,6 +129,9 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
         } else {
             let (cropped, rows) =
                 crop_in_place(full_data, full_width, full_height, left, top, crop_width, crop_height);
+            if rows == 0 {
+                return Err("The RAW file is truncated: it holds no complete image rows".to_string());
+            }
             (cropped, crop_width as u32, rows as u32, [top, right, bottom, left])
         }
     } else {
@@ -140,7 +143,11 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
     let cfa_name = raw_image.camera.cfa.name.to_uppercase();
     let mut cfa_pattern = match cfa_name.as_str() {
         "RGGB" => 0, "GRBG" => 1, "GBRG" => 2, "BGGR" => 3,
-        _ => 0,
+        other => {
+            return Err(format!(
+                "Unsupported colour filter layout ({other:?}) — only RGGB-family Bayer RAWs can be developed"
+            ))
+        }
     };
 
     // PHASE 111: Apply CFA Shift based on crop parity
@@ -311,7 +318,7 @@ fn load_raw_data_blocking(path: &str) -> Result<RawDataResult, String> {
 
     // EXIF via kamadak-exif, with rawler's own parse filling whatever it
     // could not read (see `ExifInfo::fill_from`).
-    let mut exif = extract_metadata_kamadak(path.to_str().unwrap_or_default());
+    let mut exif = extract_metadata_kamadak(path);
     if let Some(meta) = &raw_metadata {
         exif.fill_from(&meta.exif);
     }
@@ -456,7 +463,7 @@ impl ExifInfo {
 }
 
 /// Phase 119: EXIF extraction via kamadak-exif only (rexif removed)
-fn extract_metadata_kamadak(path: &str) -> ExifInfo {
+fn extract_metadata_kamadak(path: &Path) -> ExifInfo {
     let mut info = ExifInfo {
         iso: "---".to_string(),
         shutter: "---".to_string(),

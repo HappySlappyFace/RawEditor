@@ -108,20 +108,24 @@ fn apply_orientation(img: image::DynamicImage, orientation: u32) -> image::Dynam
 /// as the loader does — or the grid would show a portrait shot sideways that
 /// Develop shows upright.
 fn exif_orientation(file: &[u8]) -> u32 {
-    let orientation = match exif::Reader::new().read_from_container(&mut std::io::Cursor::new(file)) {
-        Ok(exif_data) => exif_data
-            .get_field(exif::Tag::Orientation, exif::In::PRIMARY)
-            .and_then(|f| f.value.get_uint(0)),
-        Err(_) => {
-            let source = rawler::rawsource::RawSource::new_from_slice(file);
-            rawler::get_decoder(&source)
-                .and_then(|d| d.raw_metadata(&source, &rawler::decoders::RawDecodeParams::default()))
-                .ok()
-                .and_then(|m| m.exif.orientation)
-                .map(u32::from)
-        }
-    };
-    crate::raw::loader::normalize_orientation(orientation.unwrap_or(1))
+    let from_kamadak = exif::Reader::new()
+        .read_from_container(&mut std::io::Cursor::new(file))
+        .ok()
+        .and_then(|d| d.get_field(exif::Tag::Orientation, exif::In::PRIMARY).and_then(|f| f.value.get_uint(0)));
+    orientation_or_else(from_kamadak, || {
+        let source = rawler::rawsource::RawSource::new_from_slice(file);
+        rawler::get_decoder(&source)
+            .and_then(|d| d.raw_metadata(&source, &rawler::decoders::RawDecodeParams::default()))
+            .ok()
+            .and_then(|m| m.exif.orientation)
+            .map(u32::from)
+    })
+}
+
+/// kamadak's value, else rawler's — the loader's `ExifInfo::fill_from` rule,
+/// which also covers a container kamadak opened but found no Orientation in.
+fn orientation_or_else(kamadak: Option<u32>, rawler: impl FnOnce() -> Option<u32>) -> u32 {
+    crate::raw::loader::normalize_orientation(kamadak.or_else(rawler).unwrap_or(1))
 }
 
 fn resize_to_width(img: &image::DynamicImage, target_width: u32, filter: FilterType) -> image::DynamicImage {
@@ -142,6 +146,13 @@ fn save_tier(img: &image::DynamicImage, tier_name: &str, image_id: i64) -> Resul
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn orientation_falls_back_to_rawler_when_kamadak_has_none() {
+        assert_eq!(super::orientation_or_else(None, || Some(6)), 6);
+        assert_eq!(super::orientation_or_else(Some(3), || Some(6)), 3);
+        assert_eq!(super::orientation_or_else(None, || None), 1);
+    }
+
     fn compute_max_height(target_width: u32, img_width: u32, img_height: u32) -> u32 {
         if img_width > 0 {
             (target_width as u64 * img_height as u64 / img_width as u64).max(1) as u32

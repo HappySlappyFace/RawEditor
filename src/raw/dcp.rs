@@ -50,6 +50,7 @@ fn read_ifd(path: &Path) -> Result<HashMap<u16, RawTag>, String> {
     let mut f = std::fs::File::open(path)
         .map_err(|e| format!("Cannot open DCP: {e}"))?;
 
+    let file_len = f.metadata().map_err(|e| e.to_string())?.len();
     let mut hdr = [0u8; 8];
     f.read_exact(&mut hdr).map_err(|e| format!("Header read: {e}"))?;
 
@@ -94,6 +95,11 @@ fn read_ifd(path: &Path) -> Result<HashMap<u16, RawTag>, String> {
             voff[..total as usize].to_vec()
         } else {
             let offset = u32_from(voff);
+            // A damaged or hostile profile can claim gigabytes: check the
+            // range lies inside the file before allocating for it.
+            if offset as u64 + total as u64 > file_len {
+                return Err(format!("Tag {tag} data runs past the end of the file"));
+            }
             let saved = f.stream_position().map_err(|e| e.to_string())?;
             f.seek(SeekFrom::Start(offset as u64))
                 .map_err(|e| format!("Seek data tag={tag}: {e}"))?;
@@ -115,7 +121,7 @@ fn read_ifd(path: &Path) -> Result<HashMap<u16, RawTag>, String> {
 fn tag_floats(tag: &RawTag, le: bool) -> Vec<f32> {
     match tag.typ {
         11 => { // FLOAT
-            tag.data.chunks(4).map(|c| {
+            tag.data.chunks(4).filter(|c| c.len() == 4).map(|c| {
                 f32::from_bits(if le {
                     u32::from_le_bytes([c[0],c[1],c[2],c[3]])
                 } else {
@@ -195,6 +201,15 @@ pub struct DcpProfile {
     pub profile_name: Option<String>,
 }
 
+impl DcpProfile {
+    /// The pipeline needs a camera -> XYZ D50 ForwardMatrix. Without one the
+    /// profile cannot supply the matrix (the ColorMatrix is its inverse
+    /// direction), so it is not offered.
+    pub fn has_forward_matrix(&self) -> bool {
+        self.forward_matrix_1.is_some() || self.forward_matrix_2.is_some()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct InterpolatedProfile {
     /// Camera RGB → **ProPhoto** RGB, row-major.
@@ -248,7 +263,9 @@ pub fn parse_dcp(path: &Path) -> Result<DcpProfile, String> {
         .unwrap_or(17);
     let illuminant2 = map.get(&TAG_CALIBRATION_ILLUMINANT_2)
         .and_then(|t| tag_u32s(t, le).into_iter().next())
-        .unwrap_or(21);
+        // No second illuminant means a single-illuminant profile: the blend
+        // weight must be 0 at every temperature, not a guess at D65.
+        .unwrap_or(illuminant1);
 
     let dims_of = |tag: u16| {
         map.get(&tag)
@@ -326,6 +343,11 @@ pub fn illuminant_to_kelvin(ill: u32) -> f32 {
         21 => 6500.0, // D65
         22 => 7500.0, // D75
         23 => 5000.0, // D50
+        1  => 5500.0, // Daylight
+        3  => 2850.0, // Tungsten
+        10 => 6500.0, // Cloudy
+        11 => 7500.0, // Shade
+        24 => 3200.0, // ISO studio tungsten
         _  => 5000.0,
     }
 }
@@ -363,8 +385,11 @@ pub fn interpolate_at_temperature(
 ) -> InterpolatedProfile {
     let weight = illuminant_weight(profile, kelvin);
 
-    let fm1 = profile.forward_matrix_1.unwrap_or(profile.color_matrix_1);
-    let fm2 = profile.forward_matrix_2.unwrap_or(profile.color_matrix_2);
+    // A ColorMatrix is XYZ -> camera, the inverse of a ForwardMatrix, so it is
+    // no stand-in; `load_profile` rejects profiles with no ForwardMatrix at
+    // all. With only one of the two, use it for both.
+    let fm1 = profile.forward_matrix_1.or(profile.forward_matrix_2).unwrap_or(profile.color_matrix_1);
+    let fm2 = profile.forward_matrix_2.or(profile.forward_matrix_1).unwrap_or(profile.color_matrix_2);
 
     // Fold BaselineExposureOffset into the forward matrix: scaling camera→XYZ
     // uniformly is an exposure shift applied before the HueSatMap and tone
@@ -381,7 +406,9 @@ pub fn interpolate_at_temperature(
     // the right-hand operand.
     let camera_to_prophoto = crate::color::mat3_mul(&crate::color::XYZ_D50_TO_PROPHOTO, &forward_matrix);
 
-    let num_elements = (profile.hue_sat_dims.0 * profile.hue_sat_dims.1 * profile.hue_sat_dims.2) as usize;
+    let num_elements = (profile.hue_sat_dims.0 as usize)
+        .saturating_mul(profile.hue_sat_dims.1 as usize)
+        .saturating_mul(profile.hue_sat_dims.2 as usize);
     let hue_sat_lut = if num_elements > 0 {
         match (&profile.hue_sat_data_1, &profile.hue_sat_data_2) {
             (Some(lut1), Some(lut2)) => (0..num_elements).map(|i| {
@@ -456,7 +483,7 @@ fn eval_curve_points(points: &[(f32, f32)], x: f32) -> f32 {
     }
     points
         .windows(2)
-        .find(|w| x >= w[0].0 && x <= w[1].0)
+        .find(|w| x >= w[0].0 && x <= w[1].0 && w[1].0 > w[0].0)
         .map(|w| {
             let t = (x - w[0].0) / (w[1].0 - w[0].0);
             w[0].1 * (1.0 - t) + w[1].1 * t
@@ -562,6 +589,10 @@ pub fn load_profile(path: &Path) -> Option<std::sync::Arc<DcpProfile>> {
     // Parsed outside the lock: two loads racing on a cold cache just parse
     // twice, which beats serialising every RAW decode behind the file read.
     let profile = match parse_dcp(&path) {
+        Ok(profile) if !profile.has_forward_matrix() => {
+            tracing::warn!("DCP {:?} has no ForwardMatrix; not usable by this pipeline", path);
+            None
+        }
         Ok(profile) => {
             tracing::info!(
                 "DCP {:?} parsed: fm1={} hsm_dims={:?}",
@@ -675,6 +706,64 @@ mod tests {
         let i = interpolate_at_temperature(&p, 5000.0, ToneSettings::from_params(&Default::default()));
         assert_eq!(i.hue_sat_dims, (1, 1, 1));
         assert_eq!(i.hue_sat_lut, vec![[0.0, 1.0, 1.0]]);
+    }
+
+    /// A damaged profile claiming a huge tag must fail, not allocate it.
+    #[test]
+    fn a_tag_running_past_the_file_is_an_error() {
+        let mut bytes = b"IIRC".to_vec();
+        bytes.extend_from_slice(&8u32.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&TAG_COLOR_MATRIX_1.to_le_bytes());
+        bytes.extend_from_slice(&11u16.to_le_bytes());
+        bytes.extend_from_slice(&0x3000_0000u32.to_le_bytes());
+        bytes.extend_from_slice(&26u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        let path = std::env::temp_dir().join(format!("raw-editor-huge-{}.dcp", std::process::id()));
+        std::fs::write(&path, bytes).unwrap();
+        let r = parse_dcp(&path);
+        let _ = std::fs::remove_file(&path);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn duplicate_curve_x_gives_no_nan() {
+        let pts = [(0.0, 0.0), (0.5, 0.2), (0.5, 0.8), (1.0, 1.0)];
+        for i in 0..=100 {
+            assert!(eval_curve_points(&pts, i as f32 / 100.0).is_finite());
+        }
+    }
+
+    /// A single-illuminant profile (ForwardMatrix1 only) must give the same
+    /// matrix at every temperature; it used to blend against the ColorMatrix.
+    #[test]
+    fn single_illuminant_forward_matrix_is_temperature_independent() {
+        let fm = [0.8, 0.1, 0.1, 0.2, 0.7, 0.1, 0.0, 0.1, 0.9];
+        let path = synthetic_dcp(&[
+            (TAG_COLOR_MATRIX_1, 11, floats(&[1.5, -0.3, -0.2, -0.4, 1.3, 0.1, -0.1, 0.2, 0.8])),
+            (TAG_FORWARD_MATRIX_1, 11, floats(&fm)),
+            (TAG_CALIBRATION_ILLUMINANT_1, 3, vec![17, 0]),
+        ]);
+        let p = parse_dcp(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert!(p.has_forward_matrix());
+        let tone = ToneSettings::from_params(&Default::default());
+        let warm = interpolate_at_temperature(&p, 3000.0, tone).camera_to_prophoto;
+        let cool = interpolate_at_temperature(&p, 7000.0, tone).camera_to_prophoto;
+        assert_eq!(warm, cool);
+        let expect = crate::color::mat3_mul(&crate::color::XYZ_D50_TO_PROPHOTO, &fm);
+        for i in 0..9 {
+            assert!((warm[i] - expect[i]).abs() < 1e-5, "{i}");
+        }
+    }
+
+    #[test]
+    fn a_profile_without_a_forward_matrix_is_not_usable() {
+        let path = synthetic_dcp(&[(TAG_COLOR_MATRIX_1, 11, floats(&[1.5, -0.3, -0.2, -0.4, 1.3, 0.1, -0.1, 0.2, 0.8]))]);
+        let p = parse_dcp(&path).unwrap();
+        assert!(!p.has_forward_matrix());
+        assert!(load_profile(&path).is_none());
+        let _ = std::fs::remove_file(&path);
     }
 
     /// Parse every DCP installed in the user profiles dir (skips when none).
