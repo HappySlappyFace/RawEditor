@@ -87,7 +87,17 @@ fn select_image(editor: &mut RawEditor, image_id: i64, from_click: bool) -> Task
     editor.mask_tool = crate::app::state::MaskTool::Inactive;
 
     if let Some(library) = &editor.library {
-        editor.current_edit_params = library.load_edit_params(image_id).unwrap_or_default();
+        editor.current_edit_params = match library.load_saved_edit(image_id) {
+            Ok(saved) => saved.unwrap_or_default(),
+            Err(e) => {
+                // The library backs the old JSON up before the next flush
+                // replaces it with these defaults.
+                tracing::error!("Could not read the saved edit for image {image_id}: {e}");
+                editor.status =
+                    "This image's saved edit could not be read, so it opens unedited. The old edit is kept as a backup.".to_string();
+                Default::default()
+            }
+        };
         // Crop mode survives the switch, so the freshly loaded params (which
         // never carry the flag) must pick it up before anything renders them.
         editor.sync_tool_flags();

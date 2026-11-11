@@ -654,10 +654,18 @@ pub fn handle_paste_settings(editor: &mut RawEditor) -> Task<Message> {
             .multi_selection
             .iter()
             .filter(|&&id| Some(id) != editor.selected_image_id)
-            .map(|&id| {
-                let mut target = lib.load_edit_params(id).unwrap_or_default();
+            .filter_map(|&id| {
+                // An unreadable saved edit must not be merged into defaults
+                // and written back: skip the image and keep what it has.
+                let mut target = match lib.load_saved_edit(id) {
+                    Ok(saved) => saved.unwrap_or_default(),
+                    Err(e) => {
+                        tracing::error!("Paste skipped image {id}: unreadable saved edit: {e}");
+                        return None;
+                    }
+                };
                 crate::core::types::apply_categories(&mut target, &for_image(Some(id)), clip.categories);
-                (id, target)
+                Some((id, target))
             })
             .collect();
         match lib.save_edit_params_many(&merged) {

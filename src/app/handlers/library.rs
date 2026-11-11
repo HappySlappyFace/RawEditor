@@ -260,7 +260,7 @@ pub fn handle_cache_processed(editor: &mut RawEditor, result: Result<(i64, Strin
             apply_cache_paths(&mut editor.images, image_id, thumb, instant, working);
         }
         Err((image_id, ref err)) if image_id != 0 => {
-            if let Err(db_err) = library.conn().execute("UPDATE images SET cache_status = 'failed' WHERE id = ?1", [image_id]) {
+            if let Err(db_err) = library.mark_cache_failed(image_id) {
                 tracing::error!("Failed to mark image {} as failed: {}", image_id, db_err);
             }
             tracing::warn!("Cache processing failed for image {}: {}", image_id, err);
