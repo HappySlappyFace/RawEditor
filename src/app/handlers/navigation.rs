@@ -1064,7 +1064,7 @@ async fn load_image_handle(
             let preview = crate::app::state::CachedPreview { width: w, height: h, bytes: pixels.into() };
             (id, preview.to_handle(), Some(preview.bytes), (w, h))
         }
-        Err(_) => (id, iced::widget::image::Handle::from_path(path), None, (1280, 853)),
+        Err(_) => (id, iced::widget::image::Handle::from_path(path), None, crate::app::state::PLACEHOLDER_DIMS),
     }
 }
 

@@ -427,6 +427,9 @@ pub type DcpMemo = (
     Arc<crate::raw::dcp::DcpProfile>,
 );
 
+/// Shape assumed for the viewport before any preview or render exists.
+pub const PLACEHOLDER_DIMS: (u32, u32) = (1280, 853);
+
 /// Undo steps kept per image.
 pub const HISTORY_LIMIT: usize = 100;
 
@@ -1167,7 +1170,7 @@ impl RawEditor {
         } else if self.working_preview_bytes.is_some() {
             self.working_preview_dims
         } else {
-            (1280, 853)
+            PLACEHOLDER_DIMS
         }
     }
 
@@ -1347,7 +1350,7 @@ impl RawEditor {
             return if self.working_preview_bytes.is_some() {
                 self.working_preview_dims
             } else {
-                (1280, 853)
+                PLACEHOLDER_DIMS
             };
         };
         let (w, h) = res.oriented_dims(self.current_edit_params.quarter_turns);
