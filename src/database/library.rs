@@ -468,13 +468,6 @@ impl Library {
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
     }
 
-    /// Delete all edits for an image (reset to unedited)
-    pub fn delete_edits(&self, image_id: i64) -> SqlResult<()> {
-        self.conn
-            .execute("DELETE FROM edits WHERE image_id = ?1", [image_id])?;
-        Ok(())
-    }
-
     /// Rate a whole selection in ONE transaction.
     ///
     /// These run on the UI thread (rating is a keypress), and a select-all

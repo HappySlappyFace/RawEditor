@@ -479,11 +479,13 @@ pub fn handle_reset_edits(editor: &mut RawEditor) -> Task<Message> {
     // The masks just got wiped; drop the selection/tool that pointed at them.
     editor.selected_mask = None;
     editor.mask_tool = crate::app::state::MaskTool::Inactive;
-    if let Some(lib) = &editor.library {
-        if let Some(id) = editor.selected_image_id {
-            let _ = lib.delete_edits(id);
-        }
-    }
+    editor.brush_armed = false;
+    editor.color_picking_mask = None;
+    editor.ai_select = None;
+    editor.status = String::new();
+    // No `delete_edits` here: `update_pipeline` marks the (default) params
+    // dirty and `commit_current_state` flushes them, which would write the
+    // row straight back.
     let task = update_pipeline(editor);
     editor.commit_current_state();
     task
