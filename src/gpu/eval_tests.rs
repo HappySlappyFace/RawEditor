@@ -910,3 +910,91 @@ fn masks_follow_the_picture() {
         assert!(failures.is_empty(), "{failures:#?}");
     });
 }
+
+/// The UI thread must not write the uniform block while a render is in
+/// flight (it would land `view_rect = FULL` or newer params in the render's
+/// main pass). A push made mid-render is parked and applied by the next
+/// render, which is its only writer.
+#[test]
+#[ignore]
+fn a_push_during_a_render_waits_for_the_next_render() {
+    use crate::app::handlers::develop::{push_uniforms_and_render, trigger_async_render};
+    use crate::app::state::RawEditor;
+    let scene = Scene::default_scene(200);
+    let data = mosaic(&scene, 0.0, 0.0, 1);
+    runtime().block_on(async {
+        let ctx = std::sync::Arc::new(SharedContext::new().await.expect("gpu"));
+        let res = ImageResources::new(
+            &ctx, 1, &data, scene.w as u32, scene.h as u32, &EditParams::default(), WB,
+            [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], 0, [BLACK as u32; 4], WHITE as u32,
+            None, None, 1, std::sync::Arc::new(crate::core::lens::LensContext::default()),
+        )
+        .expect("image resources");
+        res.update_uniforms(&ctx, &EditParams::default(), None, None);
+        let mut e = RawEditor::new().0;
+        e.selected_image_id = Some(1);
+        e.gpu_context = Some(ctx);
+        e.image_resources = Some(std::sync::Arc::new(res));
+        e.viewport_size = (800.0, 600.0);
+        e.scale_factor = 1.0;
+
+        e.is_rendering = true; // a render task is in flight
+        let edit = EditParams { exposure: 1.5, ..EditParams::default() };
+        let _ = push_uniforms_and_render(&mut e, &edit);
+        let pushed = || e.image_resources.as_ref().unwrap().pushed_params().exposure;
+        assert_eq!(pushed(), 0.0, "the UI thread wrote the uniforms mid-render");
+        assert!(e.pending_render);
+
+        // The finished render's follow-up applies it before it renders.
+        e.is_rendering = true;
+        let _ = trigger_async_render(&mut e);
+        assert_eq!(e.image_resources.as_ref().unwrap().pushed_params().exposure, 1.5);
+    });
+}
+
+/// A lost device is detected, and the editor drops the dead context (and the
+/// `gpu_init` cell that would hand it back) so the next load builds a new one.
+#[test]
+#[ignore]
+fn a_lost_device_is_detected_and_the_context_replaced() {
+    use crate::app::state::RawEditor;
+    runtime().block_on(async {
+        let ctx = std::sync::Arc::new(SharedContext::new().await.expect("gpu"));
+        assert!(!ctx.is_lost());
+        ctx.device.destroy();
+        ctx.device.poll(iced_wgpu::wgpu::Maintain::Wait);
+        assert!(ctx.is_lost(), "destroying the device was not noticed");
+
+        let mut e = RawEditor::new().0;
+        e.gpu_context = Some(ctx.clone());
+        e.gpu_init.set(ctx.clone()).ok();
+        let _ = crate::app::handlers::develop::handle_gpu_lost(&mut e);
+        assert!(e.gpu_context.is_none());
+        assert!(e.gpu_init.get().is_none(), "the dead context would be handed out again");
+        assert!(e.status.contains("GPU"));
+    });
+}
+
+/// A readback that fails (here: the device was destroyed under the render) is
+/// an error the export can report, not an empty buffer.
+#[test]
+#[ignore]
+fn a_failed_readback_is_an_error() {
+    let scene = Scene::default_scene(64);
+    let data = mosaic(&scene, 0.0, 0.0, 1);
+    runtime().block_on(async {
+        let ctx = SharedContext::new().await.expect("gpu");
+        let res = ImageResources::new(
+            &ctx, 1, &data, scene.w as u32, scene.h as u32, &EditParams::default(), WB,
+            [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], 0, [BLACK as u32; 4], WHITE as u32,
+            None, None, 1, std::sync::Arc::new(crate::core::lens::LensContext::default()),
+        )
+        .expect("image resources");
+        res.update_uniforms(&ctx, &EditParams::default(), None, None);
+        let (w, h) = res.oriented_dims(0);
+        assert!(super::render_functions::render_to_vec(&ctx, &res, w, h, FULL_VIEW_RECT).await.is_ok());
+        ctx.device.destroy();
+        let r = super::render_functions::render_to_vec(&ctx, &res, w, h, FULL_VIEW_RECT).await;
+        assert!(r.is_err(), "a dead device returned {} bytes", r.map(|v| v.0.len()).unwrap_or(0));
+    });
+}

@@ -24,6 +24,10 @@ fn write_view_rect(context: &SharedContext, resources: &ImageResources, view_rec
     );
 }
 
+/// What the user sees when `map_async` fails (device lost, out of memory):
+/// not "wrong data size" from an encoder fed an empty buffer.
+const READBACK_FAILED: &str = "the GPU readback failed (the graphics device may have been reset)";
+
 /// Select the colour space the next renders encode into (export only; see
 /// `core::output_space`). A 4-byte targeted write like `write_view_rect`:
 /// `update_uniforms` always writes 0 (sRGB), so the display is unaffected.
@@ -196,7 +200,7 @@ pub async fn render_to_vec(
     width: u32,
     height: u32,
     view_rect: [f32; 4],
-) -> (Vec<u8>, f32, f32) {
+) -> Result<(Vec<u8>, f32, f32), String> {
     let t_upload_start = std::time::Instant::now();
     write_view_rect(context, resources, view_rect);
     let (cb, readback) = encode_color_pass(context, resources, width, height);
@@ -217,9 +221,9 @@ pub async fn render_to_vec(
     if let Ok(Ok(())) = rx.await {
         let result = readback.unpad();
         let render_ms = t_render_start.elapsed().as_secs_f32() * 1000.0;
-        (result, upload_ms, render_ms)
+        Ok((result, upload_ms, render_ms))
     } else {
-        (Vec::new(), upload_ms, 0.0)
+        Err(READBACK_FAILED.into())
     }
 }
 
@@ -381,7 +385,7 @@ pub async fn render_to_bytes_16bit(
     resources: &ImageResources,
     width: u32,
     height: u32,
-) -> (Vec<u16>, f32, f32) {
+) -> Result<(Vec<u16>, f32, f32), String> {
     let t_upload_start = std::time::Instant::now();
 
     // Export renders the whole cropped frame. This must be reset explicitly:
@@ -499,9 +503,9 @@ pub async fn render_to_bytes_16bit(
         readback_buffer.unmap();
 
         let render_ms = t_render_start.elapsed().as_secs_f32() * 1000.0;
-        (result, upload_ms, render_ms)
+        Ok((result, upload_ms, render_ms))
     } else {
-        (Vec::new(), upload_ms, 0.0)
+        Err(READBACK_FAILED.into())
     }
 }
 
@@ -1212,7 +1216,7 @@ mod tests {
             let mut renders = Vec::new();
             for space in OutputSpace::ALL {
                 write_output_space(&ctx, &res, space);
-                let (samples, _, _) = render_to_bytes_16bit(&ctx, &res, w, h).await;
+                let (samples, _, _) = render_to_bytes_16bit(&ctx, &res, w, h).await.expect("readback");
                 let back = space.space_to_srgb_matrix();
                 let lin: Vec<[f32; 3]> = samples
                     .as_chunks::<3>()
