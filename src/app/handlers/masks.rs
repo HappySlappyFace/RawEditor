@@ -362,7 +362,8 @@ pub fn handle_mask_color_picked(editor: &mut RawEditor, u: f32, v: f32) -> Task<
         }
     };
     // Same units as the demosaic output: black-subtracted, unit range.
-    let mean_black = raw.black_levels.iter().sum::<u32>() as f32 / 4.0;
+    let mean_black =
+        crate::app::handlers::develop::mean_black(&raw, editor.current_edit_params.black_offsets);
     let range = (raw.white_level as f32 - mean_black).max(1.0);
     let target = crate::core::types::mask_chroma(rgb.map(|c| c / range));
     if index >= editor.current_edit_params.mask_count as usize {

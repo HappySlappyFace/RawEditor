@@ -977,8 +977,16 @@ pub(crate) fn sample_raw_rgb(
     let cx = ((su * w as f32) as i64).clamp(8, w - 9);
     let cy = ((sv * h as f32) as i64).clamp(8, h - 9);
 
-    let mean_black =
-        raw.black_levels.iter().sum::<u32>() as f32 / raw.black_levels.len() as f32;
+    // Each site's own black level plus the user's offset, exactly as the
+    // demosaic uploads them. (Reads `raw.data`: with AI denoise on, the shader
+    // sees the blended mosaic and this the original; a 16x16 mean hardly
+    // notices.)
+    let offsets = editor.current_edit_params.black_offsets;
+    let slots = crate::gpu::demosaic::tile_black_slots(raw.cfa_pattern);
+    let site_black = |x: i64, y: i64| {
+        let slot = slots[((y % 2) * 2 + (x % 2)) as usize];
+        raw.black_levels[slot] as f32 + offsets[slot]
+    };
     let clip_threshold = (raw.white_level as f32 * 0.98) as u16;
 
     let mut sums = [0.0f64; 3]; // R, G, B
@@ -995,12 +1003,18 @@ pub(crate) fn sample_raw_rgb(
                 (0, 1, 1) | (1, 1, 0) | (2, 0, 1) | (3, 0, 0) => 2, // B
                 _ => 1,                                             // G (both sites)
             };
-            sums[channel] += (value as f32 - mean_black).max(0.0) as f64;
+            sums[channel] += (value as f32 - site_black(x, y)).max(0.0) as f64;
             counts[channel] += 1;
         }
     }
     let mean = |c: usize| (sums[c] / counts[c].max(1) as f64) as f32;
     Ok(([mean(0), mean(1), mean(2)], clipped, raw))
+}
+
+/// Mean black level over the four sites including the user's offsets: the
+/// zero of the unit range `sample_raw_rgb`'s values divide by.
+pub(crate) fn mean_black(raw: &crate::raw::loader::RawDataResult, offsets: [f32; 4]) -> f32 {
+    raw.black_levels.iter().zip(offsets).map(|(&b, o)| b as f32 + o).sum::<f32>() / 4.0
 }
 
 /// WB eyedropper: `(u, v)` is the display-space UV of the click within the
