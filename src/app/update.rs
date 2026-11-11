@@ -135,6 +135,9 @@ fn is_slider_change(message: &Message) -> bool {
             | Message::MaskAdjustmentChanged(..)
             | Message::LensParamChanged(..)
             | Message::DefringeChanged(..)
+            | Message::BlackOffsetChanged(..)
+            | Message::BrushSettingChanged(..)
+            | Message::AiDenoiseAmount(_)
     )
 }
 
