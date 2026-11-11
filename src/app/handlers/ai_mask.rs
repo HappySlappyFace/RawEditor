@@ -382,8 +382,14 @@ pub fn handle_bitmaps_loaded(
 pub fn track(editor: &mut RawEditor) -> Option<Task<Message>> {
     let mut tasks = Vec::new();
     if let Some(s) = &editor.ai_select {
-        let gone = editor.selected_image_id != Some(s.image_id)
-            || editor.current_tab != crate::app::message::AppTab::Develop
+        if editor.selected_image_id != Some(s.image_id) {
+            // The params are another image's now: only drop the session.
+            // (`handle_image_selected` ends it properly before the switch.)
+            editor.ai_select = None;
+            editor.status = String::new();
+            return track(editor);
+        }
+        let gone = editor.current_tab != crate::app::message::AppTab::Develop
             || editor
                 .image_resources
                 .as_ref()
