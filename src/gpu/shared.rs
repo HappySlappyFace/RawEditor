@@ -40,6 +40,9 @@ pub struct SharedContext {
     /// Cached Texture/Clarity band pre-pass (see `gpu::local_contrast`).
     pub local_contrast: super::local_contrast::LocalContrast,
     pub sampler_linear: wgpu::Sampler,
+    /// 1×1 stand-ins for the brush / AI layer arrays, made once.
+    brush_placeholder: wgpu::TextureView,
+    ai_placeholder: wgpu::TextureView,
     /// Set by the device-lost callback (driver reset, suspend/resume, eGPU
     /// unplug). Every readback fails after that, so the app checks it and
     /// builds a fresh context instead of showing blank frames until restart.
@@ -272,6 +275,8 @@ impl SharedContext {
             ],
         });
         let brush = super::brush::BrushRaster::new(&device);
+        let brush_placeholder = super::brush::placeholder(&device);
+        let ai_placeholder = super::ai_mask::placeholder(&device);
         let demosaic = super::demosaic::Demosaic::new(&device);
         let denoise = super::denoise::Denoise::new(&device);
         let local_contrast = super::local_contrast::LocalContrast::new(&device);
@@ -361,6 +366,8 @@ impl SharedContext {
             denoise,
             local_contrast,
             sampler_linear,
+            brush_placeholder,
+            ai_placeholder,
             lost,
         })
     }
@@ -741,6 +748,8 @@ struct StageState {
     masks: Arc<wgpu::BindGroup>,
     /// What the AI mask layers hold; `None` = nothing uploaded yet.
     ai_key: Option<super::ai_mask::AiKey>,
+    /// Per slot: (id, orientation, decoded) the layer holds; `None` = fresh.
+    ai_slots: [Option<(u64, u32, bool)>; crate::core::types::MAX_MASKS],
     /// Allocated with the first AI mask.
     ai: Option<super::ai_mask::AiLayers>,
     /// Which denoise target holds the current output (when `denoise_key`).
@@ -831,6 +840,7 @@ impl StageState {
             brush: None,
             masks,
             ai_key: None,
+            ai_slots: [None; crate::core::types::MAX_MASKS],
             ai: None,
             denoise_out: 0,
             local_key: None,
@@ -1058,8 +1068,8 @@ impl ImageResources {
         // (the bind group keeps it alive).
         let mask_bind_group = Arc::new(make_mask_bind_group(
             context,
-            &super::brush::placeholder(&context.device),
-            &super::ai_mask::placeholder(&context.device),
+            &context.brush_placeholder,
+            &context.ai_placeholder,
             &mask_buffer,
         ));
 
@@ -1245,12 +1255,16 @@ impl ImageResources {
             // ellipse.
             let (dw, dh) = self.oriented_dims(params.quarter_turns);
             let (lw, lh) = super::brush::layer_size(dw, dh);
+            // Fresh layers hold nothing, so everything is redrawn; otherwise
+            // only the layers whose strokes changed since `brush_key`.
+            let mut prev = st.brush_key;
             if st.brush.as_ref().is_none_or(|l| (l.width, l.height) != (lw, lh)) {
                 st.brush = Some(context.brush.layers(&context.device, lw, lh));
                 self.rebuild_mask_group(context, &mut st);
+                prev = None;
             }
             if let Some(layers) = &st.brush {
-                context.brush.rasterize(&context.device, &context.queue, layers, &params.brush);
+                context.brush.rasterize(&context.device, &context.queue, layers, &params.brush, prev.as_ref());
             }
             st.brush_key = Some(params.brush);
         }
@@ -1263,22 +1277,8 @@ impl ImageResources {
 
     /// Group 1 from whatever layers exist (placeholders for the rest).
     fn rebuild_mask_group(&self, context: &SharedContext, st: &mut StageState) {
-        let brush_placeholder;
-        let brush = match &st.brush {
-            Some(l) => &l.array_view,
-            None => {
-                brush_placeholder = super::brush::placeholder(&context.device);
-                &brush_placeholder
-            }
-        };
-        let ai_placeholder;
-        let ai = match &st.ai {
-            Some(l) => &l.array_view,
-            None => {
-                ai_placeholder = super::ai_mask::placeholder(&context.device);
-                &ai_placeholder
-            }
-        };
+        let brush = st.brush.as_ref().map_or(&context.brush_placeholder, |l| &l.array_view);
+        let ai = st.ai.as_ref().map_or(&context.ai_placeholder, |l| &l.array_view);
         st.masks = Arc::new(make_mask_bind_group(context, brush, ai, &self.mask_buffer));
     }
 
@@ -1314,6 +1314,8 @@ impl ImageResources {
         let (lw, lh) = super::brush::layer_size(dw, dh);
         if st.ai.as_ref().is_none_or(|l| (l.width, l.height) != (lw, lh)) {
             st.ai = Some(super::ai_mask::AiLayers::new(&context.device, lw, lh));
+            // A new texture is zero-filled: empty slots are already right.
+            st.ai_slots = [None; crate::core::types::MAX_MASKS];
             self.rebuild_mask_group(context, st);
         }
         if let Some(layers) = &st.ai {
@@ -1322,7 +1324,17 @@ impl ImageResources {
                 if id != 0 && bitmap.is_none() {
                     tracing::warn!("AI mask {id} (slot {slot}) has no decoded bitmap yet");
                 }
-                layers.upload(&context.queue, slot, bitmap.map(|b| &**b), key.orientation);
+                // Ids are immutable, so (id, orientation, decoded?) says what
+                // the slot holds; an empty slot holds zeros whatever the turn.
+                let slot_key = match bitmap {
+                    Some(_) => (id, key.orientation, true),
+                    None => (0, 0, false),
+                };
+                let fresh_zero = st.ai_slots[slot].is_none() && slot_key == (0, 0, false);
+                if st.ai_slots[slot] != Some(slot_key) && !fresh_zero {
+                    layers.upload(&context.queue, slot, bitmap.map(|b| &**b), key.orientation);
+                }
+                st.ai_slots[slot] = Some(slot_key);
             }
         }
         st.ai_key = Some(key);

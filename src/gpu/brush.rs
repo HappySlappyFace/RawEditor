@@ -114,6 +114,44 @@ pub struct BrushLayers {
     pub height: u32,
 }
 
+#[cfg(test)]
+impl BrushLayers {
+    pub fn texture(&self) -> &wgpu::Texture {
+        &self.texture
+    }
+}
+
+/// Which mask layers must be redrawn to go from `prev` to `cur`: those whose
+/// own strokes (in order, with their points) differ. Stroke offsets into the
+/// shared point array are ignored, since another mask's edit shifts them.
+pub fn changed_masks(prev: Option<&BrushData>, cur: &BrushData) -> [bool; MAX_MASKS] {
+    let Some(prev) = prev else {
+        return [true; MAX_MASKS];
+    };
+    let mut dirty = [false; MAX_MASKS];
+    for (mask, d) in dirty.iter_mut().enumerate() {
+        let mut a = prev.live().iter().filter(|s| s.mask as usize == mask);
+        let mut b = cur.live().iter().filter(|s| s.mask as usize == mask);
+        *d = loop {
+            match (a.next(), b.next()) {
+                (None, None) => break false,
+                (Some(x), Some(y)) => {
+                    let same = x.erase == y.erase
+                        && x.radius == y.radius
+                        && x.feather == y.feather
+                        && x.flow == y.flow
+                        && prev.points_of(x) == cur.points_of(y);
+                    if !same {
+                        break true;
+                    }
+                }
+                _ => break true,
+            }
+        };
+    }
+    dirty
+}
+
 /// Layer size for an image displayed at `w × h`: same aspect, long side
 /// capped — never larger than the working texture, which has no more detail.
 pub fn layer_size(w: u32, h: u32) -> (u32, u32) {
@@ -216,7 +254,10 @@ impl BrushRaster {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            // COPY_SRC only so tests can read the layers back.
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | if cfg!(test) { wgpu::TextureUsages::COPY_SRC } else { wgpu::TextureUsages::empty() },
             view_formats: &[],
         });
         let array_view = texture.create_view(&wgpu::TextureViewDescriptor {
@@ -263,8 +304,19 @@ impl BrushRaster {
         BrushLayers { texture, array_view, layer_views, points, strokes, bind_group, width, height }
     }
 
-    /// Clear every layer and redraw all strokes, then submit.
-    pub fn rasterize(&self, device: &wgpu::Device, queue: &wgpu::Queue, layers: &BrushLayers, data: &BrushData) {
+    /// Redraw the layers whose strokes differ from `prev` (what the layers
+    /// currently hold; `None` = unknown, redraw all), then submit. A layer
+    /// is cleared and redrawn from all of its own strokes, so the result is
+    /// identical to a full redraw.
+    pub fn rasterize(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        layers: &BrushLayers,
+        data: &BrushData,
+        prev: Option<&BrushData>,
+    ) {
+        let dirty = changed_masks(prev, data);
         let (w, h) = (layers.width as f32, layers.height as f32);
         let aspect = w / h;
         let n = (data.point_count as usize).min(MAX_POINTS);
@@ -294,7 +346,7 @@ impl BrushRaster {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Brush encoder"),
         });
-        for view in &layers.layer_views {
+        for (view, _) in layers.layer_views.iter().zip(&dirty).filter(|(_, d)| **d) {
             encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Brush clear"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -309,7 +361,7 @@ impl BrushRaster {
         }
         for (i, s) in strokes.iter().enumerate() {
             let mask = s.mask as usize;
-            if mask >= MAX_MASKS || s.len == 0 {
+            if mask >= MAX_MASKS || s.len == 0 || !dirty[mask] {
                 continue;
             }
             let Some((x, y, sw, sh)) = scissor(data.points_of(s), s.radius, aspect, layers.width, layers.height) else {
@@ -363,6 +415,31 @@ mod tests {
         naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
             .validate(&module)
             .unwrap_or_else(|e| panic!("brush shader failed validation: {e:?}"));
+    }
+
+    #[test]
+    fn only_the_edited_masks_are_redrawn() {
+        let stroke = |b: &mut BrushData, mask: u32, pts: &[[f32; 2]]| {
+            b.begin(mask, false, 0.05, 0.5, 1.0).unwrap();
+            for p in pts {
+                b.push_raw(*p);
+            }
+        };
+        let mut a = BrushData::default();
+        stroke(&mut a, 0, &[[0.1, 0.1], [0.2, 0.2]]);
+        stroke(&mut a, 3, &[[0.5, 0.5], [0.6, 0.6]]);
+        assert_eq!(changed_masks(None, &a), [true; MAX_MASKS]);
+        assert_eq!(changed_masks(Some(&a), &a), [false; MAX_MASKS]);
+        // Another stroke on mask 3 shifts nothing of mask 0's.
+        let mut b = a;
+        stroke(&mut b, 3, &[[0.7, 0.7]]);
+        let d = changed_masks(Some(&a), &b);
+        assert!(d[3] && !d[0] && d.iter().filter(|x| **x).count() == 1);
+        // Removing mask 0 empties it and leaves mask 3 alone (its points moved).
+        let mut c = a;
+        c.clear_mask(0);
+        let d = changed_masks(Some(&a), &c);
+        assert!(d[0] && !d[3]);
     }
 
     #[test]
