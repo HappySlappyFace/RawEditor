@@ -667,6 +667,16 @@ pub fn handle_paste_settings(editor: &mut RawEditor) -> Task<Message> {
         // Their edits changed unrendered: their edited thumbnails are stale.
         let pasted: Vec<i64> = merged.iter().map(|(id, _)| *id).collect();
         editor.invalidate_proxies(&pasted);
+        // An image already visited has an undo stack that knows nothing of
+        // the paste: put it on, so Undo there steps back to before it.
+        // (Unvisited images seed their stack from the saved edits.)
+        for (id, params) in &merged {
+            if let Some((stack, index)) = editor.history_map.get_mut(id) {
+                stack.truncate(*index + 1);
+                stack.push(*params);
+                *index += 1;
+            }
+        }
     }
 
     editor.status = if others > 0 {
