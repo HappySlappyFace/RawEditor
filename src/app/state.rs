@@ -418,6 +418,21 @@ pub struct EditedProxy {
 /// Edited proxies kept in memory. ~400 KB each (384px RGBA).
 pub const EDITED_PROXY_CAPACITY: usize = 128;
 
+/// `(kelvin, tone, interpolation, the profile it came from)`: the memo is
+/// valid only for the same profile (pointer-compared; kept alive here).
+pub type DcpMemo = (
+    f32,
+    crate::core::tonemap::ToneSettings,
+    Arc<crate::raw::dcp::InterpolatedProfile>,
+    Arc<crate::raw::dcp::DcpProfile>,
+);
+
+/// Shape assumed for the viewport before any preview or render exists.
+pub const PLACEHOLDER_DIMS: (u32, u32) = (1280, 853);
+
+/// Undo steps kept per image.
+pub const HISTORY_LIMIT: usize = 100;
+
 /// Main application state
 #[derive(Debug)]
 pub struct RawEditor {
@@ -539,13 +554,7 @@ pub struct RawEditor {
     /// `&RawEditor` signature: the crop and mask drag paths call it while
     /// holding an immutable borrow of `gpu_context`/`image_resources`.
     /// Cleared on image load, where `current_dcp_profile` changes.
-    pub dcp_memo: std::cell::RefCell<
-        Option<(
-            f32,
-            crate::core::tonemap::ToneSettings,
-            Arc<crate::raw::dcp::InterpolatedProfile>,
-        )>,
-    >,
+    pub dcp_memo: std::cell::RefCell<Option<DcpMemo>>,
     /// As-shot white balance of the current image as (Kelvin, Adobe tint),
     /// solved from the camera's WB multipliers via the color matrix (Robertson
     /// CCT). Anchor for the Temp/Tint sliders; None until a raw is loaded.
@@ -1105,6 +1114,13 @@ impl RawEditor {
             // Push new state
             stack.push(params_to_push);
             *index += 1;
+            // Each step is ~21 KB: keep the newest HISTORY_LIMIT per image
+            // (the oldest undo steps go first).
+            if stack.len() > HISTORY_LIMIT {
+                let excess = stack.len() - HISTORY_LIMIT;
+                stack.drain(..excess);
+                *index -= excess;
+            }
 
             tracing::debug!(
                 "History Commit: Stack size {}, Index {}",
@@ -1154,7 +1170,7 @@ impl RawEditor {
         } else if self.working_preview_bytes.is_some() {
             self.working_preview_dims
         } else {
-            (1280, 853)
+            PLACEHOLDER_DIMS
         }
     }
 
@@ -1268,10 +1284,11 @@ impl RawEditor {
         for id in ids {
             self.edited_proxies.pop(id);
         }
+        let wanted: HashSet<i64> = ids.iter().copied().collect();
         let had_saved: Vec<i64> = self
             .images
             .iter()
-            .filter(|img| img.cache_path_edited.is_some() && ids.contains(&img.id))
+            .filter(|img| img.cache_path_edited.is_some() && wanted.contains(&img.id))
             .map(|img| img.id)
             .collect();
         if had_saved.is_empty() {
@@ -1333,7 +1350,7 @@ impl RawEditor {
             return if self.working_preview_bytes.is_some() {
                 self.working_preview_dims
             } else {
-                (1280, 853)
+                PLACEHOLDER_DIMS
             };
         };
         let (w, h) = res.oriented_dims(self.current_edit_params.quarter_turns);
@@ -1756,6 +1773,23 @@ mod tests {
 
     fn editor() -> RawEditor {
         RawEditor::new().0
+    }
+
+    #[test]
+    fn message_stays_small_and_history_is_capped() {
+        // EditParams is ~21 KB; it must not be carried by value in a Message.
+        assert!(std::mem::size_of::<Message>() < 1024, "{}", std::mem::size_of::<Message>());
+
+        let mut e = editor();
+        e.selected_image_id = Some(1);
+        for i in 0..(HISTORY_LIMIT + 20) {
+            e.current_edit_params.exposure = i as f32 * 0.01;
+            e.commit_current_state();
+        }
+        let (stack, index) = e.get_current_history().unwrap();
+        assert_eq!(stack.len(), HISTORY_LIMIT);
+        assert_eq!(*index, HISTORY_LIMIT - 1);
+        assert_eq!(stack[*index].exposure, (HISTORY_LIMIT + 19) as f32 * 0.01);
     }
 
     #[test]

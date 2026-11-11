@@ -324,14 +324,15 @@ pub enum Message {
     /// `editor.current_edit_params`, which is whatever image happens to be open
     /// in Develop — a batch export previously applied that one image's edits to
     /// every image in the queue.
+    /// (Boxed: `EditParams` is ~21 KB and would size every `Message`.)
     ExportRawLoaded(
         i64,
-        crate::core::types::EditParams,
+        Box<crate::core::types::EditParams>,
         Result<std::sync::Arc<raw::loader::RawDataResult>, String>,
     ),
     ExportPipelineReady(
         i64,
-        crate::core::types::EditParams,
+        Box<crate::core::types::EditParams>,
         Result<
             (
                 std::sync::Arc<crate::gpu::shared::SharedContext>,

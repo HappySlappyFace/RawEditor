@@ -10,6 +10,13 @@ pub fn handle_image_selected(editor: &mut RawEditor, image_id: i64) -> Task<Mess
     // Must run BEFORE selected_image_id moves: flush_edits writes
     // current_edit_params against the currently-selected id, so flushing after
     // the switch would write this image's edits onto the next one.
+    // End an AI-select session where the image is left, while the params are
+    // still this image's (the clean-up edits masks by slot index).
+    let ai_done = if editor.selected_image_id != Some(image_id) {
+        crate::app::handlers::ai_mask::handle_done(editor)
+    } else {
+        Task::none()
+    };
     editor.flush_edits();
     // Leaving an image: bring its edited thumbnail on disk up to date. Also
     // before the selection moves — it checks against the outgoing edits.
@@ -78,10 +85,10 @@ pub fn handle_image_selected(editor: &mut RawEditor, image_id: i64) -> Task<Mess
         };
 
         if needs_load {
-            return Task::batch([persist, trigger_image_load(editor, image_id), reveal]);
+            return Task::batch([ai_done, persist, trigger_image_load(editor, image_id), reveal]);
         }
     }
-    Task::batch([persist, reveal])
+    Task::batch([ai_done, persist, reveal])
 }
 
 /// Scroll the current tab's grid or filmstrip so the selection is visible.
@@ -1057,7 +1064,7 @@ async fn load_image_handle(
             let preview = crate::app::state::CachedPreview { width: w, height: h, bytes: pixels.into() };
             (id, preview.to_handle(), Some(preview.bytes), (w, h))
         }
-        Err(_) => (id, iced::widget::image::Handle::from_path(path), None, (1280, 853)),
+        Err(_) => (id, iced::widget::image::Handle::from_path(path), None, crate::app::state::PLACEHOLDER_DIMS),
     }
 }
 

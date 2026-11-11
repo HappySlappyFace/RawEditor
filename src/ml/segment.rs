@@ -255,7 +255,7 @@ pub fn to_bitmap(logits: &Logits, input: &SamInput) -> Bitmap {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::ml::masks::Point;
 
@@ -269,7 +269,7 @@ mod tests {
         assert_eq!(choose_mask(&[0.1, 0.2, 0.9, 0.5], &boxed), 0);
     }
 
-    fn disc_raw(w: u32, h: u32) -> RawDataResult {
+    pub(crate) fn disc_raw(w: u32, h: u32) -> RawDataResult {
         // A bright disc on a dark field, RGGB, as a minimal "photo".
         let mut data = vec![0u16; (w * h) as usize];
         for y in 0..h {
