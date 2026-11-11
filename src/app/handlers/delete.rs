@@ -178,6 +178,15 @@ pub fn handle_hard_delete_complete(editor: &mut RawEditor, outcome: HardDeleteOu
     let mut nav_task = Task::none();
     if let Some(sel) = editor.selected_image_id {
         if deleted.contains(&sel) {
+            // The open image is gone: whatever it had unsaved has nowhere to
+            // go. `handle_image_selected` flushes first, and with the
+            // selection already moved it would write these params onto the
+            // fallback image.
+            editor.edits_dirty = false;
+            editor.working_preview_bytes = None;
+            editor.rendered_preview_bytes = None;
+            editor.image_resources = None;
+            editor.preview_resources = None;
             editor.selected_image_id = fallback;
             if let Some(next_id) = fallback {
                 nav_task = Task::done(Message::ImageSelected(next_id));
@@ -306,5 +315,36 @@ mod tests {
 
         // Missing files are treated as already-succeeded, not an error.
         trash_or_missing(scratch.to_str().unwrap()).expect("missing file should not error");
+    }
+
+    /// The doomed image can still be dirty when the background delete lands.
+    /// `handle_image_selected`, which follows via `ImageSelected`, flushes
+    /// against the already-moved selection: the neighbour got the deleted
+    /// image's edits.
+    #[test]
+    fn a_hard_delete_does_not_write_the_deleted_edits_onto_the_neighbour() {
+        use crate::app::message::Message;
+        let dir = std::env::temp_dir().join(format!("raw-editor-del-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let lib = crate::database::library::Library::open_at(&dir.join("c.db")).unwrap();
+        let a = lib.import_image("/x/a.nef", "a.nef").unwrap();
+        let b = lib.import_image("/x/b.nef", "b.nef").unwrap();
+        let mut e = RawEditor::new().0;
+        e.images = lib.get_all_images().unwrap();
+        e.library = Some(lib);
+        e.selected_image_id = Some(a);
+        e.current_edit_params.exposure = 2.0;
+        e.edits_dirty = true;
+
+        let outcome = HardDeleteOutcome { deleted_ids: vec![a], failed: vec![] };
+        let _ = crate::app::update::update(&mut e, Message::HardDeleteComplete(outcome));
+        assert_eq!(e.selected_image_id, Some(b));
+        let _ = crate::app::update::update(&mut e, Message::ImageSelected(b));
+
+        let saved = e.library.as_ref().unwrap().load_edit_params(b).unwrap_or_default();
+        assert_eq!(saved.exposure, 0.0, "the deleted image's edits landed on its neighbour");
+        assert_eq!(e.current_edit_params.exposure, 0.0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
