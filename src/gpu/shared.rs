@@ -1081,27 +1081,28 @@ impl ImageResources {
             white_level,
             wb_multipliers,
         );
-        let noise_model = crate::core::noise::estimate(
-            &raw_data[..pixel_count],
-            width as usize,
-            height as usize,
-            super::demosaic::tile_colors(cfa_pattern),
-            demosaic_params.black,
-            demosaic_params.scale,
-            [demosaic_params.ceil[0], demosaic_params.ceil[1], demosaic_params.ceil[2]],
-        );
+        // The three analyses read the same mosaic independently, so they run
+        // side by side: the wall time is the slowest one, not the sum.
+        let analysis_wb = [demosaic_params.ceil[0], demosaic_params.ceil[1], demosaic_params.ceil[2]];
+        let (noise_model, haze, highlights) = {
+            let data = &raw_data[..pixel_count];
+            let (w, h) = (width as usize, height as usize);
+            let tiles = super::demosaic::tile_colors(cfa_pattern);
+            let (black, scale) = (demosaic_params.black, demosaic_params.scale);
+            std::thread::scope(|scope| {
+                let noise = scope.spawn(|| crate::core::noise::estimate(data, w, h, tiles, black, scale, analysis_wb));
+                let haze = scope.spawn(|| crate::core::haze::analyse(data, w, h, tiles, black, scale));
+                let highlights =
+                    crate::core::highlights::analyse(data, w, h, tiles, black, scale, analysis_wb);
+                (noise.join(), haze.join(), highlights)
+            })
+        };
+        let (Ok(noise_model), Ok(haze)) = (noise_model, haze) else {
+            return Err("an image analysis thread panicked".to_string());
+        };
         tracing::info!("Noise model: a={:?} b={:?}", noise_model.a, noise_model.b);
 
         // Dehaze's slider-independent half, on the same data and units.
-        let haze = crate::core::haze::analyse(
-            &raw_data[..pixel_count],
-            width as usize,
-            height as usize,
-            super::demosaic::tile_colors(cfa_pattern),
-            demosaic_params.black,
-            demosaic_params.scale,
-        );
-        let analysis_wb = [demosaic_params.ceil[0], demosaic_params.ceil[1], demosaic_params.ceil[2]];
         let haze_airlight = (haze != crate::core::haze::HazeModel::default()).then_some(haze.airlight);
         if let Some(a) = haze_airlight {
             gpu_params.set_haze(a, analysis_wb);
@@ -1110,15 +1111,6 @@ impl ImageResources {
 
         // Highlight reconstruction's per-image half: the colour clipped
         // highlights are rebuilt in, learned from their unclipped rims.
-        let highlights = crate::core::highlights::analyse(
-            &raw_data[..pixel_count],
-            width as usize,
-            height as usize,
-            super::demosaic::tile_colors(cfa_pattern),
-            demosaic_params.black,
-            demosaic_params.scale,
-            analysis_wb,
-        );
         let highlight_correction = highlights.correction;
         gpu_params.set_highlights(highlight_correction);
         // Both analyses ride the uniform; it was uploaded before them.
