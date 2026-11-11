@@ -1642,6 +1642,12 @@ impl RawEditor {
             {
                 return Some(Message::WindowResized(size));
             }
+            // Alt+F4, a WM close binding, the taskbar and a session logout:
+            // with `exit_on_close_request(false)` they land here instead of
+            // exiting past the save points `handle_close_window` runs.
+            if let iced::Event::Window(iced::window::Event::CloseRequested) = event {
+                return Some(Message::CloseWindow);
+            }
             // Only winit's X11, macOS and Windows backends deliver drops;
             // on native Wayland (winit 0.30) this never fires.
             if let iced::Event::Window(iced::window::Event::FileDropped(path)) = event {
