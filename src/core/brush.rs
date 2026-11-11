@@ -146,7 +146,7 @@ impl BrushData {
     }
 
     /// Append to the last stroke unconditionally. False when full.
-    fn push_raw(&mut self, p: [f32; 2]) -> bool {
+    pub(crate) fn push_raw(&mut self, p: [f32; 2]) -> bool {
         let n = self.point_count as usize;
         if n >= MAX_POINTS || self.stroke_count == 0 {
             return false;

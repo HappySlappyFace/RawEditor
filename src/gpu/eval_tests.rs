@@ -998,3 +998,70 @@ fn a_failed_readback_is_an_error() {
         assert!(r.is_err(), "a dead device returned {} bytes", r.map(|v| v.0.len()).unwrap_or(0));
     });
 }
+
+/// Redrawing only the changed brush layers must leave every layer exactly as
+/// a from-scratch rasterisation of the same strokes would.
+/// Run with `cargo test brush_incremental_matches_full_redraw -- --ignored`.
+#[test]
+#[ignore]
+fn brush_incremental_matches_full_redraw() {
+    use crate::core::brush::BrushData;
+    use crate::core::types::MAX_MASKS;
+    use iced_wgpu::wgpu;
+    let stroke = |b: &mut BrushData, mask: u32, erase: bool, pts: &[[f32; 2]]| {
+        b.begin(mask, erase, 0.06, 0.5, 0.8).unwrap();
+        for p in pts {
+            b.push_raw(*p);
+        }
+    };
+    let mut a = BrushData::default();
+    stroke(&mut a, 0, false, &[[0.1, 0.2], [0.4, 0.5], [0.8, 0.3]]);
+    stroke(&mut a, 3, false, &[[0.2, 0.8], [0.7, 0.7]]);
+    let mut b = a;
+    stroke(&mut b, 3, true, &[[0.4, 0.6], [0.5, 0.9]]);
+    stroke(&mut b, 5, false, &[[0.5, 0.5]]);
+
+    runtime().block_on(async {
+        let ctx = SharedContext::new().await.expect("gpu");
+        let (w, h) = (96u32, 64u32);
+        let read = |layers: &super::brush::BrushLayers| -> Vec<u8> {
+            let bpr = 256u32; // 96 px * 2 B = 192, padded
+            let size = (bpr * h) as u64 * MAX_MASKS as u64;
+            let buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            let mut enc = ctx.device.create_command_encoder(&Default::default());
+            enc.copy_texture_to_buffer(
+                wgpu::ImageCopyTexture {
+                    texture: layers.texture(),
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::ImageCopyBuffer {
+                    buffer: &buf,
+                    layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(bpr), rows_per_image: Some(h) },
+                },
+                wgpu::Extent3d { width: w, height: h, depth_or_array_layers: MAX_MASKS as u32 },
+            );
+            ctx.queue.submit(Some(enc.finish()));
+            let (tx, rx) = std::sync::mpsc::channel();
+            buf.slice(..).map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
+            ctx.device.poll(wgpu::Maintain::Wait);
+            rx.recv().unwrap().unwrap();
+            let v = buf.slice(..).get_mapped_range().to_vec();
+            v
+        };
+        let inc = ctx.brush.layers(&ctx.device, w, h);
+        ctx.brush.rasterize(&ctx.device, &ctx.queue, &inc, &a, None);
+        ctx.brush.rasterize(&ctx.device, &ctx.queue, &inc, &b, Some(&a));
+        let full = ctx.brush.layers(&ctx.device, w, h);
+        ctx.brush.rasterize(&ctx.device, &ctx.queue, &full, &b, None);
+        let (ri, rf) = (read(&inc), read(&full));
+        assert!(ri.iter().any(|&x| x != 0), "nothing was drawn");
+        assert!(ri == rf, "incremental redraw differs from a full redraw");
+    });
+}
