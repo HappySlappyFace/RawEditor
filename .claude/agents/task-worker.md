@@ -11,8 +11,13 @@ Rules for every task:
 - RawEditor is a Rust app (iced 0.13, wgpu, WGSL). Read `CLAUDE.md` first; its constraints
   override anything in the finding.
 - Never run `cargo fmt`.
-- Verify with `cargo check`, then `cargo clippy --all-targets -- -D warnings` (must stay at
-  zero) and `cargo test <name>` for tests you touched. Never run the ignored GPU tests.
+- Verify with `tools/check_branch.sh` (run from your worktree root): it runs clippy
+  (`-D warnings`, must stay at zero) and `cargo test` and prints only the failing lines. Use
+  `cargo test <name>` while iterating. Never run the ignored GPU tests unless the task says so.
+- A BUG that touches rendering, masks, geometry or the shader needs a test that FAILS before
+  your fix and passes after: a unit test, or an `#[ignore]` test in `src/gpu/eval_tests.rs`
+  that renders through the real shader. A naga validation test only proves the WGSL parses,
+  not that the output is right. If you cannot write one, say so in your result.
 - Change only what the finding needs; mention other findings instead of fixing them.
 - If CONFIRMED or PARTLY and you changed code: commit on this worktree branch, one commit per
   task, message "task <id>: <title>". Never push or tag, never edit REVIEW_NOTES.md.
