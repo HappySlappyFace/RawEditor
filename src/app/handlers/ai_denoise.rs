@@ -456,11 +456,23 @@ pub fn handle_regenerated(editor: &mut RawEditor, image_id: i64, result: Result<
             if editor.selected_image_id == Some(image_id) && editor.current_edit_params.ai_denoise > 0.0 {
                 return crate::app::handlers::navigation::reload_selected_image(editor);
             }
+            // The user may have stepped to another image whose own request
+            // `after_resources` refused while this job ran. Never for the
+            // finished image itself: its resources predate the cache and
+            // would ask for it again.
+            if editor.image_resources.as_ref().is_some_and(|r| r.image_id != image_id) {
+                return after_resources(editor);
+            }
             Task::none()
         }
         Err(e) => {
             tracing::error!("AI denoise for image {image_id}: {e}");
             editor.status = format!("AI denoise failed: {e}");
+            // Another image waiting behind this one still gets its turn; the
+            // failed image itself is not retried (that would loop).
+            if editor.image_resources.as_ref().is_some_and(|r| r.image_id != image_id) {
+                return after_resources(editor);
+            }
             Task::none()
         }
     }
