@@ -427,6 +427,9 @@ pub type DcpMemo = (
     Arc<crate::raw::dcp::DcpProfile>,
 );
 
+/// Undo steps kept per image.
+pub const HISTORY_LIMIT: usize = 100;
+
 /// Main application state
 #[derive(Debug)]
 pub struct RawEditor {
@@ -1108,6 +1111,13 @@ impl RawEditor {
             // Push new state
             stack.push(params_to_push);
             *index += 1;
+            // Each step is ~21 KB: keep the newest HISTORY_LIMIT per image
+            // (the oldest undo steps go first).
+            if stack.len() > HISTORY_LIMIT {
+                let excess = stack.len() - HISTORY_LIMIT;
+                stack.drain(..excess);
+                *index -= excess;
+            }
 
             tracing::debug!(
                 "History Commit: Stack size {}, Index {}",
@@ -1759,6 +1769,23 @@ mod tests {
 
     fn editor() -> RawEditor {
         RawEditor::new().0
+    }
+
+    #[test]
+    fn message_stays_small_and_history_is_capped() {
+        // EditParams is ~21 KB; it must not be carried by value in a Message.
+        assert!(std::mem::size_of::<Message>() < 1024, "{}", std::mem::size_of::<Message>());
+
+        let mut e = editor();
+        e.selected_image_id = Some(1);
+        for i in 0..(HISTORY_LIMIT + 20) {
+            e.current_edit_params.exposure = i as f32 * 0.01;
+            e.commit_current_state();
+        }
+        let (stack, index) = e.get_current_history().unwrap();
+        assert_eq!(stack.len(), HISTORY_LIMIT);
+        assert_eq!(*index, HISTORY_LIMIT - 1);
+        assert_eq!(stack[*index].exposure, (HISTORY_LIMIT + 19) as f32 * 0.01);
     }
 
     #[test]

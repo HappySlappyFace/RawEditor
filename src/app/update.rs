@@ -361,10 +361,10 @@ fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::ExportConfirmed => handlers::export::handle_export_confirmed(editor),
         Message::ProcessNextExport => handlers::export::handle_process_next_export(editor),
         Message::ExportRawLoaded(id, params, res) => {
-            handlers::export::handle_export_raw_loaded(editor, id, params, res)
+            handlers::export::handle_export_raw_loaded(editor, id, *params, res)
         }
         Message::ExportPipelineReady(id, params, res) => {
-            handlers::export::handle_export_pipeline_ready(editor, id, params, res)
+            handlers::export::handle_export_pipeline_ready(editor, id, *params, res)
         }
         Message::ExportSaveComplete(id, res) => {
             handlers::export::handle_export_save_complete(editor, id, res)
