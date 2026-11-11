@@ -224,14 +224,14 @@ pub const HINT: &str = "AI Select: click to add · right-click or Alt-click to s
 /// the same source position (`core::viewport::frame_to_layer_uv`).
 fn source_uv(editor: &RawEditor, u: f32, v: f32) -> (f32, f32) {
     let Some(s) = editor.ai_select.as_ref() else { return (u, v) };
-    match editor.raw_cache.peek(&s.image_id) {
-        Some(raw) => {
+    match crate::app::handlers::develop::source_geometry(editor, s.image_id) {
+        Some(geo) => {
             crate::core::viewport::frame_to_source_uv(
                 &editor.current_edit_params,
-                &raw.lens_context,
+                &geo.lens,
                 s.orientation,
-                raw.width,
-                raw.height,
+                geo.width,
+                geo.height,
                 u,
                 v,
             )
@@ -249,12 +249,15 @@ pub fn handle_prompt(editor: &mut RawEditor, u: f32, v: f32, positive: bool) -> 
     decode(editor)
 }
 
-/// A dragged box, in full-image display UV.
+/// A dragged box, in full-image display UV. On a straightened image the
+/// box drawn on screen is a turned rectangle in the sensor frame, so SAM
+/// (whose boxes are axis-aligned) gets the bounds of all four corners.
 pub fn handle_rect(editor: &mut RawEditor, u0: f32, v0: f32, u1: f32, v1: f32) -> Task<Message> {
-    let a = source_uv(editor, u0, v0);
-    let b = source_uv(editor, u1, v1);
+    let corners = [(u0, v0), (u1, v0), (u1, v1), (u0, v1)].map(|(u, v)| source_uv(editor, u, v));
     let Some(s) = editor.ai_select.as_mut() else { return Task::none() };
-    s.prompts.rect = Some([a.0, a.1, b.0, b.1]);
+    let lo = corners.iter().fold((f32::MAX, f32::MAX), |m, c| (m.0.min(c.0), m.1.min(c.1)));
+    let hi = corners.iter().fold((f32::MIN, f32::MIN), |m, c| (m.0.max(c.0), m.1.max(c.1)));
+    s.prompts.rect = Some([lo.0, lo.1, hi.0, hi.1]);
     decode(editor)
 }
 
@@ -454,20 +457,30 @@ pub fn track(editor: &mut RawEditor) -> Option<Task<Message>> {
     (!tasks.is_empty()).then(|| Task::batch(tasks))
 }
 
-/// The session's clicks in full-image display UV, for the overlay.
+/// The session's clicks in full-image display UV, for the overlay: where the
+/// picture SHOWS the content they were made on, through Straighten and the
+/// lens remap, so a dot stays on its subject (and under the cursor that made
+/// it) however the image is straightened.
 pub fn display_points(editor: &RawEditor) -> Vec<(f32, f32, bool)> {
-    editor
-        .ai_select
-        .as_ref()
-        .map(|s| {
-            s.prompts
-                .points
-                .iter()
-                .map(|p| {
-                    let (u, v) = crate::color::sensor_to_display_uv(p.u, p.v, s.orientation);
-                    (u, v, p.positive)
-                })
-                .collect()
+    let Some(s) = editor.ai_select.as_ref() else { return Vec::new() };
+    let geo = crate::app::handlers::develop::source_geometry(editor, s.image_id);
+    s.prompts
+        .points
+        .iter()
+        .map(|p| {
+            let (u, v) = match &geo {
+                Some(g) => crate::core::viewport::source_to_frame_uv(
+                    &editor.current_edit_params,
+                    &g.lens,
+                    s.orientation,
+                    g.width,
+                    g.height,
+                    p.u,
+                    p.v,
+                ),
+                None => crate::color::sensor_to_display_uv(p.u, p.v, s.orientation),
+            };
+            (u, v, p.positive)
         })
-        .unwrap_or_default()
+        .collect()
 }

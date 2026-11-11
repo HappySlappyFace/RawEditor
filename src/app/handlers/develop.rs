@@ -945,6 +945,36 @@ pub fn handle_toggle_wb_picker(editor: &mut RawEditor) -> Task<Message> {
     update_pipeline(editor)
 }
 
+/// What mapping a click to the source position needs about an image: its
+/// lens context, EXIF orientation and full sensor size.
+pub(crate) struct SourceGeometry {
+    pub lens: std::sync::Arc<crate::core::lens::LensContext>,
+    pub exif_orientation: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// [`SourceGeometry`] of `image_id`, from its GPU resources (always there
+/// while it is shown in Develop) or else the RAW cache. Never only the RAW
+/// cache: an entry can be evicted while the image is open, and the brush and
+/// AI-select mappings then silently fell back to the un-straightened frame.
+pub(crate) fn source_geometry(editor: &RawEditor, image_id: i64) -> Option<SourceGeometry> {
+    if let Some(res) = editor.image_resources.as_ref().filter(|r| r.image_id == image_id) {
+        return Some(SourceGeometry {
+            lens: res.lens.clone(),
+            exif_orientation: res.orientation,
+            width: res.original_width,
+            height: res.original_height,
+        });
+    }
+    editor.raw_cache.peek(&image_id).map(|raw| SourceGeometry {
+        lens: raw.lens_context.clone(),
+        exif_orientation: raw.orientation,
+        width: raw.width,
+        height: raw.height,
+    })
+}
+
 /// Why a raw sample could not be taken.
 pub(crate) enum RawSampleError {
     /// No usable raw data (not in memory, or too small).

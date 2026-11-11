@@ -276,18 +276,59 @@ pub fn frame_to_source_uv(
     if !g.active {
         return ((su, sv), rotated);
     }
+    let (lu, lv) = lens_remap(&g, su, sv);
+    ((lu.clamp(0.0, 1.0), lv.clamp(0.0, 1.0)), true)
+}
+
+/// The shader's Step 0 geometry (green channel): output sensor UV → the
+/// source sensor UV it samples. Unclamped.
+fn lens_remap(g: &crate::core::lens::GpuLens, su: f32, sv: f32) -> (f32, f32) {
     let px = (su - 0.5) * g.scale[0];
     let py = (sv - 0.5) * g.scale[1];
     let ru = px.hypot(py);
     let d = &g.dist;
     let f = d[0] + ru * (d[1] + ru * (d[2] + ru * (d[3] + ru * d[4])));
-    (
-        (
-            (px * f / g.scale[0] + 0.5).clamp(0.0, 1.0),
-            (py * f / g.scale[1] + 0.5).clamp(0.0, 1.0),
-        ),
-        true,
-    )
+    (px * f / g.scale[0] + 0.5, py * f / g.scale[1] + 0.5)
+}
+
+/// The inverse of [`frame_to_source_uv`]: where content at sensor UV
+/// `(su, sv)` is SHOWN, in full-image display UV — through the inverse lens
+/// remap (solved by fixed-point iteration; the remap is a mild radial
+/// scaling), the orientation, and Straighten turned back. What the overlay
+/// needs to draw something stored in the sensor frame (AI-select clicks)
+/// where the picture shows it.
+pub fn source_to_frame_uv(
+    params: &crate::core::types::EditParams,
+    lens: &crate::core::lens::LensContext,
+    orientation: u32,
+    sensor_w: u32,
+    sensor_h: u32,
+    su: f32,
+    sv: f32,
+) -> (f32, f32) {
+    let g = crate::core::lens::gpu_params(lens, &params.lens, sensor_w, sensor_h);
+    let mut s = (su, sv);
+    if g.active {
+        for _ in 0..32 {
+            let (fu, fv) = lens_remap(&g, s.0, s.1);
+            s = (s.0 + (su - fu), s.1 + (sv - fv));
+        }
+    }
+    let (u, v) = crate::color::sensor_to_display_uv(s.0, s.1, orientation);
+    if params.rotation.abs() <= 0.01 {
+        return (u, v);
+    }
+    let mut aspect = sensor_w.max(1) as f32 / sensor_h.max(1) as f32;
+    if orientation == 6 || orientation == 8 {
+        aspect = 1.0 / aspect;
+    }
+    // R(−θ): the shader samples at R(θ)·out.
+    let (sin_a, cos_a) = params.rotation.to_radians().sin_cos();
+    let cx = (u - 0.5) * aspect;
+    let cy = v - 0.5;
+    let rx = cx * cos_a + cy * sin_a;
+    let ry = -cx * sin_a + cy * cos_a;
+    (rx / aspect + 0.5, ry + 0.5)
 }
 
 /// Where a full-image display UV point lands in the frame the pixel-anchored
@@ -591,6 +632,43 @@ mod tests {
         assert!((got.1 - (0.5 + 0.75 * s)).abs() < 1e-5, "{got:?}");
         // ~4% of the frame away from the unstraightened click, as the finding says.
         assert!((got.1 - 0.5).abs() > 0.06);
+    }
+
+    #[test]
+    fn source_to_frame_inverts_frame_to_source() {
+        let lens = crate::core::lens::LensContext::default();
+        for (rotation, distortion) in [(0.0f32, 0.0f32), (10.0, 0.0), (-30.0, 0.0), (7.0, -0.5), (0.0, 0.8)] {
+            let mut p = crate::core::types::EditParams::default();
+            p.rotation = rotation;
+            p.lens.distortion = distortion;
+            for o in [1u32, 3, 6, 8] {
+                for (u, v) in [(0.5f32, 0.5f32), (0.31, 0.77), (0.6, 0.4), (0.45, 0.62)] {
+                    let (s, _) = frame_to_source_uv(&p, &lens, o, 6000, 4000, u, v);
+                    let back = source_to_frame_uv(&p, &lens, o, 6000, 4000, s.0, s.1);
+                    assert!(
+                        (back.0 - u).abs() < 1e-4 && (back.1 - v).abs() < 1e-4,
+                        "rot {rotation} dist {distortion} o {o}: ({u}, {v}) → {s:?} → {back:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Straighten's direction, pinned to the shader (`R(θ)·out`, positive
+    /// counter-clockwise on screen): content right of centre is SHOWN lower
+    /// for a negative angle — and so is the brush/AI layer drawn on it.
+    #[test]
+    fn content_moves_with_straighten_in_the_shaders_direction() {
+        let lens = crate::core::lens::LensContext::default();
+        let mut p = crate::core::types::EditParams::default();
+        p.rotation = 10.0;
+        // Content at the right-edge midpoint of the unrotated frame…
+        let (u, v) = source_to_frame_uv(&p, &lens, 1, 6000, 4000, 0.9, 0.5);
+        // …is shown above the midline for +10° (y down: R(θ) maps the
+        // shown point (u, v<0.5) back to v = 0.5).
+        assert!(v < 0.5 && u < 0.9, "({u}, {v})");
+        let (lu, lv) = frame_to_layer_uv(&p, &lens, 1, 6000, 4000, u, v);
+        assert!((lu - 0.9).abs() < 1e-5 && (lv - 0.5).abs() < 1e-5, "({lu}, {lv})");
     }
 
     #[test]

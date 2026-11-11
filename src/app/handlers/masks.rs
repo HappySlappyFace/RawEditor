@@ -246,16 +246,18 @@ fn display_aspect(editor: &RawEditor) -> f32 {
 /// stored in: the layer is read at the source position the picture shows, so
 /// it follows Straighten and lens correction (`core::viewport::frame_to_layer_uv`).
 fn layer_uv(editor: &RawEditor, u: f32, v: f32) -> [f32; 2] {
-    let raw = editor.selected_image_id.and_then(|id| editor.raw_cache.peek(&id));
-    let Some(raw) = raw else { return [u, v] };
+    let geo = editor
+        .selected_image_id
+        .and_then(|id| crate::app::handlers::develop::source_geometry(editor, id));
+    let Some(geo) = geo else { return [u, v] };
     let orientation =
-        crate::color::compose_orientation(raw.orientation, editor.current_edit_params.quarter_turns);
+        crate::color::compose_orientation(geo.exif_orientation, editor.current_edit_params.quarter_turns);
     let (lu, lv) = crate::core::viewport::frame_to_layer_uv(
         &editor.current_edit_params,
-        &raw.lens_context,
+        &geo.lens,
         orientation,
-        raw.width,
-        raw.height,
+        geo.width,
+        geo.height,
         u,
         v,
     );
@@ -477,6 +479,31 @@ mod tests {
         let _ = update(&mut e, Message::Undo);
         assert_eq!(e.current_edit_params.brush.stroke_count, 0, "undo removes the stroke");
         assert_eq!(e.current_edit_params.mask_count, 1, "…but not the mask");
+    }
+
+    /// With Straighten on, a stroke is stored where the shader reads the
+    /// brush layer for the pixel under the cursor (`frame_to_layer_uv`), not
+    /// at the raw canvas UV — the GPU half is `masks_follow_the_picture`.
+    #[test]
+    fn a_stroke_on_a_straightened_image_is_stored_in_the_layer_frame() {
+        let mut e = editor();
+        let raw = crate::raw::loader::RawDataResult {
+            width: 6000,
+            height: 4000,
+            orientation: 1,
+            ..crate::ml::segment::tests::disc_raw(60, 40)
+        };
+        e.raw_cache.put(1, std::sync::Arc::new(raw));
+        e.current_edit_params.rotation = 10.0;
+        let _ = update(&mut e, Message::ToggleMaskPlacement(MASK_BRUSH));
+        let _ = update(&mut e, Message::BrushStroke(StrokeEvent::Begin(0.8, 0.3)));
+        let _ = update(&mut e, Message::BrushStroke(StrokeEvent::End));
+        let b = e.current_edit_params.brush;
+        let got = b.points_of(&b.strokes[0])[0];
+        let lens = crate::core::lens::LensContext::default();
+        let want = crate::core::viewport::frame_to_layer_uv(&e.current_edit_params, &lens, 1, 6000, 4000, 0.8, 0.3);
+        assert!((got[0] - want.0).abs() < 1e-6 && (got[1] - want.1).abs() < 1e-6, "{got:?} vs {want:?}");
+        assert!((got[0] - 0.8).abs() + (got[1] - 0.3).abs() > 0.02, "Straighten must move it: {got:?}");
     }
 
     #[test]
