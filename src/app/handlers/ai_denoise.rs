@@ -149,7 +149,7 @@ pub fn handle_open(editor: &mut RawEditor) -> Task<Message> {
     };
     editor.active_modal = Modal::AiDenoise;
 
-    let cached = editor.raw_cache.peek(&image_id).cloned();
+    let cached = editor.raw_for(image_id);
     let path = editor.images.iter().find(|i| i.id == image_id).map(|i| i.path.clone());
     Task::perform(
         async move {
@@ -431,7 +431,7 @@ pub fn after_resources(editor: &mut RawEditor) -> Task<Message> {
     let progress = Arc::new(Progress::default());
     editor.ai_denoise.regen = Some((image_id, progress.clone()));
     editor.status = "Re-computing AI denoise…".into();
-    let cached = editor.raw_cache.peek(&image_id).cloned();
+    let cached = editor.raw_for(image_id);
     let path = editor.images.iter().find(|i| i.id == image_id).map(|i| i.path.clone());
     Task::perform(
         async move {

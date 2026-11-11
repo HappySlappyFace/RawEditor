@@ -1015,7 +1015,7 @@ pub(crate) fn sample_raw_rgb(
     u: f32,
     v: f32,
 ) -> Result<([f32; 3], bool, std::sync::Arc<crate::raw::loader::RawDataResult>), RawSampleError> {
-    let Some(raw) = editor.raw_cache.peek(&image_id).cloned() else {
+    let Some(raw) = editor.raw_for(image_id) else {
         return Err(RawSampleError::Missing("raw data not in memory (reopen the image)"));
     };
     // The 16×16 sample window below needs room on both sides; `clamp(8, w-9)`

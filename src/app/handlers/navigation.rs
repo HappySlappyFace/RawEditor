@@ -828,6 +828,10 @@ fn trigger_image_load(editor: &mut RawEditor, image_id: i64) -> Task<Message> {
     // previous image may still be building, and starting this one's
     // alongside it would hold two full-size working sets. Its result
     // releases the guard and re-checks this image (`handle_full_res_ready`).
+    // The pin belongs to the image being left.
+    if editor.current_raw.as_ref().is_some_and(|(id, _)| *id != image_id) {
+        editor.current_raw = None;
+    }
     let develop = editor.current_tab == AppTab::Develop;
     if develop {
         // The outgoing image's GPU resources and render must not stay on
