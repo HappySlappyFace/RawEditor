@@ -13,11 +13,22 @@ Rules for every task:
 - Never run `cargo fmt`.
 - Verify with `tools/check_branch.sh` (run from your worktree root): it runs clippy
   (`-D warnings`, must stay at zero) and `cargo test` and prints only the failing lines. Use
-  `cargo test <name>` while iterating. Never run the ignored GPU tests unless the task says so.
+  `cargo test <name>` while iterating. You may run an ignored GPU test by name
+  (`cargo test <name> -- --ignored`) when your change touches rendering and that test covers it;
+  never the whole ignored set.
 - A BUG that touches rendering, masks, geometry or the shader needs a test that FAILS before
   your fix and passes after: a unit test, or an `#[ignore]` test in `src/gpu/eval_tests.rs`
   that renders through the real shader. A naga validation test only proves the WGSL parses,
   not that the output is right. If you cannot write one, say so in your result.
+- A change to a queue, the selection or loading flow, undo history, or any state that several
+  messages share needs a test through the REAL flow, not just the helper you touched. Past
+  failures: a queue helper passed its own unit tests, but the `requeue` that runs right after every
+  selection then dropped the selected image, so Develop hung on "Loading"; and a shader fix was
+  "verified" by a syntax-only check while the mask was still in the wrong frame. For a queue
+  or state change, write a test that applies the helper AND the call that follows it in the
+  real code path, and say in your result which calls follow yours (grep for them).
+- Before you finish, list every function your change calls or is called by that also changes the
+  state you changed, and confirm none of them undoes your work.
 - Change only what the finding needs; mention other findings instead of fixing them.
 - If CONFIRMED or PARTLY and you changed code: commit on this worktree branch, one commit per
   task, message "task <id>: <title>". Never push or tag, never edit REVIEW_NOTES.md.
