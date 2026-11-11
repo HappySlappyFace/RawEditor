@@ -445,6 +445,17 @@ pub fn handle_export_pipeline_ready(
     >,
 ) -> Task<Message> {
     match result {
+        Ok((context, _)) if context.is_lost() => {
+            // A reset GPU renders nothing; forget it so the next image (or
+            // the next Develop load) builds a fresh context.
+            tracing::error!("Export of image {image_id}: GPU device lost");
+            editor.gpu_context = None;
+            editor.gpu_init = Arc::new(tokio::sync::OnceCell::new());
+            let e = "the GPU was reset; try again".to_string();
+            editor.status = format!("Export failed: {e}");
+            set_job_state(editor, image_id, crate::app::state::ExportJobState::Failed(e));
+            Task::perform(async {}, |_| Message::ProcessNextExport)
+        }
         Ok((context, resources)) => {
             // THE leak fix. `gpu_context` is otherwise only ever assigned on
             // the Develop image-load path (loading.rs), so exporting without

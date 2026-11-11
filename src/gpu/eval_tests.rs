@@ -951,3 +951,26 @@ fn a_push_during_a_render_waits_for_the_next_render() {
         assert_eq!(e.image_resources.as_ref().unwrap().pushed_params().exposure, 1.5);
     });
 }
+
+/// A lost device is detected, and the editor drops the dead context (and the
+/// `gpu_init` cell that would hand it back) so the next load builds a new one.
+#[test]
+#[ignore]
+fn a_lost_device_is_detected_and_the_context_replaced() {
+    use crate::app::state::RawEditor;
+    runtime().block_on(async {
+        let ctx = std::sync::Arc::new(SharedContext::new().await.expect("gpu"));
+        assert!(!ctx.is_lost());
+        ctx.device.destroy();
+        ctx.device.poll(iced_wgpu::wgpu::Maintain::Wait);
+        assert!(ctx.is_lost(), "destroying the device was not noticed");
+
+        let mut e = RawEditor::new().0;
+        e.gpu_context = Some(ctx.clone());
+        e.gpu_init.set(ctx.clone()).ok();
+        let _ = crate::app::handlers::develop::handle_gpu_lost(&mut e);
+        assert!(e.gpu_context.is_none());
+        assert!(e.gpu_init.get().is_none(), "the dead context would be handed out again");
+        assert!(e.status.contains("GPU"));
+    });
+}

@@ -40,6 +40,10 @@ pub struct SharedContext {
     /// Cached Texture/Clarity band pre-pass (see `gpu::local_contrast`).
     pub local_contrast: super::local_contrast::LocalContrast,
     pub sampler_linear: wgpu::Sampler,
+    /// Set by the device-lost callback (driver reset, suspend/resume, eGPU
+    /// unplug). Every readback fails after that, so the app checks it and
+    /// builds a fresh context instead of showing blank frames until restart.
+    lost: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl SharedContext {
@@ -94,6 +98,19 @@ impl SharedContext {
         device.on_uncaptured_error(Box::new(|e| {
             tracing::error!("Uncaptured GPU error: {e}");
         }));
+
+        // The callback also runs when the device is dropped (to release what
+        // it owns); only a real loss counts.
+        let lost = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        {
+            let lost = lost.clone();
+            device.set_device_lost_callback(move |reason, message| {
+                if !matches!(reason, wgpu::DeviceLostReason::Dropped) {
+                    tracing::error!("GPU device lost ({reason:?}): {message}");
+                    lost.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+            });
+        }
 
         let device = Arc::new(device);
         let queue = Arc::new(queue);
@@ -344,7 +361,14 @@ impl SharedContext {
             denoise,
             local_contrast,
             sampler_linear,
+            lost,
         })
+    }
+
+    /// True once the GPU device has been lost; nothing built on this context
+    /// can render any more.
+    pub fn is_lost(&self) -> bool {
+        self.lost.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 

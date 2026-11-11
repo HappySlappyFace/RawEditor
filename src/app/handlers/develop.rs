@@ -708,6 +708,9 @@ pub fn handle_render_finished(
     editor: &mut RawEditor,
     out: crate::app::message::RenderOutput,
 ) -> Task<Message> {
+    if editor.gpu_context.as_ref().is_some_and(|c| c.is_lost()) {
+        return handle_gpu_lost(editor);
+    }
     // A render of the image the user has since navigated away from: drop the
     // pixels, but still release the throttle below so the next render runs.
     let current = editor.image_resources.as_ref().map(|r| r.image_id);
@@ -756,6 +759,24 @@ pub fn handle_render_finished(
         return Task::batch([save, loupe, trigger_async_render(editor)]);
     }
     Task::batch([save, loupe])
+}
+
+/// The GPU device is gone (driver reset, suspend/resume, eGPU unplug): every
+/// readback would fail from here on. Drop the context and the resources built
+/// on it, so the next load creates a fresh one (`loading::shared_context`
+/// would otherwise hand back the dead one from `gpu_init`), and reload the
+/// selected image.
+pub(crate) fn handle_gpu_lost(editor: &mut RawEditor) -> Task<Message> {
+    tracing::error!("GPU device lost; rebuilding the GPU context");
+    editor.status = "The GPU was reset; reloading the image.".into();
+    editor.gpu_context = None;
+    editor.gpu_init = std::sync::Arc::new(tokio::sync::OnceCell::new());
+    editor.image_resources = None;
+    editor.preview_resources = None;
+    editor.is_rendering = false;
+    editor.pending_render = false;
+    editor.deferred_push = None;
+    crate::app::handlers::navigation::reload_selected_image(editor)
 }
 
 /// What a develop render of the current view needs: window, target size,
