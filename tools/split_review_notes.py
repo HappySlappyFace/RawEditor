@@ -177,8 +177,8 @@ def render(e, sections, entries, notes_name):
             "Confirming it comes first; do not change code you cannot tie to the described "
             "failure.\n"
         )
-    p.append(COMMON if kind != "IDEA" else COMMON.split("## Your final answer")[0]
-             + "## Your final answer\n\nThe design note only. Do not change any file.\n")
+    if kind == "IDEA":
+        p.append("Final answer: the design note only. Do not change any file.\n")
     if intro:
         p.append(f"## Section context ({e['sec']}. {sec_title})\n")
         p.append(intro + "\n")
@@ -216,6 +216,17 @@ def main():
         name = f"{key[0]:02d}{key[1]:02d}.md"
         (out / name).write_text(render(e, sections, entries, notes.name), encoding="utf-8")
     print(f"wrote {len(entries)} files to {out}/")
+    rows = []
+    for key in sorted(entries):
+        e = entries[key]
+        if key[0] > 99 or key[1] > 99:
+            continue
+        k = kind_of(e)
+        unsure = k != "IDEA" and bool(UNSURE.search(e["heading"] + e["body"]))
+        rows.append("\t".join([f"{key[0]:02d}{key[1]:02d}", str(key[0]), k,
+                               str(unsure).lower(), e["title"] or e["heading"]]))
+    (out / "index.tsv").write_text("id\tsection\tkind\tunverified\ttitle\n" + "\n".join(rows) + "\n",
+                                   encoding="utf-8")
 
 
 if __name__ == "__main__":
