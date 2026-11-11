@@ -210,6 +210,107 @@ pub fn straighten_from_line(current: f32, dx: f32, dy: f32) -> Option<f32> {
     Some((current + off_level).clamp(-45.0, 45.0))
 }
 
+/// Where a click on the displayed image lands in the SENSOR, mirroring the
+/// colour pass's own chain: the crop sub-rect, the Straighten rotation about
+/// the display centre (in display aspect), the orientation (EXIF plus quarter
+/// turns, `orientation` already composed), then the lens remap (the green
+/// channel's position). `(u, v)` is UV within the rendered, cropped image.
+/// Returns sensor UV, clamped to the frame when the chain leaves it.
+///
+/// `sensor_w`/`sensor_h` are the full-resolution sensor dimensions (the lens
+/// model's units), landscape.
+pub fn display_to_source_uv(
+    params: &crate::core::types::EditParams,
+    lens: &crate::core::lens::LensContext,
+    orientation: u32,
+    sensor_w: u32,
+    sensor_h: u32,
+    u: f32,
+    v: f32,
+) -> (f32, f32) {
+    let crop = params.crop;
+    frame_to_source_uv(
+        params,
+        lens,
+        orientation,
+        sensor_w,
+        sensor_h,
+        crop[0] + u.clamp(0.0, 1.0) * crop[2],
+        crop[1] + v.clamp(0.0, 1.0) * crop[3],
+    )
+    .0
+}
+
+/// [`display_to_source_uv`] for a point already in FULL-image display UV (no
+/// crop remap: what the AI-select and brush canvases report). The flag says
+/// whether Straighten or the lens moved it at all.
+pub fn frame_to_source_uv(
+    params: &crate::core::types::EditParams,
+    lens: &crate::core::lens::LensContext,
+    orientation: u32,
+    sensor_w: u32,
+    sensor_h: u32,
+    u: f32,
+    v: f32,
+) -> ((f32, f32), bool) {
+    let mut uv = (u.clamp(0.0, 1.0), v.clamp(0.0, 1.0));
+    let rotated = params.rotation.abs() > 0.01;
+
+    // Straighten (same threshold and aspect rule as the shader).
+    if rotated {
+        let mut aspect = sensor_w.max(1) as f32 / sensor_h.max(1) as f32;
+        if orientation == 6 || orientation == 8 {
+            aspect = 1.0 / aspect;
+        }
+        let (sin_a, cos_a) = params.rotation.to_radians().sin_cos();
+        let cx = (uv.0 - 0.5) * aspect;
+        let cy = uv.1 - 0.5;
+        let rx = cx * cos_a - cy * sin_a;
+        let ry = cx * sin_a + cy * cos_a;
+        uv = ((rx / aspect + 0.5).clamp(0.0, 1.0), (ry + 0.5).clamp(0.0, 1.0));
+    }
+
+    let (su, sv) = crate::color::display_to_sensor_uv(uv.0, uv.1, orientation);
+
+    let g = crate::core::lens::gpu_params(lens, &params.lens, sensor_w, sensor_h);
+    if !g.active {
+        return ((su, sv), rotated);
+    }
+    let px = (su - 0.5) * g.scale[0];
+    let py = (sv - 0.5) * g.scale[1];
+    let ru = px.hypot(py);
+    let d = &g.dist;
+    let f = d[0] + ru * (d[1] + ru * (d[2] + ru * (d[3] + ru * d[4])));
+    (
+        (
+            (px * f / g.scale[0] + 0.5).clamp(0.0, 1.0),
+            (py * f / g.scale[1] + 0.5).clamp(0.0, 1.0),
+        ),
+        true,
+    )
+}
+
+/// Where a full-image display UV point lands in the frame the pixel-anchored
+/// mask layers (brush, AI) are stored in: the display-oriented frame of the
+/// SOURCE position the colour pass samples there. The shader reads those
+/// layers at this same position, so painting and drawing agree, and the
+/// layers follow the picture when Straighten or the lens change.
+pub fn frame_to_layer_uv(
+    params: &crate::core::types::EditParams,
+    lens: &crate::core::lens::LensContext,
+    orientation: u32,
+    sensor_w: u32,
+    sensor_h: u32,
+    u: f32,
+    v: f32,
+) -> (f32, f32) {
+    let ((su, sv), moved) = frame_to_source_uv(params, lens, orientation, sensor_w, sensor_h, u, v);
+    if !moved {
+        return (u, v);
+    }
+    crate::color::sensor_to_display_uv(su, sv, orientation)
+}
+
 /// Normalize an angle in degrees into [-180, 180).
 ///
 /// Rotation is cyclic: `atan2` deltas jump by ~360° across the ±180° branch
@@ -462,6 +563,62 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn click_to_source_is_the_plain_orientation_map_without_straighten_or_lens() {
+        let p = crate::core::types::EditParams::default();
+        let lens = crate::core::lens::LensContext::default();
+        for o in [1u32, 3, 6, 8] {
+            let got = display_to_source_uv(&p, &lens, o, 6000, 4000, 0.3, 0.8);
+            let want = crate::color::display_to_sensor_uv(0.3, 0.8, o);
+            assert!((got.0 - want.0).abs() < 1e-6 && (got.1 - want.1).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn click_to_source_follows_straighten_like_the_shader() {
+        let mut p = crate::core::types::EditParams::default();
+        p.rotation = 5.0;
+        let lens = crate::core::lens::LensContext::default();
+        // The centre is the pivot.
+        let c = display_to_source_uv(&p, &lens, 1, 6000, 4000, 0.5, 0.5);
+        assert!((c.0 - 0.5).abs() < 1e-6 && (c.1 - 0.5).abs() < 1e-6);
+        // Right-edge midpoint, aspect 1.5: R(5 deg) of (0.75, 0) in aspect space.
+        let (s, co) = 5.0f32.to_radians().sin_cos();
+        let got = display_to_source_uv(&p, &lens, 1, 6000, 4000, 1.0, 0.5);
+        assert!((got.0 - (0.5 + 0.75 * co / 1.5)).abs() < 1e-5, "{got:?}");
+        assert!((got.1 - (0.5 + 0.75 * s)).abs() < 1e-5, "{got:?}");
+        // ~4% of the frame away from the unstraightened click, as the finding says.
+        assert!((got.1 - 0.5).abs() > 0.06);
+    }
+
+    #[test]
+    fn layer_uv_is_exact_by_default_and_names_the_same_source_point() {
+        let lens = crate::core::lens::LensContext::default();
+        let plain = crate::core::types::EditParams::default();
+        let mut p = plain;
+        p.rotation = -7.0;
+        p.lens.distortion = 0.5;
+        for o in [1u32, 3, 6, 8] {
+            assert_eq!(frame_to_layer_uv(&plain, &lens, o, 6000, 4000, 0.31, 0.77), (0.31, 0.77));
+            let (lu, lv) = frame_to_layer_uv(&p, &lens, o, 6000, 4000, 0.31, 0.77);
+            let back = crate::color::display_to_sensor_uv(lu, lv, o);
+            let src = frame_to_source_uv(&p, &lens, o, 6000, 4000, 0.31, 0.77).0;
+            assert!((back.0 - src.0).abs() < 1e-5 && (back.1 - src.1).abs() < 1e-5);
+        }
+    }
+
+    #[test]
+    fn click_to_source_follows_the_lens_remap() {
+        let mut p = crate::core::types::EditParams::default();
+        p.lens.distortion = 1.0;
+        let lens = crate::core::lens::LensContext::default();
+        let c = display_to_source_uv(&p, &lens, 1, 6000, 4000, 0.5, 0.5);
+        assert!((c.0 - 0.5).abs() < 1e-6 && (c.1 - 0.5).abs() < 1e-6);
+        let e = display_to_source_uv(&p, &lens, 1, 6000, 4000, 0.9, 0.9);
+        assert!((e.0 - 0.9).abs() > 1e-3 && (e.1 - 0.9).abs() > 1e-3, "{e:?}");
+        assert!(e.0 < 0.9 && e.1 < 0.9, "positive distortion samples nearer the centre: {e:?}");
     }
 
     #[test]

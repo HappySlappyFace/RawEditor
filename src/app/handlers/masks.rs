@@ -242,6 +242,26 @@ fn display_aspect(editor: &RawEditor) -> f32 {
         .unwrap_or(1.5)
 }
 
+/// A canvas point (full-image display UV) in the frame the brush layer is
+/// stored in: the layer is read at the source position the picture shows, so
+/// it follows Straighten and lens correction (`core::viewport::frame_to_layer_uv`).
+fn layer_uv(editor: &RawEditor, u: f32, v: f32) -> [f32; 2] {
+    let raw = editor.selected_image_id.and_then(|id| editor.raw_cache.peek(&id));
+    let Some(raw) = raw else { return [u, v] };
+    let orientation =
+        crate::color::compose_orientation(raw.orientation, editor.current_edit_params.quarter_turns);
+    let (lu, lv) = crate::core::viewport::frame_to_layer_uv(
+        &editor.current_edit_params,
+        &raw.lens_context,
+        orientation,
+        raw.width,
+        raw.height,
+        u,
+        v,
+    );
+    [lu, lv]
+}
+
 pub fn handle_brush_stroke(editor: &mut RawEditor, ev: StrokeEvent) -> Task<Message> {
     let Some(index) = editor.selected_mask else {
         return Task::none();
@@ -250,6 +270,17 @@ pub fn handle_brush_stroke(editor: &mut RawEditor, ev: StrokeEvent) -> Task<Mess
         return Task::none();
     }
     let aspect = display_aspect(editor);
+    let ev = match ev {
+        StrokeEvent::Begin(u, v) => {
+            let [u, v] = layer_uv(editor, u, v);
+            StrokeEvent::Begin(u, v)
+        }
+        StrokeEvent::Move(u, v) => {
+            let [u, v] = layer_uv(editor, u, v);
+            StrokeEvent::Move(u, v)
+        }
+        end => end,
+    };
     match ev {
         StrokeEvent::Begin(u, v) => {
             let b = editor.brush_settings;

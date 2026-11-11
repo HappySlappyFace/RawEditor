@@ -218,19 +218,42 @@ pub fn handle_engine_ready(editor: &mut RawEditor, token: u64, result: Result<En
 
 pub const HINT: &str = "AI Select: click to add · right-click or Alt-click to subtract · drag a box · Enter when done";
 
+/// Full-image display UV → the sensor UV of the content shown there, through
+/// the colour pass's Straighten and lens remap as well as the orientation, so
+/// SAM is prompted at the content that was clicked. The mask is read back at
+/// the same source position (`core::viewport::frame_to_layer_uv`).
+fn source_uv(editor: &RawEditor, u: f32, v: f32) -> (f32, f32) {
+    let Some(s) = editor.ai_select.as_ref() else { return (u, v) };
+    match editor.raw_cache.peek(&s.image_id) {
+        Some(raw) => {
+            crate::core::viewport::frame_to_source_uv(
+                &editor.current_edit_params,
+                &raw.lens_context,
+                s.orientation,
+                raw.width,
+                raw.height,
+                u,
+                v,
+            )
+            .0
+        }
+        None => crate::color::display_to_sensor_uv(u.clamp(0.0, 1.0), v.clamp(0.0, 1.0), s.orientation),
+    }
+}
+
 /// A click on the photo, in full-image display UV.
 pub fn handle_prompt(editor: &mut RawEditor, u: f32, v: f32, positive: bool) -> Task<Message> {
+    let (su, sv) = source_uv(editor, u, v);
     let Some(s) = editor.ai_select.as_mut() else { return Task::none() };
-    let (su, sv) = crate::color::display_to_sensor_uv(u.clamp(0.0, 1.0), v.clamp(0.0, 1.0), s.orientation);
     s.prompts.points.push(Point { u: su, v: sv, positive });
     decode(editor)
 }
 
 /// A dragged box, in full-image display UV.
 pub fn handle_rect(editor: &mut RawEditor, u0: f32, v0: f32, u1: f32, v1: f32) -> Task<Message> {
+    let a = source_uv(editor, u0, v0);
+    let b = source_uv(editor, u1, v1);
     let Some(s) = editor.ai_select.as_mut() else { return Task::none() };
-    let a = crate::color::display_to_sensor_uv(u0.clamp(0.0, 1.0), v0.clamp(0.0, 1.0), s.orientation);
-    let b = crate::color::display_to_sensor_uv(u1.clamp(0.0, 1.0), v1.clamp(0.0, 1.0), s.orientation);
     s.prompts.rect = Some([a.0, a.1, b.0, b.1]);
     decode(editor)
 }

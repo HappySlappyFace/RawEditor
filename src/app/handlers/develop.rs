@@ -972,16 +972,19 @@ pub(crate) fn sample_raw_rgb(
         return Err(RawSampleError::Missing("no raw pixels available"));
     }
 
-    // Display UV → sensor UV: undo the crop remap (the vertex shader shows the
-    // crop sub-rect when not in crop mode), then the orientation mapping —
-    // EXIF's plus the user's quarter turns, the same transform the fragment
-    // shader applies.
-    let crop = editor.current_edit_params.crop;
-    let cu = crop[0] + u.clamp(0.0, 1.0) * crop[2];
-    let cv = crop[1] + v.clamp(0.0, 1.0) * crop[3];
+    // Display UV → sensor UV through the colour pass's own chain: crop remap,
+    // Straighten, EXIF orientation plus the user's quarter turns, lens remap.
     let orientation =
         crate::color::compose_orientation(raw.orientation, editor.current_edit_params.quarter_turns);
-    let (su, sv) = crate::color::display_to_sensor_uv(cu, cv, orientation);
+    let (su, sv) = crate::core::viewport::display_to_source_uv(
+        &editor.current_edit_params,
+        &raw.lens_context,
+        orientation,
+        raw.width,
+        raw.height,
+        u,
+        v,
+    );
 
     // Sample a 16×16 sensor window centred on the pick, per CFA channel.
     let w = raw.width as i64;
