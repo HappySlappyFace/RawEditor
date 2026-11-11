@@ -67,6 +67,18 @@ fn select_image(editor: &mut RawEditor, image_id: i64, from_click: bool) -> Task
         editor.multi_selection.insert(image_id);
         editor.selection_anchor = Some(image_id);
     }
+    // `Loading(id)` promises a load of `id` that will finish it, and only a
+    // Develop selection starts one. Selecting another image anywhere else
+    // (Library, Cull) loads nothing, and the old image's result then lands
+    // unwanted — so coming back to it later found "already loading", started
+    // nothing, and Develop sat on "Loading" forever. Drop the promise with
+    // the selection; entering Develop on an image loads it afresh (a decode
+    // still running is reused, not repeated: `direct_raw_loads`).
+    if editor.current_tab != AppTab::Develop
+        && matches!(editor.editor_readiness, EditorReadiness::Loading(id) if id != image_id)
+    {
+        editor.editor_readiness = EditorReadiness::NoSelection;
+    }
     editor.selected_image_id = Some(image_id);
     editor.canvas_cache.clear();
     // Mask selection is an index into the previous image's mask list — clear
@@ -998,6 +1010,9 @@ fn schedule_raw_preloads(editor: &mut RawEditor) -> Task<Message> {
         neighbours(editor, editor.raw_preload_behind, editor.raw_preload_ahead)
             .into_iter()
             .filter(|img| !editor.raw_cache.contains(&img.id))
+            // A direct decode of it is already running (an image stepped
+            // past): queueing it as well would decode it twice.
+            .filter(|img| !editor.direct_raw_loads.contains(&img.id))
             .map(|img| (img.id, img.path.clone()))
             .collect();
     requeue(

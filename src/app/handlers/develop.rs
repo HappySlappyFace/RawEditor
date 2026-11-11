@@ -669,12 +669,25 @@ pub fn handle_paste_settings(editor: &mut RawEditor) -> Task<Message> {
         editor.invalidate_proxies(&pasted);
         // An image already visited has an undo stack that knows nothing of
         // the paste: put it on, so Undo there steps back to before it.
-        // (Unvisited images seed their stack from the saved edits.)
+        // (Unvisited images seed their stack from the saved edits.) A paste
+        // that left an image as it was adds no step, as for any commit
+        // (`commit_current_state`), or the next Undo there does nothing.
         for (id, params) in &merged {
             if let Some((stack, index)) = editor.history_map.get_mut(id) {
+                let unchanged = stack
+                    .get(*index)
+                    .is_some_and(|top| top.without_tool_state() == params.without_tool_state());
+                if unchanged {
+                    continue;
+                }
                 stack.truncate(*index + 1);
                 stack.push(*params);
                 *index += 1;
+                if stack.len() > crate::app::state::HISTORY_LIMIT {
+                    let excess = stack.len() - crate::app::state::HISTORY_LIMIT;
+                    stack.drain(..excess);
+                    *index -= excess;
+                }
             }
         }
     }
