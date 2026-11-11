@@ -10,6 +10,7 @@ pub fn handle_raw_data_loaded(
     image_id: i64,
     result: Result<raw::loader::RawDataResult, String>,
 ) -> Task<Message> {
+    editor.direct_raw_loads.remove(&image_id);
     match result {
         Ok(raw) => {
             let raw = Arc::new(raw);
@@ -88,17 +89,11 @@ pub fn prepare_image_resources_from_raw(
     let params = editor.current_edit_params;
     let profile_defaults = editor.camera_profile_defaults.clone();
     let context = editor.gpu_context.clone();
+    let gpu_init = editor.gpu_init.clone();
 
     Task::perform(
         async move {
-            let ctx = if let Some(c) = context {
-                c
-            } else {
-                match gpu::shared::SharedContext::new().await {
-                    Ok(c) => Arc::new(c),
-                    Err(e) => return Err(e),
-                }
-            };
+            let ctx = shared_context(&gpu_init, context).await?;
 
             // The image's camera profile: its own choice, else its camera's
             // default, else the best installed match. Resolved here, off the
@@ -154,6 +149,24 @@ pub fn prepare_image_resources_from_raw(
         },
         move |res| Message::ImageResourcesReady(image_id, res),
     )
+}
+
+/// The one `SharedContext`. Every path that needs a context goes through
+/// here: tasks started before the first finishes (select 1 → 2 → 1 during the
+/// first load, or an export beside a load) all get the same device, so
+/// resources built by one can be installed beside another's context.
+pub async fn shared_context(
+    cell: &tokio::sync::OnceCell<Arc<gpu::shared::SharedContext>>,
+    existing: Option<Arc<gpu::shared::SharedContext>>,
+) -> Result<Arc<gpu::shared::SharedContext>, String> {
+    cell.get_or_try_init(|| async {
+        match existing {
+            Some(c) => Ok(c),
+            None => gpu::shared::SharedContext::new().await.map(Arc::new),
+        }
+    })
+    .await
+    .cloned()
 }
 
 pub fn handle_image_resources_ready(editor: &mut RawEditor, image_id: i64, result: Result<(Arc<gpu::shared::SharedContext>, Arc<gpu::shared::ImageResources>), String>) -> Task<Message> {
@@ -293,6 +306,7 @@ pub fn trigger_full_res_upgrade(editor: &mut RawEditor) -> Task<Message> {
     let profile_use = editor.image_resources.as_ref().and_then(|r| r.profile_use.clone());
     let profile_defaults = editor.camera_profile_defaults.clone();
     let context = editor.gpu_context.clone();
+    let gpu_init = editor.gpu_init.clone();
 
     tracing::info!(
         "Upgrading to full-res resources for image {} ({})",
@@ -307,14 +321,7 @@ pub fn trigger_full_res_upgrade(editor: &mut RawEditor) -> Task<Message> {
                 (None, Some(path)) => Arc::new(raw::loader::load_raw_data(path).await?),
                 (None, None) => return Err("no RAW to upgrade from".to_string()),
             };
-            let ctx = if let Some(c) = context {
-                c
-            } else {
-                match gpu::shared::SharedContext::new().await {
-                    Ok(c) => Arc::new(c),
-                    Err(e) => return Err(e),
-                }
-            };
+            let ctx = shared_context(&gpu_init, context).await?;
 
             // The profile the image already uses (resolved for its preview),
             // or — if the preview recorded none — resolved now.

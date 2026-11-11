@@ -907,17 +907,20 @@ fn trigger_image_load(editor: &mut RawEditor, image_id: i64) -> Task<Message> {
                     cached_raw.clone(),
                 ));
             } else if !editor.pending_raw_loads.contains(&image_id) {
-                tasks.push(Task::perform(
+                // One direct decode per image: stepping A -> B -> A used to
+                // decode A twice, and a held arrow key one image per step.
+                if editor.direct_raw_loads.insert(image_id) {
+                    tasks.push(Task::perform(
                     raw::loader::load_raw_data(raw_path),
                     move |res| Message::RawDataLoaded(image_id, res),
-                ));
-            } else if let Some(pos) = editor
-                .queued_raw_loads
-                .iter()
-                .position(|(queued_id, _)| *queued_id == image_id)
-            {
-                let prioritized = editor.queued_raw_loads.remove(pos);
-                editor.queued_raw_loads.insert(0, prioritized);
+                    ));
+                }
+            } else {
+                prioritise(
+                    &mut editor.queued_raw_loads,
+                    image_id,
+                    crate::app::loader::MAX_CONCURRENT_RAW_LOADS,
+                );
             }
         }
         
@@ -1020,6 +1023,22 @@ fn neighbours(editor: &RawEditor, behind: usize, ahead: usize) -> Vec<&ImageData
         }
     }
     out
+}
+
+/// Move `id` to the front of the not-yet-started part of the queue.
+///
+/// The first `in_flight` entries are the running decodes; inserting at index 0
+/// would shove one of them out of the running window, and iced would drop its
+/// subscription and throw the half-finished decode away.
+fn prioritise(queue: &mut Vec<(i64, String)>, id: i64, in_flight: usize) {
+    let Some(pos) = queue.iter().position(|(queued, _)| *queued == id) else {
+        return;
+    };
+    if pos < in_flight {
+        return; // already running
+    }
+    let entry = queue.remove(pos);
+    queue.insert(in_flight.min(queue.len()), entry);
 }
 
 /// Replace a load queue's not-yet-started tail with `wanted`, in order.
@@ -1172,5 +1191,31 @@ mod tests {
         e.selected_image_id = Some(1);
         assert_eq!(step_selection(&e, true), Some(3));
         assert_eq!(step_selection(&e, false), Some(3)); // wraps backwards
+    }
+}
+
+#[cfg(test)]
+mod prioritise_tests {
+    use super::prioritise;
+
+    fn q(ids: &[i64]) -> Vec<(i64, String)> {
+        ids.iter().map(|i| (*i, String::new())).collect()
+    }
+    fn ids(q: &[(i64, String)]) -> Vec<i64> {
+        q.iter().map(|(i, _)| *i).collect()
+    }
+
+    #[test]
+    fn prioritising_keeps_running_heads() {
+        let mut queue = q(&[1, 2, 3, 4]);
+        prioritise(&mut queue, 4, 2);
+        assert_eq!(ids(&queue), vec![1, 2, 4, 3]);
+    }
+
+    #[test]
+    fn prioritising_a_running_head_changes_nothing() {
+        let mut queue = q(&[1, 2, 3]);
+        prioritise(&mut queue, 2, 2);
+        assert_eq!(ids(&queue), vec![1, 2, 3]);
     }
 }

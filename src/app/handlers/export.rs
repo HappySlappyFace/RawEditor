@@ -336,6 +336,7 @@ pub fn handle_export_raw_loaded(
             // The develop pipeline uses a subsampled preview; export must use the
             // original sensor dimensions so we don't re-use those resources here.
             let ctx = editor.gpu_context.clone();
+            let gpu_init = editor.gpu_init.clone();
 
             let profile_defaults = editor.camera_profile_defaults.clone();
 
@@ -378,14 +379,7 @@ pub fn handle_export_raw_loaded(
                         (cam_to_srgb, None)
                     };
 
-                    let context = if let Some(c) = ctx {
-                        c
-                    } else {
-                        match gpu::shared::SharedContext::new().await {
-                            Ok(c) => Arc::new(c),
-                            Err(e) => return Err(e),
-                        }
-                    };
+                    let context = crate::app::handlers::loading::shared_context(&gpu_init, ctx).await?;
 
                     // AI denoise: the cached result, regenerated if missing
                     // (an export must not silently drop an edit).
