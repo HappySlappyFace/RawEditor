@@ -342,6 +342,9 @@ pub fn handle_export_raw_loaded(
 
             Task::perform(
                 async move {
+                    let context = crate::app::handlers::loading::shared_context(&gpu_init, ctx).await?;
+                    // CPU-heavy: on the blocking pool, not a tokio worker.
+                    tokio::task::spawn_blocking(move || {
                     // The image's own camera profile (its choice, else its
                     // camera's default, else the best match) — resolved here,
                     // off the UI thread, exactly as the develop load does.
@@ -379,8 +382,6 @@ pub fn handle_export_raw_loaded(
                         (cam_to_srgb, None)
                     };
 
-                    let context = crate::app::handlers::loading::shared_context(&gpu_init, ctx).await?;
-
                     // AI denoise: the cached result, regenerated if missing
                     // (an export must not silently drop an edit).
                     let mosaic = crate::app::handlers::ai_denoise::export_mosaic(&raw_data, image_id, params.ai_denoise);
@@ -410,6 +411,9 @@ pub fn handle_export_raw_loaded(
                         }
                         (context, Arc::new(res))
                     })
+                    })
+                    .await
+                    .map_err(|e| format!("resource build panicked: {e}"))?
                 },
                 move |res| Message::ExportPipelineReady(image_id, Box::new(params), res),
             )

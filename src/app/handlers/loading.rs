@@ -94,6 +94,10 @@ pub fn prepare_image_resources_from_raw(
     Task::perform(
         async move {
             let ctx = shared_context(&gpu_init, context).await?;
+            // CPU-heavy (profile scan, mosaic blend, noise/haze analysis,
+            // texture uploads): on the blocking pool, not a tokio worker, so
+            // renders' `block_in_place` always finds a free worker.
+            tokio::task::spawn_blocking(move || {
 
             // The image's camera profile: its own choice, else its camera's
             // default, else the best installed match. Resolved here, off the
@@ -146,6 +150,9 @@ pub fn prepare_image_resources_from_raw(
                 }
                 Err(e) => Err(e),
             }
+            })
+            .await
+            .map_err(|e| format!("resource build panicked: {e}"))?
         },
         move |res| Message::ImageResourcesReady(image_id, res),
     )
@@ -322,6 +329,10 @@ pub fn trigger_full_res_upgrade(editor: &mut RawEditor) -> Task<Message> {
                 (None, None) => return Err("no RAW to upgrade from".to_string()),
             };
             let ctx = shared_context(&gpu_init, context).await?;
+            // CPU-heavy (profile scan, mosaic blend, noise/haze analysis,
+            // texture uploads): on the blocking pool, not a tokio worker, so
+            // renders' `block_in_place` always finds a free worker.
+            tokio::task::spawn_blocking(move || {
 
             // The profile the image already uses (resolved for its preview),
             // or — if the preview recorded none — resolved now.
@@ -369,6 +380,9 @@ pub fn trigger_full_res_upgrade(editor: &mut RawEditor) -> Task<Message> {
                 }
                 Err(e) => Err(e),
             }
+            })
+            .await
+            .map_err(|e| format!("resource build panicked: {e}"))?
         },
         move |res| Message::FullResReady(image_id, res),
     )
