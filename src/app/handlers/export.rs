@@ -336,11 +336,15 @@ pub fn handle_export_raw_loaded(
             // The develop pipeline uses a subsampled preview; export must use the
             // original sensor dimensions so we don't re-use those resources here.
             let ctx = editor.gpu_context.clone();
+            let gpu_init = editor.gpu_init.clone();
 
             let profile_defaults = editor.camera_profile_defaults.clone();
 
             Task::perform(
                 async move {
+                    let context = crate::app::handlers::loading::shared_context(&gpu_init, ctx).await?;
+                    // CPU-heavy: on the blocking pool, not a tokio worker.
+                    tokio::task::spawn_blocking(move || {
                     // The image's own camera profile (its choice, else its
                     // camera's default, else the best match) — resolved here,
                     // off the UI thread, exactly as the develop load does.
@@ -378,15 +382,6 @@ pub fn handle_export_raw_loaded(
                         (cam_to_srgb, None)
                     };
 
-                    let context = if let Some(c) = ctx {
-                        c
-                    } else {
-                        match gpu::shared::SharedContext::new().await {
-                            Ok(c) => Arc::new(c),
-                            Err(e) => return Err(e),
-                        }
-                    };
-
                     // AI denoise: the cached result, regenerated if missing
                     // (an export must not silently drop an edit).
                     let mosaic = crate::app::handlers::ai_denoise::export_mosaic(&raw_data, image_id, params.ai_denoise);
@@ -416,6 +411,9 @@ pub fn handle_export_raw_loaded(
                         }
                         (context, Arc::new(res))
                     })
+                    })
+                    .await
+                    .map_err(|e| format!("resource build panicked: {e}"))?
                 },
                 move |res| Message::ExportPipelineReady(image_id, Box::new(params), res),
             )
@@ -473,7 +471,13 @@ pub fn handle_export_pipeline_ready(
             // setting was never read, so the checkbox and the size field did
             // nothing at all.
             let (target_width, target_height) = resized_dims(cropped_w, cropped_h, &settings);
-            if let Err(e) = check_export_size(&context, target_width, target_height, settings.format) {
+            // The colour pass reads the source with one bilinear tap, so past a
+            // 2x reduction it skips pixels and fine detail aliases. Render at
+            // the largest whole multiple of the target that fits in the
+            // source and box-average down (`box_reduce`).
+            let factor = supersample_factor((cropped_w, cropped_h), (target_width, target_height));
+            let (render_w, render_h) = (target_width * factor, target_height * factor);
+            if let Err(e) = check_export_size(&context, render_w, render_h, settings.format) {
                 tracing::error!("Export of image {image_id} refused: {e}");
                 editor.status = format!("Export failed: {e}");
                 set_job_state(editor, image_id, crate::app::state::ExportJobState::Failed(e));
@@ -500,23 +504,23 @@ pub fn handle_export_pipeline_ready(
                         let (samples, _, _) = crate::gpu::render_functions::render_to_bytes_16bit(
                             &context,
                             &resources,
-                            target_width,
-                            target_height,
+                            render_w,
+                            render_h,
                         )
                         .await;
-                        ExportPixels::Rgb16(samples)
+                        ExportPixels::Rgb16(box_reduce(&samples, render_w, render_h, factor))
                     } else {
                         let (bytes, _, _) = crate::gpu::render_functions::render_to_vec(
                             &context,
                             &resources,
-                            target_width,
-                            target_height,
+                            render_w,
+                            render_h,
                             // Export always renders the whole cropped frame,
                             // never the on-screen window.
                             crate::gpu::params::FULL_VIEW_RECT,
                         )
                         .await;
-                        ExportPixels::Rgba8(bytes)
+                        ExportPixels::Rgba8(box_reduce(&bytes, render_w, render_h, factor))
                     };
                     save_export_async(filename, source, pixels, target_width, target_height, settings)
                         .await
@@ -590,6 +594,47 @@ fn resized_dims(width: u32, height: u32, settings: &ExportSettings) -> (u32, u32
     )
 }
 
+/// The whole-number multiple of the target size to render at: the largest
+/// factor whose render still fits inside the cropped source (never upscaling),
+/// and 1 when there is no reduction to speak of.
+fn supersample_factor(source: (u32, u32), target: (u32, u32)) -> u32 {
+    (source.0 / target.0.max(1)).min(source.1 / target.1.max(1)).max(1)
+}
+
+/// Average each `factor`×`factor` block of a `width`×`height` image (any
+/// channel count, inferred from the length) down to one pixel.
+fn box_reduce<T: Copy + Into<u32> + TryFrom<u32>>(
+    src: &[T],
+    width: u32,
+    height: u32,
+    factor: u32,
+) -> Vec<T> {
+    if factor <= 1 {
+        return src.to_vec();
+    }
+    let (w, h, f) = (width as usize, height as usize, factor as usize);
+    let channels = src.len() / (w * h).max(1);
+    let (ow, oh) = (w / f, h / f);
+    let area = (f * f) as u32;
+    let mut out = Vec::with_capacity(ow * oh * channels);
+    for y in 0..oh {
+        for x in 0..ow {
+            for c in 0..channels {
+                let mut sum = 0u32;
+                for dy in 0..f {
+                    let row = (y * f + dy) * w + x * f;
+                    for dx in 0..f {
+                        sum += src[(row + dx) * channels + c].into();
+                    }
+                }
+                let avg = (sum + area / 2) / area;
+                out.push(T::try_from(avg).unwrap_or(src[0]));
+            }
+        }
+    }
+    out
+}
+
 /// Reject an export the GPU or the encoder cannot produce, before any work.
 ///
 /// Without this a too-large render failed wgpu validation mid-batch, and a
@@ -616,19 +661,19 @@ fn check_export_size(
 /// Two source folders commonly hold the same stems (DSC_0001 from two cards,
 /// or a re-export into the same folder). `File::create` truncates, so the
 /// previous behaviour silently destroyed the earlier export.
-fn unique_output_path(dir: &Path, stem: &str, extension: &str) -> PathBuf {
+fn unique_output_path(dir: &Path, stem: &str, extension: &str) -> Result<PathBuf, String> {
     let candidate = dir.join(format!("{stem}.{extension}"));
     if !candidate.exists() {
-        return candidate;
+        return Ok(candidate);
     }
     for n in 2..10_000u32 {
         let candidate = dir.join(format!("{stem} ({n}).{extension}"));
         if !candidate.exists() {
-            return candidate;
+            return Ok(candidate);
         }
     }
-    // Pathological: fall back to overwriting rather than looping forever.
-    dir.join(format!("{stem}.{extension}"))
+    // Pathological: refuse rather than overwrite an earlier export.
+    Err(format!("10,000 files named {stem} already exist in {}", dir.display()))
 }
 
 /// Carries either an 8-bit RGBA (JPEG/PNG) or 16-bit RGB (TIFF) sample
@@ -695,7 +740,7 @@ async fn save_export_async(
             ExportFormat::Tiff => "tiff",
         };
 
-        let output_path = unique_output_path(&output_dir, &filename, extension);
+        let output_path = unique_output_path(&output_dir, &filename, extension)?;
         let file = File::create(&output_path).map_err(|e| e.to_string())?;
         let mut writer = BufWriter::new(file);
 
@@ -924,21 +969,60 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("raw-editor-export-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("temp dir");
 
-        let first = unique_output_path(&dir, "DSC_0001", "jpg");
+        let first = unique_output_path(&dir, "DSC_0001", "jpg").unwrap();
         assert_eq!(first.file_name().unwrap(), "DSC_0001.jpg");
         std::fs::write(&first, b"x").expect("write");
 
-        let second = unique_output_path(&dir, "DSC_0001", "jpg");
+        let second = unique_output_path(&dir, "DSC_0001", "jpg").unwrap();
         assert_eq!(second.file_name().unwrap(), "DSC_0001 (2).jpg");
         std::fs::write(&second, b"x").expect("write");
 
-        let third = unique_output_path(&dir, "DSC_0001", "jpg");
+        let third = unique_output_path(&dir, "DSC_0001", "jpg").unwrap();
         assert_eq!(third.file_name().unwrap(), "DSC_0001 (3).jpg");
 
         // A different extension is a different file and must not be renamed.
-        let png = unique_output_path(&dir, "DSC_0001", "png");
+        let png = unique_output_path(&dir, "DSC_0001", "png").unwrap();
         assert_eq!(png.file_name().unwrap(), "DSC_0001.png");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod downscale_tests {
+    use super::*;
+
+    #[test]
+    fn factor_is_a_whole_multiple_that_fits() {
+        assert_eq!(supersample_factor((6000, 4000), (1500, 1000)), 4);
+        assert_eq!(supersample_factor((6000, 4000), (4000, 2667)), 1);
+        assert_eq!(supersample_factor((6000, 4000), (6000, 4000)), 1);
+    }
+
+    /// A 1-pixel checkerboard is the worst case for a point sample: it reads
+    /// all black or all white. Averaged, it must come out mid-grey.
+    #[test]
+    fn box_reduce_averages_a_checkerboard() {
+        let (w, h) = (8u32, 8u32);
+        let mut px = Vec::new();
+        for y in 0..h {
+            for x in 0..w {
+                let v = if (x + y) % 2 == 0 { 0u8 } else { 255 };
+                px.extend_from_slice(&[v, v, v, 255]);
+            }
+        }
+        let out = box_reduce(&px, w, h, 4);
+        assert_eq!(out.len(), 2 * 2 * 4);
+        for p in out.chunks(4) {
+            assert!((p[0] as i32 - 128).abs() <= 1, "got {}", p[0]);
+            assert_eq!(p[3], 255);
+        }
+    }
+
+    #[test]
+    fn box_reduce_handles_sixteen_bit_rgb() {
+        let src: Vec<u16> = [0u16, 65535].iter().cycle().take(4 * 3).copied().collect();
+        let out = box_reduce(&src, 2, 2, 2);
+        assert_eq!(out.len(), 3);
     }
 }

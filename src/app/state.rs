@@ -563,6 +563,10 @@ pub struct RawEditor {
     // Phase 95: Unified GPU Pipeline Architecture
     /// Shared GPU context (created once, reused for all images)
     pub gpu_context: Option<Arc<gpu::shared::SharedContext>>,
+    /// Where the context is created, exactly once (see
+    /// `handlers::loading::shared_context`): tasks started before the first
+    /// finishes would otherwise each build their own device.
+    pub gpu_init: Arc<tokio::sync::OnceCell<Arc<gpu::shared::SharedContext>>>,
     /// Current image resources (created per image, wrapped in Arc)
     pub image_resources: Option<Arc<gpu::shared::ImageResources>>,
     /// The subsampled develop preview of the same image, kept once
@@ -717,6 +721,9 @@ pub struct RawEditor {
     pub pending_raw_loads: HashSet<i64>,
     /// Throttled RAW preload queue
     pub queued_raw_loads: Vec<(i64, String)>,
+    /// Images whose selected-image RAW decode is in flight (started outside the
+    /// preload queue), so a second selection does not start a second decode.
+    pub direct_raw_loads: HashSet<i64>,
 
     /// Phase 104: Performance Profiler
     pub profiler: crate::core::profiler::Profiler,
@@ -912,6 +919,7 @@ impl RawEditor {
 
                 // Phase 95: Unified GPU Pipeline Architecture
                 gpu_context: None, // Will be initialized on first image load
+                gpu_init: Arc::new(tokio::sync::OnceCell::new()),
                 image_resources: None,
                 preview_resources: None,
                 editor_readiness: EditorReadiness::NoSelection,
@@ -1037,6 +1045,7 @@ impl RawEditor {
                 queued_loads: Vec::new(),
                 pending_raw_loads: HashSet::new(),
                 queued_raw_loads: Vec::new(),
+                direct_raw_loads: HashSet::new(),
             },
             // The splash stays up for at least SPLASH_MIN, however fast the
             // database opens: on a small catalogue it otherwise flashed for a
@@ -1860,6 +1869,17 @@ mod tests {
             img(5, "/photos/2024/e.NEF", marked),
         ];
         e
+    }
+
+    /// Auto-advance after a mark used to walk the unfiltered list and could
+    /// land on an image the rating filter hides (no filmstrip selection).
+    #[test]
+    fn next_unmarked_prefers_an_image_the_filter_shows() {
+        let mut e = catalog();
+        e.current_tab = AppTab::Develop;
+        e.min_filter_rating = 5;
+        assert_eq!(e.displayed_ids(), vec![3]);
+        assert_eq!(crate::app::handlers::navigation::find_next_unmarked_image_id(&e, 1), Some(3));
     }
 
     #[test]
