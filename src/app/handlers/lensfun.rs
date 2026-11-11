@@ -134,6 +134,7 @@ pub fn handle_db_loaded(editor: &mut RawEditor, changed: bool) -> Task<Message> 
 /// The database changed: decoded images carry the old lookup.
 fn database_changed(editor: &mut RawEditor) -> Task<Message> {
     editor.raw_cache.clear();
+    editor.current_raw = None;
     editor.raw_cache_bytes = 0;
     crate::app::handlers::navigation::reload_selected_image(editor)
 }

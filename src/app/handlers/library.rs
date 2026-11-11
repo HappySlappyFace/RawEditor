@@ -32,7 +32,7 @@ pub fn handle_database_loaded(editor: &mut RawEditor, result: Result<Vec<crate::
                         return Task::batch(vec![
                             maximize_window,
                             scale,
-                            spawn_cache_workers(db_path),
+                            spawn_cache_workers(editor, db_path),
                             updates,
                         ]);
                     }
@@ -238,7 +238,7 @@ pub fn handle_import_complete(
         editor.pending_cache_count = library.count_pending_cache().unwrap_or(0);
         editor.status = format!("Import complete! Added {}, skipped {}.", result.imported_count, result.skipped_count);
         let db_path = library.path().clone();
-        return spawn_cache_workers(db_path);
+        return spawn_cache_workers(editor, db_path);
     }
     Task::none()
 }
@@ -284,6 +284,8 @@ pub fn handle_cache_processed(editor: &mut RawEditor, result: Result<(i64, Strin
         return Task::perform(process_cache_async(db_path), Message::CacheProcessed);
     }
 
+    // This worker retires: free its slot so a later import can top up.
+    editor.cache_workers_live = editor.cache_workers_live.saturating_sub(1);
     if editor.pending_cache_count == 0 {
         editor.status = format!("{} All cache tiers generated!", ui::icons::CHECK);
     }
@@ -492,10 +494,14 @@ pub fn handle_remove_folder_confirmed(editor: &mut RawEditor) -> Task<Message> {
 /// Capped at 4 to keep memory usage predictable (each decode can hold ~100MB).
 const CACHE_WORKERS: usize = 4;
 
-/// Fire `CACHE_WORKERS` concurrent cache tasks at once.
-fn spawn_cache_workers(db_path: PathBuf) -> Task<Message> {
+/// Top the running cache workers up to `CACHE_WORKERS`. Each completion
+/// starts its own replacement, so starting a full set again while some are
+/// still running (a second import) would multiply the concurrency.
+fn spawn_cache_workers(editor: &mut RawEditor, db_path: PathBuf) -> Task<Message> {
+    let missing = CACHE_WORKERS.saturating_sub(editor.cache_workers_live);
+    editor.cache_workers_live += missing;
     Task::batch(
-        (0..CACHE_WORKERS).map(|_| {
+        (0..missing).map(|_| {
             Task::perform(process_cache_async(db_path.clone()), Message::CacheProcessed)
         })
     )
@@ -772,6 +778,25 @@ mod tests {
         std::fs::write(dir.join("b.nef"), b"x").unwrap();
         let second = import_folder_blocking(&dir, &db).unwrap();
         assert_eq!((second.imported_count, second.skipped_count), (1, 1));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Two imports in a row must not stack a second set of workers on the
+    /// first (each completion starts its own replacement).
+    #[test]
+    fn cache_workers_are_topped_up_not_multiplied() {
+        let dir = scratch_dir("workers");
+        let mut e = RawEditor::new().0;
+        e.library = Some(crate::database::library::Library::open_at(&dir.join("c.db")).unwrap());
+        let db = dir.join("c.db");
+        let _ = spawn_cache_workers(&mut e, db.clone());
+        let _ = spawn_cache_workers(&mut e, db.clone());
+        assert_eq!(e.cache_workers_live, CACHE_WORKERS);
+        // A worker that finds nothing left retires and frees its slot.
+        let _ = handle_cache_processed(&mut e, Err((0, "empty".into())));
+        assert_eq!(e.cache_workers_live, CACHE_WORKERS - 1);
+        let _ = spawn_cache_workers(&mut e, db);
+        assert_eq!(e.cache_workers_live, CACHE_WORKERS);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

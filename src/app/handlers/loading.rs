@@ -71,6 +71,7 @@ pub fn prepare_image_resources_from_raw(
     image_id: i64,
     raw: Arc<raw::loader::RawDataResult>,
 ) -> Task<Message> {
+    editor.current_raw = Some((image_id, raw.clone()));
     editor.current_metadata = Some(metadata_snapshot(&raw));
     editor.current_metadata_id = Some(image_id);
 
@@ -299,7 +300,7 @@ pub fn trigger_full_res_upgrade(editor: &mut RawEditor) -> Task<Message> {
         return Task::none();
     }
 
-    let cached = editor.raw_cache.get(&image_id).cloned();
+    let cached = editor.raw_for(image_id);
     let path = match &cached {
         Some(_) => None,
         None => match editor.images.iter().find(|i| i.id == image_id) {
@@ -423,6 +424,26 @@ fn metadata_snapshot(raw: &raw::loader::RawDataResult) -> raw::loader::RawDataRe
 mod tests {
     use super::*;
     use crate::app::message::AppTab;
+
+    /// With the preload budget at 0 nothing enters `raw_cache`, yet the open
+    /// image's RAW must stay reachable (eyedroppers, loupe, AI tools). Runs
+    /// the real `RawDataLoaded` handler; `apply_raw_preload_cleanup` runs in it.
+    #[test]
+    fn the_open_images_raw_is_pinned_with_a_zero_preload_budget() {
+        let mut e = RawEditor::new().0;
+        e.raw_preload_budget_mb = 0;
+        e.selected_image_id = Some(1);
+        e.editor_readiness = EditorReadiness::Loading(1);
+        let raw = crate::ml::segment::tests::disc_raw(60, 40);
+        let _ = handle_raw_data_loaded(&mut e, 1, Ok(raw));
+        assert!(e.raw_cache.is_empty(), "budget 0 caches nothing");
+        assert!(e.raw_for(1).is_some(), "the open image's RAW was dropped");
+        assert!(e.raw_for(2).is_none());
+        assert!(crate::app::handlers::develop::sample_raw_rgb(&e, 1, 0.5, 0.5).is_ok());
+        // Deleting the image releases the pin.
+        e.remove_from_raw_cache(1);
+        assert!(e.raw_for(1).is_none());
+    }
 
     /// Zoom is kept across images and tabs, so a photo can load straight
     /// into a zoomed-in view. Only the zoom handler used to request full

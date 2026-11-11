@@ -50,6 +50,8 @@ pub fn main() -> iced::Result {
         size: iced::Size::new(900.0, 350.0),
         min_size: Some(iced::Size::new(600.0, 350.0)),
         decorations: false,
+        // Closing goes through `Message::CloseWindow` (flush, save the proxy).
+        exit_on_close_request: false,
         icon: iced::window::icon::from_file_data(APP_ICON_PNG, None).ok(),
         #[cfg(target_os = "linux")]
         platform_specific: iced::window::settings::PlatformSpecific {

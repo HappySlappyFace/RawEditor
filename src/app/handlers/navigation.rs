@@ -7,6 +7,18 @@ use crate::raw;
 use crate::ui::preview_renderer::{CropHandle, MaskHandle};
 
 pub fn handle_image_selected(editor: &mut RawEditor, image_id: i64) -> Task<Message> {
+    select_image(editor, image_id, true)
+}
+
+/// Selection the app makes itself (after a delete, auto-advance, a marked
+/// image): never reads the modifier keys, which may still be held from the
+/// shortcut that caused it and would turn "move on" into a range select or
+/// toggle the image out of the selection.
+pub fn handle_image_moved(editor: &mut RawEditor, image_id: i64) -> Task<Message> {
+    select_image(editor, image_id, false)
+}
+
+fn select_image(editor: &mut RawEditor, image_id: i64, from_click: bool) -> Task<Message> {
     // Must run BEFORE selected_image_id moves: flush_edits writes
     // current_edit_params against the currently-selected id, so flushing after
     // the switch would write this image's edits onto the next one.
@@ -28,8 +40,8 @@ pub fn handle_image_selected(editor: &mut RawEditor, image_id: i64) -> Task<Mess
     // The peek belongs to the outgoing image; carrying it across would show
     // the new image unedited with no way to notice why.
     editor.before_peek = false;
-    let shift = editor.last_modifiers.shift();
-    let command = editor.last_modifiers.command();
+    let shift = from_click && editor.last_modifiers.shift();
+    let command = from_click && editor.last_modifiers.command();
 
     if shift {
         // Range select from the anchor. Falls back to a plain click when
@@ -311,7 +323,7 @@ pub fn ensure_develop_selection_not_marked(editor: &mut RawEditor) -> Task<Messa
     };
 
     if let Some(next_id) = find_next_unmarked_image_id(editor, sel) {
-        Task::done(Message::ImageSelected(next_id))
+        Task::done(Message::ImageMoved(next_id))
     } else {
         editor.selected_image_id = None;
         editor.editor_readiness = EditorReadiness::NoSelection;
@@ -347,7 +359,7 @@ pub fn handle_select_next_image(editor: &mut RawEditor) -> Task<Message> {
         return Task::none();
     }
     match step_selection(editor, true) {
-        Some(next) => Task::done(Message::ImageSelected(next)),
+        Some(next) => Task::done(Message::ImageMoved(next)),
         None => Task::none(),
     }
 }
@@ -357,7 +369,7 @@ pub fn handle_select_previous_image(editor: &mut RawEditor) -> Task<Message> {
         return Task::none();
     }
     match step_selection(editor, false) {
-        Some(prev) => Task::done(Message::ImageSelected(prev)),
+        Some(prev) => Task::done(Message::ImageMoved(prev)),
         None => Task::none(),
     }
 }
@@ -828,6 +840,10 @@ fn trigger_image_load(editor: &mut RawEditor, image_id: i64) -> Task<Message> {
     // previous image may still be building, and starting this one's
     // alongside it would hold two full-size working sets. Its result
     // releases the guard and re-checks this image (`handle_full_res_ready`).
+    // The pin belongs to the image being left.
+    if editor.current_raw.as_ref().is_some_and(|(id, _)| *id != image_id) {
+        editor.current_raw = None;
+    }
     let develop = editor.current_tab == AppTab::Develop;
     if develop {
         // The outgoing image's GPU resources and render must not stay on
@@ -1140,6 +1156,28 @@ mod tests {
         e.current_tab = AppTab::Library;
         e.images = ids.iter().map(|i| img(*i, "/p/x.NEF")).collect();
         e
+    }
+
+    /// A move the app makes (after a delete, auto-advance) must not be read as
+    /// a Shift/Ctrl click because a key from the triggering shortcut is
+    /// still held; a real click still is.
+    #[test]
+    fn app_driven_selection_ignores_held_modifiers() {
+        let mut e = editor_with(&[1, 2, 3]);
+        let _ = handle_image_selected(&mut e, 1);
+        e.last_modifiers = iced::keyboard::Modifiers::SHIFT;
+        let _ = crate::app::update::update(&mut e, Message::ImageMoved(3));
+        assert_eq!(e.multi_selection, [3].into_iter().collect(), "a range select");
+        assert_eq!(e.selected_image_id, Some(3));
+
+        e.last_modifiers = iced::keyboard::Modifiers::CTRL;
+        let _ = crate::app::update::update(&mut e, Message::ImageMoved(2));
+        assert_eq!(e.multi_selection, [2].into_iter().collect(), "toggled out");
+
+        // A real Shift-click still extends.
+        e.last_modifiers = iced::keyboard::Modifiers::SHIFT;
+        let _ = crate::app::update::update(&mut e, Message::ImageSelected(3));
+        assert_eq!(e.multi_selection.len(), 2);
     }
 
     #[test]
