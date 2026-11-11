@@ -187,6 +187,8 @@ pub fn handle_turn_image(editor: &mut RawEditor, clockwise: bool) -> Task<Messag
         .as_ref()
         .filter(|r| Some(r.image_id) == editor.selected_image_id)
     else {
+        // Not silent: say why nothing turned.
+        editor.status = "Turn: the image is still loading".to_string();
         return Task::none();
     };
     let (w, h) = res.oriented_dims(editor.current_edit_params.quarter_turns);
