@@ -3896,7 +3896,7 @@ dependencies = [
 
 [[package]]
 name = "raw-editor"
-version = "0.9.25"
+version = "0.9.26"
 dependencies = [
  "bytemuck",
  "bzip2-rs",
