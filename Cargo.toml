@@ -28,7 +28,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 dirs = "5.0"
 
 # Native file/folder picker dialogs
-rfd = "0.14"
+rfd = "0.18"
 
 # Recursive directory traversal
 walkdir = "2.4"
