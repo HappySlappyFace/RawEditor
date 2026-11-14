@@ -47,10 +47,12 @@ pub fn main() -> iced::Result {
     .font(ui::theme::font::BOLD_BYTES)
     .default_font(Font::with_name("JetBrainsMono Nerd Font"))
     .window(iced::window::Settings {
-        size: iced::Size::new(900.0, 350.0),
+        size: iced::Size::new(1280.0, 720.0),
         // Wide enough for the title bar: the centred tabs (4 x 112 px) must clear
-        // the menus on the left and the window buttons on the right.
-        min_size: Some(iced::Size::new(900.0, 350.0)),
+        // the menus on the left and the window buttons on the right. With the
+        // update badge showing the bar needs about 1000 px, so it can crowd the
+        // right-hand buttons just above this minimum.
+        min_size: Some(iced::Size::new(960.0, 540.0)),
         decorations: false,
         // Closing goes through `Message::CloseWindow` (flush, save the proxy).
         exit_on_close_request: false,
