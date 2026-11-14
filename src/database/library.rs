@@ -470,6 +470,24 @@ impl Library {
         Ok(out)
     }
 
+    /// Ids of images whose saved edit has AI denoise on: the only ones whose
+    /// cached result (`cache/denoised`) is worth keeping.
+    pub fn ai_denoise_images(&self) -> SqlResult<std::collections::HashSet<i64>> {
+        let mut stmt = self.conn.prepare("SELECT image_id, settings_json FROM edits")?;
+        let rows = stmt.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))?;
+        let mut out = std::collections::HashSet::new();
+        for row in rows {
+            let (image_id, json) = row?;
+            if !json.contains("\"ai_denoise\"") {
+                continue;
+            }
+            if EditParams::from_json(&json).is_ok_and(|p| p.ai_denoise > 0.0) {
+                out.insert(image_id);
+            }
+        }
+        Ok(out)
+    }
+
     /// Load an image's saved edit. `Ok(None)` means there is no row (never
     /// edited); `Err` means a row exists but cannot be read. In that case the
     /// unreadable JSON is first copied to `settings_json_backup` (never
@@ -713,6 +731,15 @@ fn load_database_blocking() -> Result<Vec<super::models::Image>, String> {
             }
         }
         Err(e) => tracing::warn!("Could not sweep AI masks: {e}"),
+    }
+    match lib.ai_denoise_images() {
+        Ok(keep) => {
+            let n = crate::ml::denoise::sweep(&keep);
+            if n > 0 {
+                tracing::info!("Removed {n} unused AI denoise result(s)");
+            }
+        }
+        Err(e) => tracing::warn!("Could not sweep AI denoise results: {e}"),
     }
     if let Ok(dir) = crate::raw::processor::cache_dir("edited") {
         match lib.sweep_edited_proxies(&dir) {

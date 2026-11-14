@@ -23,11 +23,14 @@ pub struct UpdatesState {
     pub shown: Option<Result<Option<Available>, String>>,
     /// The first-run prompt's checkbox, which starts ticked.
     pub prompt_choice: bool,
+    /// Check for Updates was clicked while another check was running: that
+    /// check's result is then shown too, whatever it was started as.
+    pub manual_pending: bool,
 }
 
 impl Default for UpdatesState {
     fn default() -> Self {
-        Self { checking: false, available: None, shown: None, prompt_choice: true }
+        Self { checking: false, available: None, shown: None, prompt_choice: true, manual_pending: false }
     }
 }
 
@@ -71,6 +74,9 @@ pub fn handle_check(editor: &mut RawEditor) -> Task<Message> {
     if editor.active_modal != Modal::Preferences {
         editor.active_modal = Modal::Update;
     }
+    // `start` does nothing while a check runs (the startup one, say): remember
+    // the click so that check's result is shown.
+    editor.updates.manual_pending = editor.updates.checking;
     start(editor, true)
 }
 
@@ -80,6 +86,7 @@ pub fn handle_checked(
     manual: bool,
 ) -> Task<Message> {
     editor.updates.checking = false;
+    let manual = manual || std::mem::take(&mut editor.updates.manual_pending);
     match &result {
         Ok(Some(a)) => {
             tracing::info!("update: {} is available (this is {})", a.version, crate::core::updates::current_version());
@@ -207,5 +214,22 @@ mod tests {
         assert_eq!(e.update_check, Some(false));
         assert_eq!(e.active_modal, Modal::None);
         assert!(!e.updates.checking);
+    }
+}
+
+#[cfg(test)]
+mod manual_click_tests {
+    use super::*;
+
+    /// A click on Check for Updates while the startup check runs still gets
+    /// a result: the startup check's.
+    #[test]
+    fn a_click_during_the_startup_check_shows_its_result() {
+        let (mut e, _) = RawEditor::new();
+        e.updates.checking = true; // the startup check, in flight
+        let _ = handle_check(&mut e);
+        let _ = handle_checked(&mut e, Ok(None), false);
+        assert!(matches!(e.updates.shown, Some(Ok(None))));
+        assert!(!e.updates.manual_pending);
     }
 }

@@ -666,6 +666,8 @@ pub struct RawEditor {
     pub multi_selection: HashSet<i64>,
     /// Phase 55: Track modifier keys for Ctrl/Cmd+Click
     pub last_modifiers: iced::keyboard::Modifiers,
+    /// Character shortcuts whose key is currently held (see `key_is_fresh`).
+    pub keys_down: std::collections::HashMap<String, std::time::Instant>,
     /// Pivot for Shift+click range selection: the last image picked WITHOUT
     /// shift. Held separately from `selected_image_id` because a range drag
     /// moves the current selection while the pivot must stay put.
@@ -967,6 +969,7 @@ impl RawEditor {
                 copy_categories: settings.copy_categories,
                 multi_selection: HashSet::new(),
                 last_modifiers: iced::keyboard::Modifiers::default(),
+                keys_down: Default::default(),
                 selection_anchor: None,
                 auto_advance: settings.auto_advance,
                 min_filter_rating: 0,
@@ -1659,9 +1662,10 @@ impl RawEditor {
                 return Some(Message::FileDropped(path));
             }
             // Alt-tabbing away while Space is held sends the KeyReleased to
-            // the other window, which would otherwise strand the peek on.
+            // the other window, which would otherwise strand the peek on (and
+            // a held arrow key's glide at speed).
             if let iced::Event::Window(iced::window::Event::Unfocused) = event {
-                return Some(Message::SetBeforePeek(false));
+                return Some(Message::WindowUnfocused);
             }
             // Hold-to-peek and the arrow-key follow scroll need the release
             // edge; every other shortcut here is press-only.
@@ -1676,113 +1680,14 @@ impl RawEditor {
                 ) {
                     return Some(Message::NavigationKeyReleased);
                 }
+                if let keyboard::Key::Character(c) = key {
+                    return Some(Message::ShortcutKeyUp(c.to_lowercase()));
+                }
                 return None;
             }
 
-            if let iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) = event
-            {
-                // Phase 54: Settings Clipboard (Ctrl/Cmd+C/V)
-                if modifiers.command() {
-                    match key {
-                        // Shift+C skips the picker and copies everything, so
-                        // the common case keeps zero friction.
-                        keyboard::Key::Character(c) if c == "c" || c == "C" => {
-                            return Some(if modifiers.shift() {
-                                Message::CopyAllSettings
-                            } else {
-                                Message::CopySettings
-                            });
-                        }
-                        keyboard::Key::Character(c) if c == "v" || c == "V" => {
-                            return Some(Message::PasteSettings);
-                        }
-                        // Must live in the command block with an early return:
-                        // the fall-through match below would make a bare `a`
-                        // select everything.
-                        keyboard::Key::Character(c) if c == "a" || c == "A" => {
-                            return Some(Message::SelectAll);
-                        }
-                        _ => {}
-                    }
-                }
-
-                match key {
-                    keyboard::Key::Named(Named::F3) => Some(Message::ToggleProfiler),
-                    // Nothing opened the shortcut list from the keyboard,
-                    // which is a poor joke for a shortcut list.
-                    keyboard::Key::Named(Named::F1) => {
-                        Some(Message::OpenModal(Modal::Help))
-                    }
-                    keyboard::Key::Character(c) if c == "?" || c == "/" && modifiers.shift() => {
-                        Some(Message::OpenModal(Modal::Help))
-                    }
-                    keyboard::Key::Named(Named::Escape) => Some(Message::Escape),
-                    // Hold to peek at the original; the KeyReleased arm above
-                    // ends it. The handler ignores repeats and gates on tab /
-                    // modal / readiness.
-                    keyboard::Key::Named(Named::Space) => Some(Message::SetBeforePeek(true)),
-                    keyboard::Key::Named(Named::ArrowRight) => Some(Message::SelectNextImage),
-                    keyboard::Key::Named(Named::ArrowLeft) => Some(Message::SelectPreviousImage),
-                    keyboard::Key::Named(Named::Delete)
-                    | keyboard::Key::Named(Named::Backspace) => Some(Message::DeleteImage),
-                    // Enter confirms whichever modal is open. One key event can
-                    // only produce one message, so it routes on `active_modal`
-                    // in handle_modal_confirm rather than each modal trying to
-                    // claim the key. Inert when no modal is open.
-                    keyboard::Key::Named(Named::Enter) => Some(Message::ModalConfirm),
-                    // D confirms "Mark for Removal" in the Delete modal. Safe
-                    // everywhere else — the handler no-ops unless Modal::Delete
-                    // is actually open.
-                    keyboard::Key::Character(c) if c == "d" || c == "D" => {
-                        Some(Message::MarkForRemovalConfirmed)
-                    }
-                    // Phase 56: Rating Shortcuts (1-5)
-                    keyboard::Key::Character(c) if c == "0" => Some(Message::SetRating(0)),
-                    keyboard::Key::Character(c) if c == "1" => Some(Message::SetRating(1)),
-                    keyboard::Key::Character(c) if c == "2" => Some(Message::SetRating(2)),
-                    keyboard::Key::Character(c) if c == "3" => Some(Message::SetRating(3)),
-                    keyboard::Key::Character(c) if c == "4" => Some(Message::SetRating(4)),
-                    keyboard::Key::Character(c) if c == "5" => Some(Message::SetRating(5)),
-                    keyboard::Key::Character(c) if c == "r" || c == "R" => {
-                        Some(Message::ResetEdits)
-                    }
-                    // Phase 83: Flag Shortcuts
-                    keyboard::Key::Character(c) if c == "p" || c == "P" => {
-                        Some(Message::SetFlag(1))
-                    }
-                    keyboard::Key::Character(c) if c == "x" || c == "X" => {
-                        Some(Message::SetFlag(-1))
-                    }
-                    keyboard::Key::Character(c) if c == "u" || c == "U" => {
-                        Some(Message::SetFlag(0))
-                    }
-                    // Phase 60: HUD Toggle
-                    keyboard::Key::Character(c) if c == "i" || c == "I" => {
-                        Some(Message::ToggleInfoHud)
-                    }
-                    // Phase 65: Undo/Redo shortcuts
-                    keyboard::Key::Character(c)
-                        if c == "z" && (modifiers.command() || modifiers.control()) =>
-                    {
-                        if modifiers.shift() {
-                            Some(Message::Redo)
-                        } else {
-                            Some(Message::Undo)
-                        }
-                    }
-                    keyboard::Key::Character(c)
-                        if c == "y" && (modifiers.command() || modifiers.control()) =>
-                    {
-                        Some(Message::Redo)
-                    }
-                    // Phase 67: Crop shortcut
-                    keyboard::Key::Character(c) if c == "c" => Some(Message::ToggleCrop),
-                    // WB eyedropper shortcut
-                    keyboard::Key::Character(c) if c == "w" || c == "W" => {
-                        Some(Message::ToggleWbPicker)
-                    }
-                    _ => None,
-                }
+            if let iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) = event {
+                key_shortcut(key, modifiers)
             } else {
                 None
             }
@@ -2100,5 +2005,215 @@ mod tests {
         e.flush_edits();
         assert!(e.edited_proxies.peek(&1).is_none());
         assert_eq!(e.images[0].cache_path_edited, None);
+    }
+}
+
+/// The message a key press stands for, if any. Pure, so the keymap can be
+/// tested.
+pub(crate) fn key_shortcut(key: iced::keyboard::Key, modifiers: iced::keyboard::Modifiers) -> Option<Message> {
+    use iced::keyboard;
+    use iced::keyboard::key::Named;
+        // Phase 54: Settings Clipboard (Ctrl/Cmd+C/V)
+        if modifiers.command() {
+            match key {
+                // Shift+C skips the picker and copies everything, so
+                // the common case keeps zero friction.
+                keyboard::Key::Character(c) if c == "c" || c == "C" => {
+                    return Some(if modifiers.shift() {
+                        Message::CopyAllSettings
+                    } else {
+                        Message::CopySettings
+                    });
+                }
+                keyboard::Key::Character(c) if c == "v" || c == "V" => {
+                    return Some(Message::PasteSettings);
+                }
+                // Must live in the command block with an early return:
+                // the fall-through match below would make a bare `a`
+                // select everything.
+                keyboard::Key::Character(c) if c == "a" || c == "A" => {
+                    return Some(Message::SelectAll);
+                }
+                _ => {}
+            }
+        }
+
+        // Ctrl/Cmd+Z and Y first: they are the only letter shortcuts that
+        // take a modifier.
+        if let keyboard::Key::Character(c) = &key {
+            if matches!(c.as_str(), "z" | "Z" | "y" | "Y") && (modifiers.command() || modifiers.control()) {
+                return Some(if c.eq_ignore_ascii_case("y") || modifiers.shift() { Message::Redo } else { Message::Undo });
+            }
+            // Every other letter or digit shortcut is a bare key (Shift allowed:
+            // "?" and capitals). With Ctrl/Cmd/Alt held it is someone else's
+            // chord (Ctrl+R reload, Cmd+W close, Alt as the slider's fine-drag
+            // modifier) and must not reset edits, rate or flag.
+            if modifiers.command() || modifiers.control() || modifiers.alt() || modifiers.logo() {
+                return None;
+            }
+        }
+
+        match key {
+            keyboard::Key::Named(Named::F3) => Some(Message::ToggleProfiler),
+            // Nothing opened the shortcut list from the keyboard,
+            // which is a poor joke for a shortcut list.
+            keyboard::Key::Named(Named::F1) => {
+                Some(Message::OpenModal(Modal::Help))
+            }
+            keyboard::Key::Character(c) if c == "?" || c == "/" && modifiers.shift() => {
+                Some(Message::OpenModal(Modal::Help))
+            }
+            keyboard::Key::Named(Named::Escape) => Some(Message::Escape),
+            // Hold to peek at the original; the KeyReleased arm above
+            // ends it. The handler ignores repeats and gates on tab /
+            // modal / readiness.
+            keyboard::Key::Named(Named::Space) => Some(Message::SetBeforePeek(true)),
+            keyboard::Key::Named(Named::ArrowRight) => Some(Message::SelectNextImage),
+            keyboard::Key::Named(Named::ArrowLeft) => Some(Message::SelectPreviousImage),
+            keyboard::Key::Named(Named::Delete)
+            | keyboard::Key::Named(Named::Backspace) => Some(Message::DeleteImage),
+            // Enter confirms whichever modal is open. One key event can
+            // only produce one message, so it routes on `active_modal`
+            // in handle_modal_confirm rather than each modal trying to
+            // claim the key. Inert when no modal is open.
+            keyboard::Key::Named(Named::Enter) => Some(Message::ModalConfirm),
+            // D confirms "Mark for Removal" in the Delete modal. Safe
+            // everywhere else — the handler no-ops unless Modal::Delete
+            // is actually open.
+            keyboard::Key::Character(c) if c == "d" || c == "D" => {
+                once(&c, Message::MarkForRemovalConfirmed)
+            }
+            // Phase 56: Rating Shortcuts (1-5)
+            keyboard::Key::Character(c) if c == "0" => once(&c, Message::SetRating(0)),
+            keyboard::Key::Character(c) if c == "1" => once(&c, Message::SetRating(1)),
+            keyboard::Key::Character(c) if c == "2" => once(&c, Message::SetRating(2)),
+            keyboard::Key::Character(c) if c == "3" => once(&c, Message::SetRating(3)),
+            keyboard::Key::Character(c) if c == "4" => once(&c, Message::SetRating(4)),
+            keyboard::Key::Character(c) if c == "5" => once(&c, Message::SetRating(5)),
+            keyboard::Key::Character(c) if c == "r" || c == "R" => {
+                once(&c, Message::ResetEdits)
+            }
+            // Phase 83: Flag Shortcuts
+            keyboard::Key::Character(c) if c == "p" || c == "P" => {
+                once(&c, Message::SetFlag(1))
+            }
+            keyboard::Key::Character(c) if c == "x" || c == "X" => {
+                once(&c, Message::SetFlag(-1))
+            }
+            keyboard::Key::Character(c) if c == "u" || c == "U" => {
+                once(&c, Message::SetFlag(0))
+            }
+            // Phase 60: HUD Toggle
+            keyboard::Key::Character(c) if c == "i" || c == "I" => {
+                once(&c, Message::ToggleInfoHud)
+            }
+            // Phase 67: Crop shortcut
+            keyboard::Key::Character(c) if c == "c" => once(&c, Message::ToggleCrop),
+            // WB eyedropper shortcut
+            keyboard::Key::Character(c) if c == "w" || c == "W" => {
+                once(&c, Message::ToggleWbPicker)
+            }
+            _ => None,
+        }
+}
+
+/// A shortcut that must not repeat while its key is held (a rating or flag is
+/// a database write, the toggles would flicker). iced 0.13's `KeyPressed` has
+/// no repeat flag, so `update` tracks which keys are down (`keys_down`).
+fn once(key: &str, message: Message) -> Option<Message> {
+    Some(Message::ShortcutKey { key: key.to_lowercase(), message: Box::new(message) })
+}
+
+impl RawEditor {
+    /// Is this press of `key` the first of a hold? Repeats refresh the entry,
+    /// so it lives as long as the hold; an entry nothing has refreshed for
+    /// `HOLD_GAP` is stale (a key-up that went to another window) and the
+    /// next press counts as fresh.
+    pub(crate) fn key_is_fresh(&mut self, key: String) -> bool {
+        const HOLD_GAP: std::time::Duration = std::time::Duration::from_millis(1500);
+        let now = std::time::Instant::now();
+        match self.keys_down.insert(key, now) {
+            Some(last) => now.duration_since(last) > HOLD_GAP,
+            None => true,
+        }
+    }
+}
+
+#[cfg(test)]
+mod keymap_tests {
+    use super::*;
+    use iced::keyboard::{Key, Modifiers};
+
+    fn ch(c: &str) -> Key {
+        Key::Character(c.into())
+    }
+
+    /// The message inside a once-per-hold wrapper.
+    fn inner(m: Option<Message>) -> Option<Message> {
+        match m {
+            Some(Message::ShortcutKey { message, .. }) => Some(*message),
+            other => other,
+        }
+    }
+
+    /// A held key repeats its press: only the first of a hold counts, and a
+    /// key-up (or the hold going stale) re-arms it.
+    #[test]
+    fn a_held_key_fires_once() {
+        let mut e = RawEditor::new().0;
+        assert!(e.key_is_fresh("r".into()));
+        assert!(!e.key_is_fresh("r".into()));
+        assert!(!e.key_is_fresh("r".into()));
+        assert!(e.key_is_fresh("p".into()), "another key is independent");
+        e.keys_down.remove("r");
+        assert!(e.key_is_fresh("r".into()), "released, pressed again");
+        e.keys_down.insert("p".into(), std::time::Instant::now() - std::time::Duration::from_secs(5));
+        assert!(e.key_is_fresh("p".into()), "a stale hold must not block the key for good");
+    }
+
+    /// Through `update`: the second press of a held rating key does nothing.
+    #[test]
+    fn update_ignores_repeats_of_a_held_shortcut() {
+        let mut e = crate::app::testkit::editor_with_images(2);
+        crate::app::testkit::send(&mut e, Message::ImageSelected(1));
+        let press = || Message::ShortcutKey { key: "3".into(), message: Box::new(Message::SetRating(3)) };
+        crate::app::testkit::send(&mut e, press());
+        assert_eq!(e.images[0].rating, 3);
+        e.images[0].rating = 0; // a repeat must not set it again
+        crate::app::testkit::send(&mut e, press());
+        assert_eq!(e.images[0].rating, 0);
+        crate::app::testkit::send(&mut e, Message::ShortcutKeyUp("3".into()));
+        crate::app::testkit::send(&mut e, press());
+        assert_eq!(e.images[0].rating, 3);
+    }
+
+    /// Ctrl/Cmd/Alt + a letter or digit is not a shortcut: Ctrl+R must not
+    /// reset the edits, nor Ctrl+1 rate, nor Alt+C open the crop.
+    #[test]
+    fn a_held_modifier_disables_the_single_key_shortcuts() {
+        for m in [Modifiers::CTRL, Modifiers::ALT, Modifiers::LOGO, Modifiers::CTRL | Modifiers::SHIFT] {
+            for k in ["r", "d", "1", "5", "p", "x", "u", "i", "c", "w", "0"] {
+                // Ctrl/Cmd+C is the clipboard, not ToggleCrop.
+                if k == "c" && m.command() {
+                    continue;
+                }
+                assert!(key_shortcut(ch(k), m).is_none(), "{k} with {m:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn bare_keys_and_the_modified_chords_still_work() {
+        assert!(matches!(inner(key_shortcut(ch("r"), Modifiers::empty())), Some(Message::ResetEdits)));
+        assert!(matches!(inner(key_shortcut(ch("3"), Modifiers::empty())), Some(Message::SetRating(3))));
+        assert!(matches!(inner(key_shortcut(ch("R"), Modifiers::SHIFT)), Some(Message::ResetEdits)));
+        assert!(matches!(key_shortcut(ch("?"), Modifiers::SHIFT), Some(Message::OpenModal(Modal::Help))));
+        assert!(matches!(key_shortcut(ch("z"), Modifiers::CTRL), Some(Message::Undo)));
+        assert!(matches!(key_shortcut(ch("z"), Modifiers::CTRL | Modifiers::SHIFT), Some(Message::Redo)));
+        assert!(matches!(key_shortcut(ch("y"), Modifiers::CTRL), Some(Message::Redo)));
+        assert!(matches!(key_shortcut(ch("c"), Modifiers::CTRL), Some(Message::CopySettings)));
+        assert!(matches!(key_shortcut(ch("v"), Modifiers::CTRL), Some(Message::PasteSettings)));
+        assert!(matches!(key_shortcut(ch("a"), Modifiers::CTRL), Some(Message::SelectAll)));
+        assert!(matches!(key_shortcut(Key::Named(iced::keyboard::key::Named::ArrowRight), Modifiers::CTRL), Some(Message::SelectNextImage)));
     }
 }

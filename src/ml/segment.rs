@@ -154,6 +154,13 @@ pub struct Decoder {
 #[derive(Clone)]
 pub struct Logits(Vec<f32>);
 
+#[cfg(test)]
+impl Logits {
+    pub fn default_for_tests() -> Self {
+        Self(Vec::new())
+    }
+}
+
 impl Decoder {
     /// Blocking.
     pub fn new() -> Result<Self, String> {

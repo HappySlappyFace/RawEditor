@@ -621,7 +621,7 @@ impl CropOverlay {
                 &mut frame,
                 self.uv_to_screen((m.ax + m.bx) * 0.5, (m.ay + m.by) * 0.5, &ib),
             );
-        } else {
+        } else if m.mask_type == crate::core::types::MASK_RADIAL {
             // Radial: ellipse in UV space, screen radii already account for
             // the UV→screen aspect distortion (same conversion RadiusUniform
             // uses at placement time). rx/ry being genuine screen-space
@@ -694,6 +694,12 @@ impl CropOverlay {
         let Some(m) = self.selected_mask else {
             return vec![];
         };
+        // Brush, range and AI masks have no geometry of their own (a = b = 0):
+        // they must offer no handles, or a drag would write a centre, radius
+        // and rotation into a mask that does not use them.
+        if m.mask_type != crate::core::types::MASK_LINEAR && m.mask_type != crate::core::types::MASK_RADIAL {
+            return vec![];
+        }
         if m.mask_type == 0 {
             vec![
                 (MaskHandle::LinearStart, self.uv_to_screen(m.ax, m.ay, ib)),
@@ -1198,5 +1204,45 @@ impl canvas::Program<Message> for CropOverlay {
         }
 
         iced::mouse::Interaction::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::types::MaskParams;
+
+    fn overlay(mask: MaskParams) -> CropOverlay {
+        CropOverlay {
+            zoom: 1.0,
+            offset: cgmath::Vector2::new(0.0, 0.0),
+            image_width: 600,
+            image_height: 400,
+            is_cropping: false,
+            is_wb_picking: false,
+            crop: [0.0, 0.0, 1.0, 1.0],
+            is_mask_placing: false,
+            selected_mask: Some(mask),
+            brush: None,
+            is_color_picking: false,
+            is_loupe_targeting: false,
+            is_leveling: false,
+            ai_select: None,
+        }
+    }
+
+    fn handles(mask: MaskParams) -> usize {
+        let o = overlay(mask);
+        let ib = o.image_bounds(600.0, 400.0);
+        o.mask_handle_positions(&ib).len()
+    }
+
+    #[test]
+    fn only_linear_and_radial_masks_offer_handles() {
+        assert_eq!(handles(MaskParams::new_linear(0.2, 0.2, 0.8, 0.8)), 3);
+        assert_eq!(handles(MaskParams::new_radial(0.5, 0.5, 0.2, 0.2)), 4);
+        assert_eq!(handles(MaskParams::new_brush()), 0);
+        assert_eq!(handles(MaskParams::new_range()), 0);
+        assert_eq!(handles(MaskParams::new_ai()), 0);
     }
 }

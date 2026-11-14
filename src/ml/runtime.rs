@@ -10,7 +10,8 @@ use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
 
 fn threads() -> usize {
-    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4)
+    // Leave one core for the UI and render threads (never fewer than one).
+    std::thread::available_parallelism().map(|n| n.get().saturating_sub(1).max(1)).unwrap_or(3)
 }
 
 /// A CPU session for one model file. Blocking (graph optimisation takes a

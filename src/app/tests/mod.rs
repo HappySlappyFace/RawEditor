@@ -3,4 +3,5 @@
 
 mod develop_history;
 mod loading;
+mod mask_robustness;
 mod unreadable_edit;
