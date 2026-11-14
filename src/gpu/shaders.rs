@@ -586,8 +586,8 @@ fn perceptual_saturation(c: vec3<f32>, sat: f32, vib: f32) -> vec3<f32> {
     return ok_to_rgb(vec3<f32>(l, d * c2) * r);
 }
 
-// Rotate the Oklab hue at constant L and chroma; a colour the new hue
-// cannot hold comes in to its gamut limit along that hue.
+// Rotate the Oklab hue at constant L and chroma. No clamp here: a colour
+// outside the gamut keeps it, and Step 15b's gamut map is the only fit.
 fn perceptual_hue_shift(c: vec3<f32>, angle: f32) -> vec3<f32> {
     if (angle == 0.0) {
         return c;
@@ -600,8 +600,7 @@ fn perceptual_hue_shift(c: vec3<f32>, angle: f32) -> vec3<f32> {
     let ca = cos(angle);
     let sa = sin(angle);
     let d = vec2<f32>(lab.y * ca - lab.z * sa, lab.y * sa + lab.z * ca) / ch;
-    let c2 = min(ch, ok_max_saturation(d.x, d.y) * lab.x);
-    return ok_to_rgb(vec3<f32>(lab.x, d * c2));
+    return ok_to_rgb(vec3<f32>(lab.x, d * ch));
 }
 
 // S-curve on Oklab L with slope k at the pivot; black and white held,

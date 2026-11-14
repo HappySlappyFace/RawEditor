@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 // during the rendering pipeline. All edits are non-destructive and stored
 // as JSON in the database.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
+#[serde(default)]
 pub struct EditParams {
     // ========== Exposure & Tone ==========
     /// Exposure adjustment in stops (-5.0 to +5.0)
@@ -284,6 +285,7 @@ fn default_luma_detail() -> f32 {
 /// stay anchored to image content when the crop changes. Like the crop
 /// rectangle, masks do not follow the straighten `rotation` slider.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Default)]
+#[serde(default)]
 pub struct MaskParams {
     /// 0 = linear gradient, 1 = radial ellipse
     pub mask_type: u32,
@@ -503,8 +505,19 @@ impl EditParams {
     }
 
     /// Convert to JSON string for database storage
+    ///
+    /// serde_json writes a NaN/inf `f32` as `null`, which `from_json` then
+    /// rejects, so one bad value would make the whole saved edit unreadable.
+    /// The result is therefore checked by reading it back: an edit that could
+    /// not be loaded again is an error here, and the caller keeps the
+    /// previous row.
     pub fn to_json(self) -> Result<String, serde_json::Error> {
-        serde_json::to_string(&self)
+        let json = serde_json::to_string(&self)?;
+        if let Err(e) = serde_json::from_str::<Self>(&json) {
+            tracing::error!("refusing to save an edit that cannot be read back (non-finite value?): {e}");
+            return Err(e);
+        }
+        Ok(json)
     }
 
     /// Parse from JSON string (from database)
@@ -873,6 +886,26 @@ mod tests {
     fn test_default_is_unedited() {
         let params = EditParams::default();
         assert!(params.is_unedited());
+    }
+
+    #[test]
+    fn a_non_finite_value_is_refused_not_saved_as_unreadable_json() {
+        for bad in [f32::NAN, f32::INFINITY] {
+            let mut p = EditParams::default();
+            p.exposure = bad;
+            assert!(p.to_json().is_err(), "{bad} must not serialise");
+            let mut p = EditParams::default();
+            p.masks[0].exposure = bad;
+            assert!(p.to_json().is_err(), "{bad} in a mask must not serialise");
+        }
+        assert!(EditParams::default().to_json().is_ok());
+    }
+
+    #[test]
+    fn an_edit_missing_any_field_still_loads() {
+        let restored = EditParams::from_json("{\"exposure\":1.5}").unwrap();
+        assert_eq!(restored.exposure, 1.5);
+        assert_eq!(restored.contrast, EditParams::default().contrast);
     }
 
     #[test]
