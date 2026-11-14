@@ -346,8 +346,19 @@ pub struct ExportSettings {
     pub quality: u8,
     pub resize: bool,
     pub max_width: u32,
+    /// The "Max long edge" field as typed. `max_width` is its value when it is
+    /// a positive whole number, else 0 (see [`ExportSettings::size_invalid`]).
+    pub max_width_text: String,
     pub subfolder: String,
     pub base_path: std::path::PathBuf,
+}
+
+impl ExportSettings {
+    /// Resize is on but the long edge is not a positive number: exporting
+    /// would silently write full-size files.
+    pub fn size_invalid(&self) -> bool {
+        self.resize && self.max_width == 0
+    }
 }
 
 impl Default for ExportSettings {
@@ -358,6 +369,7 @@ impl Default for ExportSettings {
             quality: 80,
             resize: false,
             max_width: 2048,
+            max_width_text: "2048".to_string(),
             subfolder: "Export".to_string(),
             base_path: dirs::picture_dir().unwrap_or_else(|| std::path::PathBuf::from(".")),
         }
@@ -429,6 +441,10 @@ pub type DcpMemo = (
 
 /// Shape assumed for the viewport before any preview or render exists.
 pub const PLACEHOLDER_DIMS: (u32, u32) = (1280, 853);
+
+/// How soon after a slider's commit a double-click reset still counts as
+/// the second half of the same gesture.
+pub const SLIDER_AMEND_WINDOW: std::time::Duration = std::time::Duration::from_millis(700);
 
 /// Undo steps kept per image.
 pub const HISTORY_LIMIT: usize = 100;
@@ -761,6 +777,9 @@ pub struct RawEditor {
     /// a zoomed-in view renders from `preview_resources` so the drag stays
     /// interactive; the release re-renders at full resolution.
     pub stage_drag: bool,
+    /// When the last undo step was pushed (`commit_current_state`). A double-click
+    /// reset on a slider amends that step instead of adding a second one.
+    pub last_commit: Option<std::time::Instant>,
     /// The on-screen render came from `preview_resources` only because of a
     /// `stage_drag`, so it is softer than the view calls for.
     pub display_from_drag_preview: bool,
@@ -1005,6 +1024,7 @@ impl RawEditor {
                 full_res_upgrading: false,
                 full_res_failed: None,
                 stage_drag: false,
+                last_commit: None,
                 display_from_drag_preview: false,
                 held_noise: None,
                 noise_settle_token: 0,
@@ -1124,6 +1144,7 @@ impl RawEditor {
         self.stage_drag = false;
         self.flush_edits();
         let params_to_push = self.current_edit_params;
+        let mut pushed = false;
         if let Some((stack, index)) = self.get_current_history() {
             // A release that changed nothing — clicking a slider without
             // dragging, grabbing a crop handle and letting go — must not add a
@@ -1142,6 +1163,7 @@ impl RawEditor {
             // Push new state
             stack.push(params_to_push);
             *index += 1;
+            pushed = true;
             // Each step is ~21 KB: keep the newest HISTORY_LIMIT per image
             // (the oldest undo steps go first).
             if stack.len() > HISTORY_LIMIT {
@@ -1155,6 +1177,35 @@ impl RawEditor {
                 stack.len(),
                 *index
             );
+        }
+        if pushed {
+            self.last_commit = Some(std::time::Instant::now());
+        }
+    }
+
+    /// A double-click reset's commit. The first press of the double click
+    /// already pushed an undo step (the slider jumped to the click); if that
+    /// was moments ago, fold the reset into it, so one Undo returns to the
+    /// value the user had. Otherwise it is an ordinary commit.
+    pub fn commit_amending_last(&mut self) {
+        let recent = self.last_commit.is_some_and(|t| t.elapsed() < SLIDER_AMEND_WINDOW);
+        if !recent {
+            return self.commit_current_state();
+        }
+        self.last_commit = None;
+        self.stage_drag = false;
+        self.flush_edits();
+        let params = self.current_edit_params;
+        if let Some((stack, index)) = self.get_current_history() {
+            if *index == 0 {
+                return;
+            }
+            stack[*index] = params;
+            // The reset landed back on where the user started: no step at all.
+            if stack[*index - 1].without_tool_state() == params.without_tool_state() {
+                stack.remove(*index);
+                *index -= 1;
+            }
         }
     }
 
@@ -1213,7 +1264,7 @@ impl RawEditor {
     /// | Cull | yes | no | visible |
     /// | Develop | yes | no | **excluded** |
     ///
-    /// `MARKED_FOR_REMOVAL_RATING` is 255, which satisfies `>=` against any
+    /// A mark is stored as 200 + stars (`models::is_marked`), which satisfies `>=` against any
     /// real 0-5 threshold, so marked images survive the rating filter — that
     /// is intentional, and why Develop needs its own explicit exclusion.
     ///
@@ -1222,7 +1273,6 @@ impl RawEditor {
     /// and arrow-key navigation. Re-inlining the predicate is how the four
     /// drift apart.
     pub fn displayed_images(&self) -> Vec<&ImageData> {
-        let marked = crate::database::models::MARKED_FOR_REMOVAL_RATING;
         self.images
             .iter()
             .filter(|img| self.min_filter_rating == 0 || img.rating >= self.min_filter_rating)
@@ -1240,7 +1290,7 @@ impl RawEditor {
             // images the user has flagged for deletion.
             .filter(|img| {
                 !matches!(self.current_tab, AppTab::Develop | AppTab::Export)
-                    || img.rating != marked
+                    || !crate::database::models::is_marked(img.rating)
             })
             .collect()
     }
@@ -1799,7 +1849,7 @@ mod tests {
 
     fn catalog() -> RawEditor {
         let mut e = editor();
-        let marked = crate::database::models::MARKED_FOR_REMOVAL_RATING;
+        let marked = crate::database::models::with_mark(0, true);
         e.images = vec![
             img(1, "/photos/2024/a.NEF", 0),
             img(2, "/photos/2024/b.NEF", 3),

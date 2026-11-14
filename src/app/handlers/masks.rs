@@ -148,6 +148,23 @@ pub fn handle_delete_mask(editor: &mut RawEditor, index: usize) -> Task<Message>
     editor.color_picking_mask = None;
     editor.brush_armed = false;
 
+    // An open AI-select session names its mask by slot: deleting that mask
+    // ends the session, deleting one below it moves the session down with it.
+    // (Done/Cancel take the session before they call this, so they are
+    // unaffected.)
+    match editor.ai_select.as_ref().map(|s| s.slot) {
+        Some(slot) if slot == index => {
+            editor.ai_select = None;
+            editor.status = String::new();
+        }
+        Some(slot) if slot > index => {
+            if let Some(s) = editor.ai_select.as_mut() {
+                s.slot = slot - 1;
+            }
+        }
+        _ => {}
+    }
+
     editor.selected_mask = match editor.selected_mask {
         Some(s) if s == index => None,
         Some(s) if s > index => Some(s - 1),

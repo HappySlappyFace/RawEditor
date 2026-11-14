@@ -48,7 +48,9 @@ pub fn main() -> iced::Result {
     .default_font(Font::with_name("JetBrainsMono Nerd Font"))
     .window(iced::window::Settings {
         size: iced::Size::new(900.0, 350.0),
-        min_size: Some(iced::Size::new(600.0, 350.0)),
+        // Wide enough for the title bar: the centred tabs (4 x 112 px) must clear
+        // the menus on the left and the window buttons on the right.
+        min_size: Some(iced::Size::new(900.0, 350.0)),
         decorations: false,
         // Closing goes through `Message::CloseWindow` (flush, save the proxy).
         exit_on_close_request: false,

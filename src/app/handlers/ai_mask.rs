@@ -103,6 +103,26 @@ pub struct AiBitmapState {
     failed: Vec<u64>,
 }
 
+#[cfg(test)]
+impl AiSelect {
+    /// A session without an engine or a GPU, for message-level tests.
+    pub fn for_test(image_id: i64, slot: usize, created: bool) -> Self {
+        Self {
+            image_id,
+            slot,
+            orientation: 0,
+            prompts: Prompts::default(),
+            prev_ai_id: 0,
+            created,
+            engine: None,
+            error: None,
+            logits: None,
+            decoding: false,
+            token: session_token(),
+        }
+    }
+}
+
 fn session_token() -> u64 {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)

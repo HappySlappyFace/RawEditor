@@ -50,7 +50,10 @@ pub fn handle_black_phase_changed(editor: &mut RawEditor, y: bool, v: u32) -> Ta
     } else {
         editor.current_edit_params.black_phase_x = v;
     }
-    update_pipeline(editor)
+    let task = update_pipeline(editor);
+    // A checkbox has no release: this click is the whole gesture.
+    editor.commit_current_state();
+    task
 }
 
 pub fn handle_vibrance_changed(editor: &mut RawEditor, v: f32) -> Task<Message> {

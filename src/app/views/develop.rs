@@ -370,6 +370,7 @@ fn sensor_correction(editor: &RawEditor) -> Element<'_, Message> {
             .push(
                 slider(-50.0..=50.0, p.black_offsets[i], move |v| Message::BlackOffsetChanged(i, v))
                     .step(0.1_f32)
+                    .on_release(Message::CommitEdit)
                     .style(ui::styles::ProSlider::style),
             );
     }
@@ -966,7 +967,10 @@ fn mask_rows<'a>(
                     .size(16),
                 button(text(ui::icons::TIMES).font(ICON_FONT).size(theme::size::SMALL))
                     .style(ui::styles::NeutralButton::style)
-                    .on_press(Message::DeleteMask(i))
+                    // The open AI-select session's own mask stays until Done / Cancel.
+                    .on_press_maybe(
+                        (!editor.ai_select.as_ref().is_some_and(|s| s.slot == i)).then_some(Message::DeleteMask(i)),
+                    )
                     .padding(theme::space::S),
             ]
             .spacing(theme::space::XS)
@@ -1821,7 +1825,7 @@ fn slider_field<'a>(
         .into(),
     };
 
-    let reset = default.map(|d| Message::SliderSet { change: Box::new(on_change(d)), commit: true });
+    let reset = default.map(|d| Message::SliderReset { change: Box::new(on_change(d)) });
     let gradient = rail_gradient(&on_change(0.0));
     let mut track = ui::widgets::slider::slider(range, value, on_change)
         .step(step)

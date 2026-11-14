@@ -310,7 +310,7 @@ pub enum Message {
     SetExportColorSpace(crate::core::output_space::OutputSpace),
     SetExportQuality(u8),
     ToggleExportResize(bool),
-    SetExportWidth(u32),
+    SetExportWidth(String),
     SetExportSubfolder(String),
     SetExportBasePath(PathBuf),
     PickExportBasePath,
@@ -415,6 +415,9 @@ pub enum Message {
     /// an undo step as a drag's release would (false for tool settings like
     /// brush size, which are not edits).
     SliderSet { change: Box<Message>, commit: bool },
+    /// A double-click reset on a slider: like `SliderSet` with `commit`, but
+    /// folded into the undo step the double click's first press made.
+    SliderReset { change: Box<Message> },
 
     // ========== Phase 54: Settings Clipboard ==========
     /// Open the category picker (Ctrl/Cmd+C)

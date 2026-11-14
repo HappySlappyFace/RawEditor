@@ -95,7 +95,7 @@ fn through_menu(message: &Message) -> &Message {
 /// [`through_menu`], and also the change a `SliderSet` carries.
 fn through_wrappers(message: &Message) -> &Message {
     match through_menu(message) {
-        Message::SliderSet { change, .. } => through_menu(change),
+        Message::SliderSet { change, .. } | Message::SliderReset { change } => through_menu(change),
         other => other,
     }
 }
@@ -329,6 +329,12 @@ fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
             } else {
                 task
             }
+        }
+        Message::SliderReset { change } => {
+            editor.slider_entry = None;
+            let task = dispatch(editor, *change);
+            editor.commit_amending_last();
+            Task::batch([task, handlers::develop::finish_stage_drag(editor)])
         }
         Message::Undo => handlers::develop::handle_undo(editor),
         Message::Redo => handlers::develop::handle_redo(editor),

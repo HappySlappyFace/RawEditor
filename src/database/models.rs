@@ -28,9 +28,31 @@ pub struct Image {
     pub flag: i8,
 }
 
-/// Sentinel `rating` value meaning "marked for removal" (soft delete).
-/// 255 is far outside the real 0-5 range so a future defensive
-/// `.clamp(0,5)` would obviously misbehave rather than silently losing the
-/// mark. The ONLY writer of this value is handlers::delete — never the
-/// digit-key (0-5) rating shortcuts.
-pub const MARKED_FOR_REMOVAL_RATING: u8 = 255;
+/// "Marked for removal" (soft delete) rides in the `rating` column as
+/// `MARKED_BASE + the star rating it hides` (200-205), so un-marking gives the
+/// stars back. Anything `>= MARKED_BASE` is marked. The ONLY writers are
+/// `Library::set_marked` and its in-memory twin [`with_mark`] — never the
+/// digit-key (0-5) rating shortcuts. Databases from before the stars were
+/// kept hold 255 (marked, stars lost); it still reads as marked, with no
+/// stars to return, and the schema setup rewrites it to 200.
+pub const MARKED_BASE: u8 = 200;
+
+/// Is this stored `rating` a mark for removal?
+pub fn is_marked(rating: u8) -> bool {
+    rating >= MARKED_BASE
+}
+
+/// The star rating (0-5) hidden behind a stored `rating`, marked or not.
+pub fn stars(rating: u8) -> u8 {
+    if is_marked(rating) {
+        let s = rating - MARKED_BASE;
+        if s <= 5 { s } else { 0 }
+    } else {
+        rating.min(5)
+    }
+}
+
+/// `rating` with the mark set (keeping its stars) or cleared (restoring them).
+pub fn with_mark(rating: u8, marked: bool) -> u8 {
+    if marked { MARKED_BASE + stars(rating) } else { stars(rating) }
+}

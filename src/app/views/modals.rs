@@ -154,7 +154,9 @@ pub fn view_export_modal<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
         crate::app::views::export::settings_panel(editor),
         dialog::actions([
             dialog::action("Cancel", Kind::Neutral).on_press(Message::CloseModal).into(),
-            dialog::action(label, Kind::Primary).on_press(Message::ExportConfirmed).into(),
+            dialog::action(label, Kind::Primary)
+                .on_press_maybe((!editor.export_settings.size_invalid()).then_some(Message::ExportConfirmed))
+                .into(),
         ]),
     )
     .into()

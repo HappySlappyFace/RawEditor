@@ -34,6 +34,15 @@ pub struct EditorState {
     last_click: Option<(std::time::Instant, usize)>,
 }
 
+/// Records a click on point `i` and says whether it completes a double click.
+/// A double click is consumed (it removes the point), so a third click starts
+/// over instead of landing on whichever point slid into index `i`.
+fn register_click(last: &mut Option<(std::time::Instant, usize)>, now: std::time::Instant, i: usize) -> bool {
+    let double = last.is_some_and(|(t, j)| j == i && now.duration_since(t) < DOUBLE_CLICK);
+    *last = if double { None } else { Some((now, i)) };
+    double
+}
+
 fn channel_color(ch: CurveChannel, alpha: f32) -> Color {
     match ch {
         CurveChannel::Master => Color { a: alpha, ..theme::colours().text },
@@ -107,10 +116,7 @@ impl canvas::Program<Message> for CurveEditor {
                 let Some(p) = rel else { return (Status::Ignored, None) };
                 if let Some(i) = self.hit(&r, p) {
                     let now = std::time::Instant::now();
-                    let double = state
-                        .last_click
-                        .is_some_and(|(t, j)| j == i && now.duration_since(t) < DOUBLE_CLICK);
-                    state.last_click = Some((now, i));
+                    let double = register_click(&mut state.last_click, now, i);
                     if double {
                         state.dragging = None;
                         let mut c = *self.curve();
@@ -266,5 +272,22 @@ impl canvas::Program<Message> for CurveEditor {
             Some(_) => mouse::Interaction::Crosshair,
             None => mouse::Interaction::default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_triple_click_is_a_double_then_a_fresh_single() {
+        let t = Instant::now();
+        let mut last = None;
+        assert!(!register_click(&mut last, t, 2));
+        assert!(register_click(&mut last, t + Duration::from_millis(100), 2));
+        // The point was removed; a third click on the point now at index 2
+        // must not count as another double.
+        assert!(!register_click(&mut last, t + Duration::from_millis(200), 2));
     }
 }
