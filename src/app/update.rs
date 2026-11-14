@@ -4,6 +4,21 @@ use crate::app::state::{Modal, ModalExit, RawEditor};
 use iced::Task;
 
 pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
+    // Once-per-hold shortcuts: judge the press here, and everything below
+    // sees the plain message.
+    let message = match message {
+        Message::ShortcutKey { key, message } => {
+            if !editor.key_is_fresh(key) {
+                return Task::none();
+            }
+            *message
+        }
+        Message::ShortcutKeyUp(key) => {
+            editor.keys_down.remove(&key);
+            return Task::none();
+        }
+        other => other,
+    };
     // Ctrl/Cmd+click resets a slider to its default. iced fires `on_change`
     // for that click but no `on_release`, so the CommitEdit every other slider
     // gesture ends with never arrives — commit it here instead. Holding the
@@ -80,7 +95,7 @@ fn through_menu(message: &Message) -> &Message {
 /// [`through_menu`], and also the change a `SliderSet` carries.
 fn through_wrappers(message: &Message) -> &Message {
     match through_menu(message) {
-        Message::SliderSet { change, .. } => through_menu(change),
+        Message::SliderSet { change, .. } | Message::SliderReset { change } => through_menu(change),
         other => other,
     }
 }
@@ -314,6 +329,12 @@ fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
             } else {
                 task
             }
+        }
+        Message::SliderReset { change } => {
+            editor.slider_entry = None;
+            let task = dispatch(editor, *change);
+            editor.commit_amending_last();
+            Task::batch([task, handlers::develop::finish_stage_drag(editor)])
         }
         Message::Undo => handlers::develop::handle_undo(editor),
         Message::Redo => handlers::develop::handle_redo(editor),
@@ -553,6 +574,15 @@ fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
             handlers::window::query_scale_factor()
         }
         Message::KineticTick(now) => handlers::scroll::handle_kinetic_tick(editor, now),
+        Message::WindowUnfocused => {
+            editor.keys_down.clear();
+            Task::batch([
+                handlers::develop::handle_set_before_peek(editor, false),
+                handlers::scroll::handle_navigation_released(editor),
+            ])
+        }
+        // Consumed at the top of `update`.
+        Message::ShortcutKey { .. } | Message::ShortcutKeyUp(_) => Task::none(),
         Message::NavigationKeyReleased => handlers::scroll::handle_navigation_released(editor),
         Message::FilmstripWheel(delta) => handlers::scroll::handle_filmstrip_wheel(editor, delta),
     }

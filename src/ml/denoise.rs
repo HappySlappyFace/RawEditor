@@ -411,13 +411,47 @@ const CACHE_MAGIC: &[u8; 4] = b"RDN1";
 /// `cache/denoised/<image id>-<model hash>.bin`: a new model never reads
 /// another model's results.
 fn cache_path(image_id: i64) -> Option<std::path::PathBuf> {
-    let tag = &DENOISE.files[0].sha256[..12];
-    crate::core::paths::cache_dir().map(|d| d.join("denoised").join(format!("{image_id}-{tag}.bin")))
+    crate::core::paths::cache_dir().map(|d| d.join("denoised").join(cache_name(image_id)))
 }
 
-/// Store a whole-image result. Blocking (~50 MB at 24 MP).
-pub fn save_cache(image_id: i64, width: u32, height: u32, data: &[u16]) -> Result<(), String> {
+fn cache_name(image_id: i64) -> String {
+    format!("{image_id}-{}.bin", model_tag())
+}
+
+fn model_tag() -> &'static str {
+    &DENOISE.files[0].sha256[..12]
+}
+
+/// A cheap identity of the source mosaic (FNV-1a over a strided sample plus
+/// the dimensions). Image ids restart at 1 when the database is recreated
+/// while this folder survives, so an id alone can name another photo's
+/// result; the same id with a different photo gives a different fingerprint.
+pub fn fingerprint(source: &[u16], width: u32, height: u32) -> u32 {
+    let mut h: u32 = 0x811c_9dc5;
+    let mut mix = |v: u32| {
+        for b in v.to_le_bytes() {
+            h ^= b as u32;
+            h = h.wrapping_mul(0x0100_0193);
+        }
+    };
+    mix(width);
+    mix(height);
+    let step = (source.len() / 8192).max(1);
+    for v in source.iter().step_by(step) {
+        mix(*v as u32);
+    }
+    // 0 is what files written before the fingerprint carry.
+    h.max(1)
+}
+
+/// Store a whole-image result for `source` (the mosaic it was made from).
+/// Blocking (~50 MB at 24 MP).
+pub fn save_cache(image_id: i64, width: u32, height: u32, source: &[u16], data: &[u16]) -> Result<(), String> {
     let path = cache_path(image_id).ok_or("no cache folder")?;
+    save_cache_at(&path, width, height, fingerprint(source, width, height), data)
+}
+
+fn save_cache_at(path: &std::path::Path, width: u32, height: u32, fp: u32, data: &[u16]) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
     }
@@ -425,31 +459,83 @@ pub fn save_cache(image_id: i64, width: u32, height: u32, data: &[u16]) -> Resul
     bytes.extend_from_slice(CACHE_MAGIC);
     bytes.extend_from_slice(&width.to_le_bytes());
     bytes.extend_from_slice(&height.to_le_bytes());
-    bytes.extend_from_slice(&0u32.to_le_bytes());
+    bytes.extend_from_slice(&fp.to_le_bytes());
     for v in data {
         bytes.extend_from_slice(&v.to_le_bytes());
     }
     let tmp = path.with_extension("part");
     std::fs::write(&tmp, &bytes).map_err(|e| format!("could not save the AI denoise result: {e}"))?;
-    std::fs::rename(&tmp, &path).map_err(|e| format!("could not save the AI denoise result: {e}"))
+    std::fs::rename(&tmp, path).map_err(|e| format!("could not save the AI denoise result: {e}"))
 }
 
-/// A stored result for this image at these dimensions. Blocking.
-pub fn load_cache(image_id: i64, width: u32, height: u32) -> Option<Vec<u16>> {
-    let bytes = std::fs::read(cache_path(image_id)?).ok()?;
+/// A stored result for this image, made from this `source` mosaic. Blocking.
+pub fn load_cache(image_id: i64, source: &[u16], width: u32, height: u32) -> Option<Vec<u16>> {
+    load_cache_at(&cache_path(image_id)?, width, height, fingerprint(source, width, height))
+}
+
+fn load_cache_at(path: &std::path::Path, width: u32, height: u32, fp: u32) -> Option<Vec<u16>> {
+    let bytes = std::fs::read(path).ok()?;
     let n = (width as usize) * (height as usize);
     if bytes.len() != 16 + 2 * n
         || &bytes[..4] != CACHE_MAGIC
         || bytes[4..8] != width.to_le_bytes()
         || bytes[8..12] != height.to_le_bytes()
+        || bytes[12..16] != fp.to_le_bytes()
     {
         return None;
     }
     Some(bytes[16..].as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect())
 }
 
-pub fn has_cache(image_id: i64) -> bool {
-    cache_path(image_id).is_some_and(|p| p.exists())
+/// Is there a result for this image made from this `source`? Reads only the
+/// header.
+pub fn has_cache(image_id: i64, source: &[u16], width: u32, height: u32) -> bool {
+    cache_path(image_id).is_some_and(|p| has_cache_at(&p, width, height, fingerprint(source, width, height)))
+}
+
+fn has_cache_at(path: &std::path::Path, width: u32, height: u32, fp: u32) -> bool {
+    use std::io::Read;
+    let Ok(mut f) = std::fs::File::open(path) else { return false };
+    let mut head = [0u8; 16];
+    if f.read_exact(&mut head).is_err() {
+        return false;
+    }
+    let n = (width as u64) * (height as u64);
+    f.metadata().is_ok_and(|m| m.len() == 16 + 2 * n)
+        && &head[..4] == CACHE_MAGIC
+        && head[4..8] == width.to_le_bytes()
+        && head[8..12] == height.to_le_bytes()
+        && head[12..16] == fp.to_le_bytes()
+}
+
+/// Delete every stored result whose image is not in `keep` (images whose
+/// saved edit has AI denoise on) or that belongs to another model. Blocking;
+/// run once at startup like the AI mask sweep.
+pub fn sweep(keep: &std::collections::HashSet<i64>) -> usize {
+    match crate::core::paths::cache_dir() {
+        Some(d) => sweep_dir(&d.join("denoised"), keep),
+        None => 0,
+    }
+}
+
+fn sweep_dir(dir: &std::path::Path, keep: &std::collections::HashSet<i64>) -> usize {
+    let Ok(files) = std::fs::read_dir(dir) else { return 0 };
+    let tag = model_tag();
+    let mut removed = 0;
+    for file in files.flatten() {
+        let name = file.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let wanted = name
+            .strip_suffix(".bin")
+            .and_then(|stem| stem.split_once('-'))
+            .is_some_and(|(id, t)| t == tag && id.parse::<i64>().is_ok_and(|id| keep.contains(&id)));
+        // Leftover `.part` files are never wanted; anything else is not ours.
+        let ours = name.ends_with(".bin") || name.ends_with(".part");
+        if ours && !wanted && std::fs::remove_file(file.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
 }
 
 /// `original` moved `amount` (0..=1) of the way to `denoised`.
@@ -473,7 +559,7 @@ pub fn effective_mosaic<'a>(
     if amount <= 0.0 {
         return (std::borrow::Cow::Borrowed(&raw.data), 0.0);
     }
-    match load_cache(image_id, raw.width, raw.height) {
+    match load_cache(image_id, &raw.data, raw.width, raw.height) {
         Some(denoised) => (std::borrow::Cow::Owned(blend(&raw.data, &denoised, amount)), amount),
         None => {
             tracing::warn!("AI denoise result for image {image_id} is not cached; showing the original");
@@ -493,5 +579,54 @@ mod cache_tests {
         assert_eq!(blend(&o, &d, 0.0), o);
         assert_eq!(blend(&o, &d, 1.0), d);
         assert_eq!(blend(&o, &d, 0.5), [150, 150, 300]);
+    }
+}
+
+#[cfg(test)]
+mod cache_identity_tests {
+    use super::*;
+
+    fn dir(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("rawedit-dn-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// Same id and sensor size, different photo (the database was recreated):
+    /// the old result must not be used.
+    #[test]
+    fn a_result_is_not_applied_to_another_photo_with_the_same_id() {
+        let d = dir("fp");
+        let path = d.join(cache_name(1));
+        let photo_a: Vec<u16> = (0..64 * 48).map(|i| (i * 13 % 4000) as u16).collect();
+        let photo_b: Vec<u16> = (0..64 * 48).map(|i| (i * 7 % 3000) as u16).collect();
+        let result = vec![5u16; 64 * 48];
+        let fa = fingerprint(&photo_a, 64, 48);
+        save_cache_at(&path, 64, 48, fa, &result).unwrap();
+        assert!(has_cache_at(&path, 64, 48, fa));
+        assert_eq!(load_cache_at(&path, 64, 48, fa).as_deref(), Some(&result[..]));
+        let fb = fingerprint(&photo_b, 64, 48);
+        assert_ne!(fa, fb);
+        assert!(!has_cache_at(&path, 64, 48, fb));
+        assert!(load_cache_at(&path, 64, 48, fb).is_none());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn sweep_keeps_only_wanted_images_of_the_current_model() {
+        let d = dir("sweep");
+        let tag = model_tag();
+        for name in [format!("1-{tag}.bin"), format!("2-{tag}.bin"), "3-abcdefabcdef.bin".to_string(), format!("1-{tag}.part")] {
+            std::fs::write(d.join(name), b"x").unwrap();
+        }
+        std::fs::write(d.join("notes.txt"), b"x").unwrap();
+        let keep: std::collections::HashSet<i64> = [1, 3].into_iter().collect();
+        assert_eq!(sweep_dir(&d, &keep), 3);
+        let mut left: Vec<String> =
+            std::fs::read_dir(&d).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        left.sort();
+        assert_eq!(left, vec![format!("1-{tag}.bin"), "notes.txt".to_string()]);
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

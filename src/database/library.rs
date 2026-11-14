@@ -132,6 +132,9 @@ impl Library {
         self.add_column_if_missing("images", "cache_path_edited", "TEXT")?;
         // Phase 56: 0-5 star ratings.
         self.add_column_if_missing("images", "rating", "INTEGER DEFAULT 0")?;
+        // Marks used to be a bare 255 that threw the stars away; they are now
+        // 200 + stars (`models::with_mark`). Existing marks keep their meaning.
+        self.conn.execute("UPDATE images SET rating = 200 WHERE rating = 255", [])?;
         // Tracks deleted files.
         self.add_column_if_missing("images", "file_status", "TEXT DEFAULT 'exists'")?;
         // Phase 83: 0=Unflagged, 1=Pick, -1=Reject.
@@ -470,6 +473,24 @@ impl Library {
         Ok(out)
     }
 
+    /// Ids of images whose saved edit has AI denoise on: the only ones whose
+    /// cached result (`cache/denoised`) is worth keeping.
+    pub fn ai_denoise_images(&self) -> SqlResult<std::collections::HashSet<i64>> {
+        let mut stmt = self.conn.prepare("SELECT image_id, settings_json FROM edits")?;
+        let rows = stmt.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))?;
+        let mut out = std::collections::HashSet::new();
+        for row in rows {
+            let (image_id, json) = row?;
+            if !json.contains("\"ai_denoise\"") {
+                continue;
+            }
+            if EditParams::from_json(&json).is_ok_and(|p| p.ai_denoise > 0.0) {
+                out.insert(image_id);
+            }
+        }
+        Ok(out)
+    }
+
     /// Load an image's saved edit. `Ok(None)` means there is no row (never
     /// edited); `Err` means a row exists but cannot be read. In that case the
     /// unreadable JSON is first copied to `settings_json_backup` (never
@@ -518,6 +539,22 @@ impl Library {
             let mut stmt = tx.prepare("UPDATE images SET rating = ?1 WHERE id = ?2")?;
             for id in ids {
                 stmt.execute(rusqlite::params![rating, id])?;
+            }
+        }
+        tx.commit()
+    }
+
+    /// Mark (or un-mark) a selection for removal in one transaction. A mark
+    /// keeps each image's own stars (`models::with_mark`), so un-marking
+    /// returns them.
+    pub fn set_marked(&self, ids: &[i64], marked: bool) -> SqlResult<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        {
+            let mut read = tx.prepare("SELECT COALESCE(rating, 0) FROM images WHERE id = ?1")?;
+            let mut write = tx.prepare("UPDATE images SET rating = ?1 WHERE id = ?2")?;
+            for id in ids {
+                let Ok(current) = read.query_row([id], |r| r.get::<_, u8>(0)) else { continue };
+                write.execute(rusqlite::params![crate::database::models::with_mark(current, marked), id])?;
             }
         }
         tx.commit()
@@ -713,6 +750,15 @@ fn load_database_blocking() -> Result<Vec<super::models::Image>, String> {
             }
         }
         Err(e) => tracing::warn!("Could not sweep AI masks: {e}"),
+    }
+    match lib.ai_denoise_images() {
+        Ok(keep) => {
+            let n = crate::ml::denoise::sweep(&keep);
+            if n > 0 {
+                tracing::info!("Removed {n} unused AI denoise result(s)");
+            }
+        }
+        Err(e) => tracing::warn!("Could not sweep AI denoise results: {e}"),
     }
     if let Ok(dir) = crate::raw::processor::cache_dir("edited") {
         match lib.sweep_edited_proxies(&dir) {
@@ -1011,20 +1057,31 @@ mod tests {
 
     #[test]
     fn test_marked_for_removal_sentinel_round_trip() {
-        use crate::database::models::MARKED_FOR_REMOVAL_RATING;
+        use crate::database::models::is_marked;
         let lib = in_memory_library();
         let id = lib.import_image("/mark.nef", "mark.nef").unwrap();
+        let rating = |lib: &Library| lib.get_all_images().unwrap().iter().find(|i| i.id == id).unwrap().rating;
 
-        lib.set_ratings(&[id], MARKED_FOR_REMOVAL_RATING).unwrap();
-        let images = lib.get_all_images().unwrap();
-        let img = images.iter().find(|i| i.id == id).unwrap();
-        assert_eq!(img.rating, MARKED_FOR_REMOVAL_RATING);
+        lib.set_ratings(&[id], 4).unwrap();
+        lib.set_marked(&[id], true).unwrap();
+        assert!(is_marked(rating(&lib)));
+        // Un-marking gives the stars back.
+        lib.set_marked(&[id], false).unwrap();
+        assert_eq!(rating(&lib), 4);
+    }
 
-        // Un-marking reuses the same setter with a normal rating.
-        lib.set_ratings(&[id], 0).unwrap();
-        let images = lib.get_all_images().unwrap();
-        let img = images.iter().find(|i| i.id == id).unwrap();
-        assert_eq!(img.rating, 0);
+    #[test]
+    fn a_legacy_255_mark_is_migrated_and_unmarks_to_unrated() {
+        use crate::database::models::is_marked;
+        let mut lib = in_memory_library();
+        let id = lib.import_image("/old.nef", "old.nef").unwrap();
+        lib.set_ratings(&[id], 255).unwrap();
+        lib.init_schema().unwrap();
+        let rating = |lib: &Library| lib.get_all_images().unwrap().iter().find(|i| i.id == id).unwrap().rating;
+        assert_eq!(rating(&lib), 200);
+        assert!(is_marked(rating(&lib)));
+        lib.set_marked(&[id], false).unwrap();
+        assert_eq!(rating(&lib), 0);
     }
 
     // ── cache version migration resets stale cached images ────────────────────

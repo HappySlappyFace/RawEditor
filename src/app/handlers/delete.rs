@@ -1,7 +1,7 @@
 // Delete Image: two modes reached from the same Delete/Backspace key.
 //
 // - Mark for removal (soft): reuses the existing `rating: u8` column with a
-//   reserved sentinel (MARKED_FOR_REMOVAL_RATING) instead of a new DB
+//   offset (MARKED_BASE + the stars, see database::models) instead of a new DB
 //   column — deliberately, to avoid a schema migration. Hidden from Develop,
 //   still visible (with a badge) in Library/Cull.
 // - Delete from disk (hard): moves the RAW file + cache tiers to the OS
@@ -16,7 +16,7 @@
 use crate::app::handlers::navigation;
 use crate::app::message::Message;
 use crate::app::state::{EditorReadiness, Modal, RawEditor};
-use crate::database::models::MARKED_FOR_REMOVAL_RATING;
+use crate::database::models::{is_marked, with_mark};
 use iced::Task;
 use std::path::PathBuf;
 
@@ -49,19 +49,19 @@ pub fn handle_delete_image_requested(editor: &mut RawEditor) -> Task<Message> {
     let marked: std::collections::HashSet<i64> = editor
         .images
         .iter()
-        .filter(|i| i.rating == MARKED_FOR_REMOVAL_RATING)
+        .filter(|i| is_marked(i.rating))
         .map(|i| i.id)
         .collect();
     let all_marked = ids.iter().all(|id| marked.contains(id));
 
     if all_marked {
         if let Some(lib) = &editor.library {
-            if let Err(e) = lib.set_ratings(&ids, 0) {
+            if let Err(e) = lib.set_marked(&ids, false) {
                 tracing::error!("Failed to unmark {} image(s): {e}", ids.len());
                 editor.status = format!("Could not unmark: {e}");
                 return Task::none();
             }
-            editor.apply_to_images(&ids, |img| img.rating = 0);
+            editor.apply_to_images(&ids, |img| img.rating = with_mark(img.rating, false));
         }
         editor.status = format!("Unmarked {} image(s)", ids.len());
         Task::none()
@@ -83,12 +83,12 @@ pub fn handle_mark_for_removal_confirmed(editor: &mut RawEditor) -> Task<Message
     }
 
     if let Some(lib) = &editor.library {
-        if let Err(e) = lib.set_ratings(&ids, MARKED_FOR_REMOVAL_RATING) {
+        if let Err(e) = lib.set_marked(&ids, true) {
             tracing::error!("Failed to mark {} image(s) for removal: {e}", ids.len());
             editor.status = format!("Could not mark for removal: {e}");
             return Task::none();
         }
-        editor.apply_to_images(&ids, |img| img.rating = MARKED_FOR_REMOVAL_RATING);
+        editor.apply_to_images(&ids, |img| img.rating = with_mark(img.rating, true));
     }
     editor.status = format!("Marked {} image(s) for removal", ids.len());
 

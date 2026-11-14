@@ -1,7 +1,10 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// `#[serde(default)]` on the struct: any field a file lacks (an older build, a
+/// hand edit) takes its `Default` value instead of failing the whole parse.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AppSettings {
     pub cache_capacity: usize,
     pub raw_preload_budget_mb: u32,
@@ -91,6 +94,8 @@ impl AppSettings {
             Ok(settings) => settings,
             Err(e) => {
                 tracing::warn!("Failed to load app settings, using defaults: {}", e);
+                // The next save would overwrite the unreadable file; keep it.
+                quarantine(&Self::settings_path());
                 Self::default()
             }
         }
@@ -142,9 +147,43 @@ impl AppSettings {
     }
 }
 
+/// Move an unreadable settings file to `settings.json.bad` so a later save
+/// cannot destroy what the user might still recover from it.
+fn quarantine(path: &std::path::Path) {
+    if !path.exists() {
+        return;
+    }
+    let bad = path.with_extension("json.bad");
+    if let Err(e) = std::fs::rename(path, &bad) {
+        tracing::warn!("Could not keep the unreadable settings as {}: {}", bad.display(), e);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_file_missing_any_field_keeps_the_rest_and_defaults_the_gap() {
+        let parsed: AppSettings =
+            serde_json::from_str(r#"{ "thumbnail_size": 150.0, "update_check": true }"#)
+                .expect("partial settings must parse");
+        assert_eq!(parsed.thumbnail_size, 150.0);
+        assert_eq!(parsed.update_check, Some(true));
+        assert_eq!(parsed.cache_capacity, AppSettings::default().cache_capacity);
+    }
+
+    #[test]
+    fn an_unreadable_file_is_kept_as_bad() {
+        let dir = std::env::temp_dir().join(format!("rawedit-settings-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, "{ not json").unwrap();
+        quarantine(&path);
+        assert!(!path.exists());
+        assert_eq!(std::fs::read_to_string(dir.join("settings.json.bad")).unwrap(), "{ not json");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// A settings file written before `copy_categories` existed must still
     /// load, keeping every other preference intact.

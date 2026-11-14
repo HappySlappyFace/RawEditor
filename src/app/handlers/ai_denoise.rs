@@ -337,8 +337,11 @@ pub fn handle_apply(editor: &mut RawEditor) -> Task<Message> {
         return handle_remove(editor);
     }
     // Already computed for this image (an amount change): just set it.
-    if crate::ml::denoise::has_cache(image_id) {
-        return finish(editor, image_id, amount);
+    {
+        let raw = engine.0.loupe.raw();
+        if crate::ml::denoise::has_cache(image_id, &raw.data, raw.width, raw.height) {
+            return finish(editor, image_id, amount);
+        }
     }
     let progress = Arc::new(Progress::default());
     st.job = Some(progress.clone());
@@ -348,7 +351,7 @@ pub fn handle_apply(editor: &mut RawEditor) -> Task<Message> {
                 let e = &engine.0;
                 let raw = e.loupe.raw();
                 let out = crate::ml::denoise::denoise(&raw.data, &e.layout, &e.model, &progress)?;
-                crate::ml::denoise::save_cache(image_id, raw.width, raw.height, &out)
+                crate::ml::denoise::save_cache(image_id, raw.width, raw.height, &raw.data, &out)
             })
             .await
             .map_err(|e| format!("AI denoise failed: {e}"))?
@@ -483,7 +486,7 @@ fn regenerate(raw: &crate::raw::loader::RawDataResult, image_id: i64, progress: 
     let layout = crate::ml::denoise::layout_of(raw);
     let model = crate::ml::denoise::noise_model(&raw.data, &layout);
     let out = crate::ml::denoise::denoise(&raw.data, &layout, &model, progress)?;
-    crate::ml::denoise::save_cache(image_id, raw.width, raw.height, &out)?;
+    crate::ml::denoise::save_cache(image_id, raw.width, raw.height, &raw.data, &out)?;
     Ok(out)
 }
 

@@ -210,6 +210,11 @@ where
                 if state.modifiers.command() {
                     if let Some(d) = self.default {
                         change(self, d);
+                        // No drag follows, so no release will: commit here, or
+                        // the reset gets no undo step until something else does.
+                        if let Some(m) = self.on_release.clone() {
+                            shell.publish(m);
+                        }
                     }
                     state.drag = None;
                 } else {
@@ -401,5 +406,41 @@ mod tests {
         let d = Drag { anchor_x: 0.0, anchor_value: 0.9, fine: false };
         assert_eq!(drag_value(d, 1000.0, TRAVEL, -1.0, 1.0, 0.01), 1.0);
         assert_eq!(drag_value(d, -1000.0, TRAVEL, -1.0, 1.0, 0.01), -1.0);
+    }
+
+    /// Drives the real widget with a null renderer: press at the middle of a
+    /// 100 x 16 track, optionally with Ctrl held. Returns what it published.
+    fn press(command: bool) -> Vec<&'static str> {
+        use iced::advanced::{clipboard, layout, widget::Tree, Layout, Shell, Widget};
+        let mut w: Slider<'_, &'static str> =
+            slider(0.0..=10.0, 7.0, |_| "change").default(0.0).on_release("release");
+        let mut tree = Tree::new(&w as &dyn Widget<&'static str, Theme, ()>);
+        let node = layout::Node::new(Size::new(100.0, 16.0));
+        let lay = Layout::new(&node);
+        let cursor = mouse::Cursor::Available(Point::new(50.0, 8.0));
+        let mut out = Vec::new();
+        let mut shell = Shell::new(&mut out);
+        let mut clip = clipboard::Null;
+        let vp = Rectangle::new(Point::ORIGIN, Size::new(100.0, 16.0));
+        let mods = if command { keyboard::Modifiers::COMMAND } else { keyboard::Modifiers::empty() };
+        let mut send = |ev: Event, shell: &mut Shell<'_, &'static str>| {
+            <Slider<'_, &'static str> as Widget<&'static str, Theme, ()>>::on_event(
+                &mut w, &mut tree, ev, lay, cursor, &(), &mut clip, shell, &vp,
+            )
+        };
+        send(Event::Keyboard(keyboard::Event::ModifiersChanged(mods)), &mut shell);
+        send(Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)), &mut shell);
+        send(Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)), &mut shell);
+        out
+    }
+
+    #[test]
+    fn a_command_click_reset_commits_like_a_drag_release() {
+        assert_eq!(press(true), ["change", "release"]);
+    }
+
+    #[test]
+    fn a_plain_click_changes_then_commits_once() {
+        assert_eq!(press(false), ["change", "release"]);
     }
 }

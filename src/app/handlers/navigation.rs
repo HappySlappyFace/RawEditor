@@ -303,7 +303,7 @@ pub fn find_next_unmarked_image_id(editor: &RawEditor, from_id: i64) -> Option<i
     let mut any = None;
     for step in 1..=len {
         let candidate = &editor.images[(idx + step) % len];
-        if candidate.rating == crate::database::models::MARKED_FOR_REMOVAL_RATING {
+        if crate::database::models::is_marked(candidate.rating) {
             continue;
         }
         if shown.contains(&candidate.id) {
@@ -327,7 +327,7 @@ fn selection_is_marked(editor: &RawEditor) -> bool {
         .images
         .iter()
         .find(|i| i.id == sel)
-        .map(|i| i.rating == crate::database::models::MARKED_FOR_REMOVAL_RATING)
+        .map(|i| crate::database::models::is_marked(i.rating))
         .unwrap_or(false)
 }
 
@@ -1276,7 +1276,7 @@ mod tests {
     #[test]
     fn stepping_stays_inside_the_displayed_set() {
         let mut e = editor_with(&[1, 2, 3]);
-        e.images[1].rating = crate::database::models::MARKED_FOR_REMOVAL_RATING;
+        e.images[1].rating = crate::database::models::with_mark(0, true);
         e.current_tab = AppTab::Develop; // excludes marked
         e.selected_image_id = Some(1);
         assert_eq!(step_selection(&e, true), Some(3));

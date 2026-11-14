@@ -28,6 +28,8 @@ const FORMATS: [u32; 2] = [2, 1];
 const MAX_ARCHIVE: u64 = 32 << 20;
 const MAX_FILE: u64 = 16 << 20;
 const MAX_FILES: usize = 2000;
+/// Total unpacked size: the real database is a few MB.
+const MAX_TOTAL: u64 = 64 << 20;
 
 /// What a location currently offers.
 #[derive(Debug, Clone, PartialEq)]
@@ -77,7 +79,8 @@ fn parse_versions(json: &str) -> Result<(i64, u32), String> {
     Ok((timestamp, format))
 }
 
-/// Ask each location what it offers; the newest wins. Blocking.
+/// Ask the locations in order and take the first that answers, as lensfun's
+/// own updater does; a dead second mirror then costs nothing. Blocking.
 pub fn check() -> Result<Remote, String> {
     let agent = agent();
     let mut errors = Vec::new();
@@ -91,9 +94,8 @@ pub fn check() -> Result<Remote, String> {
             .and_then(|json| parse_versions(&json));
         match fetched {
             Ok((timestamp, format)) => {
-                if best.as_ref().is_none_or(|b| timestamp > b.timestamp) {
-                    best = Some(Remote { location: location.to_string(), timestamp, format });
-                }
+                best = Some(Remote { location: location.to_string(), timestamp, format });
+                break;
             }
             Err(e) => {
                 tracing::warn!("lensfun: {location}: {e}");
@@ -120,6 +122,7 @@ fn xml_name(path: &Path) -> Option<String> {
 fn unpack(archive: &[u8]) -> Result<Vec<(String, String)>, String> {
     let mut tar = tar::Archive::new(bzip2_rs::DecoderReader::new(archive));
     let mut files = Vec::new();
+    let mut total = 0u64;
     for entry in tar.entries().map_err(|e| format!("corrupt archive: {e}"))? {
         let entry = entry.map_err(|e| format!("corrupt archive: {e}"))?;
         if entry.header().entry_type() != tar::EntryType::Regular {
@@ -134,12 +137,30 @@ fn unpack(archive: &[u8]) -> Result<Vec<(String, String)>, String> {
             .take(MAX_FILE)
             .read_to_string(&mut xml)
             .map_err(|e| format!("{name}: {e}"))?;
+        total += xml.len() as u64;
+        if total > MAX_TOTAL {
+            return Err("archive unpacks to an implausible size".to_string());
+        }
         files.push((name, xml));
         if files.len() > MAX_FILES {
             return Err("archive holds implausibly many files".to_string());
         }
     }
     Ok(files)
+}
+
+/// Finish an update that died between `swap_in`'s two renames: when the live
+/// folder is missing but the previous one was set aside, put it back. Called
+/// before the database is read.
+pub fn restore_interrupted(target: &Path) {
+    let Some(parent) = target.parent() else { return };
+    let old = parent.join(".updates-old");
+    if !target.exists() && old.exists() {
+        match std::fs::rename(&old, target) {
+            Ok(()) => tracing::info!("lensfun: restored the database from an interrupted update"),
+            Err(e) => tracing::warn!("lensfun: could not restore {}: {e}", old.display()),
+        }
+    }
 }
 
 /// Write `files` + `timestamp.txt` as the new contents of `target`,
@@ -290,6 +311,22 @@ mod tests {
         assert_eq!(std::fs::read_to_string(target.join("new.xml")).unwrap(), "2");
         assert_eq!(std::fs::read_to_string(target.join("timestamp.txt")).unwrap(), "2");
         assert!(!root.join(".updates-new").exists() && !root.join(".updates-old").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_interrupted_swap_is_restored() {
+        let root = std::env::temp_dir().join(format!("raw-editor-lensfun-restore-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let target = root.join("updates");
+        std::fs::create_dir_all(root.join(".updates-old")).unwrap();
+        std::fs::write(root.join(".updates-old").join("a.xml"), "1").unwrap();
+        restore_interrupted(&target);
+        assert_eq!(std::fs::read_to_string(target.join("a.xml")).unwrap(), "1");
+        // A live folder is never replaced by the leftover.
+        std::fs::create_dir_all(root.join(".updates-old")).unwrap();
+        restore_interrupted(&target);
+        assert!(target.join("a.xml").exists() && root.join(".updates-old").exists());
         let _ = std::fs::remove_dir_all(&root);
     }
 

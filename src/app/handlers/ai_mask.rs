@@ -103,6 +103,26 @@ pub struct AiBitmapState {
     failed: Vec<u64>,
 }
 
+#[cfg(test)]
+impl AiSelect {
+    /// A session without an engine or a GPU, for message-level tests.
+    pub fn for_test(image_id: i64, slot: usize, created: bool) -> Self {
+        Self {
+            image_id,
+            slot,
+            orientation: 0,
+            prompts: Prompts::default(),
+            prev_ai_id: 0,
+            created,
+            engine: None,
+            error: None,
+            logits: None,
+            decoding: false,
+            token: session_token(),
+        }
+    }
+}
+
 fn session_token() -> u64 {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -306,7 +326,11 @@ pub fn handle_mask_ready(editor: &mut RawEditor, token: u64, result: Result<Sele
     let stale = sel.prompts < s.prompts.points.len() + s.prompts.rect.is_some() as usize;
     s.logits = Some(sel.logits.clone());
     insert_bitmap(editor, image_id, sel.ai_id, sel.bitmap);
-    if slot < editor.current_edit_params.mask_count as usize {
+    // Only into a slot that is still an AI mask: if the list shifted under the
+    // session, the index may now name another kind of mask.
+    if slot < editor.current_edit_params.mask_count as usize
+        && editor.current_edit_params.masks[slot].mask_type == MASK_AI
+    {
         editor.current_edit_params.masks[slot].ai_id = sel.ai_id;
     }
     let draw = crate::app::handlers::develop::update_pipeline(editor);
@@ -483,4 +507,72 @@ pub fn display_points(editor: &RawEditor) -> Vec<(f32, f32, bool)> {
             (u, v, p.positive)
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::message::Message;
+    use crate::app::testkit::*;
+    use crate::core::types::{EditParams, MASK_LINEAR};
+
+    fn session(image_id: i64, slot: usize, created: bool) -> AiSelect {
+        AiSelect {
+            image_id,
+            slot,
+            orientation: 1,
+            prompts: Prompts::default(),
+            prev_ai_id: 0,
+            created,
+            engine: None,
+            error: None,
+            logits: None,
+            decoding: false,
+            token: 7,
+        }
+    }
+
+    /// Image 1 has an open, still empty AI-select slot 0; image 2 has a
+    /// linear mask at index 0. Clicking image 2 must leave its mask alone and
+    /// drop image 1's empty slot.
+    #[test]
+    fn leaving_an_image_mid_session_does_not_touch_the_next_images_masks() {
+        let mut e = develop_with_images(2);
+        let mut b = EditParams::default();
+        b.masks[0] = MaskParams::new_linear(0.1, 0.1, 0.9, 0.9);
+        b.mask_count = 1;
+        e.library.as_ref().unwrap().save_edit_params(2, &b).unwrap();
+
+        // Image 1: a new AI slot, session open.
+        e.current_edit_params.masks[0] = MaskParams::new_ai();
+        e.current_edit_params.mask_count = 1;
+        e.ai_select = Some(session(1, 0, true));
+
+        send(&mut e, Message::ImageSelected(2));
+
+        assert!(e.ai_select.is_none());
+        assert_eq!(e.selected_image_id, Some(2));
+        assert_eq!(e.current_edit_params.mask_count, 1, "image 2's mask was deleted");
+        assert_eq!(e.current_edit_params.masks[0].mask_type, MASK_LINEAR);
+        assert_eq!(saved_edits(&e, 2).mask_count, 1);
+        assert_eq!(saved_edits(&e, 1).mask_count, 0, "image 1 kept an empty AI slot");
+    }
+
+    /// A decoder answer must not be written into a slot that is no longer an
+    /// AI mask (the list shifted under the session).
+    #[test]
+    fn a_selection_is_not_written_into_a_non_ai_slot() {
+        let mut e = develop_with_images(1);
+        e.current_edit_params.masks[0] = MaskParams::new_linear(0.1, 0.1, 0.9, 0.9);
+        e.current_edit_params.mask_count = 1;
+        e.ai_select = Some(session(1, 0, false));
+        let sel = Selection {
+            ai_id: 42,
+            bitmap: Arc::new(Bitmap { width: 1, height: 1, data: vec![255] }),
+            logits: Logits::default_for_tests(),
+            prompts: 0,
+        };
+        let _ = handle_mask_ready(&mut e, 7, Ok(sel));
+        assert_eq!(e.current_edit_params.masks[0].ai_id, 0);
+    }
 }

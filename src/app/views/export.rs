@@ -121,8 +121,8 @@ pub fn settings_panel(editor: &RawEditor) -> Element<'_, Message> {
         row![
             body_text("Max long edge".to_string()),
             iced::widget::Space::with_width(Length::Fill),
-            text_input("2048", &s.max_width.to_string())
-                .on_input(|v| Message::SetExportWidth(v.parse().unwrap_or(0)))
+            text_input("2048", &s.max_width_text)
+                .on_input(Message::SetExportWidth)
                 .width(Length::Fixed(90.0))
                 .size(theme::size::SMALL)
                 .style(ui::styles::text_input_style),
@@ -150,7 +150,11 @@ pub fn settings_panel(editor: &RawEditor) -> Element<'_, Message> {
             .text_size(12)
             .style(ui::styles::checkbox_style),
         resize_field,
-        hint("Only ever shrinks — a smaller image is never upscaled.".to_string()),
+        hint(if s.size_invalid() {
+            "Enter a long edge in pixels, a whole number above 0.".to_string()
+        } else {
+            "Only ever shrinks — a smaller image is never upscaled.".to_string()
+        }),
         iced::widget::Space::with_height(Length::Fixed(8.0)),
         section_header("Destination"),
         button(
@@ -307,7 +311,7 @@ fn view_queue(editor: &RawEditor) -> Element<'_, Message> {
             })
             .align_x(iced::alignment::Horizontal::Center),
         )
-        .on_press_maybe((!pending_ids.is_empty()).then_some(Message::ExportConfirmed))
+        .on_press_maybe((!pending_ids.is_empty() && !editor.export_settings.size_invalid()).then_some(Message::ExportConfirmed))
         .padding(theme::space::L)
         .width(Length::Fixed(180.0))
         .style(ui::styles::AccentButton::style)

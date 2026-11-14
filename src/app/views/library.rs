@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use crate::app::message::Message;
 use crate::app::state::RawEditor;
-use crate::database::models::{Image as ImageData, MARKED_FOR_REMOVAL_RATING};
+use crate::database::models::{is_marked, Image as ImageData};
 use crate::ui;
 use crate::ui::icons::ICON_FONT;
 use crate::ui::theme;
@@ -368,7 +368,7 @@ fn view_image_card<'a>(
     };
 
     let top_right_badge: Element<'a, Message> = if has_loaded_thumb
-        && img.rating == MARKED_FOR_REMOVAL_RATING
+        && is_marked(img.rating)
     {
         container(
             row![

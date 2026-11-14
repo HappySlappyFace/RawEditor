@@ -50,7 +50,10 @@ pub fn handle_black_phase_changed(editor: &mut RawEditor, y: bool, v: u32) -> Ta
     } else {
         editor.current_edit_params.black_phase_x = v;
     }
-    update_pipeline(editor)
+    let task = update_pipeline(editor);
+    // A checkbox has no release: this click is the whole gesture.
+    editor.commit_current_state();
+    task
 }
 
 pub fn handle_vibrance_changed(editor: &mut RawEditor, v: f32) -> Task<Message> {
@@ -629,11 +632,14 @@ pub fn handle_paste_settings(editor: &mut RawEditor) -> Task<Message> {
     let for_image = |id: Option<i64>| {
         if id == clip.source_image { clip.params } else { clip.params.without_ai_masks() }
     };
-    crate::core::types::apply_categories(
-        &mut editor.current_edit_params,
-        &for_image(editor.selected_image_id),
-        clip.categories,
-    );
+    // Masks pasted without geometry follow the destination's own turn.
+    let (dw, dh) = editor.image_display_dims();
+    let aspect = dw as f32 / dh.max(1) as f32;
+    let for_target = |id: Option<i64>, dst_turns: u32| {
+        crate::core::types::turned_for_paste(&for_image(id), clip.categories, dst_turns, aspect)
+    };
+    let src_for_current = for_target(editor.selected_image_id, editor.current_edit_params.quarter_turns);
+    crate::core::types::apply_categories(&mut editor.current_edit_params, &src_for_current, clip.categories);
 
     // A paste that lowered mask_count can leave `selected_mask` pointing past
     // the end of the live masks, exactly as handle_reset_edits guards against.
@@ -664,7 +670,8 @@ pub fn handle_paste_settings(editor: &mut RawEditor) -> Task<Message> {
                         return None;
                     }
                 };
-                crate::core::types::apply_categories(&mut target, &for_image(Some(id)), clip.categories);
+                let src = for_target(Some(id), target.quarter_turns);
+                crate::core::types::apply_categories(&mut target, &src, clip.categories);
                 Some((id, target))
             })
             .collect();

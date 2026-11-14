@@ -10,6 +10,7 @@ pub mod modal;
 pub mod no_operate;
 pub mod profiler_graph;
 pub mod slider;
+pub mod sweep_bar;
 pub mod transition;
 
 /// `use crate::ui::widgets::button;` brings in both the module (for

@@ -29,8 +29,10 @@ pub fn handle_toggle_export_resize(editor: &mut RawEditor, resize: bool) -> Task
     Task::none()
 }
 
-pub fn handle_set_export_width(editor: &mut RawEditor, width: u32) -> Task<Message> {
-    editor.export_settings.max_width = width;
+pub fn handle_set_export_width(editor: &mut RawEditor, text: String) -> Task<Message> {
+    // 0 means "not a usable number" (empty, a stray letter, a minus sign).
+    editor.export_settings.max_width = text.trim().parse::<u32>().unwrap_or(0);
+    editor.export_settings.max_width_text = text;
     Task::none()
 }
 
@@ -112,6 +114,10 @@ pub fn export_target_ids(editor: &RawEditor) -> Vec<i64> {
 }
 
 pub fn handle_export_confirmed(editor: &mut RawEditor) -> Task<Message> {
+    if editor.export_settings.size_invalid() {
+        editor.status = "Enter a long edge in pixels, or untick Resize long edge.".to_string();
+        return Task::none();
+    }
     editor.active_modal = Modal::None;
 
     // Re-entrancy guard, matching handle_delete_from_disk_confirmed's

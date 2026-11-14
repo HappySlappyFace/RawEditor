@@ -129,11 +129,17 @@ pub fn remove(id: ModelId) -> Result<(), String> {
     Ok(())
 }
 
-fn agent() -> ureq::Agent {
+/// ureq 3's `timeout_recv_body` is a budget for the WHOLE body, not per read
+/// (its docs: "The budget is not restarted for each read"). A flat 60 s made
+/// the 109 MB encoder need ~15 Mbit/s. Scale it by the file's size instead,
+/// assuming a floor of 64 KiB/s.
+fn body_timeout(bytes: u64) -> Duration {
+    Duration::from_secs(60 + bytes / (64 * 1024))
+}
+
+fn agent(bytes: u64) -> ureq::Agent {
     ureq::Agent::config_builder()
-        // Per-read inactivity, not a whole-transfer limit: a 100 MB file on a
-        // slow link may legitimately take minutes.
-        .timeout_recv_body(Some(Duration::from_secs(60)))
+        .timeout_recv_body(Some(body_timeout(bytes)))
         .timeout_connect(Some(Duration::from_secs(30)))
         .https_only(true)
         .user_agent(format!("RawEditor/{} (AI models)", env!("CARGO_PKG_VERSION")))
@@ -148,7 +154,6 @@ pub fn install(id: ModelId, progress: &Progress) -> Result<(), String> {
     let dir = dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
     progress.set_total(model.total_bytes());
-    let agent = agent();
     for f in model.files {
         let dest = file_path(f);
         if verify_file(&dest, f).is_ok() {
@@ -156,7 +161,7 @@ pub fn install(id: ModelId, progress: &Progress) -> Result<(), String> {
             continue;
         }
         let url = format!("{RELEASE_URL}{}", f.name);
-        let response = agent.get(&url).call().map_err(|e| format!("download failed: {e}"))?;
+        let response = agent(f.bytes).get(&url).call().map_err(|e| format!("download failed: {e}"))?;
         let mut reader = response
             .into_body()
             .into_with_config()
@@ -224,6 +229,13 @@ fn hex(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn body_timeout_scales_with_the_file() {
+        // The largest model must get far more than the old flat 60 s.
+        assert!(super::body_timeout(109 * 1024 * 1024).as_secs() > 20 * 60);
+        assert_eq!(super::body_timeout(0).as_secs(), 60);
+    }
+
     use super::*;
 
     fn record(data: &[u8]) -> ModelFile {

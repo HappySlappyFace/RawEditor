@@ -3,7 +3,7 @@ use crate::ui::widgets::button;
 use crate::ui::widgets::fade_image::fade_image;
 use iced::{Background, Border, Color, Element, Length, Theme};
 
-use crate::database::models::{Image, MARKED_FOR_REMOVAL_RATING};
+use crate::database::models::{is_marked, Image};
 use crate::app::message::Message;
 use crate::ui::icons;  // Phase 58: Icon constants
 
@@ -113,7 +113,7 @@ pub fn view<'a>(
         // which reuses this same field via a reserved sentinel — must be
         // checked first or `img.rating as usize` below would try to build a
         // 255-element star vec) on the bottom-left corner.
-        let rating_overlay = if img.rating == MARKED_FOR_REMOVAL_RATING {
+        let rating_overlay = if is_marked(img.rating) {
             Element::from(container(
                 container(
                     row![

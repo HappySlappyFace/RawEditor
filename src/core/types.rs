@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 // during the rendering pipeline. All edits are non-destructive and stored
 // as JSON in the database.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
+#[serde(default)]
 pub struct EditParams {
     // ========== Exposure & Tone ==========
     /// Exposure adjustment in stops (-5.0 to +5.0)
@@ -284,6 +285,7 @@ fn default_luma_detail() -> f32 {
 /// stay anchored to image content when the crop changes. Like the crop
 /// rectangle, masks do not follow the straighten `rotation` slider.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Default)]
+#[serde(default)]
 pub struct MaskParams {
     /// 0 = linear gradient, 1 = radial ellipse
     pub mask_type: u32,
@@ -476,7 +478,7 @@ impl EditParams {
         let mut i = 0;
         while i < (self.mask_count as usize).min(MAX_MASKS) {
             if self.masks[i].mask_type == MASK_AI {
-                let count = self.mask_count as usize;
+                let count = (self.mask_count as usize).min(MAX_MASKS);
                 self.masks.copy_within(i + 1..count, i);
                 self.masks[count - 1] = MaskParams::default();
                 self.mask_count -= 1;
@@ -503,8 +505,19 @@ impl EditParams {
     }
 
     /// Convert to JSON string for database storage
+    ///
+    /// serde_json writes a NaN/inf `f32` as `null`, which `from_json` then
+    /// rejects, so one bad value would make the whole saved edit unreadable.
+    /// The result is therefore checked by reading it back: an edit that could
+    /// not be loaded again is an error here, and the caller keeps the
+    /// previous row.
     pub fn to_json(self) -> Result<String, serde_json::Error> {
-        serde_json::to_string(&self)
+        let json = serde_json::to_string(&self)?;
+        if let Err(e) = serde_json::from_str::<Self>(&json) {
+            tracing::error!("refusing to save an edit that cannot be read back (non-finite value?): {e}");
+            return Err(e);
+        }
+        Ok(json)
     }
 
     /// Parse from JSON string (from database)
@@ -514,6 +527,13 @@ impl EditParams {
         if params.temperature > 100.0 {
             // Old Kelvin value stored — convert back to normalized range
             params.temperature = ((params.temperature - 5000.0) / 5000.0).clamp(-1.0, 1.0);
+        }
+        // Readers index `masks` by `mask_count` and clamp luma to a band:
+        // sanitise once here so a hand-edited or corrupt row cannot panic them.
+        params.mask_count = params.mask_count.min(MAX_MASKS as u32);
+        for m in params.masks.iter_mut() {
+            m.luma_lo = m.luma_lo.clamp(0.0, 1.0);
+            m.luma_hi = m.luma_hi.clamp(m.luma_lo, 1.0);
         }
         Ok(params)
     }
@@ -775,6 +795,29 @@ pub struct EditClipboard {
     pub source_image: Option<i64>,
 }
 
+/// `src` re-expressed in the frame of an image turned `dst_turns` quarter
+/// turns, for a paste that carries masks but not geometry. Mask shapes and
+/// brush strokes live in the TURNED frame (§D), so without this they land a
+/// quarter turn away from where they were drawn. `aspect` is the
+/// destination's displayed width / height (the brush's radii depend on it).
+/// Anything else is returned unchanged: with geometry the destination takes
+/// the source's turn, and without masks there is nothing to carry.
+pub fn turned_for_paste(src: &EditParams, cats: CopyCategories, dst_turns: u32, aspect: f32) -> EditParams {
+    let mut out = *src;
+    if !cats.masks || cats.geometry {
+        return out;
+    }
+    let steps = (dst_turns + 4 - src.quarter_turns % 4) % 4;
+    // A turn swaps width and height: the source frame's aspect is the
+    // destination's, inverted for an odd number of turns.
+    let mut a = if steps % 2 == 1 { 1.0 / aspect.max(1e-6) } else { aspect };
+    for _ in 0..steps {
+        out.turn_quarter(true, a);
+        a = 1.0 / a.max(1e-6);
+    }
+    out
+}
+
 /// Copy the fields belonging to `cats` from `src` onto `dst`, leaving every
 /// other field of `dst` untouched.
 ///
@@ -873,6 +916,26 @@ mod tests {
     fn test_default_is_unedited() {
         let params = EditParams::default();
         assert!(params.is_unedited());
+    }
+
+    #[test]
+    fn a_non_finite_value_is_refused_not_saved_as_unreadable_json() {
+        for bad in [f32::NAN, f32::INFINITY] {
+            let mut p = EditParams::default();
+            p.exposure = bad;
+            assert!(p.to_json().is_err(), "{bad} must not serialise");
+            let mut p = EditParams::default();
+            p.masks[0].exposure = bad;
+            assert!(p.to_json().is_err(), "{bad} in a mask must not serialise");
+        }
+        assert!(EditParams::default().to_json().is_ok());
+    }
+
+    #[test]
+    fn an_edit_missing_any_field_still_loads() {
+        let restored = EditParams::from_json("{\"exposure\":1.5}").unwrap();
+        assert_eq!(restored.exposure, 1.5);
+        assert_eq!(restored.contrast, EditParams::default().contrast);
     }
 
     #[test]
@@ -1293,5 +1356,52 @@ mod tests {
         params.reset();
 
         assert!(params.is_unedited());
+    }
+}
+
+#[cfg(test)]
+mod paste_turn_tests {
+    use super::*;
+
+    fn clip(turns: u32) -> EditParams {
+        let mut p = EditParams::default();
+        p.quarter_turns = turns;
+        p.masks[0] = MaskParams::new_linear(0.2, 0.3, 0.2, 0.9);
+        p.mask_count = 1;
+        p
+    }
+
+    fn cats(masks: bool, geometry: bool) -> CopyCategories {
+        CopyCategories { masks, geometry, ..CopyCategories::default() }
+    }
+
+    #[test]
+    fn masks_without_geometry_follow_the_destinations_turn() {
+        let src = clip(0);
+        // Destination turned once clockwise: the point (0.2, 0.3) lands at (1-v, u).
+        let out = turned_for_paste(&src, cats(true, false), 1, 1.5);
+        let m = out.masks[0];
+        assert!((m.ax - 0.7).abs() < 1e-6 && (m.ay - 0.2).abs() < 1e-6, "{m:?}");
+        // Same turn: untouched. With geometry: untouched (the turn is copied).
+        assert_eq!(turned_for_paste(&clip(1), cats(true, false), 1, 1.5).masks[0].ax, 0.2);
+        assert_eq!(turned_for_paste(&src, cats(true, true), 1, 1.5).masks[0].ax, 0.2);
+        assert_eq!(turned_for_paste(&src, cats(false, false), 1, 1.5).masks[0].ax, 0.2);
+        // A full circle round (0 -> 3 is three clockwise turns) is rigid too.
+        let out = turned_for_paste(&src, cats(true, false), 3, 1.5);
+        assert!((out.masks[0].ax - 0.3).abs() < 1e-6 && (out.masks[0].ay - 0.8).abs() < 1e-6);
+    }
+
+    #[test]
+    fn from_json_clamps_what_readers_index_with() {
+        let mut p = EditParams::default();
+        p.mask_count = 99;
+        p.masks[0].luma_lo = 2.0;
+        p.masks[0].luma_hi = -1.0;
+        let back = EditParams::from_json(&p.to_json().unwrap()).unwrap();
+        assert_eq!(back.mask_count as usize, MAX_MASKS);
+        assert!(back.masks[0].luma_lo <= back.masks[0].luma_hi);
+        // The readers that used to panic.
+        let _ = back.without_ai_masks();
+        assert_eq!(back.ai_masks().count(), 0);
     }
 }

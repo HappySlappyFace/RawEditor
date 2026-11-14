@@ -1,4 +1,5 @@
 pub mod layout;
+pub mod splash;
 pub mod library;
 pub mod cull;
 pub mod develop;

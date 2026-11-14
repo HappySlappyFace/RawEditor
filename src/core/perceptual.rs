@@ -252,8 +252,9 @@ pub fn hue_shift(rgb: [f32; 3], angle: f32) -> [f32; 3] {
     let (sn, cs) = angle.sin_cos();
     let da = (lab[1] * cs - lab[2] * sn) / c;
     let db = (lab[1] * sn + lab[2] * cs) / c;
-    let c2 = c.min(max_saturation(da, db) * lab[0]);
-    oklab_to_linear_srgb([lab[0], da * c2, db * c2])
+    // Constant chroma, no clamp: a colour outside sRGB (wide-gamut export)
+    // keeps it, and Step 15b's gamut map is the only fit.
+    oklab_to_linear_srgb([lab[0], da * c, db * c])
 }
 
 /// The contrast curve on Oklab L: slope `k` at `CONTRAST_PIVOT_L`, black
@@ -950,8 +951,20 @@ mod tests {
         for rgb in samples() {
             let out = hue_shift(rgb, 30f32.to_radians());
             assert!(hue_diff(hue(out), hue(rgb) + 30.0) < 0.5, "{rgb:?}");
-            assert!(out.iter().all(|&c| c >= -2e-3), "{rgb:?} → {out:?}");
             assert!((oklab_l(out) - oklab_l(rgb)).abs() < 1e-4);
+            let (a, b) = (linear_srgb_to_oklab(rgb), linear_srgb_to_oklab(out));
+            let (ca, cb) = ((a[1] * a[1] + a[2] * a[2]).sqrt(), (b[1] * b[1] + b[2] * b[2]).sqrt());
+            assert!((ca - cb).abs() < 1e-4, "chroma is held: {ca} vs {cb}");
         }
+    }
+
+    #[test]
+    fn hue_shift_keeps_a_colour_outside_srgb() {
+        // A saturated colour past the sRGB cone: the old clamp pulled its
+        // chroma in to the cone of the new hue.
+        let wide = [-0.08f32, 0.6, 0.1];
+        let out = hue_shift(wide, 20f32.to_radians());
+        let c = |v: [f32; 3]| { let l = linear_srgb_to_oklab(v); (l[1] * l[1] + l[2] * l[2]).sqrt() };
+        assert!((c(out) - c(wide)).abs() < 1e-4, "{} vs {}", c(out), c(wide));
     }
 }

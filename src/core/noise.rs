@@ -158,6 +158,14 @@ pub fn estimate(
 
     let mut model = NoiseModel::default();
     for c in 0..3 {
+        // Quantisation noise (1/12 DN²) in this colour's units: a bin cannot
+        // honestly be quieter than that, and a dead-flat one (black-clipped
+        // border, constant synthetic area) would otherwise read zero.
+        let floor = (0..4)
+            .filter(|&k| colors[k] as usize == c)
+            .map(|k| (scale[k] as f64).powi(2) / 12.0)
+            .fold(f64::INFINITY, f64::min);
+        let floor = if floor.is_finite() { floor } else { 0.0 };
         // (mean, variance, blocks) per usable bin.
         let mut pts: Vec<(f64, f64, f64)> = Vec::new();
         for bin in 0..BINS {
@@ -166,7 +174,7 @@ pub fn estimate(
             if n < MIN_BIN_BLOCKS {
                 continue;
             }
-            pts.push((means[c][bin] / n as f64, flat_variance(v), n as f64));
+            pts.push((means[c][bin] / n as f64, flat_variance(v).max(floor), n as f64));
         }
         if let Some((a, b)) = fit_lower_envelope(&pts) {
             model.a[c] = a as f32;
@@ -210,9 +218,17 @@ fn flat_variance(v: &mut [f32]) -> f64 {
 /// variance it measures, so this weights each bin by its relative precision
 /// instead of letting the brightest bins dominate. Returns `None` with fewer
 /// than two usable bins.
+const MAX_WEIGHT_RATIO: f64 = 1e6;
+
 fn fit_lower_envelope(pts: &[(f64, f64, f64)]) -> Option<(f64, f64)> {
     let mut keep: Vec<(f64, f64, f64)> =
         pts.iter().map(|&(m, v, n)| (m, v, n / (v * v).max(1e-30))).collect();
+    // No bin may outweigh the least certain one by more than `MAX_WEIGHT_RATIO`,
+    // so a freak near-zero variance cannot decide the fit on its own.
+    let wmin = keep.iter().map(|p| p.2).fold(f64::INFINITY, f64::min);
+    for p in &mut keep {
+        p.2 = p.2.min(wmin * MAX_WEIGHT_RATIO);
+    }
     let mut fit = fit_affine(&keep)?;
     for _ in 0..3 {
         let kept: Vec<_> = keep
@@ -399,6 +415,18 @@ mod tests {
             let sd_s = slope * sd;
             assert!((sd_s - 1.0).abs() < 0.1, "x={x}: stabilised σ {sd_s:.3}");
         }
+    }
+
+    /// A bin whose blocks are all dead flat reads variance 0; it must not
+    /// dominate the fit (weight n/v² would be ~1e30 times the others).
+    #[test]
+    fn a_dead_flat_bin_does_not_collapse_the_fit() {
+        let (a, b) = (0.01f64, 1e-4f64);
+        let mut pts: Vec<(f64, f64, f64)> =
+            (1..8).map(|i| { let m = i as f64 * 0.1; (m, a * m + b, 100.0) }).collect();
+        pts.push((0.001, 0.0, 100.0));
+        let (fa, _fb) = fit_lower_envelope(&pts).unwrap();
+        assert!(fa > a * 0.3, "slope collapsed to {fa}");
     }
 
     #[test]

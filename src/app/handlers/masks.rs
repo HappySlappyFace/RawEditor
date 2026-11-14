@@ -148,6 +148,23 @@ pub fn handle_delete_mask(editor: &mut RawEditor, index: usize) -> Task<Message>
     editor.color_picking_mask = None;
     editor.brush_armed = false;
 
+    // An open AI-select session names its mask by slot: deleting that mask
+    // ends the session, deleting one below it moves the session down with it.
+    // (Done/Cancel take the session before they call this, so they are
+    // unaffected.)
+    match editor.ai_select.as_ref().map(|s| s.slot) {
+        Some(slot) if slot == index => {
+            editor.ai_select = None;
+            editor.status = String::new();
+        }
+        Some(slot) if slot > index => {
+            if let Some(s) = editor.ai_select.as_mut() {
+                s.slot = slot - 1;
+            }
+        }
+        _ => {}
+    }
+
     editor.selected_mask = match editor.selected_mask {
         Some(s) if s == index => None,
         Some(s) if s > index => Some(s - 1),
@@ -211,8 +228,8 @@ pub fn handle_mask_adjustment_changed(
         MaskAdjustment::Tint => mask.tint = value.clamp(-1.0, 1.0),
         MaskAdjustment::Rotation => mask.rotation = value.clamp(-180.0, 180.0),
         MaskAdjustment::Hue => mask.hue = value.clamp(-1.0, 1.0),
-        MaskAdjustment::LumaLo => mask.luma_lo = value.clamp(0.0, mask.luma_hi),
-        MaskAdjustment::LumaHi => mask.luma_hi = value.clamp(mask.luma_lo, 1.0),
+        MaskAdjustment::LumaLo => mask.luma_lo = value.min(mask.luma_hi).max(0.0),
+        MaskAdjustment::LumaHi => mask.luma_hi = value.max(mask.luma_lo).min(1.0),
         MaskAdjustment::LumaSmooth => mask.luma_smooth = value.clamp(0.0, 0.5),
         MaskAdjustment::ColorTolerance => mask.color_tolerance = value.clamp(0.0, 1.0),
     }
@@ -265,12 +282,17 @@ fn layer_uv(editor: &RawEditor, u: f32, v: f32) -> [f32; 2] {
 }
 
 pub fn handle_brush_stroke(editor: &mut RawEditor, ev: StrokeEvent) -> Task<Message> {
-    let Some(index) = editor.selected_mask else {
+    let live = editor
+        .selected_mask
+        .filter(|&i| i < editor.current_edit_params.mask_count as usize && editor.brush_armed);
+    let Some(index) = live else {
+        // Disarmed (or deselected) mid-stroke: the release must still end it,
+        // or `is_painting` stays set and the stroke is never committed.
+        if matches!(ev, StrokeEvent::End) {
+            return end_stroke(editor);
+        }
         return Task::none();
     };
-    if index >= editor.current_edit_params.mask_count as usize || !editor.brush_armed {
-        return Task::none();
-    }
     let aspect = display_aspect(editor);
     let ev = match ev {
         StrokeEvent::Begin(u, v) => {
@@ -314,17 +336,21 @@ pub fn handle_brush_stroke(editor: &mut RawEditor, ev: StrokeEvent) -> Task<Mess
             }
             update_pipeline(editor)
         }
-        StrokeEvent::End => {
-            if !editor.is_painting {
-                return Task::none();
-            }
-            editor.is_painting = false;
-            editor.current_edit_params.brush.finish(aspect);
-            let task = update_pipeline(editor);
-            editor.commit_current_state();
-            task
-        }
+        StrokeEvent::End => end_stroke(editor),
     }
+}
+
+/// Finish the stroke in progress (if any) and commit it.
+fn end_stroke(editor: &mut RawEditor) -> Task<Message> {
+    if !editor.is_painting {
+        return Task::none();
+    }
+    let aspect = display_aspect(editor);
+    editor.is_painting = false;
+    editor.current_edit_params.brush.finish(aspect);
+    let task = update_pipeline(editor);
+    editor.commit_current_state();
+    task
 }
 
 pub fn handle_clear_mask_brush(editor: &mut RawEditor) -> Task<Message> {
