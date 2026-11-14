@@ -33,7 +33,7 @@ const LOGO_LIGHT_BYTES: &[u8] = include_bytes!("../../../assets/logo-light.png")
 /// its decoded-image cache by that id — so building the handle inside `view`
 /// copied the PNG and decoded it again on every view rebuild, which iced
 /// does after every message.
-fn logo() -> Handle {
+pub(super) fn logo() -> Handle {
     static LOGO: std::sync::LazyLock<Handle> =
         std::sync::LazyLock::new(|| Handle::from_bytes(LOGO_BYTES));
     // The logo is opaque, on the title bar's own grey, so each theme has its
@@ -53,7 +53,7 @@ fn logo() -> Handle {
 /// zip) the splash was simply blank. Not embedded: it is ~10 MB. Inside a
 /// macOS `.app` the executable sits in `Contents/MacOS` and the assets in
 /// `Contents/Resources`, so that sibling is tried too.
-fn splash() -> Handle {
+pub(super) fn splash() -> Handle {
     static SPLASH: std::sync::LazyLock<Handle> = std::sync::LazyLock::new(|| {
         let relative = std::path::Path::new("assets").join("splash.png");
         let beside_exe = std::env::current_exe()
@@ -73,7 +73,7 @@ fn splash() -> Handle {
 pub fn view(editor: &RawEditor) -> Element<'_, Message> {
     // Phase 23: Show splash screen if database is still loading
     let content = match &editor.library {
-        None => view_splash(editor),
+        None => super::splash::view(editor),
         Some(_) => view_main(editor),
     };
     
@@ -114,95 +114,6 @@ pub fn view(editor: &RawEditor) -> Element<'_, Message> {
     stack![content]
         .push_maybe(modal_body.map(|body| modal_overlay(body, modal as u64, exiting)))
         .into()
-}
-
-/// Phase 23: Splash screen shown during database loading
-fn view_splash(editor: &RawEditor) -> Element<'_, Message> {
-    let left_content = column![
-        Space::with_height(Length::Fill),
-        iced::widget::image(splash())
-            .width(Length::Fill)
-            .content_fit(iced::ContentFit::Cover),
-        Space::with_height(Length::Fill),
-    ]
-    .align_x(iced::Alignment::Center);
-    
-    let left_panel = container(left_content)
-    .width(Length::FillPortion(7))
-    .height(Length::Fill)
-    .style(|_theme| {
-        container::Style {
-            background: Some(Background::Color(theme::colours().bg)),
-            ..Default::default()
-        }
-    });
-    
-    let right_panel = container(
-        column![
-            Space::with_height(Length::Fill),
-            container(
-                Image::new(logo())
-                    .height(Length::Fixed(72.0))
-                    .content_fit(iced::ContentFit::Contain)
-            )
-            .width(Length::Fill)
-            .align_x(iced::alignment::Horizontal::Center),
-            Space::with_height(Length::Fixed(28.0)),
-            container(
-                column![
-                    text(&editor.status)
-                        .size(theme::size::BODY)
-                        .width(Length::Fill)
-                        .align_x(iced::alignment::Horizontal::Center)
-                        .style(|_| text::Style {
-                            color: Some(theme::colours().text)
-                        }),
-                ]
-                .spacing(theme::space::S)
-            )
-            .padding([theme::space::XL, theme::space::XL])
-            .style(|_| container::Style {
-                background: Some(Background::Color(theme::colours().surface)),
-                border: iced::Border {
-                    radius: theme::radius::DIALOG.into(),
-                    width: 1.0,
-                    color: theme::colours().border_subtle,
-                },
-                ..Default::default()
-            })
-            .width(Length::Fill)
-            .max_width(360),
-            Space::with_height(Length::Fixed(16.0)),
-            text("Work in progress build")
-                .size(theme::size::CAPTION)
-                .width(Length::Fill)
-                .align_x(iced::alignment::Horizontal::Center)
-                .style(|_| text::Style {
-                    color: Some(theme::colours().text_disabled)
-                }),
-            text(format!("Version {}", crate::app::APP_VERSION))
-                .size(theme::size::CAPTION)
-                .width(Length::Fill)
-                .align_x(iced::alignment::Horizontal::Center)
-                .style(|_| text::Style {
-                    color: Some(theme::colours().text_disabled)
-                }),
-            Space::with_height(Length::Fill),
-        ]
-        .align_x(Alignment::Center)
-        .width(Length::Fill)
-    )
-    .padding([0, 30])
-    .width(Length::FillPortion(3))
-    .height(Length::Fill)
-    .style(|_theme| {
-        container::Style {
-            background: Some(Background::Color(theme::colours().bg)),
-            ..Default::default()
-        }
-    });
-    
-    row![left_panel, right_panel].width(Length::Fill).height(Length::Fill).into()
 }
 
 /// Phase 23: Main application UI (shown after database loads)

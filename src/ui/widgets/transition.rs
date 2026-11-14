@@ -38,6 +38,10 @@ pub struct FadeThrough<'a, Message> {
     content: Element<'a, Message>,
     key: u64,
     background: Color,
+    /// Seconds to wait (content hidden) before the fade starts.
+    delay: f32,
+    /// Seconds the fade itself takes.
+    duration: f32,
 }
 
 pub fn fade_through<'a, Message>(
@@ -45,7 +49,39 @@ pub fn fade_through<'a, Message>(
     background: Color,
     content: impl Into<Element<'a, Message>>,
 ) -> FadeThrough<'a, Message> {
-    FadeThrough { content: content.into(), key, background }
+    FadeThrough {
+        content: content.into(),
+        key,
+        background,
+        delay: 0.0,
+        duration: motion::duration::PAGE,
+    }
+}
+
+impl<'a, Message> FadeThrough<'a, Message> {
+    /// Hold the content hidden for `secs`, then fade it in. Staggers several
+    /// fades (the splash screen) without a timeline of their own.
+    pub fn delay(mut self, secs: f32) -> Self {
+        self.delay = secs.max(0.0);
+        self
+    }
+
+    /// How long the fade takes (default: the tab-switch fade).
+    pub fn duration(mut self, secs: f32) -> Self {
+        self.duration = secs.max(1e-3);
+        self
+    }
+
+    fn total(&self) -> f32 {
+        self.delay + self.duration
+    }
+}
+
+/// Progress through the fade proper, given linear progress `t` over
+/// `delay + duration`: 0 for the whole delay, then 0 to 1.
+fn staged(t: f32, delay: f32, duration: f32) -> f32 {
+    let total = delay + duration;
+    motion::segment(t, delay / total, 1.0)
 }
 
 struct FadeState {
@@ -119,7 +155,7 @@ impl<'a, Message> Widget<Message, Theme, Renderer> for FadeThrough<'a, Message> 
         if let Event::Window(window::Event::RedrawRequested(now)) = event {
             let state = tree.state.downcast_mut::<FadeState>();
             state.now = Some(now);
-            if state.timeline.tick(now, motion::duration::PAGE) {
+            if state.timeline.tick(now, self.total()) {
                 shell.request_redraw(window::RedrawRequest::NextFrame);
             }
         }
@@ -147,7 +183,11 @@ impl<'a, Message> Widget<Message, Theme, Renderer> for FadeThrough<'a, Message> 
     ) {
         use iced::advanced::Renderer as _;
         let state = tree.state.downcast_ref::<FadeState>();
-        let t = state.timeline.progress(state.now, motion::duration::PAGE);
+        let t = staged(
+            state.timeline.progress(state.now, self.total()),
+            self.delay,
+            self.duration,
+        );
         let child_layout = layout.children().next().unwrap();
         let draw_child = |renderer: &mut Renderer| {
             self.content.as_widget().draw(
@@ -393,5 +433,21 @@ mod tests {
         assert!(fade_through_veil(1.0).abs() < 1e-6);
         // Front-loaded: most of the way there by the halfway point.
         assert!(fade_through_veil(0.5) < 0.2);
+    }
+
+    #[test]
+    fn a_delayed_fade_stays_hidden_for_the_whole_delay() {
+        // 0.3 s delay + 0.5 s fade: the first 3/8 of the timeline is the delay.
+        assert_eq!(staged(0.0, 0.3, 0.5), 0.0);
+        assert_eq!(staged(0.37, 0.3, 0.5), 0.0);
+        assert!((staged(0.375 + 0.3125, 0.3, 0.5) - 0.5).abs() < 1e-5);
+        assert_eq!(staged(1.0, 0.3, 0.5), 1.0);
+    }
+
+    #[test]
+    fn no_delay_is_the_plain_fade() {
+        for t in [0.0, 0.25, 0.7, 1.0] {
+            assert!((staged(t, 0.0, 0.2) - t).abs() < 1e-6);
+        }
     }
 }
