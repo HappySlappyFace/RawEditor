@@ -359,7 +359,10 @@ pub fn filmic(x: f32) -> f32 {
     const TONE_LIFT: f32 = 0.08;
     const THRESHOLD: f32 = 0.65;
     const HEADROOM: f32 = 1.0 - THRESHOLD;
-    let x = x.max(0.0);
+    // The lift peaks at x = (1 + t) / 2t = 6.75 and falls to 0 at 13.5, so it
+    // is held at its peak: a brighter highlight must not get darker. The
+    // shader's built-in block does the same.
+    let x = x.clamp(0.0, (1.0 + TONE_LIFT) / (2.0 * TONE_LIFT));
     let lifted = x * ((1.0 + TONE_LIFT) - TONE_LIFT * x);
     if lifted <= THRESHOLD {
         lifted.clamp(0.0, 1.0)
@@ -387,7 +390,8 @@ pub fn bake(mapper: ToneMapper, gt: GtParams) -> Vec<f32> {
 mod tests {
     use super::*;
 
-    const OPERATORS: [ToneMapper; 4] = [
+    const OPERATORS: [ToneMapper; 5] = [
+        ToneMapper::Filmic,
         ToneMapper::Reinhard,
         ToneMapper::Hable,
         ToneMapper::AcesFitted,
@@ -513,9 +517,10 @@ mod tests {
     #[test]
     fn filmic_matches_shader_form() {
         // Recomputed here in the shader's exact order of operations.
-        for x in [0.0f32, 0.1, 0.18, 0.5, 0.64, 0.65, 0.9, 1.0, 3.0] {
+        for x in [0.0f32, 0.1, 0.18, 0.5, 0.64, 0.65, 0.9, 1.0, 3.0, 6.75, 10.0, 13.0, 16.0] {
             let lift = 0.08f32;
-            let lifted = x * ((1.0 + lift) - lift * x);
+            let xl = x.min((1.0 + lift) / (2.0 * lift));
+            let lifted = xl * ((1.0 + lift) - lift * xl);
             let expected = if lifted <= 0.65 {
                 lifted
             } else {

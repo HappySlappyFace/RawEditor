@@ -1065,3 +1065,33 @@ fn brush_incremental_matches_full_redraw() {
         assert!(ri == rf, "incremental redraw differs from a full redraw");
     });
 }
+
+/// On the profile-less path nothing bounds the colour before the built-in
+/// filmic block, so an overbright highlight (here 0.9 at +4 EV = 14.4) must
+/// not fold back: the filmic midtone lift is a parabola that fell to zero at
+/// 13.5 and turned such a highlight black.
+///
+/// Run with `cargo test --release filmic_lift_does_not_fold -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn filmic_lift_does_not_fold_back_overbright_highlights() {
+    let (w, h) = (64usize, 64usize);
+    let scene = Scene { w, h, lin: vec![[0.9; 3]; w * h] };
+    let data = mosaic(&scene, 0.0, 0.0, 1);
+    runtime().block_on(async {
+        let ctx = SharedContext::new().await.expect("gpu");
+        let mut centre = Vec::new();
+        for exposure in [1.0f32, 2.5, 3.5, 4.0] {
+            let p = EditParams { exposure, ..EditParams::default() };
+            let (img, rw, rh) = render(&ctx, &data, w, h, &p, None).await;
+            let i = ((rh / 2 * rw + rw / 2) * 4) as usize;
+            centre.push(img[i] as i32 + img[i + 1] as i32 + img[i + 2] as i32);
+        }
+        eprintln!("centre luma sums by exposure: {centre:?}");
+        assert!(
+            centre.windows(2).all(|p| p[1] >= p[0] - 3),
+            "brighter exposure rendered darker: {centre:?}"
+        );
+        assert!(centre[3] > 600, "+4 EV highlight is not near white: {centre:?}");
+    });
+}

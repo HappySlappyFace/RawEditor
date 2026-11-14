@@ -75,9 +75,20 @@ pub fn packaged() -> Option<&'static str> {
     *PACKAGED.get_or_init(|| {
         option_env!("RAWEDITOR_PACKAGED").or_else(|| {
             let exe = std::env::current_exe().ok()?;
-            (cfg!(target_os = "linux") && exe.starts_with("/usr/")).then_some("your package manager")
+            let flatpak = std::env::var_os("FLATPAK_ID").is_some();
+            (cfg!(target_os = "linux") && exe_is_packaged(&exe, flatpak))
+                .then_some("your package manager")
         })
     })
+}
+
+/// A binary a package manager put in place: under `/usr/` but not
+/// `/usr/local/` (a manual install), in a Flatpak sandbox (`/app/` with
+/// `FLATPAK_ID` set), or in the Nix store.
+fn exe_is_packaged(exe: &std::path::Path, flatpak: bool) -> bool {
+    (exe.starts_with("/usr/") && !exe.starts_with("/usr/local/"))
+        || (flatpak && exe.starts_with("/app/"))
+        || exe.starts_with("/nix/store/")
 }
 
 pub fn current_version() -> &'static str {
@@ -209,6 +220,17 @@ pub fn check() -> Result<Option<Available>, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn packaged_paths() {
+        use std::path::Path;
+        assert!(super::exe_is_packaged(Path::new("/usr/bin/raw-editor"), false));
+        assert!(!super::exe_is_packaged(Path::new("/usr/local/bin/raw-editor"), false));
+        assert!(super::exe_is_packaged(Path::new("/app/bin/raw-editor"), true));
+        assert!(!super::exe_is_packaged(Path::new("/app/bin/raw-editor"), false));
+        assert!(super::exe_is_packaged(Path::new("/nix/store/abc-raw/bin/raw-editor"), false));
+        assert!(!super::exe_is_packaged(Path::new("/home/u/raw-editor"), false));
+    }
+
     use super::*;
 
     fn v(s: &str) -> Version {

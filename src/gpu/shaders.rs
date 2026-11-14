@@ -1185,7 +1185,10 @@ fn color_pass(input: VertexOutput) -> vec4<f32> {
             textureSampleLevel(input_texture, texture_sampler, src_uv_b, 0.0).b,
         );
     } else {
-        color = textureSample(input_texture, texture_sampler, src_uv).rgb;
+        // Explicit LOD, like the lens branch: this sits after early returns
+        // that depend on the fragment, i.e. in non-uniform control flow, where
+        // implicit derivatives are not allowed. One mip level, so same result.
+        color = textureSampleLevel(input_texture, texture_sampler, src_uv, 0.0).rgb;
     }
     // Camera-native colour, for colour-range masks (exposure- and
     // WB-independent by construction).
@@ -1772,7 +1775,13 @@ fn color_pass(input: VertexOutput) -> vec4<f32> {
         // rendering. Mirrored on the CPU as core::tonemap::filmic, so
         // selecting "Filmic" explicitly produces identical numbers.
         let tone_lift: f32 = 0.08;
-        color = color * (vec3<f32>(1.0 + tone_lift) - tone_lift * color);
+        // The lift is a parabola that peaks at x = (1 + t) / (2t) = 6.75 and
+        // falls to zero at 13.5; an overbright highlight (a clipped channel
+        // after WB at +2 EV exposure) would fold back to grey and then black.
+        // Holding the input at the peak keeps it monotonic. Mirrored in
+        // core::tonemap::filmic.
+        let lift_in = min(color, vec3<f32>((1.0 + tone_lift) / (2.0 * tone_lift)));
+        color = lift_in * (vec3<f32>(1.0 + tone_lift) - tone_lift * lift_in);
 
         let pre_tone_max = max(color.r, max(color.g, color.b));
         if (pre_tone_max > 0.0) {

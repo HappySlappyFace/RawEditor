@@ -74,7 +74,15 @@ impl Curve {
     }
 
     pub fn is_identity(&self) -> bool {
-        self.live().iter().all(|p| (p[0] - p[1]).abs() < 1e-4)
+        // The curve is flat beyond its end points, so a curve that stops short
+        // of x = 0 or x = 1 clips there even if every point sits on the diagonal.
+        let pts = self.live();
+        let (Some(first), Some(last)) = (pts.first(), pts.last()) else {
+            return true;
+        };
+        first[0] < 1e-4
+            && last[0] > 1.0 - 1e-4
+            && pts.iter().all(|p| (p[0] - p[1]).abs() < 1e-4)
     }
 
     /// Insert a point, keeping order. Returns its index, or `None` when the
@@ -281,6 +289,15 @@ mod tests {
                 assert!((v - x).abs() < 1e-4, "entry {i}: {v} vs {x}");
             }
         }
+    }
+
+    /// A diagonal that stops short of the ends clips there, so it is an edit.
+    #[test]
+    fn diagonal_curve_with_inset_end_points_is_not_identity() {
+        let c = Curve::from_points(&[[0.2, 0.2], [0.8, 0.8]]);
+        assert!(!c.is_identity());
+        assert!((c.eval(0.0) - 0.2).abs() < 1e-5, "shadows clip to 0.2");
+        assert!(Curve::from_points(&[[0.0, 0.0], [0.5, 0.5], [1.0, 1.0]]).is_identity());
     }
 
     /// The point of the monotone spline: a steep S-curve must not overshoot

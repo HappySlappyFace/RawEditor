@@ -193,6 +193,7 @@ impl LensDb {
     /// database — after a download, or when the user has added files.
     /// Blocking, like [`global`](Self::global).
     pub fn reload() -> Arc<LensDb> {
+        crate::core::lensfun::restore_interrupted(&crate::core::paths::lensfun_updates_dir());
         let db = Arc::new(LensDb::load(&search_dirs()));
         tracing::info!("lens database: {} lenses, {} cameras", db.lenses.len(), db.cameras.len());
         *DB.write().unwrap_or_else(|e| e.into_inner()) = Some(db.clone());
@@ -215,6 +216,7 @@ impl LensDb {
     /// shadows the system one, as lensfun itself does).
     pub fn load(dirs: &[PathBuf]) -> Self {
         let mut db = LensDb::default();
+        let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
         for dir in dirs {
             let Ok(entries) = std::fs::read_dir(dir) else { continue };
             let mut files: Vec<PathBuf> = entries
@@ -233,7 +235,7 @@ impl LensDb {
                     Ok(xml) => {
                         let (lenses, cameras) = parse(&xml);
                         for l in lenses {
-                            if !db.lenses.iter().any(|e| e.maker == l.maker && e.model == l.model) {
+                            if seen.insert((l.maker.clone(), l.model.clone())) {
                                 db.lenses.push(l);
                             }
                         }
