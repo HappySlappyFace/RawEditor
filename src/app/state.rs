@@ -105,29 +105,6 @@ pub struct DropImport {
     pub files: HashSet<std::path::PathBuf>,
 }
 
-/// Noise-reduction settings the main view keeps showing while a drag on one
-/// of its sliders is in progress — the stage is too slow to re-run per tick
-/// (`handlers::loupe`). Tagged with its image so it can never leak onto
-/// another one.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct HeldNoise {
-    pub image_id: Option<i64>,
-    pub luma: f32,
-    pub detail: f32,
-    pub color: f32,
-}
-
-/// The last frame the detail loupe rendered.
-#[derive(Debug, Clone)]
-pub struct LoupeView {
-    pub image_id: i64,
-    pub handle: iced::widget::image::Handle,
-    /// Its view-UV window — what a drag in loupe pixels moves.
-    pub window: [f32; 4],
-    /// Physical pixels per side.
-    pub size: u32,
-}
-
 /// A Develop slider's value being typed: a click on the number swaps it for
 /// a text field (`views::develop::slider_field`).
 #[derive(Debug, Clone, PartialEq)]
@@ -135,40 +112,6 @@ pub struct SliderEntry {
     /// Which slider — `views::develop::slider_key` of its change message.
     pub key: String,
     pub text: String,
-}
-
-/// The Develop sidebar's 1:1 detail loupe (`handlers::loupe`, `gpu::loupe`).
-#[derive(Debug)]
-pub struct LoupeState {
-    /// Where it looks, in view UV (the post-crop display image). Kept across
-    /// images, like the zoom.
-    pub center: [f32; 2],
-    pub gpu: Option<std::sync::Arc<crate::gpu::loupe::Loupe>>,
-    /// The image whose loupe is being prepared (RAW read, noise model).
-    pub building: Option<i64>,
-    /// An image whose loupe could not be prepared, and why — not retried.
-    pub failed: Option<(i64, String)>,
-    pub frame: Option<LoupeView>,
-    /// One render at a time; `pending` asks for another when it lands.
-    pub in_flight: bool,
-    pub pending: bool,
-    /// The next click on the image places it.
-    pub targeting: bool,
-}
-
-impl Default for LoupeState {
-    fn default() -> Self {
-        Self {
-            center: [0.5, 0.5],
-            gpu: None,
-            building: None,
-            failed: None,
-            frame: None,
-            in_flight: false,
-            pending: false,
-            targeting: false,
-        }
-    }
 }
 
 /// The pages of the Preferences side menu, in menu order.
@@ -325,6 +268,9 @@ pub struct RawEditor {
     pub proxy_handles: std::collections::HashMap<i64, (u64, Handle)>,
     /// `Session::proxy_generation` when the handles were last synced.
     proxy_handles_seen: u64,
+    /// The iced handle for the loupe's frame, with the frame's pixels it was
+    /// built from (`sync_from_session`).
+    pub loupe_handle: Option<(std::sync::Arc<[u8]>, Handle)>,
     /// The page Preferences shows. Kept while the app runs, so reopening the
     /// dialog lands where the user left it; not persisted.
     pub preferences_section: PreferencesSection,
@@ -370,8 +316,6 @@ pub struct RawEditor {
     pub info_overlay: InfoOverlayState,
     /// The Develop slider whose value is being typed, if any.
     pub slider_entry: Option<SliderEntry>,
-    /// Painting into the selected mask is armed (always on for brush masks).
-    pub brush_armed: bool,
     /// Collapsed Develop sidebar sections (UI state).
     pub collapsed_sections: HashSet<crate::app::message::SidebarSection>,
     /// Which point curve the curve editor is showing (UI state, not an edit).
@@ -493,67 +437,70 @@ impl RawEditor {
         // Determine the database path (e.g., in the application's data directory)
         let _db_path = database::library::Library::get_db_path();
 
-        (
-            RawEditor {
-                histogram_cache: iced::widget::canvas::Cache::default(),
-                histogram_enabled: settings.histogram_enabled,
-                canvas_cache: iced::widget::canvas::Cache::default(),
-                is_dragging: false,
-                last_cursor_position: None,
-                last_click_time: None,
-                last_titlebar_click: None,
-                working_preview: None,
-                last_modifiers: iced::keyboard::Modifiers::default(),
-                keys_down: Default::default(),
-                selection_anchor: None,
-                pending_remove_folder: None,
-                drop_import: DropImport::default(),
-                // Must be the enum's own default (Hidden). Starting at
-                // Metadata booted the app with the overlay already on, at
-                // phase 2 of 3, so the first `I` press advanced the cycle
-                // instead of opening it.
-                info_overlay: crate::app::state::InfoOverlayState::default(),
-                // Phase 84
-                active_modal: Modal::None,
-                // Phase 88
-                thumbnail_size,
-                show_profiler: false,
-                profiler_cache: iced::widget::canvas::Cache::default(),
-                cursor_over_grid: false,
-                grid_scroll_y: 0.0,
-                grid_viewport: (0.0, 0.0),
-                window_size: iced::Size::new(1920.0, 1080.0),
-                filmstrip_scroll_x: 0.0,
-                filmstrip_view_w: 0.0,
-                filmstrip_velocity: 0.0,
-                last_kinetic_tick: None,
-                modal_exit: None,
-                modal_exit_seq: 0,
-                reduce_motion: settings.reduce_motion,
-                appearance,
-                session: crate::session::Session::new(&settings),
-                update_prompt_choice: true,
-                model_offer: None,
-                proxy_handles: Default::default(),
-                proxy_handles_seen: 0,
-                preferences_section: PreferencesSection::default(),
-                scroll_glide: None,
-                menu_generation: 0,
-                last_wheel_time: None,
-                filmstrip_input_speed: 0.0,
-                filmstrip_decay: 4.0,
-                slider_entry: None,
-                curve_channel: crate::core::curves::CurveChannel::Master,
-                brush_armed: false,
-                collapsed_sections: match &settings.develop_folded {
-                    Some(names) => names
-                        .iter()
-                        .filter_map(|n| crate::app::message::SidebarSection::from_name(n))
-                        .collect(),
-                    None => crate::app::message::SidebarSection::FOLDED_BY_DEFAULT.into_iter().collect(),
-                },
-                drag_mode: DragMode::None,
+        let mut editor = RawEditor {
+            histogram_cache: iced::widget::canvas::Cache::default(),
+            histogram_enabled: settings.histogram_enabled,
+            canvas_cache: iced::widget::canvas::Cache::default(),
+            is_dragging: false,
+            last_cursor_position: None,
+            last_click_time: None,
+            last_titlebar_click: None,
+            working_preview: None,
+            last_modifiers: iced::keyboard::Modifiers::default(),
+            keys_down: Default::default(),
+            selection_anchor: None,
+            pending_remove_folder: None,
+            drop_import: DropImport::default(),
+            // Must be the enum's own default (Hidden). Starting at
+            // Metadata booted the app with the overlay already on, at
+            // phase 2 of 3, so the first `I` press advanced the cycle
+            // instead of opening it.
+            info_overlay: crate::app::state::InfoOverlayState::default(),
+            // Phase 84
+            active_modal: Modal::None,
+            // Phase 88
+            thumbnail_size,
+            show_profiler: false,
+            profiler_cache: iced::widget::canvas::Cache::default(),
+            cursor_over_grid: false,
+            grid_scroll_y: 0.0,
+            grid_viewport: (0.0, 0.0),
+            window_size: iced::Size::new(1920.0, 1080.0),
+            filmstrip_scroll_x: 0.0,
+            filmstrip_view_w: 0.0,
+            filmstrip_velocity: 0.0,
+            last_kinetic_tick: None,
+            modal_exit: None,
+            modal_exit_seq: 0,
+            reduce_motion: settings.reduce_motion,
+            appearance,
+            session: crate::session::Session::new(&settings),
+            update_prompt_choice: true,
+            model_offer: None,
+            proxy_handles: Default::default(),
+            proxy_handles_seen: 0,
+            loupe_handle: None,
+            preferences_section: PreferencesSection::default(),
+            scroll_glide: None,
+            menu_generation: 0,
+            last_wheel_time: None,
+            filmstrip_input_speed: 0.0,
+            filmstrip_decay: 4.0,
+            slider_entry: None,
+            curve_channel: crate::core::curves::CurveChannel::Master,
+            collapsed_sections: match &settings.develop_folded {
+                Some(names) => names
+                    .iter()
+                    .filter_map(|n| crate::app::message::SidebarSection::from_name(n))
+                    .collect(),
+                None => crate::app::message::SidebarSection::FOLDED_BY_DEFAULT.into_iter().collect(),
             },
+            drag_mode: DragMode::None,
+        };
+        // The loupe renders only while its panel is open.
+        editor.session.loupe.panel_open = editor.loupe_panel_open();
+        (
+            editor,
             // The splash stays up for at least SPLASH_MIN, however fast the
             // database opens: on a small catalogue it otherwise flashed for a
             // frame. The load runs meanwhile, so a slow one costs nothing extra.
@@ -592,6 +539,53 @@ impl RawEditor {
             .as_ref()
             .or(img.cache_path_thumb.as_ref())
             .map(Handle::from_path)
+    }
+
+    /// Is the detail loupe's panel open (neither it nor the Detail section
+    /// around it folded)?
+    pub fn loupe_panel_open(&self) -> bool {
+        use crate::app::message::SidebarSection;
+        !self.collapsed_sections.contains(&SidebarSection::Detail)
+            && !self.collapsed_sections.contains(&SidebarSection::DetailPreview)
+    }
+
+    /// Bring what the app draws from session state up to date, after a
+    /// message: the canvas caches the session marked changed, the camera
+    /// preview, the proxies' and the loupe's image handles.
+    pub fn sync_from_session(&mut self) {
+        use crate::session::{Changed, PreviewHandle as Preview};
+        let changed = self.session.changed.take();
+        if changed.contains(Changed::OVERLAY) {
+            self.canvas_cache.clear();
+        }
+        if changed.contains(Changed::HISTOGRAM) {
+            self.histogram_cache.clear();
+        }
+        if changed.contains(Changed::PROFILER) {
+            self.profiler_cache.clear();
+        }
+        if let Some(preview) = self.session.camera_preview.take() {
+            self.working_preview = match preview {
+                Preview::Clear => None,
+                Preview::Cached(pixels) => Some(pixels.to_handle()),
+                Preview::Path(path) => Some(Handle::from_path(path)),
+            };
+        }
+        self.sync_proxy_handles();
+        self.loupe_handle = match &self.session.loupe.frame {
+            None => None,
+            Some(frame) => match self.loupe_handle.take() {
+                Some((rgba, handle)) if std::sync::Arc::ptr_eq(&rgba, &frame.rgba) => Some((rgba, handle)),
+                _ => Some((
+                    frame.rgba.clone(),
+                    Handle::from_rgba(
+                        frame.size,
+                        frame.size,
+                        iced::advanced::image::Bytes::from_owner(frame.rgba.clone()),
+                    ),
+                )),
+            },
+        };
     }
 
     /// Build handles for proxies captured or read since the last sync, and

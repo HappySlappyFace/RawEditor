@@ -5,7 +5,6 @@
 
 use std::sync::Arc;
 
-use crate::app::handlers::develop::{handle_gpu_lost, push_uniforms_and_render, trigger_async_render};
 use crate::app::state::RawEditor;
 use crate::core::lens::LensContext;
 use crate::core::types::EditParams;
@@ -47,14 +46,14 @@ fn a_push_during_a_render_waits_for_the_next_render() {
 
         e.session.is_rendering = true; // a render task is in flight
         let edit = EditParams { exposure: 1.5, ..EditParams::default() };
-        let _ = push_uniforms_and_render(&mut e, &edit);
+        let _ = e.session.push_uniforms_and_render(&edit);
         let pushed = || e.session.image_resources.as_ref().unwrap().pushed_params().exposure;
         assert_eq!(pushed(), 0.0, "the UI thread wrote the uniforms mid-render");
         assert!(e.session.pending_render);
 
         // The finished render's follow-up applies it before it renders.
         e.session.is_rendering = true;
-        let _ = trigger_async_render(&mut e);
+        let _ = e.session.render();
         assert_eq!(e.session.image_resources.as_ref().unwrap().pushed_params().exposure, 1.5);
     });
 }
@@ -74,7 +73,7 @@ fn a_lost_device_is_detected_and_the_context_replaced() {
         let mut e = RawEditor::new().0;
         e.session.gpu_context = Some(ctx.clone());
         e.session.gpu_init.set(ctx.clone()).ok();
-        let _ = handle_gpu_lost(&mut e);
+        let _ = e.session.gpu_lost();
         assert!(e.session.gpu_context.is_none());
         assert!(e.session.gpu_init.get().is_none(), "the dead context would be handed out again");
         assert!(e.session.status.contains("GPU"));
@@ -144,7 +143,7 @@ fn bench_slider_ticks() {
         let out = run(task);
         let d_render = t1.elapsed();
         let finished: Vec<_> =
-            out.into_iter().filter(|m| matches!(m, Message::RenderFinished(_))).collect();
+            out.into_iter().filter(|m| matches!(m, Message::Session(crate::session::SessionEvent::RenderFinished(_)))).collect();
         assert_eq!(finished.len(), 1, "tick {i}: one render per tick");
         let t2 = Instant::now();
         for m in finished {

@@ -49,8 +49,8 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
     if modal_before == Modal::AiDenoise && editor.active_modal != Modal::AiDenoise {
         handlers::ai_denoise::close(editor);
     }
-    // Thumbnails for whatever proxies the message captured.
-    editor.sync_proxy_handles();
+    // Caches, the camera preview and image handles follow the session.
+    editor.sync_from_session();
     match track_modal_exit(editor, modal_before) {
         Some(exit) => Task::batch([task, exit]),
         None => task,
@@ -202,6 +202,10 @@ fn session_event(editor: &mut RawEditor, event: crate::session::SessionEvent) ->
             editor.session.proxy_saved(id, generation, result);
             Task::none()
         }
+        SessionEvent::RenderFinished(out) => run(editor.session.render_finished(*out)),
+        SessionEvent::LoupeReady(id, r) => run(editor.session.loupe_ready(id, r)),
+        SessionEvent::LoupeRendered(id, r) => run(editor.session.loupe_rendered(id, r)),
+        SessionEvent::NoiseSettled(token) => run(editor.session.noise_settled(token)),
         SessionEvent::EditedProxyLoaded(id, result) => {
             editor.session.proxy_loaded(id, result);
             Task::none()
@@ -500,12 +504,9 @@ fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::AiDenoiseRemove => handlers::ai_denoise::handle_remove(editor),
         Message::AiDenoiseCancel => handlers::ai_denoise::handle_cancel(editor),
         Message::AiDenoiseRegenerated(id, r) => handlers::ai_denoise::handle_regenerated(editor, id, r),
-        Message::LoupeReady(id, r) => handlers::loupe::handle_ready(editor, id, r),
-        Message::LoupeRendered(id, r) => handlers::loupe::handle_rendered(editor, id, r),
         Message::LoupePan(dx, dy) => handlers::loupe::handle_pan(editor, dx, dy),
         Message::ToggleLoupeTarget => handlers::loupe::handle_toggle_target(editor),
         Message::LoupeTargetPicked(u, v) => handlers::loupe::handle_target_picked(editor, u, v),
-        Message::NoiseSettled(token) => handlers::loupe::handle_noise_settled(editor, token),
         Message::LensfunCheck => handlers::lensfun::handle_check(editor),
         Message::LensfunDownload => handlers::lensfun::handle_download(editor),
         Message::LensfunRescan => handlers::lensfun::handle_rescan(editor),
@@ -547,7 +548,6 @@ fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
             editor.show_profiler = !editor.show_profiler;
             Task::none()
         }
-        Message::RenderFinished(output) => handlers::develop::handle_render_finished(editor, *output),
         Message::ViewportResized(w, h) => {
             let (old_w, old_h) = editor.session.viewport_size;
             editor.session.viewport_size = (w, h);

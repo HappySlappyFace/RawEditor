@@ -31,15 +31,12 @@ pub fn handle_image_resources_ready(editor: &mut RawEditor, image_id: i64, resul
     after_build(editor, installed)
 }
 
-/// New resources are on screen: drop the placeholder and the overlays drawn
-/// for the old ones, and render.
+/// New resources are on screen (the session dropped the placeholder and
+/// marked the overlays stale): render.
 fn after_build(editor: &mut RawEditor, installed: Installed) -> Task<Message> {
     if installed == Installed::No {
         return Task::none();
     }
-    editor.working_preview = None;
-    editor.canvas_cache.clear();
-    editor.histogram_cache.clear();
     // Throttled, not forced: a render can still be in flight here
     // (the previous image, or the subsampled pass before a full-res
     // upgrade). Starting a second one alongside it raced the two, and
@@ -54,10 +51,6 @@ pub fn handle_full_res_ready(editor: &mut RawEditor, image_id: i64, result: Buil
         FullRes::Installed(installed) => after_build(editor, installed),
         FullRes::Effects(next) => run(next),
     }
-}
-
-pub fn trigger_full_res_upgrade(editor: &mut RawEditor) -> Task<Message> {
-    run(editor.session.trigger_full_res_upgrade())
 }
 
 #[cfg(test)]
@@ -81,7 +74,7 @@ mod tests {
         assert!(e.session.raw_cache.is_empty(), "budget 0 caches nothing");
         assert!(e.session.raw_for(1).is_some(), "the open image's RAW was dropped");
         assert!(e.session.raw_for(2).is_none());
-        assert!(crate::app::handlers::develop::sample_raw_rgb(&e, 1, 0.5, 0.5).is_ok());
+        assert!(e.session.sample_raw_rgb(1, 0.5, 0.5).is_ok());
         // Deleting the image releases the pin.
         e.session.remove_from_raw_cache(1);
         assert!(e.session.raw_for(1).is_none());
@@ -153,7 +146,7 @@ mod tests {
 
         // One upgrade at a time: a second request waits for the first.
         assert!(e.session.full_res_upgrading);
-        let _ = trigger_full_res_upgrade(&mut e);
+        let _ = e.session.trigger_full_res_upgrade();
         assert!(e.session.full_res_upgrading);
 
         // A failed upgrade keeps the preview to edit on, and is not retried
@@ -163,7 +156,7 @@ mod tests {
         assert!(matches!(e.session.editor_readiness, EditorReadiness::Ready(1)), "editor failed");
         assert!(e.session.image_resources.is_some());
         e.session.is_rendering = false;
-        let _ = crate::app::handlers::develop::trigger_async_render(&mut e);
+        let _ = e.session.render();
         assert!(!e.session.full_res_upgrading, "retried a failed upgrade");
         // A successful upgrade keeps the preview beside it: renders that full
         // resolution would not sharpen — and a noise-reduction drag, whose
@@ -194,7 +187,7 @@ mod tests {
         assert!(e.session.held_noise.is_some(), "a drag tick re-ran noise reduction on the main view");
         assert!(!e.session.is_rendering, "a held drag tick rendered the main view");
         let token = e.session.noise_settle_token;
-        let _ = crate::app::handlers::loupe::handle_noise_settled(&mut e, token);
+        let _ = e.session.noise_settled(token);
         assert!(e.session.held_noise.is_none());
         assert!(e.session.display_from_drag_preview, "the paused drag rendered at full resolution");
         e.session.is_rendering = false;

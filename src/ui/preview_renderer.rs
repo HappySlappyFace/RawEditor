@@ -11,42 +11,9 @@ use iced::widget::shader::wgpu;
 use wgpu::util::DeviceExt;
 
 use crate::app::message::Message;
+pub use crate::session::{CropHandle, MaskHandle};
 
 // ─────────────────────────────── CropHandle ────────────────────────────────
-
-/// Phase 67: Crop handles
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum CropHandle {
-    TopLeft,
-    TopRight,
-    BottomLeft,
-    BottomRight,
-    /// Phase 70: Dragging the crop area itself
-    Body,
-}
-
-/// Draggable handles of the selected local adjustment mask
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum MaskHandle {
-    /// Linear: ramp start pin (weight 1)
-    LinearStart,
-    /// Linear: ramp end pin (weight 0)
-    LinearEnd,
-    /// Radial: center pin (also moves the whole linear mask if hit on the line)
-    Center,
-    /// Radial: horizontal radius handle
-    RadiusX,
-    /// Radial: vertical radius handle
-    RadiusY,
-    /// Radial only, used transiently during initial placement: grows both
-    /// radii together (aspect-corrected) so a single drag makes a circle
-    /// instead of a flat horizontal sliver. Never hit-tested afterward —
-    /// once placed, RadiusX/RadiusY resize a single axis as normal.
-    RadiusUniform,
-    /// Radial only: rotates the ellipse. Dragged via angle (atan2 around the
-    /// screen-space center), not a UV delta like the other handles.
-    Rotation,
-}
 
 // ─────────────────────────────── ViewportPrimitive ────────────────────────
 
@@ -715,7 +682,7 @@ impl CropOverlay {
             // draw_mask_overlay) so they stay exactly on its visual
             // boundary — and so dragging RadiusX/RadiusY still moves the
             // handle in the direction it's visually pointing at any
-            // rotation (apply_mask_drag projects the drag delta onto these
+            // rotation (Session::drag_mask projects the drag delta onto these
             // same rotated local axes).
             let center = self.uv_to_screen(m.ax, m.ay, ib);
             let rx = m.bx / self.crop[2].max(1e-6) * ib.width;

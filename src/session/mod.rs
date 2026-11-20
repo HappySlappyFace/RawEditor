@@ -16,6 +16,9 @@ mod lensfun;
 mod library;
 mod loader;
 mod loading;
+mod loupe;
+mod masks;
+mod lens;
 mod navigation;
 mod proxy;
 mod models;
@@ -23,14 +26,19 @@ mod updates;
 
 pub use camera_profiles::{CameraProfileState, ProfileJob};
 pub use delete::{DeleteRequest, HardDeleteOutcome};
-#[cfg(test)]
-pub use develop::dcp_memo_is_valid;
 pub use export::{ExportFormat, ExportJob, ExportJobState, ExportSettings};
 pub use lensfun::{LensfunJob, LensfunState};
 pub use library::{collect_raw_files, CacheResult, CacheStep, ImportResult};
 pub use loader::{MAX_CONCURRENT_PREVIEW_LOADS, MAX_CONCURRENT_RAW_LOADS};
 pub use loading::{shared_context, BuiltResources, FullRes, Installed};
-pub use navigation::{ImageLoad, Moved, PreviewHandle, SelectionChange, TabLoad};
+pub use loupe::{HeldNoise, LoupeState, LOUPE_SIZE};
+pub use masks::MaskAdjustment;
+pub use lens::{DefringeParam, LensParam, LensToggle};
+pub use develop::{
+    CopyCategory, CropHandle, EditSection, GtParam, MaskHandle, RawSampleError, RenderOutput,
+    StrokeEvent,
+};
+pub use navigation::{Moved, PreviewHandle, SelectionChange, TabLoad};
 pub use proxy::{edit_key, load_proxy, read_jpeg, CachedPreview, EditedProxy, EDITED_PROXY_CAPACITY};
 pub use models::ModelsState;
 pub use updates::{UpdatesAtStartup, UpdatesState};
@@ -112,6 +120,15 @@ pub enum SessionEvent {
     /// releases the one-at-a-time upgrade guard, and so a failed upgrade
     /// keeps the working preview instead of failing the editor.
     FullResReady(i64, BuiltResources),
+    /// A develop render completed. Boxed: the histogram alone is 3 KB.
+    RenderFinished(Box<RenderOutput>),
+    /// The detail loupe for an image was prepared (or could not be).
+    LoupeReady(i64, Result<std::sync::Arc<crate::gpu::loupe::Loupe>, String>),
+    /// A detail-loupe render finished.
+    LoupeRendered(i64, Result<crate::gpu::loupe::LoupeFrame, String>),
+    /// A noise-reduction drag paused: let the main view catch up, if this is
+    /// still the latest tick's timer.
+    NoiseSettled(u64),
     /// An edited proxy finished saving to disk: (image, proxy generation,
     /// path or error). See `session::proxy`.
     EditedProxySaved(i64, u64, Result<String, String>),
@@ -147,6 +164,7 @@ fn blocking<T: Send + 'static>(
 // (`app::state` and the handlers) until the session leaves the app.
 use crate::app::message::AppTab;
 use crate::app::state::*;
+pub use raw_editor_session::Changed;
 use crate::{database, gpu, raw};
 use lru::LruCache;
 use std::collections::{HashMap, HashSet};
@@ -187,6 +205,13 @@ pub struct Session {
     pub library: Option<database::library::Library>,
     /// Status message to display to the user
     pub status: String,
+    /// What changed that the front end caches a drawing of (`Changed`);
+    /// it drains this after each call.
+    pub changed: Changed,
+    /// What the camera-preview image (Cull, and Develop before the first
+    /// render) should show now, when a call changed it; the front end
+    /// drains this after each call and holds the picture in its own form.
+    pub camera_preview: Option<PreviewHandle>,
     /// All images loaded from the database
     pub images: Vec<ImageData>,
     /// Images still awaiting cache-tier generation. Seeded from SQLite once
@@ -366,6 +391,9 @@ pub struct Session {
     /// Index into current_edit_params.masks of the mask being edited
     /// (overlay handles + sidebar sliders). None = no mask selected.
     pub selected_mask: Option<usize>,
+    /// The brush is armed: a drag on the image paints into the selected mask.
+    /// Like every tool, exclusive with the others.
+    pub brush_armed: bool,
     /// Brush tool settings for painting masks (UI state).
     pub brush_settings: BrushSettings,
     /// A stroke is in progress.
@@ -396,7 +424,7 @@ pub struct Session {
     /// to. The render task is the only writer of the uniform block while it
     /// runs (it patches `view_rect` between its own submits, and the stages
     /// read `stage_params` at render time), so the UI thread parks the push
-    /// here and `trigger_async_render` applies it before the next frame.
+    /// here and `Session::render` applies it before the next frame.
     pub deferred_push: Option<(i64, crate::core::types::EditParams)>,
     /// True while a full-resolution resource rebuild is in flight. One at a
     /// time, across images: each holds a full-size working set on the GPU,
@@ -497,6 +525,9 @@ impl Session {
                 edits_dirty: false,
                 scale_factor: 1.0,
                 working_preview_bytes: None,
+                changed: Changed::NONE,
+                camera_preview: None,
+                brush_armed: false,
                 rendered_preview_bytes: None,
                 preview_generation: 1,
                 rendered_view_rect: crate::gpu::params::FULL_VIEW_RECT,

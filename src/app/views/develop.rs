@@ -625,7 +625,7 @@ fn view_main_content<'a>(
                                 .then(|| editor.session.current_edit_params.masks[i])
                         })
                     },
-                    brush: (!peeking && editor.brush_armed && editor.session.selected_mask.is_some())
+                    brush: (!peeking && editor.session.brush_armed && editor.session.selected_mask.is_some())
                         .then_some((editor.session.brush_settings.size, editor.session.brush_settings.feather)),
                     is_color_picking: !peeking && editor.session.color_picking_mask.is_some(),
                     is_loupe_targeting: !peeking && editor.session.loupe.targeting,
@@ -1008,8 +1008,8 @@ fn mask_rows<'a>(
     let mut brush_row = row![].spacing(theme::space::XS).align_y(Alignment::Center);
     if !is_brush {
         brush_row = brush_row.push(
-            button(text(if editor.brush_armed { "Brushing" } else { "Brush" }).size(theme::size::CAPTION))
-                .style(if editor.brush_armed {
+            button(text(if editor.session.brush_armed { "Brushing" } else { "Brush" }).size(theme::size::CAPTION))
+                .style(if editor.session.brush_armed {
                     ui::styles::AccentButton::style
                 } else {
                     ui::styles::NeutralButton::style
@@ -1017,7 +1017,7 @@ fn mask_rows<'a>(
                 .on_press(Message::ToggleBrushArmed),
         );
     }
-    if editor.brush_armed {
+    if editor.session.brush_armed {
         for (label, erase) in [("Paint", false), ("Erase", true)] {
             brush_row = brush_row.push(
                 button(text(label).size(theme::size::CAPTION))
@@ -1039,7 +1039,7 @@ fn mask_rows<'a>(
         );
     }
     sidebar = sidebar.push(brush_row);
-    if editor.brush_armed {
+    if editor.session.brush_armed {
         sidebar = sidebar
             .push(slider_row_plain(editor, "Size", b.size, 0.002..=0.3, 0.001, format!("{:.1}%", b.size * 100.0), |p| p / 100.0, |v| {
                 Message::BrushSettingChanged(BrushSetting::Size, v)
@@ -1177,9 +1177,10 @@ fn ai_denoise_row(editor: &RawEditor) -> Element<'_, Message> {
 fn loupe_section(editor: &RawEditor) -> Element<'_, Message> {
     use crate::app::handlers::loupe::LOUPE_SIZE;
     let frame = editor.session.loupe.frame.as_ref().filter(|f| Some(f.image_id) == editor.session.selected_image_id);
-    let picture: Element<'_, Message> = match frame {
-        Some(f) => stack![
-            iced::widget::image(f.handle.clone())
+    let handle = frame.and(editor.loupe_handle.as_ref()).map(|(_, h)| h.clone());
+    let picture: Element<'_, Message> = match handle {
+        Some(handle) => stack![
+            iced::widget::image(handle)
                 .width(Length::Fixed(LOUPE_SIZE))
                 .height(Length::Fixed(LOUPE_SIZE)),
             iced::widget::canvas::Canvas::new(ui::loupe::LoupeDrag { on_pan: Message::LoupePan })

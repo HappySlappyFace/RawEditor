@@ -36,12 +36,10 @@ pub enum SelectionChange {
 }
 
 /// What the camera-preview image (Cull, and Develop before its first
-/// render) should show after a load starts. The front end holds that
-/// picture in its own form.
+/// render) should show (`Session::camera_preview`). The front end holds
+/// that picture in its own form.
 #[derive(Debug, Clone)]
 pub enum PreviewHandle {
-    /// Leave it as it is.
-    Keep,
     /// Nothing yet.
     Clear,
     /// These pixels, from the RAM cache.
@@ -50,20 +48,13 @@ pub enum PreviewHandle {
     Path(String),
 }
 
-/// A load the session started for an image.
-#[must_use]
-pub struct ImageLoad {
-    pub effects: Effects,
-    pub preview: PreviewHandle,
-}
-
 /// What switching to a tab calls for.
 #[must_use]
 pub enum TabLoad {
     Nothing,
     /// The Develop selection is marked for removal: it moved.
     Moved(Moved),
-    Load(ImageLoad),
+    Load(Effects),
 }
 
 /// Decode `image_id`'s RAW for Develop.
@@ -179,7 +170,7 @@ impl Session {
 
     /// Make `image_id` the open image: its saved edit, its history, and — in
     /// Develop or Cull, unless it is already loaded or loading — its load.
-    pub fn open_image(&mut self, image_id: i64) -> Option<ImageLoad> {
+    pub fn open_image(&mut self, image_id: i64) -> Effects {
         // `Loading(id)` promises a load of `id` that will finish it, and only a
         // Develop selection starts one. Selecting another image anywhere else
         // (Library, Cull) loads nothing, and the old image's result then lands
@@ -197,6 +188,8 @@ impl Session {
         // both it and any pending placement mode when the image changes.
         self.selected_mask = None;
         self.mask_tool = crate::app::state::MaskTool::Inactive;
+        // The overlay was drawn for the previous image.
+        self.changed.insert(super::Changed::OVERLAY);
 
         if let Some(library) = &self.library {
             self.current_edit_params = match library.load_saved_edit(image_id) {
@@ -230,10 +223,10 @@ impl Session {
                 _ => true,
             };
             if needs_load {
-                return Some(self.load_image(image_id));
+                return self.load_image(image_id);
             }
         }
-        None
+        Effects::none()
     }
 
     /// Switch to `tab`: save what is unsaved, and (leaving Develop) the
@@ -353,6 +346,7 @@ impl Session {
         } else {
             self.selected_image_id = None;
             self.editor_readiness = EditorReadiness::NoSelection;
+            self.camera_preview = Some(PreviewHandle::Clear);
             Moved::Cleared
         }
     }
@@ -379,9 +373,10 @@ impl Session {
         Some(ids[next])
     }
 
-    /// A working preview (the camera JPEG) was read. `true` when it is the
-    /// selected image's, so it is now on screen.
-    pub fn working_preview_ready(&mut self, id: i64, bytes: Option<std::sync::Arc<[u8]>>, dims: (u32, u32)) -> bool {
+    /// A working preview (the camera JPEG) was read: pixels (`None` when they
+    /// could not be decoded) of `dims`, from the file at `path`. The selected
+    /// image's goes on screen.
+    pub fn working_preview_ready(&mut self, id: i64, bytes: Option<std::sync::Arc<[u8]>>, dims: (u32, u32), path: String) {
         // Populate the look-ahead cache even when this is no longer the selected
         // image: the decode already happened, and caching it makes navigating
         // *back* free too, not just forward into preloaded territory.
@@ -396,12 +391,14 @@ impl Session {
             );
         }
         if Some(id) == self.selected_image_id {
+            self.camera_preview = Some(match &bytes {
+                Some(bytes) => PreviewHandle::Cached(CachedPreview { width: dims.0, height: dims.1, bytes: bytes.clone() }),
+                None => PreviewHandle::Path(path),
+            });
             self.working_preview_bytes = bytes;
             self.bump_preview_generation();
             self.working_preview_dims = dims;
-            return true;
         }
-        false
     }
 
     pub fn preview_cached(&mut self, id: i64, result: Result<(u32, u32, std::sync::Arc<[u8]>), String>) {
@@ -425,9 +422,9 @@ impl Session {
     /// Decode the selected image again. Its lens profile is looked up when the
     /// RAW is read, so after the lens database changes the loaded one is stale.
     /// The edits are untouched — only the decode is redone.
-    pub fn reload_selected_image(&mut self) -> ImageLoad {
+    pub fn reload_selected_image(&mut self) -> Effects {
         let Some(image_id) = self.selected_image_id else {
-            return ImageLoad { effects: Effects::none(), preview: PreviewHandle::Keep };
+            return Effects::none();
         };
         if self.current_tab == AppTab::Develop {
             self.load_image(image_id)
@@ -436,11 +433,13 @@ impl Session {
             self.image_resources = None;
             self.preview_resources = None;
             self.editor_readiness = EditorReadiness::NoSelection;
-            ImageLoad { effects: Effects::none(), preview: PreviewHandle::Keep }
+            Effects::none()
         }
     }
 
-    pub fn load_image(&mut self, image_id: i64) -> ImageLoad {
+    /// Start loading `image_id` for display; what the camera-preview image
+    /// shows meanwhile is set on `camera_preview`.
+    pub fn load_image(&mut self, image_id: i64) -> Effects {
         let mut preview = PreviewHandle::Clear;
         // `full_res_upgrading` is deliberately NOT reset: an upgrade of the
         // previous image may still be building, and starting this one's
@@ -561,9 +560,11 @@ impl Session {
                 self.schedule_proxy_preloads();
             }
 
-            return ImageLoad { effects: Effects::batch(effects), preview };
+            self.camera_preview = Some(preview);
+            return Effects::batch(effects);
         }
-        ImageLoad { effects: Effects::none(), preview }
+        self.camera_preview = Some(preview);
+        Effects::none()
     }
 
     fn schedule_preloads(&mut self) {

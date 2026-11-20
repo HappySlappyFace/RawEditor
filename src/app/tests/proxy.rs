@@ -1,5 +1,5 @@
 //! Edited proxies and the render that lands after the user left an image
-//! (`session::proxy`, through `handlers::develop::handle_render_finished`).
+//! (`session::proxy`, through `Session::render_finished`).
 
 use std::sync::Arc;
 
@@ -11,8 +11,8 @@ fn edited() -> EditParams {
     EditParams { exposure: -1.0, ..EditParams::default() }
 }
 
-fn late_render(id: i64, edit: EditParams) -> crate::app::message::RenderOutput {
-    crate::app::message::RenderOutput {
+fn late_render(id: i64, edit: EditParams) -> crate::session::RenderOutput {
+    crate::session::RenderOutput {
         image_id: id,
         display: Arc::from(Vec::new()),
         dims: (1, 1),
@@ -33,7 +33,7 @@ fn late_render(id: i64, edit: EditParams) -> crate::app::message::RenderOutput {
 fn the_awaited_final_render_becomes_the_proxy() {
     let mut e = RawEditor::new().0;
     e.session.proxy_awaiting.insert(5, edit_key(&edited()));
-    let _ = crate::app::handlers::develop::handle_render_finished(&mut e, late_render(5, edited()));
+    let _ = e.session.render_finished(late_render(5, edited()));
     assert!(e.session.edited_proxies.peek(&5).is_some_and(|p| p.edited));
     assert!(e.session.proxy_awaiting.is_empty());
 }
@@ -44,7 +44,7 @@ fn an_awaited_render_of_an_older_edit_is_dropped() {
     let mut e = RawEditor::new().0;
     e.session.proxy_awaiting.insert(5, edit_key(&edited()));
     let older = EditParams { exposure: -0.5, ..EditParams::default() };
-    let _ = crate::app::handlers::develop::handle_render_finished(&mut e, late_render(5, older));
+    let _ = e.session.render_finished(late_render(5, older));
     assert!(e.session.edited_proxies.peek(&5).is_none());
     assert!(e.session.proxy_awaiting.is_empty());
 }
@@ -54,6 +54,6 @@ fn an_awaited_render_of_an_older_edit_is_dropped() {
 #[test]
 fn a_stray_render_of_another_image_is_ignored() {
     let mut e = RawEditor::new().0;
-    let _ = crate::app::handlers::develop::handle_render_finished(&mut e, late_render(5, edited()));
+    let _ = e.session.render_finished(late_render(5, edited()));
     assert!(e.session.edited_proxies.peek(&5).is_none());
 }

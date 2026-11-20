@@ -6,6 +6,8 @@
 //! It is being moved here from the desktop app area by area; for now this
 //! crate holds the plumbing.
 
+mod changed;
 mod effects;
 
+pub use changed::Changed;
 pub use effects::{BoxFuture, Effect, Effects};

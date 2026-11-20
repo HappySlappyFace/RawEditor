@@ -514,11 +514,3 @@ pub fn export_mosaic(
     }
 }
 
-/// The open image's resources were built with a different AI denoise amount
-/// than its edit now has (Apply, Remove, undo, paste…): rebuild.
-pub fn resources_stale(editor: &RawEditor) -> bool {
-    editor
-        .session.image_resources
-        .as_ref()
-        .is_some_and(|r| r.ai_denoise.0 != editor.session.current_edit_params.ai_denoise)
-}

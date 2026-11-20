@@ -281,6 +281,10 @@ impl Session {
                 });
                 self.image_resources = Some(resources);
                 self.editor_readiness = EditorReadiness::Ready(image_id);
+                // The render replaces the placeholder; overlays and histogram
+                // were drawn for the old resources.
+                self.camera_preview = Some(super::PreviewHandle::Clear);
+                self.changed.insert(super::Changed::OVERLAY | super::Changed::HISTOGRAM);
                 Installed::Yes
             }
             Err(e) => {
@@ -326,7 +330,7 @@ impl Session {
 
     /// Rebuild the current image's ImageResources at full resolution, replacing
     /// the subsampled develop preview. Requested by any render whose view shows
-    /// the preview magnified (`develop::trigger_async_render`). The RAW comes from
+    /// the preview magnified (`Session::render`). The RAW comes from
     /// `raw_cache`, or from disk if the cache no longer holds it — skipping the
     /// upgrade there left a zoomed-in view soft with no way to sharpen it.
     pub fn trigger_full_res_upgrade(&mut self) -> Effects {

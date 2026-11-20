@@ -1,68 +1,68 @@
+//! Develop, the app's side: modal guards, the copy dialog, the slider text
+//! field, folded sections and pointer state. Editing, rendering and the
+//! tools are the session's (`session::develop`).
+
 use crate::app::message::{Message, SidebarSection};
+use crate::app::state::{DragMode, Modal, RawEditor};
+use crate::app::update::run;
 use crate::core::types::EditParams;
-use crate::app::state::{DragMode, RawEditor};
-use crate::ui::preview_renderer::CropHandle;
+use crate::session::{CopyCategory, CropHandle, EditSection, GtParam};
 use iced::Task;
 
+/// A slider's change: the edit, rendered (its release commits it).
+fn edit(editor: &mut RawEditor, change: impl FnOnce(&mut EditParams)) -> Task<Message> {
+    run(editor.session.edit(change))
+}
+
 pub fn handle_exposure_changed(editor: &mut RawEditor, v: f32) -> Task<Message> {
-    editor.session.current_edit_params.exposure = v;
-    update_pipeline(editor)
+    edit(editor, |p| p.exposure = v)
 }
 
 pub fn handle_contrast_changed(editor: &mut RawEditor, v: f32) -> Task<Message> {
-    editor.session.current_edit_params.contrast = v;
-    update_pipeline(editor)
+    edit(editor, |p| p.contrast = v)
 }
 
 pub fn handle_highlights_changed(editor: &mut RawEditor, v: f32) -> Task<Message> {
-    editor.session.current_edit_params.highlights = v;
-    update_pipeline(editor)
+    edit(editor, |p| p.highlights = v)
 }
 
 pub fn handle_shadows_changed(editor: &mut RawEditor, v: f32) -> Task<Message> {
-    editor.session.current_edit_params.shadows = v;
-    update_pipeline(editor)
+    edit(editor, |p| p.shadows = v)
 }
 
 pub fn handle_whites_changed(editor: &mut RawEditor, v: f32) -> Task<Message> {
-    editor.session.current_edit_params.whites = v;
-    update_pipeline(editor)
+    edit(editor, |p| p.whites = v)
 }
 
 pub fn handle_blacks_changed(editor: &mut RawEditor, v: f32) -> Task<Message> {
-    editor.session.current_edit_params.blacks = v;
-    update_pipeline(editor)
+    edit(editor, |p| p.blacks = v)
 }
 
 pub fn handle_black_offset_changed(editor: &mut RawEditor, i: usize, v: f32) -> Task<Message> {
     if i < 4 {
-        editor.session.current_edit_params.black_offsets[i] = v;
-        update_pipeline(editor)
+        edit(editor, |p| p.black_offsets[i] = v)
     } else {
         Task::none()
     }
 }
 
 pub fn handle_black_phase_changed(editor: &mut RawEditor, y: bool, v: u32) -> Task<Message> {
-    if y {
-        editor.session.current_edit_params.black_phase_y = v;
-    } else {
-        editor.session.current_edit_params.black_phase_x = v;
-    }
-    let task = update_pipeline(editor);
     // A checkbox has no release: this click is the whole gesture.
-    editor.session.commit_current_state();
-    task
+    run(editor.session.edit_and_commit(|p| {
+        if y {
+            p.black_phase_y = v;
+        } else {
+            p.black_phase_x = v;
+        }
+    }))
 }
 
 pub fn handle_vibrance_changed(editor: &mut RawEditor, v: f32) -> Task<Message> {
-    editor.session.current_edit_params.vibrance = v;
-    update_pipeline(editor)
+    edit(editor, |p| p.vibrance = v)
 }
 
 pub fn handle_profile_curve_changed(editor: &mut RawEditor, v: f32) -> Task<Message> {
-    editor.session.current_edit_params.profile_curve = v;
-    update_pipeline(editor)
+    edit(editor, |p| p.profile_curve = v)
 }
 
 pub fn handle_curve_changed(
@@ -71,139 +71,74 @@ pub fn handle_curve_changed(
     curve: crate::core::curves::Curve,
     commit: bool,
 ) -> Task<Message> {
-    *editor.session.current_edit_params.curves.get_mut(channel) = curve;
-    let task = update_pipeline(editor);
+    let change = |p: &mut EditParams| *p.curves.get_mut(channel) = curve;
     if commit {
-        editor.session.commit_current_state();
+        run(editor.session.edit_and_commit(change))
+    } else {
+        edit(editor, change)
     }
-    task
 }
 
-/// Switch the tone rendering operator.
-///
-/// Commits immediately rather than waiting for a `CommitEdit`: this is a
-/// discrete choice from a button, not a drag, so there is no release event to
-/// hang persistence off.
-pub fn handle_tone_mapper_changed(
-    editor: &mut RawEditor,
-    mapper: crate::core::tonemap::ToneMapper,
-) -> Task<Message> {
-    if editor.session.current_edit_params.tone_mapper == mapper {
-        return Task::none();
-    }
-    editor.session.current_edit_params.tone_mapper = mapper;
-    let task = update_pipeline(editor);
-    editor.session.commit_current_state();
-    task
+pub fn handle_tone_mapper_changed(editor: &mut RawEditor, mapper: crate::core::tonemap::ToneMapper) -> Task<Message> {
+    run(editor.session.set_tone_mapper(mapper))
 }
 
-/// Adjust one GT curve shape parameter. Clamped to the same ranges
-/// `GtParams::sanitised` enforces, so the stored value and the baked curve
-/// never disagree about what the slider meant.
-pub fn handle_gt_param_changed(
-    editor: &mut RawEditor,
-    param: crate::app::message::GtParam,
-    v: f32,
-) -> Task<Message> {
-    use crate::app::message::GtParam;
-    let gt = &mut editor.session.current_edit_params.gt;
-    match param {
-        GtParam::Contrast => gt.contrast = v,
-        GtParam::LinearStart => gt.linear_start = v,
-        GtParam::LinearLength => gt.linear_length = v,
-        GtParam::BlackTightness => gt.black_tightness = v,
-    }
-    *gt = gt.sanitised();
-    update_pipeline(editor)
+pub fn handle_gt_param_changed(editor: &mut RawEditor, param: GtParam, v: f32) -> Task<Message> {
+    run(editor.session.set_gt_param(param, v))
 }
 
 pub fn handle_saturation_changed(editor: &mut RawEditor, v: f32) -> Task<Message> {
-    editor.session.current_edit_params.saturation = v;
-    update_pipeline(editor)
+    edit(editor, |p| p.saturation = v)
 }
 
 pub fn handle_temperature_changed(editor: &mut RawEditor, v: f32) -> Task<Message> {
-    editor.session.current_edit_params.temperature = v;
-    update_pipeline(editor)
+    edit(editor, |p| p.temperature = v)
 }
 
 pub fn handle_tint_changed(editor: &mut RawEditor, v: f32) -> Task<Message> {
-    editor.session.current_edit_params.tint = v;
-    update_pipeline(editor)
+    edit(editor, |p| p.tint = v)
 }
 
 pub fn handle_texture_changed(editor: &mut RawEditor, v: f32) -> Task<Message> {
-    editor.session.current_edit_params.texture = v;
-    update_pipeline(editor)
+    edit(editor, |p| p.texture = v)
 }
 
 pub fn handle_clarity_changed(editor: &mut RawEditor, v: f32) -> Task<Message> {
-    editor.session.current_edit_params.clarity = v;
-    update_pipeline(editor)
+    edit(editor, |p| p.clarity = v)
 }
 
 pub fn handle_dehaze_changed(editor: &mut RawEditor, v: f32) -> Task<Message> {
-    editor.session.current_edit_params.dehaze = v;
-    update_pipeline(editor)
+    edit(editor, |p| p.dehaze = v)
 }
 
 // Noise reduction is held back on the main view while these move, and shown
-// live in the detail loupe — see `handlers::loupe`.
+// live in the detail loupe — see `session::loupe`.
 pub fn handle_luma_noise_changed(editor: &mut RawEditor, v: f32) -> Task<Message> {
-    crate::app::handlers::loupe::handle_noise_changed(editor, |p| p.luma_noise = v)
+    run(editor.session.noise_changed(|p| p.luma_noise = v))
 }
 
 pub fn handle_luma_detail_changed(editor: &mut RawEditor, v: f32) -> Task<Message> {
-    crate::app::handlers::loupe::handle_noise_changed(editor, |p| p.luma_detail = v)
+    run(editor.session.noise_changed(|p| p.luma_detail = v))
 }
 
 pub fn handle_color_noise_changed(editor: &mut RawEditor, v: f32) -> Task<Message> {
-    crate::app::handlers::loupe::handle_noise_changed(editor, |p| p.color_noise = v)
+    run(editor.session.noise_changed(|p| p.color_noise = v))
 }
 
 pub fn handle_sharpening_changed(editor: &mut RawEditor, v: f32) -> Task<Message> {
-    editor.session.current_edit_params.sharpening = v;
-    update_pipeline(editor)
+    edit(editor, |p| p.sharpening = v)
 }
 
 pub fn handle_sharpen_masking_changed(editor: &mut RawEditor, v: f32) -> Task<Message> {
-    editor.session.current_edit_params.sharpen_masking = v;
-    update_pipeline(editor)
+    edit(editor, |p| p.sharpen_masking = v)
 }
 
 pub fn handle_rotation_changed(editor: &mut RawEditor, v: f32) -> Task<Message> {
-    editor.session.current_edit_params.rotation = v;
-    update_pipeline(editor)
+    edit(editor, |p| p.rotation = v)
 }
 
-/// ⟲ / ⟳: a quarter turn of the whole frame. The crop, masks and brush
-/// strokes turn with it (`EditParams::turn_quarter`) and so does the detail
-/// loupe's target, which is a point in the same (cropped) view; the view
-/// returns to fit, since a pan offset is a fraction of the old shape.
 pub fn handle_turn_image(editor: &mut RawEditor, clockwise: bool) -> Task<Message> {
-    // The turn needs the open image's own shape; resources left over from
-    // another image (Library with a different selection) would scale its
-    // brush strokes by the wrong aspect.
-    let Some(res) = editor
-        .session.image_resources
-        .as_ref()
-        .filter(|r| Some(r.image_id) == editor.session.selected_image_id)
-    else {
-        // Not silent: say why nothing turned.
-        editor.session.status = "Turn: the image is still loading".to_string();
-        return Task::none();
-    };
-    let (w, h) = res.oriented_dims(editor.session.current_edit_params.quarter_turns);
-    editor.session.current_edit_params.turn_quarter(clockwise, w as f32 / h.max(1) as f32);
-    // The crop turned rigidly with the frame, so a point in crop-local UV
-    // turns the same way inside it.
-    let [u, v] = editor.session.loupe.center;
-    editor.session.loupe.center = if clockwise { [1.0 - v, u] } else { [v, 1.0 - u] };
-    editor.session.zoom = 1.0;
-    editor.session.pan_offset = cgmath::Vector2::new(0.0, 0.0);
-    let task = update_pipeline(editor);
-    editor.session.commit_current_state();
-    task
+    run(editor.session.turn_image(clockwise))
 }
 
 /// A click on a slider's value: a text field takes its place, focused with
@@ -217,81 +152,40 @@ pub fn handle_slider_entry_start(editor: &mut RawEditor, key: String, text: Stri
     ])
 }
 
+/// Run a tool switch, and follow the crop tool's state with the pointer's:
+/// turning crop on makes a drag on the image a crop drag, turning it off
+/// (directly, or by picking another tool) ends that.
+pub(crate) fn switch_tool(editor: &mut RawEditor, switch: impl FnOnce(&mut crate::session::Session) -> crate::session::Effects) -> Task<Message> {
+    let was_cropping = editor.session.is_cropping;
+    let effects = switch(&mut editor.session);
+    if editor.session.is_cropping != was_cropping {
+        editor.drag_mode = if editor.session.is_cropping { DragMode::Crop } else { DragMode::None };
+    }
+    run(effects)
+}
+
 /// Arm/disarm the level tool. Develop-only and exclusive with every other
 /// tool, like the WB picker: a drag on the image can only mean one thing.
 pub fn handle_toggle_level_tool(editor: &mut RawEditor) -> Task<Message> {
-    if editor.active_modal != crate::app::state::Modal::None
-        || editor.session.current_tab != crate::app::message::AppTab::Develop
-    {
+    if editor.active_modal != Modal::None {
         return Task::none();
     }
-    editor.session.is_leveling = !editor.session.is_leveling;
-    if editor.session.is_leveling {
-        if editor.session.is_cropping {
-            editor.session.is_cropping = false;
-            editor.drag_mode = DragMode::None;
-        }
-        editor.session.is_wb_picking = false;
-        editor.session.mask_tool = crate::app::state::MaskTool::Inactive;
-        editor.session.selected_mask = None;
-        editor.brush_armed = false;
-        editor.session.color_picking_mask = None;
-        editor.session.loupe.targeting = false;
-        editor.session.status = "Level: drag along a line that should be level or upright".to_string();
-    } else {
-        editor.session.status.clear();
-    }
-    update_pipeline(editor)
+    switch_tool(editor, |s| s.toggle_level_tool())
 }
 
-/// The level line was drawn: straighten so it shows level (or upright). A
-/// line too short to aim with keeps the tool armed for another try.
 pub fn handle_level_line(editor: &mut RawEditor, dx: f32, dy: f32) -> Task<Message> {
-    let current = editor.session.current_edit_params.rotation;
-    let Some(angle) = crate::core::viewport::straighten_from_line(current, dx, dy) else {
-        editor.session.status = "Level: drag a longer line along the horizon or an upright".to_string();
-        return Task::none();
-    };
-    editor.session.is_leveling = false;
-    editor.session.status = format!("Straightened by {:+.1}°", angle - current);
-    editor.session.current_edit_params.rotation = angle;
-    let task = update_pipeline(editor);
-    editor.session.commit_current_state();
-    task
+    run(editor.session.level_line(dx, dy))
 }
 
 pub fn handle_set_crop(editor: &mut RawEditor, crop: [f32; 4]) -> Task<Message> {
-    editor.session.current_edit_params.crop = crop;
-    let task = update_pipeline(editor);
-    editor.session.commit_current_state();
-    task
+    run(editor.session.edit_and_commit(|p| p.crop = crop))
 }
 
 pub fn handle_toggle_crop(editor: &mut RawEditor) -> Task<Message> {
-    // Develop-only. Without the tab check, pressing C in Library flipped
-    // is_cropping / drag_mode and ran a full update_pipeline with nothing on
-    // screen to show for it — the user only met the consequences on their next
-    // visit to Develop.
-    if editor.active_modal != crate::app::state::Modal::None
-        || editor.session.current_tab != crate::app::message::AppTab::Develop
-    {
+    if editor.active_modal != Modal::None {
         return Task::none();
     }
-    editor.session.is_wb_picking = false; // tools are mutually exclusive
-    editor.session.is_leveling = false;
-    editor.session.mask_tool = crate::app::state::MaskTool::Inactive;
-    editor.session.selected_mask = None;
-    editor.brush_armed = false;
-    editor.session.color_picking_mask = None;
-    editor.session.loupe.targeting = false;
-    editor.session.is_cropping = !editor.session.is_cropping;
-    if editor.session.is_cropping {
-        editor.drag_mode = DragMode::Crop;
-    } else {
-        editor.drag_mode = DragMode::None;
-    }
-    // update_pipeline mirrors is_cropping into the params for the shader.
-    update_pipeline(editor)
+    switch_tool(editor, |s| s.toggle_crop())
 }
 
 pub fn handle_crop_handle_grabbed(
@@ -303,72 +197,31 @@ pub fn handle_crop_handle_grabbed(
     editor.is_dragging = true;
     // See handle_mask_handle_grabbed: `_bounds` is the image rect, and
     // `viewport_size` must stay the canvas size. Overwriting it here made
-    // apply_crop_drag re-apply zoom to already-zoomed dims (zoom² scaling),
+    // the crop drag re-apply zoom to already-zoomed dims (zoom² scaling),
     // so crop handles drifted from the cursor at any zoom != 1.
     Task::none()
 }
 
 pub fn handle_commit_edit(editor: &mut RawEditor) -> Task<Message> {
-    // Every slider's on_release maps here, so this is the primary persistence
-    // point now that update_pipeline only marks the state dirty.
-    // commit_current_state flushes.
-    editor.session.commit_current_state();
-    finish_stage_drag(editor)
+    run(editor.session.commit_edit())
 }
 
-/// A noise-reduction drag just ended: apply what the main view held back
-/// (`handlers::loupe`); or, if a mid-drag pause already did, from the
-/// subsampled preview (`RawEditor::stage_drag`), render it at full resolution.
 pub fn finish_stage_drag(editor: &mut RawEditor) -> Task<Message> {
-    if editor.session.held_noise.is_some() {
-        // `stage_drag` is already clear, so this render is full resolution.
-        crate::app::handlers::loupe::release_noise(editor)
-    } else if editor.session.display_from_drag_preview {
-        crate::app::handlers::navigation::throttled_render(editor)
-    } else {
-        Task::none()
-    }
+    run(editor.session.finish_stage_drag())
 }
 
 pub fn handle_undo(editor: &mut RawEditor) -> Task<Message> {
-    if editor.active_modal != crate::app::state::Modal::None {
+    if editor.active_modal != Modal::None {
         return Task::none();
     }
-    if let Some((stack, index)) = editor.session.get_current_history() {
-        if *index > 0 {
-            *index -= 1;
-            editor.session.current_edit_params = stack[*index];
-            // Undo/redo don't commit to history (they move within it), so they
-            // don't get commit_current_state's flush — persist explicitly.
-            let task = update_pipeline(editor);
-            editor.session.flush_edits();
-            task
-        } else {
-            Task::none()
-        }
-    } else {
-        Task::none()
-    }
+    run(editor.session.undo())
 }
 
 pub fn handle_redo(editor: &mut RawEditor) -> Task<Message> {
-    if editor.active_modal != crate::app::state::Modal::None {
+    if editor.active_modal != Modal::None {
         return Task::none();
     }
-    if let Some((stack, index)) = editor.session.get_current_history() {
-        if *index < stack.len() - 1 {
-            *index += 1;
-            editor.session.current_edit_params = stack[*index];
-            // See handle_undo.
-            let task = update_pipeline(editor);
-            editor.session.flush_edits();
-            task
-        } else {
-            Task::none()
-        }
-    } else {
-        Task::none()
-    }
+    run(editor.session.redo())
 }
 
 /// Fold or open a Develop sidebar section, and remember it.
@@ -380,987 +233,129 @@ pub fn handle_toggle_section(editor: &mut RawEditor, section: SidebarSection) ->
     // The loupe renders only while visible, so opening it (or the Detail
     // section around it) is what starts it.
     if matches!(section, SidebarSection::Detail | SidebarSection::DetailPreview) {
-        crate::app::handlers::loupe::request(editor)
+        let open = editor.loupe_panel_open();
+        run(editor.session.set_loupe_panel_open(open))
     } else {
         Task::none()
     }
 }
 
-/// The edits a sidebar section owns, set back to their defaults. Geometry is
-/// not here: undoing quarter turns needs the image's shape
-/// (`handle_reset_section`). Masks have no reset: that would delete them.
-pub fn reset_section(section: SidebarSection, p: &mut EditParams) {
-    let d = EditParams::default();
-    match section {
-        SidebarSection::Light => {
-            p.exposure = d.exposure;
-            p.contrast = d.contrast;
-            p.highlights = d.highlights;
-            p.shadows = d.shadows;
-            p.whites = d.whites;
-            p.blacks = d.blacks;
-        }
-        SidebarSection::ToneCurve => p.curves = d.curves,
-        SidebarSection::ToneMapping => {
-            p.tone_mapper = d.tone_mapper;
-            p.profile_curve = d.profile_curve;
-            p.gt = d.gt;
-        }
-        SidebarSection::Colour => {
-            p.temperature = d.temperature;
-            p.tint = d.tint;
-            p.vibrance = d.vibrance;
-            p.saturation = d.saturation;
-        }
-        SidebarSection::Presence => {
-            p.texture = d.texture;
-            p.clarity = d.clarity;
-            p.dehaze = d.dehaze;
-        }
-        SidebarSection::Detail => {
-            p.luma_noise = d.luma_noise;
-            p.luma_detail = d.luma_detail;
-            p.color_noise = d.color_noise;
-            p.ai_denoise = d.ai_denoise;
-            p.sharpening = d.sharpening;
-            p.sharpen_masking = d.sharpen_masking;
-        }
-        SidebarSection::Lens => {
-            p.lens = d.lens;
-            p.defringe = d.defringe;
-        }
-        SidebarSection::Geometry | SidebarSection::DetailPreview | SidebarSection::Masks => {}
-    }
+/// The edits a sidebar section owns (none for the loupe's own section).
+pub fn edit_section(section: SidebarSection) -> Option<EditSection> {
+    Some(match section {
+        SidebarSection::Light => EditSection::Light,
+        SidebarSection::ToneCurve => EditSection::ToneCurve,
+        SidebarSection::ToneMapping => EditSection::ToneMapping,
+        SidebarSection::Colour => EditSection::Colour,
+        SidebarSection::Presence => EditSection::Presence,
+        SidebarSection::Detail => EditSection::Detail,
+        SidebarSection::Lens => EditSection::Lens,
+        SidebarSection::Geometry => EditSection::Geometry,
+        SidebarSection::Masks => EditSection::Masks,
+        SidebarSection::DetailPreview => return None,
+    })
 }
 
 /// Does this section hold any edits? Drives the header's reset button.
 pub fn section_edited(section: SidebarSection, p: &EditParams) -> bool {
-    let d = EditParams::default();
-    match section {
-        SidebarSection::Geometry => p.quarter_turns != 0 || p.rotation != d.rotation || p.crop != d.crop,
-        SidebarSection::Masks => p.mask_count > 0,
-        SidebarSection::DetailPreview => false,
-        _ => {
-            let mut reset = *p;
-            reset_section(section, &mut reset);
-            reset != *p
-        }
-    }
+    edit_section(section).is_some_and(|s| s.edited(p))
 }
 
 pub fn handle_reset_section(editor: &mut RawEditor, section: SidebarSection) -> Task<Message> {
-    if editor.active_modal != crate::app::state::Modal::None || !section_edited(section, &editor.session.current_edit_params) {
+    let Some(section) = edit_section(section) else { return Task::none() };
+    if editor.active_modal != Modal::None {
         return Task::none();
     }
-    if section == SidebarSection::Geometry {
-        // Turn back one quarter at a time, as the user turned it, so the
-        // crop, masks and strokes come back with the frame.
-        if let Some(res) = editor.session.image_resources.as_ref().filter(|r| Some(r.image_id) == editor.session.selected_image_id) {
-            while editor.session.current_edit_params.quarter_turns != 0 {
-                let (w, h) = res.oriented_dims(editor.session.current_edit_params.quarter_turns);
-                editor.session.current_edit_params.turn_quarter(false, w as f32 / h.max(1) as f32);
-            }
-        }
-        let d = EditParams::default();
-        editor.session.current_edit_params.rotation = d.rotation;
-        editor.session.current_edit_params.crop = d.crop;
-        editor.session.loupe.center = [0.5, 0.5];
-        editor.session.zoom = 1.0;
-        editor.session.pan_offset = cgmath::Vector2::new(0.0, 0.0);
-    } else {
-        reset_section(section, &mut editor.session.current_edit_params);
-    }
-    let task = update_pipeline(editor);
-    editor.session.commit_current_state();
-    task
+    run(editor.session.reset_section(section))
 }
 
 pub fn handle_reset_edits(editor: &mut RawEditor) -> Task<Message> {
-    if editor.active_modal != crate::app::state::Modal::None {
+    if editor.active_modal != Modal::None {
         return Task::none();
     }
-    editor.session.current_edit_params.reset();
-    // The masks just got wiped; drop the selection/tool that pointed at them.
-    editor.session.selected_mask = None;
-    editor.session.mask_tool = crate::app::state::MaskTool::Inactive;
-    editor.brush_armed = false;
-    editor.session.color_picking_mask = None;
-    editor.session.ai_select = None;
-    editor.session.status = String::new();
-    // No `delete_edits` here: `update_pipeline` marks the (default) params
-    // dirty and `commit_current_state` flushes them, which would write the
-    // row straight back.
-    let task = update_pipeline(editor);
-    editor.session.commit_current_state();
-    task
+    run(editor.session.reset_edits())
 }
 
 /// Ctrl+C — open the category picker so the user chooses what to copy.
 pub fn handle_copy_settings(editor: &mut RawEditor) -> Task<Message> {
-    if editor.active_modal != crate::app::state::Modal::None
-        || editor.session.selected_image_id.is_none()
-    {
+    if editor.active_modal != Modal::None || !editor.session.prepare_copy() {
         return Task::none();
     }
-    // Masks can't be copied if there are none — drop the tick rather than let
-    // the user confirm a category that would silently do nothing.
-    if editor.session.current_edit_params.mask_count == 0 {
-        editor.session.copy_categories.masks = false;
-    }
-    editor.active_modal = crate::app::state::Modal::CopySettings;
+    editor.active_modal = Modal::CopySettings;
     Task::none()
 }
 
 /// Ctrl+Shift+C — copy everything with no modal, so the common case keeps
 /// zero friction.
 pub fn handle_copy_all_settings(editor: &mut RawEditor) -> Task<Message> {
-    if editor.active_modal != crate::app::state::Modal::None
-        || editor.session.selected_image_id.is_none()
-    {
+    if editor.active_modal != Modal::None {
         return Task::none();
     }
-    store_clipboard(editor, crate::core::types::CopyCategories::all());
+    editor.session.copy_settings(Some(crate::core::types::CopyCategories::all()));
     Task::none()
 }
 
 /// Confirm the picker (its Copy button, or Enter via `ModalConfirm`).
 pub fn handle_copy_settings_confirmed(editor: &mut RawEditor) -> Task<Message> {
-    if editor.active_modal != crate::app::state::Modal::CopySettings {
+    if editor.active_modal != Modal::CopySettings {
         return Task::none();
     }
-    editor.active_modal = crate::app::state::Modal::None;
-    if editor.session.copy_categories.is_empty() {
-        return Task::none();
-    }
-    store_clipboard(editor, editor.session.copy_categories);
+    editor.active_modal = Modal::None;
+    editor.session.copy_settings(None);
     Task::none()
 }
 
-/// Snapshot the current params plus the chosen categories.
-///
-/// Both halves are stored — see `EditClipboard`. Filtering the params here
-/// would make "not copied" indistinguishable from "copied as the default
-/// value" at paste time.
-fn store_clipboard(editor: &mut RawEditor, categories: crate::core::types::CopyCategories) {
-    editor.session.edit_clipboard = Some(crate::core::types::EditClipboard {
-        params: editor.session.current_edit_params,
-        categories,
-        source_image: editor.session.selected_image_id,
-    });
-    editor.session.status = format!("Copied {}", describe_categories(&categories));
-}
-
-/// Human-readable summary of a selection, for the status line.
-fn describe_categories(c: &crate::core::types::CopyCategories) -> String {
-    let all = crate::core::types::CopyCategories::all();
-    if *c == all {
-        return "all settings".to_string();
-    }
-    let mut parts = Vec::new();
-    if c.tone { parts.push("tone"); }
-    if c.color { parts.push("color"); }
-    if c.white_balance { parts.push("WB"); }
-    if c.noise { parts.push("noise"); }
-    if c.detail { parts.push("detail"); }
-    if c.geometry { parts.push("crop"); }
-    if c.profile { parts.push("profile"); }
-    if c.masks { parts.push("masks"); }
-    if c.lens { parts.push("lens"); }
-    if c.black_levels { parts.push("black levels"); }
-    if parts.is_empty() {
-        "nothing".to_string()
-    } else {
-        parts.join(", ")
-    }
-}
-
-pub fn handle_toggle_copy_category(
-    editor: &mut RawEditor,
-    category: crate::app::message::CopyCategory,
-    value: bool,
-) -> Task<Message> {
-    use crate::app::message::CopyCategory;
-    let c = &mut editor.session.copy_categories;
-    match category {
-        CopyCategory::Tone => c.tone = value,
-        CopyCategory::Color => c.color = value,
-        CopyCategory::WhiteBalance => c.white_balance = value,
-        CopyCategory::Presence => c.presence = value,
-        CopyCategory::Noise => c.noise = value,
-        CopyCategory::Detail => c.detail = value,
-        CopyCategory::Geometry => c.geometry = value,
-        CopyCategory::Profile => c.profile = value,
-        CopyCategory::Masks => c.masks = value,
-        CopyCategory::Lens => c.lens = value,
-        CopyCategory::BlackLevels => c.black_levels = value,
-    }
+pub fn handle_toggle_copy_category(editor: &mut RawEditor, category: CopyCategory, value: bool) -> Task<Message> {
+    editor.session.set_copy_category(category, value);
     editor.save_preferences();
     Task::none()
 }
 
 pub fn handle_set_all_copy_categories(editor: &mut RawEditor, all: bool) -> Task<Message> {
-    editor.session.copy_categories = if all {
-        crate::core::types::CopyCategories::all()
-    } else {
-        crate::core::types::CopyCategories::none()
-    };
-    // Never leave Masks ticked on an image that has none.
-    if editor.session.current_edit_params.mask_count == 0 {
-        editor.session.copy_categories.masks = false;
-    }
+    editor.session.set_all_copy_categories(all);
     editor.save_preferences();
     Task::none()
 }
 
-/// Ctrl+V — MERGE the clipboard's selected categories onto the target(s).
-///
-/// A merge, not a replace: only the categories the user ticked at copy time
-/// are written, and everything else on the target survives untouched.
+/// Ctrl+V — merge the clipboard's categories onto the selection
+/// (`Session::paste_settings`).
 pub fn handle_paste_settings(editor: &mut RawEditor) -> Task<Message> {
-    if editor.active_modal != crate::app::state::Modal::None {
+    if editor.active_modal != Modal::None {
         return Task::none();
     }
-    let Some(clip) = editor.session.edit_clipboard else {
-        return Task::none();
-    };
-    if clip.categories.is_empty() {
-        return Task::none();
-    }
-
-    // AI masks name bitmaps of the image they were made on.
-    let for_image = |id: Option<i64>| {
-        if id == clip.source_image { clip.params } else { clip.params.without_ai_masks() }
-    };
-    // Masks pasted without geometry follow the destination's own turn.
-    let (dw, dh) = editor.session.image_display_dims();
-    let aspect = dw as f32 / dh.max(1) as f32;
-    let for_target = |id: Option<i64>, dst_turns: u32| {
-        crate::core::types::turned_for_paste(&for_image(id), clip.categories, dst_turns, aspect)
-    };
-    let src_for_current = for_target(editor.session.selected_image_id, editor.session.current_edit_params.quarter_turns);
-    crate::core::types::apply_categories(&mut editor.session.current_edit_params, &src_for_current, clip.categories);
-
-    // A paste that lowered mask_count can leave `selected_mask` pointing past
-    // the end of the live masks, exactly as handle_reset_edits guards against.
-    let live_masks = editor.session.current_edit_params.mask_count as usize;
-    if editor.session.selected_mask.is_some_and(|i| i >= live_masks) {
-        editor.session.selected_mask = None;
-        editor.session.mask_tool = crate::app::state::MaskTool::Inactive;
-    }
-
-    // Other images in the selection: load each one's own params and merge into
-    // them. Writing `current_edit_params` wholesale (as this used to) would
-    // overwrite the categories the user chose NOT to copy.
-    // Written in one transaction: a paste onto a few hundred images used to
-    // commit once per image on the UI thread.
-    let mut others = 0usize;
-    if let Some(lib) = &editor.session.library {
-        let merged: Vec<(i64, crate::core::types::EditParams)> = editor
-            .session.multi_selection
-            .iter()
-            .filter(|&&id| Some(id) != editor.session.selected_image_id)
-            .filter_map(|&id| {
-                // An unreadable saved edit must not be merged into defaults
-                // and written back: skip the image and keep what it has.
-                let mut target = match lib.load_saved_edit(id) {
-                    Ok(saved) => saved.unwrap_or_default(),
-                    Err(e) => {
-                        tracing::error!("Paste skipped image {id}: unreadable saved edit: {e}");
-                        return None;
-                    }
-                };
-                let src = for_target(Some(id), target.quarter_turns);
-                crate::core::types::apply_categories(&mut target, &src, clip.categories);
-                Some((id, target))
-            })
-            .collect();
-        match lib.save_edit_params_many(&merged) {
-            Ok(n) => others = n,
-            Err(e) => tracing::error!("Failed to paste onto {} image(s): {e}", merged.len()),
-        }
-        // Their edits changed unrendered: their edited thumbnails are stale.
-        let pasted: Vec<i64> = merged.iter().map(|(id, _)| *id).collect();
-        editor.session.invalidate_proxies(&pasted);
-        // An image already visited has an undo stack that knows nothing of
-        // the paste: put it on, so Undo there steps back to before it.
-        // (Unvisited images seed their stack from the saved edits.) A paste
-        // that left an image as it was adds no step, as for any commit
-        // (`commit_current_state`), or the next Undo there does nothing.
-        for (id, params) in &merged {
-            if let Some((stack, index)) = editor.session.history_map.get_mut(id) {
-                let unchanged = stack
-                    .get(*index)
-                    .is_some_and(|top| top.without_tool_state() == params.without_tool_state());
-                if unchanged {
-                    continue;
-                }
-                stack.truncate(*index + 1);
-                stack.push(*params);
-                *index += 1;
-                if stack.len() > crate::app::state::HISTORY_LIMIT {
-                    let excess = stack.len() - crate::app::state::HISTORY_LIMIT;
-                    stack.drain(..excess);
-                    *index -= excess;
-                }
-            }
-        }
-    }
-
-    editor.session.status = if others > 0 {
-        format!(
-            "Pasted {} to {} images",
-            describe_categories(&clip.categories),
-            others + 1
-        )
-    } else {
-        format!("Pasted {}", describe_categories(&clip.categories))
-    };
-
-    let task = update_pipeline(editor);
-    editor.session.commit_current_state();
-    task
-}
-
-
-// The single landing point for a completed develop render: stores the new
-// preview, applies the histogram, keeps the overview as the image's edited
-// proxy, and releases the render throttle.
-//
-// This used to be split into RenderPreview (release the throttle) then
-// HistogramReady (the slow part), because the histogram scanned the entire
-// display buffer on the CPU. The dedicated small overview pass made that scan
-// trivial, so the split — and the extra message round-trip — no longer earn
-// their keep.
-pub fn handle_render_finished(
-    editor: &mut RawEditor,
-    out: crate::app::message::RenderOutput,
-) -> Task<Message> {
-    if editor.session.gpu_context.as_ref().is_some_and(|c| c.is_lost()) {
-        return handle_gpu_lost(editor);
-    }
-    // A render of the image the user has since navigated away from: drop the
-    // pixels, but still release the throttle below so the next render runs.
-    let current = editor.session.image_resources.as_ref().map(|r| r.image_id);
-    if current == Some(out.image_id) && !out.display.is_empty() {
-        editor.session.rendered_preview_bytes = Some(out.display);
-        editor.session.rendered_preview_dims = out.dims;
-        // Buffer and window swap in the same frame — see the note in
-        // trigger_async_render about why this is not published earlier.
-        editor.session.rendered_view_rect = out.view_rect;
-        editor.session.bump_preview_generation();
-        *editor.session.histogram_data.borrow_mut() = out.histogram;
-        editor.histogram_cache.clear();
-        editor.canvas_cache.clear();
-    }
-    // The overview is a faithful render of `out.image_id` even when the user
-    // has already moved on — which is exactly when `persist` may be waiting
-    // for it (see `Session::resolve_awaiting_proxy`).
-    let awaited = editor.session.proxy_awaiting.contains_key(&out.image_id);
-    if let Some(params) = out.edit.filter(|_| current == Some(out.image_id) || awaited) {
-        editor.session.capture_proxy(
-            out.image_id,
-            out.overview,
-            out.overview_dims,
-            params,
-        );
-    }
-    let save = crate::app::update::run(editor.session.resolve_awaiting_proxy(out.image_id, out.edit));
-
-    editor.session.profiler.push_frame(crate::core::profiler::ProfilerFrame {
-        update_ms: out.update_ms,
-        upload_ms: out.upload_ms,
-        render_ms: out.render_ms,
-        total_ms: out.update_ms + out.upload_ms + out.render_ms,
-    });
-    editor.profiler_cache.clear();
-
-    // A new image, a full-resolution swap or a DPI change re-render the main
-    // view without pushing params; the loupe catches up here.
-    let loupe = crate::app::handlers::loupe::refresh_if_stale(editor);
-
-    editor.session.is_rendering = false;
-    if editor.session.pending_render {
-        editor.session.is_rendering = true;
-        editor.session.pending_render = false;
-        return Task::batch([save, loupe, trigger_async_render(editor)]);
-    }
-    Task::batch([save, loupe])
-}
-
-/// The GPU device is gone (driver reset, suspend/resume, eGPU unplug): every
-/// readback would fail from here on. Drop the context and the resources built
-/// on it, so the next load creates a fresh one (`loading::shared_context`
-/// would otherwise hand back the dead one from `gpu_init`), and reload the
-/// selected image.
-pub(crate) fn handle_gpu_lost(editor: &mut RawEditor) -> Task<Message> {
-    tracing::error!("GPU device lost; rebuilding the GPU context");
-    editor.session.status = "The GPU was reset; reloading the image.".into();
-    editor.session.gpu_context = None;
-    editor.session.gpu_init = std::sync::Arc::new(tokio::sync::OnceCell::new());
-    editor.session.image_resources = None;
-    editor.session.preview_resources = None;
-    editor.session.is_rendering = false;
-    editor.session.pending_render = false;
-    editor.session.deferred_push = None;
-    crate::app::handlers::navigation::reload_selected_image(editor)
-}
-
-pub fn render_target(editor: &RawEditor) -> crate::core::viewport::RenderTarget {
-    editor.session.render_target()
-}
-
-pub fn trigger_async_render(editor: &mut RawEditor) -> Task<Message> {
-    let t_update_start = std::time::Instant::now();
-    apply_deferred_push(editor);
-
-    // Oriented display dims of what is actually on screen — crop-aware, so the
-    // render target takes the CROPPED aspect. Must be the same source the
-    // viewport widget and the input math use, or the texture is drawn at a
-    // different shape than it was rendered for.
-    let (disp_w, disp_h) = editor.session.image_display_dims();
-
-    if let (Some(ctx), Some(resources)) = (&editor.session.gpu_context, &editor.session.image_resources) {
-        let ctx = ctx.clone();
-        let resources = resources.clone();
-
-        // Render only the slice of the image that is actually on screen, at
-        // the resolution it is displayed at. Sizing the target to the whole
-        // image at zoom-scaled resolution made its area grow as zoom^2 — at
-        // 100% on a 24MP file that meant rendering, reading back and
-        // re-uploading ~24M pixels to display ~2M. (Crop mode reveals the
-        // full sensor and disables zoom/pan, so it renders the whole image.)
-        let target = render_target(editor);
-        let view_rect = target.view_rect;
-        let (target_w, target_h) = (target.width, target.height);
-
-        // Only the REQUESTED window moves here. `rendered_view_rect` — what the
-        // viewport actually draws against — is published in
-        // `handle_render_finished`, together with the bytes it describes.
-        // Updating it now would place the still-current texture at the incoming
-        // window's position for the length of the render, which looks like the
-        // image jumping.
-        editor.session.requested_view_rect = view_rect;
-        tracing::debug!(
-            "render window: zoom={:.2} view_rect=[{:.3},{:.3},{:.3},{:.3}] target={}x{}",
-            editor.session.zoom,
-            view_rect[0],
-            view_rect[1],
-            view_rect[2],
-            view_rect[3],
-            target_w,
-            target_h,
-        );
-        let update_ms = t_update_start.elapsed().as_secs_f32() * 1000.0;
-
-        let overview_dims = crate::core::viewport::overview_dims(disp_w, disp_h);
-        let image_id = resources.image_id;
-        // Only a render of the user's real edit may become the image's proxy:
-        // the before/after peek shows other params, and crop mode shows the
-        // whole sensor with the discarded area dimmed. The uniforms hold
-        // `current_edit_params` whenever neither is active — every change to
-        // them is pushed to the GPU as it happens.
-        // The mask overlay tints the render, so it disqualifies too.
-        // So does one whose noise reduction is held back mid-drag.
-        let edit = (!editor.session.before_peek
-            && !editor.session.is_cropping
-            && editor.session.current_edit_params.mask_overlay == 0
-            && editor.session.held_noise.is_none())
-            .then_some(editor.session.current_edit_params);
-
-        // A subsampled texture shown larger than its own pixels is soft
-        // however it is rendered: fetch full resolution. Asked here, by the
-        // render itself, rather than by the zoom handler, so it also covers
-        // a view that is already zoomed in when an image loads (zoom is kept
-        // across images and tabs), a window resize, and HiDPI screens.
-        let upgrade = if target.magnification > crate::core::viewport::FULL_RES_MAGNIFICATION
-            && editor.session.current_tab == crate::app::message::AppTab::Develop
-        {
-            crate::app::handlers::loading::trigger_full_res_upgrade(editor)
-        } else {
-            Task::none()
-        };
-
-        // After a full-resolution upgrade the subsampled preview is kept
-        // (`preview_resources`). Render from it whenever full resolution adds
-        // nothing: the overview always (384px), and the display while the
-        // view does not magnify the preview — or while a noise-reduction
-        // slider is dragged, whose stage re-runs over every SOURCE pixel per
-        // tick. The release re-renders at full resolution (`finish_stage_drag`).
-        let preview = editor
-            .session.preview_resources
-            .clone()
-            .filter(|p| p.image_id == resources.image_id);
-        let (display_res, overview_res) = match preview {
-            Some(preview) => {
-                // Same state as the full-resolution set: its uniforms are the
-                // ones every edit path pushes to.
-                let params = resources.pushed_params();
-                let (interpolated, wb_override) = resolve_wb_and_dcp(editor, &params);
-                preview.update_uniforms(&ctx, &params, interpolated.as_deref(), wb_override);
-                let preview_magnification =
-                    target.magnification * resources.width as f32 / preview.width.max(1) as f32;
-                let fits = preview_magnification <= crate::core::viewport::FULL_RES_MAGNIFICATION;
-                editor.session.display_from_drag_preview = !fits && editor.session.stage_drag;
-                let display = if fits || editor.session.stage_drag { preview.clone() } else { resources };
-                (display, preview)
-            }
-            None => {
-                editor.session.display_from_drag_preview = false;
-                (resources.clone(), resources)
-            }
-        };
-
-        let render = Task::perform(
-            async move {
-                // Display window and the whole-image overview share one GPU
-                // wait; the overview is ~100k pixels, so there is no reason to
-                // report it separately from the render.
-                crate::gpu::render_functions::render_display_and_overview(
-                    &ctx,
-                    &display_res,
-                    &overview_res,
-                    target_w,
-                    target_h,
-                    view_rect,
-                    overview_dims,
-                )
-                .await
-            },
-            move |render| {
-                Message::RenderFinished(Box::new(crate::app::message::RenderOutput {
-                    image_id,
-                    display: render.display,
-                    dims: (target_w, target_h),
-                    view_rect,
-                    overview: render.overview,
-                    overview_dims,
-                    histogram: render.histogram,
-                    edit,
-                    upload_ms: render.encode_ms,
-                    render_ms: render.gpu_ms,
-                    update_ms,
-                }))
-            },
-        );
-        return Task::batch([render, upgrade]);
-    }
-    // GPU context not ready — release the lock so the next slider event can retry.
-    editor.session.is_rendering = false;
-    editor.session.pending_render = false;
-    Task::none()
+    run(editor.session.paste_settings())
 }
 
 pub fn handle_toggle_wb_picker(editor: &mut RawEditor) -> Task<Message> {
-    // Develop-only, same reasoning as handle_toggle_crop.
-    if editor.active_modal != crate::app::state::Modal::None
-        || editor.session.current_tab != crate::app::message::AppTab::Develop
-    {
+    if editor.active_modal != Modal::None {
         return Task::none();
     }
-    editor.session.is_wb_picking = !editor.session.is_wb_picking;
-    if editor.session.is_wb_picking {
-        // Tools are mutually exclusive; update_pipeline below clears the
-        // shader's crop flag to match.
-        if editor.session.is_cropping {
-            editor.session.is_cropping = false;
-            editor.drag_mode = DragMode::None;
-        }
-        editor.session.mask_tool = crate::app::state::MaskTool::Inactive;
-        editor.session.selected_mask = None;
-        editor.brush_armed = false;
-        editor.session.color_picking_mask = None;
-        editor.session.loupe.targeting = false;
-        editor.session.is_leveling = false;
-        editor.session.status = "WB picker: click a neutral grey/white area".to_string();
-    } else {
-        editor.session.status.clear();
-    }
-    update_pipeline(editor)
+    switch_tool(editor, |s| s.toggle_wb_picker())
 }
 
-/// What mapping a click to the source position needs about an image: its
-/// lens context, EXIF orientation and full sensor size.
-pub(crate) struct SourceGeometry {
-    pub lens: std::sync::Arc<crate::core::lens::LensContext>,
-    pub exif_orientation: u32,
-    pub width: u32,
-    pub height: u32,
-}
-
-/// [`SourceGeometry`] of `image_id`, from its GPU resources (always there
-/// while it is shown in Develop) or else the RAW cache. Never only the RAW
-/// cache: an entry can be evicted while the image is open, and the brush and
-/// AI-select mappings then silently fell back to the un-straightened frame.
-pub(crate) fn source_geometry(editor: &RawEditor, image_id: i64) -> Option<SourceGeometry> {
-    if let Some(res) = editor.session.image_resources.as_ref().filter(|r| r.image_id == image_id) {
-        return Some(SourceGeometry {
-            lens: res.lens.clone(),
-            exif_orientation: res.orientation,
-            width: res.original_width,
-            height: res.original_height,
-        });
-    }
-    editor.session.raw_cache.peek(&image_id).map(|raw| SourceGeometry {
-        lens: raw.lens_context.clone(),
-        exif_orientation: raw.orientation,
-        width: raw.width,
-        height: raw.height,
-    })
-}
-
-/// Why a raw sample could not be taken.
-pub(crate) enum RawSampleError {
-    /// No usable raw data (not in memory, or too small).
-    Missing(&'static str),
-}
-
-/// Mean black-subtracted camera (R, G, B) of the raw mosaic in a 16×16
-/// window at `(u, v)` — display-space UV within the rendered (cropped) image,
-/// as the overlay's eyedroppers report it — plus whether any site clipped.
-///
-/// Shared by the WB picker and the colour-range mask picker. The UV goes
-/// through the same crop remap and EXIF orientation as the fragment shader.
-pub(crate) fn sample_raw_rgb(
-    editor: &RawEditor,
-    image_id: i64,
-    u: f32,
-    v: f32,
-) -> Result<([f32; 3], bool, std::sync::Arc<crate::raw::loader::RawDataResult>), RawSampleError> {
-    let Some(raw) = editor.session.raw_for(image_id) else {
-        return Err(RawSampleError::Missing("raw data not in memory (reopen the image)"));
-    };
-    // The 16×16 sample window below needs room on both sides; `clamp(8, w-9)`
-    // panics outright on anything narrower.
-    if raw.data.is_empty() || raw.width < 17 || raw.height < 17 {
-        return Err(RawSampleError::Missing("no raw pixels available"));
-    }
-
-    // Display UV → sensor UV through the colour pass's own chain: crop remap,
-    // Straighten, EXIF orientation plus the user's quarter turns, lens remap.
-    let orientation =
-        crate::color::compose_orientation(raw.orientation, editor.session.current_edit_params.quarter_turns);
-    let (su, sv) = crate::core::viewport::display_to_source_uv(
-        &editor.session.current_edit_params,
-        &raw.lens_context,
-        orientation,
-        raw.width,
-        raw.height,
-        u,
-        v,
-    );
-
-    // Sample a 16×16 sensor window centred on the pick, per CFA channel.
-    let w = raw.width as i64;
-    let h = raw.height as i64;
-    let cx = ((su * w as f32) as i64).clamp(8, w - 9);
-    let cy = ((sv * h as f32) as i64).clamp(8, h - 9);
-
-    // Each site's own black level plus the user's offset, exactly as the
-    // demosaic uploads them. (Reads `raw.data`: with AI denoise on, the shader
-    // sees the blended mosaic and this the original; a 16x16 mean hardly
-    // notices.)
-    let offsets = editor.session.current_edit_params.black_offsets;
-    let slots = crate::gpu::demosaic::tile_black_slots(raw.cfa_pattern);
-    let site_black = |x: i64, y: i64| {
-        let slot = slots[((y % 2) * 2 + (x % 2)) as usize];
-        raw.black_levels[slot] as f32 + offsets[slot]
-    };
-    let clip_threshold = (raw.white_level as f32 * 0.98) as u16;
-
-    let mut sums = [0.0f64; 3]; // R, G, B
-    let mut counts = [0u32; 3];
-    let mut clipped = false;
-    for y in (cy - 8)..(cy + 8) {
-        for x in (cx - 8)..(cx + 8) {
-            let value = raw.data[(y * w + x) as usize];
-            clipped |= value >= clip_threshold;
-            // CFA channel for (x%2, y%2) per pattern: 0=RGGB 1=GRBG 2=GBRG 3=BGGR
-            let (px, py) = ((x % 2) as u32, (y % 2) as u32);
-            let channel = match (raw.cfa_pattern, py, px) {
-                (0, 0, 0) | (1, 0, 1) | (2, 1, 0) | (3, 1, 1) => 0, // R
-                (0, 1, 1) | (1, 1, 0) | (2, 0, 1) | (3, 0, 0) => 2, // B
-                _ => 1,                                             // G (both sites)
-            };
-            sums[channel] += (value as f32 - site_black(x, y)).max(0.0) as f64;
-            counts[channel] += 1;
-        }
-    }
-    let mean = |c: usize| (sums[c] / counts[c].max(1) as f64) as f32;
-    Ok(([mean(0), mean(1), mean(2)], clipped, raw))
-}
-
-/// Mean black level over the four sites including the user's offsets: the
-/// zero of the unit range `sample_raw_rgb`'s values divide by.
-pub(crate) fn mean_black(raw: &crate::raw::loader::RawDataResult, offsets: [f32; 4]) -> f32 {
-    raw.black_levels.iter().zip(offsets).map(|(&b, o)| b as f32 + o).sum::<f32>() / 4.0
-}
-
-/// WB eyedropper: `(u, v)` is the display-space UV of the click within the
-/// rendered image. Samples the raw Bayer mosaic around that point, derives the
-/// neutral's WB multipliers, converts to Kelvin/tint, and sets the sliders.
 pub fn handle_wb_picked(editor: &mut RawEditor, u: f32, v: f32) -> Task<Message> {
-    // On a failed pick (clipped/dark area) the tool stays active so the user
-    // can simply click elsewhere; it exits on success or on missing data.
-    let Some(image_id) = editor.session.selected_image_id else {
-        editor.session.is_wb_picking = false;
-        return Task::none();
-    };
-    let (rgb, clipped, raw) = match sample_raw_rgb(editor, image_id, u, v) {
-        Ok(sample) => sample,
-        Err(RawSampleError::Missing(msg)) => {
-            editor.session.is_wb_picking = false;
-            editor.session.status = format!("WB picker: {msg}");
-            return Task::none();
-        }
-    };
-    if clipped {
-        editor.session.status = "WB picker: area is clipped — pick a darker neutral".to_string();
-        return Task::none();
-    }
-    let [r, g, b] = rgb;
-    if r < 1.0 || g < 1.0 || b < 1.0 {
-        editor.session.status = "WB picker: area too dark for a reliable neutral".to_string();
-        return Task::none();
-    }
-
-    // Neutral → multipliers → (Kelvin, tint) through the camera matrix.
-    let wb_picked = [(g / r).clamp(0.05, 20.0), 1.0, (g / b).clamp(0.05, 20.0), 1.0];
-    let matrices = match editor.session.current_dcp_profile.as_deref() {
-        Some(p) => crate::color::CameraMatrices::Dcp(p),
-        None => crate::color::CameraMatrices::Single(raw.color_matrix),
-    };
-    let (kelvin, tint) = crate::color::wb_to_kelvin_tint(wb_picked, &matrices);
-
-    // Absolute Kelvin/tint → slider offsets around the as-shot anchor
-    // (inverse of EditParams::kelvin_from_anchor / tint_from_anchor).
-    let (anchor_kelvin, anchor_tint) = editor.session.as_shot_wb.unwrap_or((5000.0, 0.0));
-    let temperature = crate::core::types::EditParams::temperature_for_kelvin(anchor_kelvin, kelvin);
-    let tint_offset = crate::core::types::EditParams::tint_slider_for(anchor_tint, tint);
-
-    editor.session.is_wb_picking = false;
-    editor.session.current_edit_params.temperature = temperature;
-    editor.session.current_edit_params.tint = tint_offset;
-    // Report what the sliders now render, which differs from the pick when
-    // it was out of their range and got clamped.
-    let set = &editor.session.current_edit_params;
-    editor.session.status = format!(
-        "WB picked: {:.0}K, tint {:+.0}",
-        set.kelvin_from_anchor(anchor_kelvin),
-        set.tint_from_anchor(anchor_tint)
-    );
-
-    let task = update_pipeline(editor);
-    editor.session.commit_current_state();
-    task
-}
-
-pub fn resolve_wb_and_dcp(
-    editor: &RawEditor,
-    params: &crate::core::types::EditParams,
-) -> (Option<std::sync::Arc<crate::raw::dcp::InterpolatedProfile>>, Option<[f32; 4]>) {
-    editor.session.resolve_wb_and_dcp(params)
-}
-
-/// Write `params` (with the resolved DCP and slider WB) to the uniforms. Only
-/// while no render is in flight — see `RawEditor::deferred_push`.
-fn push_uniforms(editor: &RawEditor, params: &crate::core::types::EditParams) {
-    if let (Some(ctx), Some(resources)) = (&editor.session.gpu_context, &editor.session.image_resources) {
-        // Phase 140: Interpolate DCP + resolve slider WB
-        let (interpolated, wb_override) = resolve_wb_and_dcp(editor, params);
-        resources.update_uniforms(ctx, params, interpolated.as_deref(), wb_override);
-    }
-}
-
-/// Apply a push that arrived mid-render. Runs at the start of every render,
-/// when the previous one has finished, so the uniform block has one writer.
-fn apply_deferred_push(editor: &mut RawEditor) {
-    let Some((id, params)) = editor.session.deferred_push.take() else { return };
-    if editor.session.image_resources.as_ref().map(|r| r.image_id) == Some(id) {
-        push_uniforms(editor, &params);
-    }
-}
-
-/// Push `params` to the GPU and render with them.
-///
-/// Deliberately does NOT mark edits dirty — the caller decides whether these
-/// params represent the user's real state. The before/after peek renders
-/// params that must never be persisted.
-pub(crate) fn push_uniforms_and_render(
-    editor: &mut RawEditor,
-    params: &crate::core::types::EditParams,
-) -> Task<Message> {
-    // `params` belong to the SELECTED image, but the loaded GPU resources can
-    // still be another one's — Library and Cull change the selection without
-    // loading. Rendering them together (an undo or reset pressed in Library)
-    // drew the previous Develop image with this image's edits, and Develop
-    // then showed that frame when the user went back to it.
-    if editor.session.image_resources.as_ref().map(|r| r.image_id) != editor.session.selected_image_id {
-        return Task::none();
-    }
-    // A different camera profile can't be pushed as uniforms (its LUT sizes
-    // a texture): undo, paste or reset changed it — rebuild instead.
-    if crate::app::handlers::camera_profiles::resources_stale(editor) {
-        return crate::app::handlers::camera_profiles::rebuild(editor);
-    }
-    // Likewise a different AI denoise amount: it is baked into the mosaic.
-    if crate::app::handlers::ai_denoise::resources_stale(editor) {
-        return crate::app::handlers::navigation::reload_selected_image(editor);
-    }
-    if editor.session.is_rendering {
-        // A render task is between its own uniform writes and submits: writing
-        // the block from here could land `view_rect = FULL` in its main pass,
-        // or change the params between its stages and its colour pass. Park
-        // the push; `trigger_async_render` applies it before the next frame.
-        if let Some(id) = editor.session.selected_image_id {
-            editor.session.deferred_push = Some((id, *params));
-        }
-        editor.canvas_cache.clear();
-    } else {
-        push_uniforms(editor, params);
-    }
-
-    // The detail loupe follows every edit (it costs ~0.3 ms when the noise
-    // settings haven't changed).
-    let loupe = crate::app::handlers::loupe::request(editor);
-
-    // Phase 106: Throttling
-    let render = if editor.session.is_rendering {
-        editor.session.pending_render = true;
-        Task::none()
-    } else {
-        editor.session.is_rendering = true;
-        editor.session.pending_render = false;
-        trigger_async_render(editor)
-    };
-    Task::batch([render, loupe])
+    run(editor.session.wb_picked(u, v))
 }
 
 pub(crate) fn update_pipeline(editor: &mut RawEditor) -> Task<Message> {
-    // Deferred, not written here: this runs once per mouse-move during a
-    // slider or mask drag, and a synchronous SQLite write on that path cost
-    // an fsync per event on the UI thread. `flush_edits` at the commit points
-    // (CommitEdit, drag release, image/tab switch, close) does the write.
-    editor.session.mark_edits_dirty();
-    editor.session.sync_tool_flags();
-    // EditParams is Copy, so this sidesteps the borrow conflict for free.
-    let params = editor.session.view_params();
-    push_uniforms_and_render(editor, &params)
+    run(editor.session.update_pipeline())
 }
 
-/// Render the params the viewport should currently be showing — the
-/// before-reference while peeking, the user's real edits otherwise.
-///
-/// Every path that needs to *leave* the peek goes through here rather than
-/// poking `before_peek` directly, so the flag and the uploaded uniforms can
-/// never disagree.
-pub(crate) fn refresh_for_peek_state(editor: &mut RawEditor) -> Task<Message> {
-    let params = if editor.session.before_peek {
-        editor.session.current_edit_params.before_reference()
-    } else {
-        editor.session.view_params()
-    };
-    push_uniforms_and_render(editor, &params)
-}
-
-/// Leave the before/after peek if it is active, re-rendering the real edit.
-///
-/// Called from anywhere the peek could otherwise get stranded — tab change,
-/// image change, modal open, window focus loss. Returns `Task::none()` when
-/// there was nothing to do, so it is safe to call unconditionally.
 pub fn clear_before_peek(editor: &mut RawEditor) -> Task<Message> {
-    if !editor.session.before_peek {
-        return Task::none();
-    }
-    editor.session.before_peek = false;
-    refresh_for_peek_state(editor)
+    run(editor.session.clear_before_peek())
 }
 
-/// Hold-to-peek at the unedited original (Space).
-///
-/// Hold rather than toggle: releasing the key always returns you to your edit,
-/// so you cannot get stranded looking at the original wondering why the
-/// sliders do nothing.
+/// Hold-to-peek at the unedited original (Space). Not under a dialog.
 pub fn handle_set_before_peek(editor: &mut RawEditor, active: bool) -> Task<Message> {
-    // Key auto-repeat delivers KeyPressed continuously while Space is held.
-    // Without this guard every repeat would queue another GPU render.
-    if editor.session.before_peek == active {
+    if active && editor.active_modal != Modal::None {
         return Task::none();
     }
-
-    if active {
-        // Space is bound globally and the subscription closure has no access
-        // to editor state, so all gating lives here — the same pattern the
-        // Delete modal's Enter/D bindings use.
-        if editor.active_modal != crate::app::state::Modal::None
-            || editor.session.current_tab != crate::app::message::AppTab::Develop
-            || !matches!(
-                editor.session.editor_readiness,
-                crate::app::state::EditorReadiness::Ready(_)
-            )
-        {
-            return Task::none();
-        }
-    }
-
-    editor.session.before_peek = active;
-    refresh_for_peek_state(editor)
+    run(editor.session.set_before_peek(active))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::tonemap::ToneSettings;
-
-    use crate::core::tonemap::{GtParams, ToneMapper};
-
-    fn tone(curve: f32) -> ToneSettings {
-        ToneSettings { mapper: ToneMapper::Camera, profile_curve: curve, gt: GtParams::default() }
-    }
-
-    #[test]
-    fn dcp_memo_hits_on_identical_state() {
-        assert!(crate::session::dcp_memo_is_valid(5500.0, tone(0.33), 5500.0, tone(0.33)));
-    }
-
-    #[test]
-    fn dcp_memo_misses_when_temperature_moves() {
-        // One Kelvin is far below what any slider step produces, and must
-        // still invalidate — the memo must never coarsen the temperature.
-        assert!(!crate::session::dcp_memo_is_valid(5500.0, tone(0.33), 5501.0, tone(0.33)));
-    }
-
-    #[test]
-    fn dcp_memo_misses_when_profile_curve_moves() {
-        assert!(!crate::session::dcp_memo_is_valid(5500.0, tone(0.33), 5500.0, tone(0.34)));
-    }
-
-    #[test]
-    fn dcp_memo_absorbs_kelvin_noise_only() {
-        // Recomputing solve_wb from identical inputs is deterministic, so the
-        // epsilon exists purely to tolerate last-bit drift, not real changes.
-        assert!(crate::session::dcp_memo_is_valid(5500.0, tone(0.33), 5500.0 + 1e-4, tone(0.33)));
-    }
-
-    /// The memo caches a baked tone LUT, so switching operators MUST miss —
-    /// otherwise the new selection would not reach the GPU until something
-    /// else happened to move the temperature.
-    #[test]
-    fn dcp_memo_misses_when_the_tone_operator_changes() {
-        let mut gt = tone(0.33);
-        gt.mapper = ToneMapper::Gt;
-        assert!(!crate::session::dcp_memo_is_valid(5500.0, tone(0.33), 5500.0, gt));
-    }
-
-    /// Same for the GT shape sliders — they re-bake the curve, and nothing
-    /// else in the key moves when the user drags one.
-    #[test]
-    fn dcp_memo_misses_when_gt_shape_changes() {
-        let mut a = tone(0.33);
-        a.mapper = ToneMapper::Gt;
-        let mut b = a;
-        b.gt.contrast = 1.4;
-        assert!(!crate::session::dcp_memo_is_valid(5500.0, a, 5500.0, b));
-    }
 
     /// Every section with edits, one field each (and a mask).
     fn edited_everywhere() -> EditParams {
@@ -1390,7 +385,7 @@ mod tests {
                 continue; // reset by the handler (Geometry) or not at all
             }
             let mut q = p;
-            reset_section(s, &mut q);
+            edit_section(s).expect("a section with edits").reset(&mut q);
             assert!(!section_edited(s, &q), "{s:?} still edited after its reset");
             for other in SidebarSection::ALL.into_iter().filter(|&o| o != s) {
                 assert_eq!(section_edited(other, &q), section_edited(other, &p), "resetting {s:?} touched {other:?}");

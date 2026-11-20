@@ -183,6 +183,7 @@ impl Session {
                     after = Moved::To(next_id);
                 } else {
                     self.editor_readiness = EditorReadiness::NoSelection;
+                    self.camera_preview = Some(super::PreviewHandle::Clear);
                     after = Moved::Cleared;
                 }
             }

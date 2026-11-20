@@ -1,26 +1,10 @@
 use crate::database::models::Image as ImageData;
-use crate::ui::preview_renderer::{CropHandle, MaskHandle};
+pub use crate::session::{
+    CopyCategory, CropHandle, DefringeParam, GtParam, LensParam, LensToggle, MaskAdjustment, MaskHandle,
+    StrokeEvent,
+};
 use iced::{Point, Rectangle};
 use std::path::PathBuf;
-
-/// Which per-mask adjustment a slider targets (see MaskAdjustmentChanged)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MaskAdjustment {
-    Exposure,
-    Contrast,
-    Saturation,
-    Warmth,
-    Highlights,
-    Shadows,
-    Feather,
-    Tint,
-    Rotation,
-    Hue,
-    LumaLo,
-    LumaHi,
-    LumaSmooth,
-    ColorTolerance,
-}
 
 /// Brush tool settings (see `BrushSettingChanged`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,53 +12,6 @@ pub enum BrushSetting {
     Size,
     Feather,
     Flow,
-}
-
-/// One phase of a brush stroke on the preview, in full-image display UV.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum StrokeEvent {
-    Begin(f32, f32),
-    Move(f32, f32),
-    End,
-}
-
-/// Which GT (Uchimura) shape parameter a slider targets. Mirrors the
-/// `MaskAdjustment` pattern: one message for a family of sliders that all
-/// land in the same handler.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GtParam {
-    Contrast,
-    LinearStart,
-    LinearLength,
-    BlackTightness,
-}
-
-/// Which lens-correction slider changed (see `LensParamChanged`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LensParam {
-    ProfileDistortion,
-    ProfileVignetting,
-    Distortion,
-    Vignetting,
-    CaRed,
-    CaBlue,
-}
-
-/// Which lens-correction checkbox changed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LensToggle {
-    Profile,
-    ProfileCa,
-    Constrain,
-}
-
-/// Which defringe slider changed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DefringeParam {
-    PurpleAmount,
-    PurpleHue,
-    GreenAmount,
-    GreenHue,
 }
 
 /// The Develop sidebar's foldable sections, top to bottom (UI state only).
@@ -137,22 +74,6 @@ impl SidebarSection {
     }
 }
 
-/// Which group of adjustments a Copy Settings checkbox targets.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CopyCategory {
-    Tone,
-    Color,
-    WhiteBalance,
-    Presence,
-    Noise,
-    Detail,
-    Geometry,
-    Profile,
-    Masks,
-    Lens,
-    BlackLevels,
-}
-
 /// Application tabs/modules
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppTab {
@@ -160,32 +81,6 @@ pub enum AppTab {
     Cull,
     Develop, // Edit selected image with full preview
     Export,  // Batch export queue and settings
-}
-
-/// Everything a completed develop render hands back to the UI thread.
-#[derive(Debug, Clone)]
-pub struct RenderOutput {
-    /// Image the render was made from. A render still in flight when the
-    /// user navigates must not land on the next image's viewport.
-    pub image_id: i64,
-    /// The on-screen window's pixels (RGBA), `dims` in size.
-    pub display: std::sync::Arc<[u8]>,
-    pub dims: (u32, u32),
-    /// The window `display` covers. Travels with the pixels so the viewport
-    /// never draws a buffer against a window it wasn't rendered for.
-    pub view_rect: [f32; 4],
-    /// Small whole-image render (RGBA), `overview_dims` in size: histogram
-    /// source and edited-proxy candidate.
-    pub overview: std::sync::Arc<[u8]>,
-    pub overview_dims: (u32, u32),
-    pub histogram: crate::core::histogram::HistogramData,
-    /// The params rendered, when they are the user's real edit — `None` for
-    /// the before/after peek and the crop tool's full-sensor visualisation,
-    /// neither of which may stand in for the edited image.
-    pub edit: Option<crate::core::types::EditParams>,
-    pub upload_ms: f32,
-    pub render_ms: f32,
-    pub update_ms: f32,
 }
 
 /// Application messages (events)
@@ -503,19 +398,12 @@ pub enum Message {
     AiDenoiseCancel,
     AiDenoiseRegenerated(i64, Result<(), String>),
 
-    /// The detail loupe for an image was prepared (or could not be).
-    LoupeReady(i64, Result<std::sync::Arc<crate::gpu::loupe::Loupe>, String>),
-    /// A detail-loupe render finished.
-    LoupeRendered(i64, Result<crate::gpu::loupe::LoupeFrame, String>),
     /// Dragging inside the loupe, by this many logical pixels.
     LoupePan(f32, f32),
     /// Arm or disarm "click the image to place the loupe".
     ToggleLoupeTarget,
     /// The image was clicked while placing the loupe (display-space UV).
     LoupeTargetPicked(f32, f32),
-    /// A noise-reduction drag paused: let the main view catch up, if this is
-    /// still the latest tick's timer.
-    NoiseSettled(u64),
     /// Ask lensfun what database it currently publishes.
     LensfunCheck,
     /// Download (or update) the lensfun database.
@@ -611,8 +499,6 @@ pub enum Message {
     /// The develop viewport's logical size changed: (width, height).
     ViewportResized(f32, f32),
 
-    /// A develop render completed. Boxed: the histogram alone is 3 KB.
-    RenderFinished(Box<RenderOutput>),
     /// Phase 104: Toggle Profiler Overlay
     ToggleProfiler,
 

@@ -29,10 +29,10 @@ fn a_stroke_ends_even_if_the_brush_was_disarmed_mid_stroke() {
     e.session.current_edit_params.masks[0] = MaskParams::new_brush();
     e.session.current_edit_params.mask_count = 1;
     e.session.selected_mask = Some(0);
-    e.brush_armed = true;
+    e.session.brush_armed = true;
     send(&mut e, Message::BrushStroke(StrokeEvent::Begin(0.5, 0.5)));
     assert!(e.session.is_painting);
-    e.brush_armed = false;
+    e.session.brush_armed = false;
     send(&mut e, Message::BrushStroke(StrokeEvent::End));
     assert!(!e.session.is_painting, "the stroke was never finished");
     assert!(!saved_edits(&e, 1).brush.is_empty() || e.session.current_edit_params.brush.stroke_count == 1);

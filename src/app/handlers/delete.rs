@@ -54,7 +54,7 @@ pub fn handle_delete_from_disk_confirmed(editor: &mut RawEditor) -> Task<Message
 
 pub fn handle_hard_delete_complete(editor: &mut RawEditor, outcome: HardDeleteOutcome) -> Task<Message> {
     let moved = editor.session.hard_delete_complete(outcome);
-    navigation::apply_moved(editor, moved)
+    navigation::apply_moved(moved)
 }
 
 #[cfg(test)]

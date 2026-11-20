@@ -186,7 +186,7 @@ fn open(editor: &mut RawEditor, slot: usize, created: bool) -> Task<Message> {
     });
     // Other tools off: the canvas belongs to AI select now.
     editor.session.mask_tool = crate::app::state::MaskTool::Inactive;
-    editor.brush_armed = false;
+    editor.session.brush_armed = false;
     editor.session.color_picking_mask = None;
     editor.session.selected_mask = Some(slot);
     editor.session.status = "AI Select: analysing the image…".into();
@@ -244,7 +244,7 @@ pub const HINT: &str = "AI Select: click to add · right-click or Alt-click to s
 /// the same source position (`core::viewport::frame_to_layer_uv`).
 fn source_uv(editor: &RawEditor, u: f32, v: f32) -> (f32, f32) {
     let Some(s) = editor.session.ai_select.as_ref() else { return (u, v) };
-    match crate::app::handlers::develop::source_geometry(editor, s.image_id) {
+    match editor.session.source_geometry(s.image_id) {
         Some(geo) => {
             crate::core::viewport::frame_to_source_uv(
                 &editor.session.current_edit_params,
@@ -487,7 +487,7 @@ pub fn track(editor: &mut RawEditor) -> Option<Task<Message>> {
 /// it) however the image is straightened.
 pub fn display_points(editor: &RawEditor) -> Vec<(f32, f32, bool)> {
     let Some(s) = editor.session.ai_select.as_ref() else { return Vec::new() };
-    let geo = crate::app::handlers::develop::source_geometry(editor, s.image_id);
+    let geo = editor.session.source_geometry(s.image_id);
     s.prompts
         .points
         .iter()

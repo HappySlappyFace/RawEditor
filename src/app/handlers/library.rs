@@ -246,13 +246,9 @@ pub fn handle_remove_folder_confirmed(editor: &mut RawEditor) -> Task<Message> {
     };
     editor.active_modal = crate::app::state::Modal::None;
 
-    let had_selection = editor.session.selected_image_id.is_some();
     let gone = editor.session.remove_folder(&folder);
     if editor.selection_anchor.is_some_and(|a| gone.contains(&a)) {
         editor.selection_anchor = None;
-    }
-    if had_selection && editor.session.selected_image_id.is_none() {
-        editor.working_preview = None;
     }
     Task::none()
 }

@@ -4,7 +4,7 @@
 //!
 //! A profile is applied when an image's GPU resources are built, so a change
 //! that could alter which profile the open image resolves to rebuilds them
-//! ([`resources_stale`], [`rebuild`]).
+//! (`Session::camera_profile_stale`, [`rebuild`]).
 
 use iced::Task;
 
@@ -13,12 +13,6 @@ use crate::app::state::RawEditor;
 use crate::app::update::{follow_up, run};
 use crate::core::camera_profiles::{ProfileChoice, UpdateReport};
 use crate::session::Session;
-
-/// Were the open image's GPU resources built with a different profile
-/// choice than it now has (its own, or its camera's default)?
-pub fn resources_stale(editor: &RawEditor) -> bool {
-    editor.session.camera_profile_stale()
-}
 
 /// Rebuild the open image so it picks its profile again.
 pub fn rebuild(editor: &mut RawEditor) -> Task<Message> {

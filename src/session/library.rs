@@ -322,6 +322,7 @@ impl Session {
             self.selected_image_id = None;
             self.editor_readiness = EditorReadiness::NoSelection;
             self.working_preview_bytes = None;
+            self.camera_preview = Some(super::PreviewHandle::Clear);
             self.rendered_preview_bytes = None;
             self.image_resources = None;
             self.preview_resources = None;
