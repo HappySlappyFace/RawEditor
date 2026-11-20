@@ -9,6 +9,7 @@ mod app;
 mod debug;
 #[cfg(target_os = "linux")]
 mod desktop;
+mod session;
 mod ui;
 
 // The engine (GPU pipeline, RAW decoding, colour science, catalogue, AI) is

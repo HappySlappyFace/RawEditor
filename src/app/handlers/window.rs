@@ -209,7 +209,7 @@ pub fn handle_modal_confirm(editor: &mut RawEditor) -> Task<Message> {
         },
         Modal::AiDenoise => crate::app::handlers::ai_denoise::handle_apply(editor),
         Modal::UpdatePrompt => crate::app::handlers::updates::handle_prompt_confirmed(editor),
-        Modal::Update if editor.updates.available.is_some() && !editor.updates.checking => {
+        Modal::Update if editor.session.updates.available.is_some() && !editor.session.updates.checking => {
             crate::app::handlers::updates::handle_open_page(editor)
         }
         Modal::Update => handle_close_modal(editor),

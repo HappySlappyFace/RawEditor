@@ -230,7 +230,7 @@ fn update_controls(editor: &RawEditor) -> Element<'_, Message> {
     }
     column![
         column![
-            checkbox("Check for updates at startup", editor.update_check == Some(true))
+            checkbox("Check for updates at startup", editor.session.update_check == Some(true))
                 .on_toggle(|_| Message::ToggleUpdateCheck)
                 .size(16)
                 .spacing(theme::space::M)
@@ -241,7 +241,7 @@ fn update_controls(editor: &RawEditor) -> Element<'_, Message> {
         .spacing(theme::space::XS),
         row![
             button(text("Check Now").size(theme::size::BODY))
-                .on_press_maybe((!editor.updates.checking).then_some(Message::CheckForUpdates))
+                .on_press_maybe((!editor.session.updates.checking).then_some(Message::CheckForUpdates))
                 .padding([theme::space::S, theme::space::XL])
                 .style(ui::styles::NeutralButton::style),
             version,
@@ -255,7 +255,7 @@ fn update_controls(editor: &RawEditor) -> Element<'_, Message> {
 
 /// The last Check Now's result, under its button.
 fn update_status(editor: &RawEditor) -> Option<Element<'_, Message>> {
-    let st = &editor.updates;
+    let st = &editor.session.updates;
     let warn = theme::colours().warn;
     let ok = theme::colours().text_secondary;
     let line = |s: String, color: Color| -> Element<'_, Message> {
@@ -1223,8 +1223,8 @@ mod tests {
                 let Some((name, _)) = line.split_once('=') else { continue };
                 // `tokio.workspace = true` names `tokio`.
                 let name = name.trim().trim_end_matches(".workspace");
-                // Our own engine, not a third-party crate.
-                if name == "raw-editor-core" {
+                // Our own crates, not third-party ones.
+                if name == "raw-editor-core" || name == "raw-editor-session" {
                     continue;
                 }
                 if !credited.contains(&name) {

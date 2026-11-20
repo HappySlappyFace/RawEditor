@@ -516,7 +516,7 @@ pub fn view_ai_denoise_modal(editor: &RawEditor) -> Element<'_, Message> {
 /// answered the app makes no request (`handlers::updates`).
 pub fn view_update_prompt_modal(editor: &RawEditor) -> Element<'_, Message> {
     let body = column![
-        checkbox("Check for updates at startup", editor.updates.prompt_choice)
+        checkbox("Check for updates at startup", editor.update_prompt_choice)
             .on_toggle(Message::UpdatePromptToggled)
             .size(16)
             .spacing(theme::space::M)
@@ -538,7 +538,7 @@ pub fn view_update_prompt_modal(editor: &RawEditor) -> Element<'_, Message> {
 
 /// A check's outcome: checking, a newer version, up to date, or an error.
 pub fn view_update_modal(editor: &RawEditor) -> Element<'_, Message> {
-    let st = &editor.updates;
+    let st = &editor.session.updates;
     let current = crate::core::updates::current_version();
     let close = |label: &str| dialog::action(label.to_string(), Kind::Neutral).on_press(Message::CloseModal);
 

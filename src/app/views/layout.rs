@@ -457,7 +457,7 @@ fn view_title_bar(editor: &RawEditor) -> Element<'_, Message> {
 /// "Update available" in the title bar, after a check found a newer
 /// release. Opens the update dialog.
 fn update_badge(editor: &RawEditor) -> Option<Element<'_, Message>> {
-    let available = editor.updates.available.as_ref()?;
+    let available = editor.session.updates.available.as_ref()?;
     Some(
         container(
             button(

@@ -1,8 +1,8 @@
 [workspace]
-members = [".", "crates/raw-editor-core"]
+members = [".", "crates/raw-editor-core", "crates/raw-editor-session"]
 # Plain `cargo build/test/clippy` at the root cover the whole workspace, so the
 # commands in CLAUDE.md and CI keep checking the engine too.
-default-members = [".", "crates/raw-editor-core"]
+default-members = [".", "crates/raw-editor-core", "crates/raw-editor-session"]
 resolver = "2"
 
 # The release version for every crate. This is the line a release bumps (the
@@ -16,6 +16,7 @@ license = "MIT"
 # Versions used by more than one crate, so the app and the engine can't drift.
 [workspace.dependencies]
 raw-editor-core = { path = "crates/raw-editor-core" }
+raw-editor-session = { path = "crates/raw-editor-session" }
 
 # Async runtime for background tasks
 # "time" powers the export memory-pressure retry. It currently arrives
@@ -64,6 +65,8 @@ license.workspace = true
 [dependencies]
 # The engine: GPU pipeline, RAW decoding, colour science, catalogue, AI.
 raw-editor-core.workspace = true
+# The editing session (the app's logic, toolkit-free); moving in area by area.
+raw-editor-session.workspace = true
 
 # GUI framework with native rendering via wgpu
 iced = { version = "0.13", features = ["wgpu", "tokio", "image", "advanced", "canvas"] }

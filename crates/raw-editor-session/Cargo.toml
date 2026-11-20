@@ -1,0 +1,12 @@
+[package]
+name = "raw-editor-session"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "RawEditor's editing session: the app's logic, independent of any UI toolkit"
+license.workspace = true
+publish = false
+
+# No dependencies yet: the plumbing (effects) is plain std. The session itself
+# moves in from the app area by area (see CLAUDE.md, Workspace).
+[dependencies]

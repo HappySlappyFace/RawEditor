@@ -468,10 +468,10 @@ pub struct RawEditor {
     pub appearance: crate::ui::theme::Appearance,
     /// Per-camera default profile (`AppSettings::camera_profile_defaults`).
     pub camera_profile_defaults: std::collections::HashMap<String, String>,
-    /// `AppSettings::update_check`: `None` until the first-run prompt is answered.
-    pub update_check: Option<bool>,
-    /// The update check's progress and result (`handlers::updates`).
-    pub updates: crate::app::handlers::updates::UpdatesState,
+    /// The editing session: the app's logic, toolkit-free (`crate::session`).
+    pub session: crate::session::Session,
+    /// The first-run update prompt's checkbox, which starts ticked.
+    pub update_prompt_choice: bool,
     /// The page Preferences shows. Kept while the app runs, so reopening the
     /// dialog lands where the user left it; not persisted.
     pub preferences_section: PreferencesSection,
@@ -1048,8 +1048,11 @@ impl RawEditor {
                 reduce_motion: settings.reduce_motion,
                 appearance,
                 camera_profile_defaults: settings.camera_profile_defaults.clone(),
-                update_check: settings.update_check,
-                updates: Default::default(),
+                session: crate::session::Session {
+                    update_check: settings.update_check,
+                    ..Default::default()
+                },
+                update_prompt_choice: true,
                 preferences_section: PreferencesSection::default(),
                 scroll_glide: None,
                 menu_generation: 0,
@@ -1646,7 +1649,7 @@ impl RawEditor {
             reduce_motion: self.reduce_motion,
             appearance: Some(self.appearance.name().to_string()),
             camera_profile_defaults: self.camera_profile_defaults.clone(),
-            update_check: self.update_check,
+            update_check: self.session.update_check,
             develop_folded: Some(
                 crate::app::message::SidebarSection::ALL
                     .into_iter()

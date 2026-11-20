@@ -157,8 +157,24 @@ fn is_slider_change(message: &Message) -> bool {
     )
 }
 
+/// Run the session's work as iced tasks; each result comes back as
+/// `Message::Session`.
+pub fn run(effects: crate::session::Effects) -> Task<Message> {
+    Task::batch(effects.into_iter().map(|e| Task::perform(e.future, Message::Session)))
+}
+
+/// A result of the session's work, handed back to it (through the app's
+/// handler where the app has its own part to play).
+fn session_event(editor: &mut RawEditor, event: crate::session::SessionEvent) -> Task<Message> {
+    use crate::session::SessionEvent;
+    match event {
+        SessionEvent::UpdateChecked { result, manual } => handlers::updates::handle_checked(editor, result, manual),
+    }
+}
+
 fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
     match message {
+        Message::Session(event) => session_event(editor, event),
         // Library
         Message::DatabaseLoaded(res) => handlers::library::handle_database_loaded(editor, res),
         Message::ImportFolder => handlers::library::handle_import_folder(editor),
@@ -428,7 +444,6 @@ fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::DropScanned { dropped, scan } => handlers::library::handle_drop_scanned(editor, dropped, scan),
         Message::DropImportConfirmed => handlers::library::handle_drop_import_confirmed(editor),
         Message::CheckForUpdates => handlers::updates::handle_check(editor),
-        Message::UpdateChecked { result, manual } => handlers::updates::handle_checked(editor, result, manual),
         Message::UpdatePromptToggled(on) => handlers::updates::handle_prompt_toggled(editor, on),
         Message::UpdatePromptConfirmed => handlers::updates::handle_prompt_confirmed(editor),
         Message::ToggleUpdateCheck => handlers::updates::handle_toggle(editor),

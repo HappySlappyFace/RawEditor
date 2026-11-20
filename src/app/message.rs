@@ -200,6 +200,8 @@ pub struct RenderOutput {
 #[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
 pub enum Message {
+    /// A piece of work the session asked for has finished (`crate::session`).
+    Session(crate::session::SessionEvent),
     // ========== Startup Messages (Phase 23) ==========
     /// Database loading completed (async background task)
     /// Phase 23: Only send images Vec, Library created on main thread (not Send)
@@ -491,9 +493,6 @@ pub enum Message {
     /// Help › Check for Updates, or Preferences' Check Now: check and show
     /// the result.
     CheckForUpdates,
-    /// A check finished. `manual`: the user asked, so show the result (an
-    /// automatic check only lights the title-bar badge, and only on success).
-    UpdateChecked { result: Result<Option<crate::core::updates::Available>, String>, manual: bool },
     /// The first-run prompt's checkbox.
     UpdatePromptToggled(bool),
     /// The first-run prompt's Continue: save the answer.
