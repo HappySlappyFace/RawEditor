@@ -21,7 +21,10 @@ raw-editor-core = { path = "crates/raw-editor-core" }
 # "time" powers the export memory-pressure retry. It currently arrives
 # transitively via iced_futures, but relying on that would make an iced update
 # able to turn `tokio::time::sleep` into a runtime panic.
-tokio = { version = "1", features = ["rt", "fs", "sync", "time"] }
+# "rt-multi-thread": the engine's render entry points call
+# `tokio::task::block_in_place`, which needs it. It used to arrive only through
+# iced, so the engine crate did not build on its own.
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "fs", "sync", "time"] }
 
 # Database for catalog management (bundled = includes SQLite, no system dependency)
 rusqlite = { version = "0.32", features = ["bundled"] }
