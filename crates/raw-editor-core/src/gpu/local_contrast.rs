@@ -55,7 +55,6 @@
 //! B0 at a full-resolution 24 MP render is finer than a pixel anyway, and
 //! the stage keeps two 16-bit RGBA targets alive.
 
-use iced_wgpu::wgpu;
 
 /// Smoothing scales as fractions of the image's long edge (σ of the
 /// cumulative kernel). See the module table.

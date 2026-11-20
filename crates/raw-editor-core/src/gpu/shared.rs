@@ -3,7 +3,6 @@
 /// This module contains the refactored pipeline architecture:
 /// - SharedContext: Persistent GPU resources (created once)
 /// - ImageResources: Per-image data (created for each image)
-use iced_wgpu::wgpu;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 

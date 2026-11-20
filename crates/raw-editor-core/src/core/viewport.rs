@@ -5,7 +5,16 @@
 // portrait image at all) — this module is the fix: everyone consumes the
 // same `image_rect`.
 
-use iced::Rectangle;
+/// A rectangle in widget-local logical pixels. Same fields as
+/// `iced::Rectangle`, so the UI converts by naming them; the engine stays
+/// free of any UI toolkit.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Rect {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
 
 /// Letterbox-fit size of an image inside a viewport, at zoom = 1.0.
 pub fn fitted_size(image_w: u32, image_h: u32, vp_w: f32, vp_h: f32) -> (f32, f32) {
@@ -33,10 +42,10 @@ pub fn image_rect(
     vp_h: f32,
     zoom: f32,
     offset: cgmath::Vector2<f32>,
-) -> Rectangle {
+) -> Rect {
     let (fw, fh) = fitted_size(image_w, image_h, vp_w, vp_h);
     let (zw, zh) = (fw * zoom, fh * zoom);
-    Rectangle {
+    Rect {
         x: vp_w / 2.0 - zw / 2.0 + offset.x * fw,
         y: vp_h / 2.0 - zh / 2.0 + offset.y * fh,
         width: zw,

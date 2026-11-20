@@ -36,7 +36,6 @@
 //! (`-x` and `2(n-1)-x` keep the parity of `x`), so the full algorithm runs
 //! right up to the edge instead of needing a separate border interpolator.
 
-use iced_wgpu::wgpu;
 use wgpu::util::DeviceExt;
 
 /// Demosaic uniforms. Everything per-site is pre-resolved on the CPU into

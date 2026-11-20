@@ -30,7 +30,7 @@ pub fn init() -> Option<WorkerGuard> {
     {
         // Debug mode: Write to stdout with pretty formatting
         tracing_subscriber::fmt()
-            .with_env_filter(filter("raw_editor=debug,iced=warn,wgpu=warn"))
+            .with_env_filter(filter("raw_editor=debug,raw_editor_core=debug,iced=warn,wgpu=warn"))
             .with_target(false)
             .pretty()
             .init();
@@ -65,7 +65,7 @@ pub fn init() -> Option<WorkerGuard> {
         let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
 
         tracing_subscriber::fmt()
-            .with_env_filter(filter("raw_editor=info,warn"))
+            .with_env_filter(filter("raw_editor=info,raw_editor_core=info,warn"))
             .with_writer(non_blocking)
             .with_ansi(false)
             .init();

@@ -2,7 +2,6 @@
 /// These replace the old RenderPipeline methods
 use super::shared::{ImageResources, SharedContext};
 use crate::core::output_space::OutputSpace;
-use iced_wgpu::wgpu;
 
 /// Patch just the `view_rect` field of the already-uploaded uniform block.
 ///

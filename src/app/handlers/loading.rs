@@ -442,7 +442,7 @@ mod tests {
         e.raw_preload_budget_mb = 0;
         e.selected_image_id = Some(1);
         e.editor_readiness = EditorReadiness::Loading(1);
-        let raw = crate::ml::segment::tests::disc_raw(60, 40);
+        let raw = crate::ml::segment::test_support::disc_raw(60, 40);
         let _ = handle_raw_data_loaded(&mut e, 1, Ok(raw));
         assert!(e.raw_cache.is_empty(), "budget 0 caches nothing");
         assert!(e.raw_for(1).is_some(), "the open image's RAW was dropped");

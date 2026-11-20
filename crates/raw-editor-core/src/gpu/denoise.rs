@@ -44,7 +44,6 @@
 //! component that it leaves behind as blotches in skies and walls. The taps
 //! are already loaded for chroma, so this costs arithmetic only.
 
-use iced_wgpu::wgpu;
 
 use crate::core::noise::NoiseModel;
 

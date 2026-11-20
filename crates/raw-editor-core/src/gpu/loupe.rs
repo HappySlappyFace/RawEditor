@@ -24,7 +24,6 @@
 
 use std::sync::{Arc, Mutex};
 
-use iced_wgpu::wgpu;
 
 use super::denoise::{DenoiseSettings, DenoiseTargets};
 use super::params::GpuEditParams;

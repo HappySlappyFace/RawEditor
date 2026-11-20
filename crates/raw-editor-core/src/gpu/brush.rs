@@ -12,7 +12,6 @@
 //! earlier ones, erase-after-add included, and flow builds up). Runs only
 //! when the strokes change; the colour pass just samples the layer.
 
-use iced_wgpu::wgpu;
 
 use crate::core::brush::{BrushData, MAX_POINTS};
 use crate::core::types::MAX_MASKS;

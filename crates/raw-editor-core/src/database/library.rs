@@ -188,7 +188,7 @@ impl Library {
     }
 
     /// Test fixtures: write an edit row's JSON verbatim, and read the backup column.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn set_raw_edit_json(&self, image_id: i64, json: &str) -> SqlResult<()> {
         self.conn.execute(
             "INSERT INTO edits (image_id, settings_json) VALUES (?1, ?2)
@@ -198,7 +198,7 @@ impl Library {
         Ok(())
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn edit_backup(&self, image_id: i64) -> Option<String> {
         self.conn
             .query_row("SELECT settings_json_backup FROM edits WHERE image_id = ?1", [image_id], |r| r.get(0))
@@ -215,7 +215,7 @@ impl Library {
 
     /// Import a single image (test fixture; the app imports whole folders
     /// in one transaction — see `handlers::library::import_folder_blocking`).
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn import_image(&self, path: &str, filename: &str) -> SqlResult<i64> {
         use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -523,7 +523,7 @@ impl Library {
 
     /// Load edit parameters for an image; `Err` when there is no row or it is
     /// unreadable. App code uses `load_saved_edit` to tell those apart.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn load_edit_params(&self, image_id: i64) -> SqlResult<EditParams> {
         self.load_saved_edit(image_id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)
     }

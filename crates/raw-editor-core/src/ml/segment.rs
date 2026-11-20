@@ -154,7 +154,7 @@ pub struct Decoder {
 #[derive(Clone)]
 pub struct Logits(Vec<f32>);
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl Logits {
     pub fn default_for_tests() -> Self {
         Self(Vec::new())
@@ -261,22 +261,12 @@ pub fn to_bitmap(logits: &Logits, input: &SamInput) -> Bitmap {
     }
 }
 
-#[cfg(test)]
-pub(crate) mod tests {
-    use super::*;
-    use crate::ml::masks::Point;
+/// Fixtures shared with the app's tests (the `test-support` feature).
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support {
+    use crate::raw::loader::RawDataResult;
 
-    #[test]
-    fn a_lone_click_takes_the_best_multimask_token() {
-        let one = Prompts { points: vec![Point { u: 0.5, v: 0.5, positive: true }], rect: None };
-        assert_eq!(choose_mask(&[0.99, 0.2, 0.9, 0.5], &one), 2);
-        let two = Prompts { points: vec![one.points[0]; 2], rect: None };
-        assert_eq!(choose_mask(&[0.1, 0.2, 0.9, 0.5], &two), 0);
-        let boxed = Prompts { points: one.points.clone(), rect: Some([0.1, 0.1, 0.4, 0.4]) };
-        assert_eq!(choose_mask(&[0.1, 0.2, 0.9, 0.5], &boxed), 0);
-    }
-
-    pub(crate) fn disc_raw(w: u32, h: u32) -> RawDataResult {
+    pub fn disc_raw(w: u32, h: u32) -> RawDataResult {
         // A bright disc on a dark field, RGGB, as a minimal "photo".
         let mut data = vec![0u16; (w * h) as usize];
         for y in 0..h {
@@ -309,6 +299,23 @@ pub(crate) mod tests {
             lens_context: Default::default(),
             orientation: 1,
         }
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::test_support::disc_raw;
+    use super::*;
+    use crate::ml::masks::Point;
+
+    #[test]
+    fn a_lone_click_takes_the_best_multimask_token() {
+        let one = Prompts { points: vec![Point { u: 0.5, v: 0.5, positive: true }], rect: None };
+        assert_eq!(choose_mask(&[0.99, 0.2, 0.9, 0.5], &one), 2);
+        let two = Prompts { points: vec![one.points[0]; 2], rect: None };
+        assert_eq!(choose_mask(&[0.1, 0.2, 0.9, 0.5], &two), 0);
+        let boxed = Prompts { points: one.points.clone(), rect: Some([0.1, 0.1, 0.4, 0.4]) };
+        assert_eq!(choose_mask(&[0.1, 0.2, 0.9, 0.5], &boxed), 0);
     }
 
     #[test]

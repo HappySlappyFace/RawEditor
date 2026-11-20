@@ -524,14 +524,15 @@ impl CropOverlay {
     /// (`core::viewport::image_rect`) that the display shader and all input
     /// math also use — draw/update/mouse_interaction all rely on this.
     fn image_bounds(&self, viewport_width: f32, viewport_height: f32) -> Rectangle {
-        crate::core::viewport::image_rect(
+        let r = crate::core::viewport::image_rect(
             self.image_width,
             self.image_height,
             viewport_width,
             viewport_height,
             self.zoom,
             self.offset,
-        )
+        );
+        Rectangle { x: r.x, y: r.y, width: r.width, height: r.height }
     }
 
     /// Full-image UV → screen point. When not cropping (the only state mask

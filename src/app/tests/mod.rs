@@ -4,6 +4,7 @@
 mod ai_select_delete_mask;
 mod develop_history;
 mod export_size_field;
+mod gpu_render;
 mod loading;
 mod mark_keeps_rating;
 mod mask_robustness;

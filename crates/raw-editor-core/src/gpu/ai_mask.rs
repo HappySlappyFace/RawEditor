@@ -12,7 +12,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use iced_wgpu::wgpu;
 
 use crate::core::types::MAX_MASKS;
 use crate::ml::masks::Bitmap;

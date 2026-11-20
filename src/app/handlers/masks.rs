@@ -517,7 +517,7 @@ mod tests {
             width: 6000,
             height: 4000,
             orientation: 1,
-            ..crate::ml::segment::tests::disc_raw(60, 40)
+            ..crate::ml::segment::test_support::disc_raw(60, 40)
         };
         e.raw_cache.put(1, std::sync::Arc::new(raw));
         e.current_edit_params.rotation = 10.0;

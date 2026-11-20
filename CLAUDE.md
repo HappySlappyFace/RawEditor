@@ -10,12 +10,12 @@ cargo run --release            # run in release mode (debug builds are too slow 
 cargo build-fast / run-fast    # release build/run with the fast-jpeg (SIMD) decoder feature
 cargo run-quick / build-quick  # day-to-day: optimised but no LTO ([profile.quick]); seconds to rebuild, not for shipping
 cargo build-compat             # explicit alias for the default-features release build
-cargo test                     # run unit tests (see src/raw/tests.rs and inline #[cfg(test)] modules)
+cargo test                     # run unit tests in both crates (inline #[cfg(test)] modules, src/app/tests/)
 cargo test <name>              # run a single test by name/substring
 cargo clippy --all-targets -- -D warnings   # lint; CI enforces this exactly, so keep it at zero
 ```
 
-**Releasing:** `Cargo.toml`'s `version` is the one source of truth. Bump it, commit, and push the tag `v<that version>` (e.g. `v1.0.0`, or `v1.0.0-rc.1` for a pre-release). The release workflow fails any tag that isn't exactly that, so no letter suffixes: a hotfix is the next patch number, because semver puts `0.9.8-E` *before* `0.9.8` and the update check (`core::updates`) would offer it backwards. Pre-release tags (with a `-`) are published as pre-releases, which are never "latest", so the update check never offers them.
+**Releasing:** the root `Cargo.toml`'s `[workspace.package] version` is the one source of truth (both crates inherit it). Bump it, commit, and push the tag `v<that version>` (e.g. `v1.0.0`, or `v1.0.0-rc.1` for a pre-release). The release workflow fails any tag that isn't exactly that, so no letter suffixes: a hotfix is the next patch number, because semver puts `0.9.8-E` *before* `0.9.8` and the update check (`core::updates`) would offer it backwards. Pre-release tags (with a `-`) are published as pre-releases, which are never "latest", so the update check never offers them.
 
 There is no separate frontend build — this is a single native Rust binary (no web tech, no Electron/Tauri).
 
@@ -31,6 +31,12 @@ There is no separate frontend build — this is a single native Rust binary (no 
 
 ## Architecture
 
+### Workspace
+Two crates. The **engine**, `crates/raw-editor-core` (`gpu`, `raw`, `ml`, `database`, `core`, `color`), has no UI toolkit: it must never depend on iced. The **app**, the root package `raw-editor` (`src/`: `app`, `ui`, `desktop`), drives it. `src/main.rs` imports the engine's modules at the crate root, so app code keeps writing `crate::core::…`, `crate::gpu::…`.
+- Test fixtures the app's tests need from the engine are `#[cfg(any(test, feature = "test-support"))]`; the app's dev-dependency turns the feature on. `#[cfg(test)]` alone doesn't reach another crate.
+- Shared dependency versions live in the root's `[workspace.dependencies]`. Every direct dependency of either crate needs a Preferences › Licenses credit (`every_direct_dependency_is_credited` checks both manifests).
+- `default-members` covers both crates, so plain `cargo test`/`clippy` check everything.
+
 ### Module layout
 - `src/main.rs` — entry point / iced application bootstrap
 - `src/app/` — application state and update loop, split Elm-style:
@@ -38,31 +44,32 @@ There is no separate frontend build — this is a single native Rust binary (no 
   - `update.rs` + `handlers/{ai_denoise,ai_mask,camera_profiles,delete,develop,export,lens,lensfun,library,loading,loupe,masks,models,navigation,proxy,scroll,updates,window}.rs` — message handlers grouped by feature area
   - `views/{develop,library,cull,export,layout,modals,preferences}.rs` — iced view builders per tab/screen
   - `loader.rs` — async multi-tier image loading orchestration
-- `src/gpu/` — the wgpu rendering pipeline (see dual-pass system below):
+- `crates/raw-editor-core/src/gpu/` — the wgpu rendering pipeline (see dual-pass system below):
   `demosaic.rs` (Pass 1, RCD), `denoise.rs` (cached NR pre-pass), `loupe.rs` (1:1 detail loupe, §G), `local_contrast.rs`
   (cached Texture/Clarity band pre-pass), `brush.rs` (mask stroke rasteriser), `shaders.rs` (Pass 2 WGSL), `shared.rs` (`SharedContext` + `ImageResources`:
   pipeline creation, textures, bind groups, uniform uploads), `params.rs`
   (uniform struct layout), `render_functions.rs` (render + readback entry points),
   `eval_tests.rs` (ignored GPU quality tests against synthetic ground truth — see §G)
-- `src/raw/` — RAW decoding (`loader`), DCP profiles (`dcp`), embedded-JPEG extraction + cache tiers (`jpeg`, `processor`), EXIF carried into exports (`exif`). kamadak-exif only opens standard TIFF containers — RW2 (`IIU`) and ORF (`IIRO`) come back empty — so the loader fills every gap from rawler's own metadata parse (`ExifInfo::fill_from`), and thumbnail orientation falls back the same way; without it those files had no focal length (so no lens profile), no exposure info and no rotation. `RAW_EXTENSIONS` is the importable set — Bayer formats only, since the debayer pass assumes a 2×2 CFA (the loader rejects anything else with a reason)
-- `src/ml/` — the on-demand AI features (§J): `models` (registry, verified download), `runtime` (ONNX Runtime sessions), `segment` (SAM 2.1), `masks` (AI-mask bitmaps on disk), `denoise` (PMRID + its cache)
-- `src/database/` — SQLite schema, queries, models (the image catalog)
-- `src/core/` — cross-cutting types, histogram computation, logging/tracing setup, profiler, user settings, `paths` (the data and cache folders — every on-disk path derives from it), `viewport.rs` (see §D), and the CPU halves of the editing features: `noise` (per-image noise model), `haze` (dehaze airlight + transmission map), `highlights` (clipped-highlight colour correction), `curves` (point curves → LUT), `perceptual` (Oklab colour controls, §B3), `output_space` (export colour spaces + generated ICC profiles, §B3), `lens` (lensfun DB, lens/defringe params → shader block), `lensfun` (downloading/updating that DB), `camera_profiles` (installed DCPs, the per-image choice, RawTherapee downloads — see §B), `brush` (mask strokes) — see §G — and, Linux only, `desktop` (the desktop entry that gives a Wayland window its taskbar icon: Wayland windows carry none, so the app keeps `~/.local/share/applications/raw-editor.desktop` pointing at the running binary; the window's app id must stay equal to its file name)
+- `crates/raw-editor-core/src/raw/` — RAW decoding (`loader`), DCP profiles (`dcp`), embedded-JPEG extraction + cache tiers (`jpeg`, `processor`), EXIF carried into exports (`exif`). kamadak-exif only opens standard TIFF containers — RW2 (`IIU`) and ORF (`IIRO`) come back empty — so the loader fills every gap from rawler's own metadata parse (`ExifInfo::fill_from`), and thumbnail orientation falls back the same way; without it those files had no focal length (so no lens profile), no exposure info and no rotation. `RAW_EXTENSIONS` is the importable set — Bayer formats only, since the debayer pass assumes a 2×2 CFA (the loader rejects anything else with a reason)
+- `crates/raw-editor-core/src/ml/` — the on-demand AI features (§J): `models` (registry, verified download), `runtime` (ONNX Runtime sessions), `segment` (SAM 2.1), `masks` (AI-mask bitmaps on disk), `denoise` (PMRID + its cache)
+- `crates/raw-editor-core/src/database/` — SQLite schema, queries, models (the image catalog)
+- `crates/raw-editor-core/src/core/` — cross-cutting types, histogram computation, logging/tracing setup, profiler, user settings, `paths` (the data and cache folders — every on-disk path derives from it), `viewport.rs` (see §D), and the CPU halves of the editing features: `noise` (per-image noise model), `haze` (dehaze airlight + transmission map), `highlights` (clipped-highlight colour correction), `curves` (point curves → LUT), `perceptual` (Oklab colour controls, §B3), `output_space` (export colour spaces + generated ICC profiles, §B3), `lens` (lensfun DB, lens/defringe params → shader block), `lensfun` (downloading/updating that DB), `camera_profiles` (installed DCPs, the per-image choice, RawTherapee downloads — see §B), `brush` (mask strokes) — see §G
+- `src/desktop.rs` — Linux only: the desktop entry that gives a Wayland window its taskbar icon (Wayland windows carry none, so the app keeps `~/.local/share/applications/raw-editor.desktop` pointing at the running binary; the window's app id must stay equal to its file name)
 - `src/ui/` — reusable iced widgets (filmstrip, histogram view, icons, `theme` (design tokens), styles, profiler graph), plus `preview_renderer.rs` + `viewport.wgsl` (the develop viewport shader widget and its crop/mask canvas overlay), and `motion.rs` + `widgets/` (animation — see §H)
-- `src/color.rs` — color space math (matrices, conversions) shared by CPU and GPU paths
+- `crates/raw-editor-core/src/color.rs` — color space math (matrices, conversions) shared by CPU and GPU paths
 
-### A. The GPU Pipeline (`src/gpu/`)
+### A. The GPU Pipeline (`crates/raw-editor-core/src/gpu/`)
 Dual-pass rendering to avoid wasting GPU cycles:
 - **Pass 1 (Demosaic, `demosaic.rs`)** — RCD as four fragment passes into transient textures, run once per image load. Reads raw `R16Uint` Bayer mosaic → outputs camera-native `Rgba16Float`. Demosaics in as-shot-WB space (ratio methods assume neutral = equal channels) and divides it back out, so WB sliders never re-run it. It has its own small uniform (`GpuDemosaicParams`), not `GpuEditParams`. Every mosaic sample is capped at its colour's ceiling (sensors can read past the metadata white level — a D3300 piles clipped sites up at 4095 against a white of 3880).
 - **Cached pre-pass stages** — denoise, the Texture/Clarity bands (built from the denoise output, so after it), the point-curve LUT and the brush-mask layers. `ImageResources::prepare_stages` (called by EVERY render entry point) re-runs a stage only when its own settings changed, keyed off the params last pushed by `update_uniforms`/`new`; export and proxies get them for free. A new expensive stage belongs here, not in Pass 2.
 - **Pass 2 (Color Science)** — re-runs on every slider tweak. Reads the demosaic (or the denoise output), applies lens correction, White Balance, highlight reconstruction, dehaze, the Texture/Clarity gain, the DCP Color Pipeline, defringe, sharpening and local masks, and is read back to CPU bytes that the viewport shader widget then draws.
-- Shader source lives in `src/gpu/shaders.rs`; pipeline/bind-group/uniform setup in `src/gpu/shared.rs`; uniform struct layout in `src/gpu/params.rs`; the render + readback entry points in `src/gpu/render_functions.rs`.
+- Shader source lives in `crates/raw-editor-core/src/gpu/shaders.rs`; pipeline/bind-group/uniform setup in `crates/raw-editor-core/src/gpu/shared.rs`; uniform struct layout in `crates/raw-editor-core/src/gpu/params.rs`; the render + readback entry points in `crates/raw-editor-core/src/gpu/render_functions.rs`.
 - `SharedContext` holds two Pass-2 pipelines: `pipeline` (→ `Rgba8Unorm`, display) and `pipeline_16` (→ `Rgba16Float`, 16-bit TIFF export only). A wgpu `RenderPipeline`'s output format is baked in at creation, so the export path needs its own rather than swapping the target's format.
 - **Windowed rendering:** Pass 2 renders only `GpuEditParams.view_rect` — the `(u0, v0, du, dv)` slice of the displayed image that is actually on screen (see §D). The vertex shader maps the target across it, so `(0,0,1,1)` is the identity and covers the whole image.
 - **Device limits come from the adapter** (texture dimension, buffer size), not `Limits::default()`, whose 8192px / 256 MB floor fails full-res work on ≥45 MP sensors. Size-check before allocating (`SharedContext::check_texture_size` / `check_buffer_size`) and return an error; the device's uncaptured-error handler only logs, so an unchecked oversize no longer panics — it renders wrong instead.
 - **Overview pass (histogram + edited proxy):** a small whole-image pass (`core::viewport::overview_dims`, 384px long edge, crop-aware) rendered in the *same frame* as the display window and sharing one `poll(Wait)` — see `render_display_and_overview`. It feeds the histogram and is kept as the image's edited proxy (§F). It must stay whole-image, or it would drift as the user pans/zooms. The two passes read one uniform buffer; their differing `view_rect` values are sequenced by `write_view_rect`'s targeted 16-byte `queue.write_buffer` between submits.
 
-### B. Adobe DCP Color Science (`src/raw/dcp.rs`)
+### B. Adobe DCP Color Science (`crates/raw-editor-core/src/raw/dcp.rs`)
 Uses the real Adobe DNG Color Pipeline instead of naive 3x3 sRGB matrices:
 1. CPU parses `.dcp` files and performs inverse-temperature dual-illuminant interpolation (blending Illuminant A and D65 by the Kelvin slider).
 2. CPU bakes the interpolated `HueSatMap` into a 3D wgpu texture (`TextureDimension::D3`) and `ProfileToneCurve` into a 1D spline texture.
@@ -74,7 +81,7 @@ Uses the real Adobe DNG Color Pipeline instead of naive 3x3 sRGB matrices:
 - **Highlights/Shadows are local, and must run in scene-linear, before the shoulder.** Each is a gain in stops (`highlights_shadows_ev`, CPU mirror `core::tone_regions`, constants guarded by `shader_tone_region_constants_match_rust`) chosen by the level of the pixel's *surroundings* and applied as a multiply — so a region moves as a whole, like exposure: its texture, hue, saturation and black are kept, and the gain's slope stays under 1 stop per stop, so tonal order is too. The surround is Clarity's edge-preserving base B2 (§G), taken as the pixel's own level × `to_surround = exp2(B2 − L − local_ev)`, so WB, exposure, dehaze and highlight reconstruction (which act on the pixel) carry through, and Texture/Clarity's own gain is divided back out. Weighting the pixel itself (the old rule) flattened detail; the old Shadows was an additive grey lift — fog. On the DCP path they are applied in ProPhoto immediately after the matrix, where values still exceed 1.0. Applied later they are a uniform multiply on an already-compressed band — the highlight goes grey and no texture returns. Step 10 is gated `has_dcp == 0` so the fallback path (which has no shoulder until the filmic curve) still gets it there, without double-applying. Masks use the same function on post-tone-curve luma × `to_surround`. `eval_tests::shadows_lift_a_region_like_exposure_keeping_its_detail` checks it through the shader.
 - The weighting scalar differs by space and is passed in by the caller: **peak channel** in ProPhoto (its Y coefficients are ~(0.288, 0.712, 0.0001), so a blown blue sky would score near-zero luma), **Rec.709 luma** on the linear-sRGB fallback.
 
-### B2. Selectable Tone Mapping (`src/core/tonemap.rs`)
+### B2. Selectable Tone Mapping (`crates/raw-editor-core/src/core/tonemap.rs`)
 A DCP bundles *colour* rendering (ForwardMatrix + HueSatMap — sensor
 characterization, always in force) and *tone* rendering (ProfileToneCurve —
 an opinion about contrast). Only the second is swappable, and
@@ -109,7 +116,7 @@ an opinion about contrast). Only the second is swappable, and
   `tone_mapper_selection_changes_the_render_without_breaking_it`, which exists
   because a missed LUT upload renders **black** with no panic and no log.
 
-### B3. Perceptual Colour Controls (`src/core/perceptual.rs`)
+### B3. Perceptual Colour Controls (`crates/raw-editor-core/src/core/perceptual.rs`)
 Contrast, Whites/Blacks, Saturation, Vibrance and the mask Hue/Contrast/Saturation
 run in **Oklab** (Ottosson); `core::perceptual` is the unit-tested CPU mirror of the
 shader's `ok_*`/`perceptual_*` functions, constants guarded by
@@ -152,7 +159,7 @@ shader's `ok_*`/`perceptual_*` functions, constants guarded by
   `fs_main_16` (16-bit TIFF) does not. Any new readback test comparing 8-bit renders
   pixel-for-pixel must allow ±1 LSB, or render through `pipeline_16`.
 
-### C. Multi-Tier Caching (`src/database/`, `src/raw/processor.rs`, `src/app/loader.rs`)
+### C. Multi-Tier Caching (`crates/raw-editor-core/src/database/`, `crates/raw-editor-core/src/raw/processor.rs`, `src/app/loader.rs`)
 RAW files are never decoded on the main thread. Three async-generated JPEG tiers plus an in-RAM LRU cache:
 - **Tier 1 — Thumbnail (256px):** library grid
 - **Tier 2 — Instant Preview (384px):** rapid full-screen scrolling
@@ -166,7 +173,7 @@ RAW files are never decoded on the main thread. Three async-generated JPEG tiers
 - **Every** `rusqlite::Connection` must be passed through `database::library::apply_pragmas` (WAL + `synchronous=NORMAL`) — including the ones opened inside `spawn_blocking` workers. Pragmas are per-connection; without them rusqlite defaults to an fsync per transaction.
 
 ### D. Viewport & Projection Math
-`src/core/viewport.rs` is the single source of truth for "where the displayed
+`crates/raw-editor-core/src/core/viewport.rs` is the single source of truth for "where the displayed
 image is on screen". The display shader, the crop/mask canvas overlay, and the
 zoom/pan/crop input math all consume the same `image_rect` — they used to
 compute it independently and disagreed at any zoom != 1.0.
@@ -223,7 +230,7 @@ Animation primitives live in `ui::motion` (plain, unit-tested math): **springs**
 ### I. Develop Sliders (`views::develop::slider_field`)
 Every sidebar slider goes through `slider_field`, which draws `ui::widgets::slider` (iced's slider forked for `f32`): holding Alt or Shift drags `FINE` (10×) slower, relative to where the drag or the modifier change began so nothing jumps, and a rail can be a gradient of what the slider does. Which sliders get which colours is one table, `rail_gradient`, keyed by the change message (global and mask sliders alike); those colours depict the effect, so they are not theme tokens. Clicking the value types a number in the units shown (`from_display` reads them back — WB inverts its as-shot anchoring); double-clicking the label or track resets it (`ui::widgets::double_click`, which has to see the press before the slider captures it). Both arrive as `Message::SliderSet { change, commit }`: the slider's own change message, then a commit exactly like a drag's release (`commit: false` for tool settings such as brush size). The field being typed is keyed by `slider_key` — the Debug of the change message, because labels repeat. iced 0.13's text field has no blur event and swallows Escape, so `update::ends_slider_entry` abandons it when the user moves on, and the subscription turns a captured Escape into `SliderEntryCancel`.
 
-### J. AI Features (`src/ml/`, `handlers::{ai_mask,ai_denoise,models}`)
+### J. AI Features (`crates/raw-editor-core/src/ml/`, `handlers::{ai_mask,ai_denoise,models}`)
 Click-to-select masks (SAM 2.1 hiera-tiny) and raw-domain denoise (PMRID), on the CPU through ONNX Runtime.
 - **Zero cost when unused — the rule this design is built on.** ONNX Runtime's environment is created on the first session (`ml::runtime`). Sessions live only while a tool is open: the SAM encoder for one run, the decoder for the AI-select session, PMRID for one job. Nothing infers in the background except regenerating a *missing* denoise cache for an edit that asks for one. Don't add speculative or prefetch inference.
 - **Models** are converted by `tools/models/export.py` (see its README), published on the `models-v1` release, and pinned by SHA-256 in `ml::models`. A download streams to `.part`, is hashed, and is renamed into place only on a match. `RAWEDITOR_MODELS_DIR` overrides the folder (tests, fresh exports). Licences: SAM 2.1 and PMRID are Apache-2.0, and both are credited in Preferences › Licenses. EdgeSAM is S-Lab (non-commercial) and the SAM 3 licence restricts use; don't swap them in.
@@ -276,7 +283,7 @@ Click-to-select masks (SAM 2.1 hiera-tiny) and raw-domain denoise (PMRID), on th
    has to store the result back.
 6. **Separation of concerns:** keep wgpu logic isolated from iced logic. Iced code should only pass plain Rust primitives/structs/flags down into `SharedContext`/`ImageResources` — no wgpu types leaking into `src/app/`.
 7. **Error handling:** use `tracing::info!`/`tracing::error!` for backend operations. Never `.unwrap()` on file I/O or wgpu buffer mapping — propagate the error to UI state or fall back gracefully.
-8. **Schema changes:** when changing the SQLite schema, update every SQL query and the corresponding struct in `src/database/models.rs` in the same change; stale DBs must be deleted/migrated (no auto-migration tooling exists yet).
+8. **Schema changes:** when changing the SQLite schema, update every SQL query and the corresponding struct in `crates/raw-editor-core/src/database/models.rs` in the same change; stale DBs must be deleted/migrated (no auto-migration tooling exists yet).
 
 ## Design Language
 "Premium Creative Pro" meets "Turbo Nerd": deep charcoal/zinc dark mode (`#0A0A0A`–`#111113`), stark white text, electric orange (`#F97316`) accents. "Pure Contact Sheet" aesthetic — images have 0.0 border radius, no intrusive filename overlays. Technical metrics use monospace fonts. UI text is UK English ("colour"); identifiers keep their existing spelling. The app is "RawEditor". Titles and buttons are Title Case ("Export 1 Image", "Not Now"); checkbox labels, field labels, hints and messages (empty states) are sentence case; an ellipsis is "…", never "...".

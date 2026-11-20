@@ -977,7 +977,7 @@ const LIBRARIES: &[Credit] = &[
     credit("chrono", &["chrono"], "MIT OR Apache-2.0", "Dates and times", "https://github.com/chronotope/chrono"),
     credit("dirs", &["dirs"], "MIT OR Apache-2.0", "Platform folder locations", "https://github.com/soc/dirs-rs"),
     credit("half", &["half"], "MIT OR Apache-2.0", "16-bit floats", "https://github.com/VoidStarKat/half-rs"),
-    credit("iced", &["iced", "iced_wgpu"], "MIT", "GUI toolkit", "https://github.com/iced-rs/iced"),
+    credit("iced", &["iced"], "MIT", "GUI toolkit", "https://github.com/iced-rs/iced"),
     credit("iced_aw", &["iced_aw"], "MIT", "Menu bar", "https://github.com/iced-rs/iced_aw"),
     credit("image · png", &["image", "png"], "MIT OR Apache-2.0", "Image decoding, PNG export", "https://github.com/image-rs/image"),
     credit("jpeg-encoder", &["jpeg-encoder"], "(MIT OR Apache-2.0) AND IJG", "JPEG export", "https://github.com/vstroebel/jpeg-encoder"),
@@ -1001,7 +1001,7 @@ const LIBRARIES: &[Credit] = &[
     credit("ureq", &["ureq"], "MIT OR Apache-2.0", "Downloading lens profiles", "https://github.com/algesten/ureq"),
     credit("walkdir", &["walkdir"], "Unlicense OR MIT", "Folder import", "https://github.com/BurntSushi/walkdir"),
     credit("webpki-roots", &[], "CDLA-Permissive-2.0", "Mozilla's trusted root certificates, for HTTPS", "https://github.com/rustls/webpki-roots"),
-    credit("wgpu", &[], "MIT OR Apache-2.0", "GPU rendering", "https://github.com/gfx-rs/wgpu"),
+    credit("wgpu", &["wgpu"], "MIT OR Apache-2.0", "GPU rendering", "https://github.com/gfx-rs/wgpu"),
     credit("zune-jpeg", &["zune-jpeg", "zune-core"], "MIT OR Apache-2.0 OR Zlib", "Fast JPEG decoding (fast-jpeg builds)", "https://github.com/etemesi254/zune-image"),
 ];
 
@@ -1194,28 +1194,42 @@ fn rule() -> Element<'static, Message> {
 mod tests {
     use super::*;
 
-    /// Every `[dependencies]` entry in Cargo.toml must be credited, so adding
-    /// a crate without a Licenses line fails here rather than going unnoticed.
+    /// Every `[dependencies]` entry of the app AND of the engine crate (both
+    /// ship in the binary) must be credited, so adding a crate without a
+    /// Licenses line fails here rather than going unnoticed.
     #[test]
     fn every_direct_dependency_is_credited() {
-        let manifest = include_str!("../../../Cargo.toml");
-        let deps = manifest
-            .split("\n[dependencies]\n")
-            .nth(1)
-            .and_then(|rest| rest.split("\n[").next())
-            .expect("Cargo.toml has a [dependencies] table");
+        let manifests = [
+            ("Cargo.toml", include_str!("../../../Cargo.toml")),
+            (
+                "crates/raw-editor-core/Cargo.toml",
+                include_str!("../../../crates/raw-editor-core/Cargo.toml"),
+            ),
+        ];
         let credited: Vec<&str> =
             LIBRARIES.iter().flat_map(|c| c.crates.iter().copied()).collect();
 
         let mut missing = Vec::new();
-        for line in deps.lines().map(str::trim) {
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            let Some((name, _)) = line.split_once('=') else { continue };
-            let name = name.trim();
-            if !credited.contains(&name) {
-                missing.push(name);
+        for (file, manifest) in manifests {
+            let deps = manifest
+                .split("\n[dependencies]\n")
+                .nth(1)
+                .and_then(|rest| rest.split("\n[").next())
+                .unwrap_or_else(|| panic!("{file} has a [dependencies] table"));
+            for line in deps.lines().map(str::trim) {
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                let Some((name, _)) = line.split_once('=') else { continue };
+                // `tokio.workspace = true` names `tokio`.
+                let name = name.trim().trim_end_matches(".workspace");
+                // Our own engine, not a third-party crate.
+                if name == "raw-editor-core" {
+                    continue;
+                }
+                if !credited.contains(&name) {
+                    missing.push(format!("{name} ({file})"));
+                }
             }
         }
         assert!(missing.is_empty(), "not credited in Preferences › Licenses: {missing:?}");
