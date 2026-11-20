@@ -254,27 +254,19 @@ impl ScrollGlide {
     }
 }
 
-/// A preloaded 1280px working preview, held in the RAM look-ahead cache.
-///
-/// Stores the decoded pixels, not an `iced` `Handle`. The Develop viewport is a
-/// wgpu shader that needs the raw bytes; caching only a `Handle` meant the
-/// preloader's decode was thrown away and the JPEG was re-read from disk the
-/// moment the user navigated to the image it had just preloaded.
-#[derive(Debug, Clone)]
-pub struct CachedPreview {
-    pub width: u32,
-    pub height: u32,
-    pub bytes: Arc<[u8]>,
-}
-
-impl CachedPreview {
-    /// Build an `iced` image handle sharing this entry's allocation.
+/// An iced handle for a preview's pixels.
+pub trait PreviewHandle {
+    /// Build an `iced` image handle sharing the preview's allocation.
     ///
     /// `Bytes::from_owner` adopts the `Arc` instead of copying, so the Cull
     /// tab's `Image` widget and the Develop viewport reference the same pixels.
     /// Note `Handle::from_rgba` mints a fresh id each call, so callers should
     /// build this once per cache hit rather than per frame.
-    pub fn to_handle(&self) -> Handle {
+    fn to_handle(&self) -> Handle;
+}
+
+impl PreviewHandle for crate::session::CachedPreview {
+    fn to_handle(&self) -> Handle {
         Handle::from_rgba(
             self.width,
             self.height,
@@ -282,31 +274,6 @@ impl CachedPreview {
         )
     }
 }
-
-/// A small render of an image as edited — see `handlers::proxy`.
-#[derive(Debug, Clone)]
-pub struct EditedProxy {
-    pub preview: CachedPreview,
-    /// Built once per capture: `Handle::from_rgba` mints a new id per call,
-    /// and iced re-uploads per id, so a handle built in `view` would upload
-    /// on every frame.
-    pub handle: Handle,
-    /// The render had edits applied. Only edited proxies replace the
-    /// camera's thumbnail — but an unedited one is still the best placeholder
-    /// while the image reloads, being exactly what Develop is about to show.
-    pub edited: bool,
-    /// The edit rendered (`proxy::edit_key`), to tell when it has fallen
-    /// behind. `None` for a proxy read from disk until its image is selected.
-    pub params: Option<crate::core::types::EditParams>,
-    /// Orders captures, so a save that completes after a newer render cannot
-    /// mark that newer render as saved.
-    pub generation: u64,
-    /// The file on disk holds this capture.
-    pub persisted: bool,
-}
-
-/// Edited proxies kept in memory. ~400 KB each (384px RGBA).
-pub const EDITED_PROXY_CAPACITY: usize = 128;
 
 /// `(kelvin, tone, interpolation, the profile it came from)`: the memo is
 /// valid only for the same profile (pointer-compared; kept alive here).
@@ -350,6 +317,14 @@ pub struct RawEditor {
     pub update_prompt_choice: bool,
     /// The model the AI-model confirm dialog offers (`handlers::models`).
     pub model_offer: Option<crate::ml::models::ModelId>,
+    /// iced handles for the session's edited proxies, with the proxy
+    /// generation each was built from. Built once per capture, after the
+    /// message that made it (`sync_proxy_handles`): `Handle::from_rgba` mints a
+    /// new id per call, and iced re-uploads per id, so a handle built in `view`
+    /// would upload on every frame.
+    pub proxy_handles: std::collections::HashMap<i64, (u64, Handle)>,
+    /// `Session::proxy_generation` when the handles were last synced.
+    proxy_handles_seen: u64,
     /// The page Preferences shows. Kept while the app runs, so reopening the
     /// dialog lands where the user left it; not persisted.
     pub preferences_section: PreferencesSection,
@@ -559,6 +534,8 @@ impl RawEditor {
                 session: crate::session::Session::new(&settings),
                 update_prompt_choice: true,
                 model_offer: None,
+                proxy_handles: Default::default(),
+                proxy_handles_seen: 0,
                 preferences_section: PreferencesSection::default(),
                 scroll_glide: None,
                 menu_generation: 0,
@@ -603,7 +580,11 @@ impl RawEditor {
     pub fn thumbnail_handle(&self, img: &ImageData) -> Option<Handle> {
         if let Some(proxy) = self.session.edited_proxies.peek(&img.id) {
             if proxy.edited || img.cache_path_thumb.is_none() {
-                return Some(proxy.handle.clone());
+                return Some(match self.proxy_handles.get(&img.id) {
+                    Some((generation, handle)) if *generation == proxy.generation => handle.clone(),
+                    // Only between a capture and the end of its `update`.
+                    _ => proxy.preview.to_handle(),
+                });
             }
             return img.cache_path_thumb.as_ref().map(Handle::from_path);
         }
@@ -611,6 +592,22 @@ impl RawEditor {
             .as_ref()
             .or(img.cache_path_thumb.as_ref())
             .map(Handle::from_path)
+    }
+
+    /// Build handles for proxies captured or read since the last sync, and
+    /// let go of those whose proxy is gone (or replaced). Cheap when nothing
+    /// changed: runs after every message.
+    pub fn sync_proxy_handles(&mut self) {
+        if self.proxy_handles_seen == self.session.proxy_generation {
+            return;
+        }
+        self.proxy_handles_seen = self.session.proxy_generation;
+        let proxies = &self.session.edited_proxies;
+        self.proxy_handles
+            .retain(|id, (generation, _)| proxies.peek(id).is_some_and(|p| p.generation == *generation));
+        for (id, proxy) in proxies.iter() {
+            self.proxy_handles.entry(*id).or_insert_with(|| (proxy.generation, proxy.preview.to_handle()));
+        }
     }
 
     pub fn save_preferences(&self) {
@@ -726,13 +723,7 @@ impl RawEditor {
             }
         });
 
-        // Borrowed, not cloned: subscription() is rebuilt after every message,
-        // and only the head of each queue is ever read.
-        let loader_subscription = crate::app::loader::subscription(
-            &self.session.queued_loads,
-            &self.session.queued_raw_loads,
-            &self.session.queued_proxy_loads,
-        );
+        let loader_subscription = crate::app::loader::subscription(&self.session);
 
         let mut subs = vec![keyboard_subscription, loader_subscription];
         // Only tick while a filmstrip glide or a reveal scroll is in progress
@@ -851,7 +842,7 @@ mod tests {
         e.session.current_tab = AppTab::Develop;
         e.session.min_filter_rating = 5;
         assert_eq!(e.session.displayed_ids(), vec![3]);
-        assert_eq!(crate::app::handlers::navigation::find_next_unmarked_image_id(&e, 1), Some(3));
+        assert_eq!(e.session.find_next_unmarked_image_id(1), Some(3));
     }
 
     #[test]
@@ -972,16 +963,20 @@ mod tests {
 
     // ── edited proxies ────────────────────────────────────────────────────────
 
+    use crate::session::{CachedPreview, EditedProxy};
+
     fn proxy(edited: bool) -> EditedProxy {
         let preview = CachedPreview { width: 1, height: 1, bytes: Arc::from(vec![0u8; 4]) };
-        EditedProxy {
-            handle: preview.to_handle(),
-            preview,
-            edited,
-            params: None,
-            generation: 1,
-            persisted: false,
-        }
+        EditedProxy { preview, edited, params: None, generation: 1, persisted: false }
+    }
+
+    /// Put `proxy` in the session the way a capture does, and sync handles
+    /// the way the end of `update` does.
+    fn capture(e: &mut RawEditor, id: i64, mut proxy: EditedProxy) {
+        e.session.proxy_generation += 1;
+        proxy.generation = e.session.proxy_generation;
+        e.session.edited_proxies.put(id, proxy);
+        e.sync_proxy_handles();
     }
 
     #[test]
@@ -997,14 +992,19 @@ mod tests {
         image.cache_path_edited = Some("/c/edited.jpg".into());
         assert_eq!(e.thumbnail_handle(&image), Some(Handle::from_path("/c/edited.jpg")));
 
-        // A live render outranks the file.
-        let live = proxy(true);
-        let live_handle = live.handle.clone();
-        e.session.edited_proxies.put(image.id, live);
-        assert_eq!(e.thumbnail_handle(&image), Some(live_handle));
+        // A live render outranks the file — through one handle per capture,
+        // or iced would upload it again on every frame.
+        capture(&mut e, image.id, proxy(true));
+        let live = e.thumbnail_handle(&image).expect("live proxy");
+        assert!(matches!(live, Handle::Rgba { .. }));
+        assert_eq!(e.thumbnail_handle(&image), Some(live.clone()), "a new handle per call");
+        // A new capture gets a new handle; the old one is let go.
+        capture(&mut e, image.id, proxy(true));
+        assert_ne!(e.thumbnail_handle(&image), Some(live));
+        assert_eq!(e.proxy_handles.len(), 1);
 
         // ...including when it says the edit was just reset to defaults.
-        e.session.edited_proxies.put(image.id, proxy(false));
+        capture(&mut e, image.id, proxy(false));
         assert_eq!(e.thumbnail_handle(&image), Some(Handle::from_path("/c/thumb.jpg")));
     }
 
@@ -1018,10 +1018,8 @@ mod tests {
         image.cache_path_thumb = None;
         assert_eq!(e.thumbnail_handle(&image), None);
 
-        let unedited = proxy(false);
-        let handle = unedited.handle.clone();
-        e.session.edited_proxies.put(image.id, unedited);
-        assert_eq!(e.thumbnail_handle(&image), Some(handle));
+        capture(&mut e, image.id, proxy(false));
+        assert!(matches!(e.thumbnail_handle(&image), Some(Handle::Rgba { .. })));
     }
 
     /// Undo / reset / paste in Library change an image's saved edits without

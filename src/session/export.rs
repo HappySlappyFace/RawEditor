@@ -372,7 +372,7 @@ impl Session {
 
                 Effects::perform("export resources", async move {
                     let res = async move {
-                        let context = crate::app::handlers::loading::shared_context(&gpu_init, ctx).await?;
+                        let context = super::shared_context(&gpu_init, ctx).await?;
                         // CPU-heavy: on the blocking pool, not a tokio worker.
                         tokio::task::spawn_blocking(move || {
                         // The image's own camera profile (its choice, else its

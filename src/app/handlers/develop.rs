@@ -1,7 +1,6 @@
 use crate::app::message::{Message, SidebarSection};
 use crate::core::types::EditParams;
 use crate::app::state::{DragMode, RawEditor};
-use crate::core::tonemap::ToneSettings;
 use crate::ui::preview_renderer::CropHandle;
 use iced::Task;
 
@@ -755,18 +754,17 @@ pub fn handle_render_finished(
     }
     // The overview is a faithful render of `out.image_id` even when the user
     // has already moved on — which is exactly when `persist` may be waiting
-    // for it (see `proxy::resolve_awaiting`).
+    // for it (see `Session::resolve_awaiting_proxy`).
     let awaited = editor.session.proxy_awaiting.contains_key(&out.image_id);
     if let Some(params) = out.edit.filter(|_| current == Some(out.image_id) || awaited) {
-        crate::app::handlers::proxy::capture(
-            editor,
+        editor.session.capture_proxy(
             out.image_id,
             out.overview,
             out.overview_dims,
             params,
         );
     }
-    let save = crate::app::handlers::proxy::resolve_awaiting(editor, out.image_id, out.edit);
+    let save = crate::app::update::run(editor.session.resolve_awaiting_proxy(out.image_id, out.edit));
 
     editor.session.profiler.push_frame(crate::core::profiler::ProfilerFrame {
         update_ms: out.update_ms,
@@ -807,23 +805,8 @@ pub(crate) fn handle_gpu_lost(editor: &mut RawEditor) -> Task<Message> {
     crate::app::handlers::navigation::reload_selected_image(editor)
 }
 
-/// What a develop render of the current view needs: window, target size,
-/// and how far the screen magnifies the texture's source pixels. The source
-/// is the develop texture itself (`image_display_dims`), so a subsampled
-/// preview reports the magnification the full-resolution rebuild would fix.
 pub fn render_target(editor: &RawEditor) -> crate::core::viewport::RenderTarget {
-    let (disp_w, disp_h) = editor.session.image_display_dims();
-    let (vw, vh) = editor.session.viewport_size;
-    crate::core::viewport::render_target(
-        disp_w,
-        disp_h,
-        vw,
-        vh,
-        editor.session.zoom,
-        editor.session.pan_offset,
-        editor.session.scale_factor,
-        editor.session.is_cropping,
-    )
+    editor.session.render_target()
 }
 
 pub fn trigger_async_render(editor: &mut RawEditor) -> Task<Message> {
@@ -1171,85 +1154,11 @@ pub fn handle_wb_picked(editor: &mut RawEditor, u: f32, v: f32) -> Task<Message>
     task
 }
 
-/// Tolerance for reusing a memoized DCP interpolation. `kelvin` comes out of
-/// `solve_wb`, which is deterministic, so identical slider state reproduces it
-/// bit-for-bit; the epsilon only absorbs noise, it does not coarsen the slider.
-const DCP_MEMO_KELVIN_EPS: f32 = 0.01;
-
-/// True when a memo recorded at `(memo_kelvin, memo_tone)` is still valid for
-/// `(kelvin, tone)`.
-///
-/// Tone settings compare exactly rather than by epsilon: they come straight
-/// off the UI as the same f32s each time, and an epsilon on a *set* of shape
-/// parameters is a good way to miss a change to one of them.
-fn dcp_memo_is_valid(
-    memo_kelvin: f32,
-    memo_tone: ToneSettings,
-    kelvin: f32,
-    tone: ToneSettings,
-) -> bool {
-    (memo_kelvin - kelvin).abs() < DCP_MEMO_KELVIN_EPS && memo_tone == tone
-}
-
-/// Resolve the DCP interpolation and WB override for the editor's current
-/// slider state. Shared by every path that refreshes uniforms (slider edits,
-/// image-ready, preview upgrades).
-///
-/// The interpolation depends only on `(kelvin, ToneSettings)`, but this is
-/// called from `update_pipeline` on every slider tick — including sliders that
-/// cannot affect it. It is memoized in `editor.session.dcp_memo` because rebuilding the
-/// HueSatMap LUT and re-baking the tone curve is a multi-allocation,
-/// `powf`-heavy job that `update_uniforms` would then throw away via its own
-/// dirty-check.
-///
-/// The two dirty-checks are independent and cannot disagree harmfully: both are
-/// functions of the same slider state, so a miss on either side merely repeats
-/// work that produces the same result.
-///
-/// `params` is passed in rather than read from `editor` because the
-/// before/after peek renders a DIFFERENT set of params than the ones the user
-/// is editing. Reading `editor.session.current_edit_params` here would give the peek
-/// default exposure with slider-derived white balance and tone curve — a
-/// hybrid of neither state.
 pub fn resolve_wb_and_dcp(
     editor: &RawEditor,
     params: &crate::core::types::EditParams,
 ) -> (Option<std::sync::Arc<crate::raw::dcp::InterpolatedProfile>>, Option<[f32; 4]>) {
-    let as_shot = editor.session.as_shot_wb.unwrap_or((5000.0, 0.0));
-    let fallback_matrix = editor
-        .session.current_metadata
-        .as_ref()
-        .map(|m| m.color_matrix)
-        .unwrap_or([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
-
-    let (kelvin, _tint, wb_override) = crate::color::solve_wb(
-        params,
-        as_shot,
-        editor.session.current_dcp_profile.as_deref(),
-        fallback_matrix,
-    );
-
-    let Some(dcp) = editor.session.current_dcp_profile.as_ref() else {
-        return (None, wb_override);
-    };
-    let tone = ToneSettings::from_params(params);
-
-    if let Ok(memo) = editor.session.dcp_memo.try_borrow() {
-        if let Some((k, t, profile, source)) = memo.as_ref() {
-            if std::sync::Arc::ptr_eq(source, dcp) && dcp_memo_is_valid(*k, *t, kelvin, tone) {
-                return (Some(profile.clone()), wb_override);
-            }
-        }
-    }
-
-    let interpolated = std::sync::Arc::new(crate::raw::dcp::interpolate_at_temperature(
-        dcp, kelvin, tone,
-    ));
-    if let Ok(mut memo) = editor.session.dcp_memo.try_borrow_mut() {
-        *memo = Some((kelvin, tone, interpolated.clone(), dcp.clone()));
-    }
-
-    (Some(interpolated), wb_override)
+    editor.session.resolve_wb_and_dcp(params)
 }
 
 /// Write `params` (with the resolved DCP and slider WB) to the uniforms. Only
@@ -1400,6 +1309,7 @@ pub fn handle_set_before_peek(editor: &mut RawEditor, active: bool) -> Task<Mess
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::tonemap::ToneSettings;
 
     use crate::core::tonemap::{GtParams, ToneMapper};
 
@@ -1409,26 +1319,26 @@ mod tests {
 
     #[test]
     fn dcp_memo_hits_on_identical_state() {
-        assert!(dcp_memo_is_valid(5500.0, tone(0.33), 5500.0, tone(0.33)));
+        assert!(crate::session::dcp_memo_is_valid(5500.0, tone(0.33), 5500.0, tone(0.33)));
     }
 
     #[test]
     fn dcp_memo_misses_when_temperature_moves() {
         // One Kelvin is far below what any slider step produces, and must
         // still invalidate — the memo must never coarsen the temperature.
-        assert!(!dcp_memo_is_valid(5500.0, tone(0.33), 5501.0, tone(0.33)));
+        assert!(!crate::session::dcp_memo_is_valid(5500.0, tone(0.33), 5501.0, tone(0.33)));
     }
 
     #[test]
     fn dcp_memo_misses_when_profile_curve_moves() {
-        assert!(!dcp_memo_is_valid(5500.0, tone(0.33), 5500.0, tone(0.34)));
+        assert!(!crate::session::dcp_memo_is_valid(5500.0, tone(0.33), 5500.0, tone(0.34)));
     }
 
     #[test]
     fn dcp_memo_absorbs_kelvin_noise_only() {
         // Recomputing solve_wb from identical inputs is deterministic, so the
         // epsilon exists purely to tolerate last-bit drift, not real changes.
-        assert!(dcp_memo_is_valid(5500.0, tone(0.33), 5500.0 + 1e-4, tone(0.33)));
+        assert!(crate::session::dcp_memo_is_valid(5500.0, tone(0.33), 5500.0 + 1e-4, tone(0.33)));
     }
 
     /// The memo caches a baked tone LUT, so switching operators MUST miss —
@@ -1438,7 +1348,7 @@ mod tests {
     fn dcp_memo_misses_when_the_tone_operator_changes() {
         let mut gt = tone(0.33);
         gt.mapper = ToneMapper::Gt;
-        assert!(!dcp_memo_is_valid(5500.0, tone(0.33), 5500.0, gt));
+        assert!(!crate::session::dcp_memo_is_valid(5500.0, tone(0.33), 5500.0, gt));
     }
 
     /// Same for the GT shape sliders — they re-bake the curve, and nothing
@@ -1449,7 +1359,7 @@ mod tests {
         a.mapper = ToneMapper::Gt;
         let mut b = a;
         b.gt.contrast = 1.4;
-        assert!(!dcp_memo_is_valid(5500.0, a, 5500.0, b));
+        assert!(!crate::session::dcp_memo_is_valid(5500.0, a, 5500.0, b));
     }
 
     /// Every section with edits, one field each (and a mask).

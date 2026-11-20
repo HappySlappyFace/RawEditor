@@ -1,9 +1,9 @@
 use iced::{Task, Point};
 use iced::widget::image::Handle;
-use crate::app::state::{RawEditor, EditorReadiness, DragMode};
+use crate::app::state::{RawEditor, DragMode, PreviewHandle as _};
 use crate::app::message::{Message, AppTab};
-use crate::database::models::Image as ImageData;
-use crate::raw;
+use crate::app::update::run;
+use crate::session::{CachedPreview, ImageLoad, Moved, PreviewHandle, SelectionChange, TabLoad};
 use crate::ui::preview_renderer::{CropHandle, MaskHandle};
 
 pub fn handle_image_selected(editor: &mut RawEditor, image_id: i64) -> Task<Message> {
@@ -19,9 +19,6 @@ pub fn handle_image_moved(editor: &mut RawEditor, image_id: i64) -> Task<Message
 }
 
 fn select_image(editor: &mut RawEditor, image_id: i64, from_click: bool) -> Task<Message> {
-    // Must run BEFORE selected_image_id moves: flush_edits writes
-    // current_edit_params against the currently-selected id, so flushing after
-    // the switch would write this image's edits onto the next one.
     // End an AI-select session where the image is left, while the params are
     // still this image's (the clean-up edits masks by slot index).
     let ai_done = if editor.session.selected_image_id != Some(image_id) {
@@ -29,100 +26,62 @@ fn select_image(editor: &mut RawEditor, image_id: i64, from_click: bool) -> Task
     } else {
         Task::none()
     };
-    editor.session.flush_edits();
-    // Leaving an image: bring its edited thumbnail on disk up to date. Also
-    // before the selection moves — it checks against the outgoing edits.
-    let persist = if editor.session.selected_image_id != Some(image_id) {
-        crate::app::handlers::proxy::persist(editor)
-    } else {
-        Task::none()
-    };
-    // The peek belongs to the outgoing image; carrying it across would show
-    // the new image unedited with no way to notice why.
-    editor.session.before_peek = false;
+    // Saves the outgoing image's edits and thumbnail: before anything moves.
+    let persist = run(editor.session.leave_image(image_id));
     let shift = from_click && editor.last_modifiers.shift();
     let command = from_click && editor.last_modifiers.command();
 
-    if shift {
+    let change = if shift {
         // Range select from the anchor. Falls back to a plain click when
         // there is no anchor yet (first ever click held Shift).
-        if let Some(range) = select_range(editor, image_id) {
-            if !command {
-                // Shift alone replaces the selection; Shift+Ctrl adds to it.
-                editor.session.multi_selection.clear();
-            }
-            editor.session.multi_selection.extend(range);
+        if let Some(ids) = select_range(editor, image_id) {
+            // Shift alone replaces the selection; Shift+Ctrl adds to it.
+            SelectionChange::Range { ids, add: command }
         } else {
-            editor.session.multi_selection.clear();
-            editor.session.multi_selection.insert(image_id);
             editor.selection_anchor = Some(image_id);
+            SelectionChange::Only
         }
     } else if command {
-        if !editor.session.multi_selection.remove(&image_id) {
-            editor.session.multi_selection.insert(image_id);
-        }
         editor.selection_anchor = Some(image_id);
+        SelectionChange::Toggle
     } else {
-        editor.session.multi_selection.clear();
-        editor.session.multi_selection.insert(image_id);
         editor.selection_anchor = Some(image_id);
-    }
-    // `Loading(id)` promises a load of `id` that will finish it, and only a
-    // Develop selection starts one. Selecting another image anywhere else
-    // (Library, Cull) loads nothing, and the old image's result then lands
-    // unwanted — so coming back to it later found "already loading", started
-    // nothing, and Develop sat on "Loading" forever. Drop the promise with
-    // the selection; entering Develop on an image loads it afresh (a decode
-    // still running is reused, not repeated: `direct_raw_loads`).
-    if editor.session.current_tab != AppTab::Develop
-        && matches!(editor.session.editor_readiness, EditorReadiness::Loading(id) if id != image_id)
-    {
-        editor.session.editor_readiness = EditorReadiness::NoSelection;
-    }
-    editor.session.selected_image_id = Some(image_id);
+        SelectionChange::Only
+    };
+    editor.session.change_selection(image_id, change);
+    let load = editor.session.open_image(image_id);
     editor.canvas_cache.clear();
-    // Mask selection is an index into the previous image's mask list — clear
-    // both it and any pending placement mode when the image changes.
-    editor.session.selected_mask = None;
-    editor.session.mask_tool = crate::app::state::MaskTool::Inactive;
-
-    if let Some(library) = &editor.session.library {
-        editor.session.current_edit_params = match library.load_saved_edit(image_id) {
-            Ok(saved) => saved.unwrap_or_default(),
-            Err(e) => {
-                // The library backs the old JSON up before the next flush
-                // replaces it with these defaults.
-                tracing::error!("Could not read the saved edit for image {image_id}: {e}");
-                editor.session.status =
-                    "This image's saved edit could not be read, so it opens unedited. The old edit is kept as a backup.".to_string();
-                Default::default()
-            }
-        };
-        // Crop mode survives the switch, so the freshly loaded params (which
-        // never carry the flag) must pick it up before anything renders them.
-        editor.session.sync_tool_flags();
-        editor.session.history_map.entry(image_id).or_insert_with(|| (vec![editor.session.current_edit_params], 0));
-        // A proxy read from disk matches the saved edits just loaded — record
-        // which edit it shows, so leaving can tell if it has fallen behind.
-        let key = crate::app::handlers::proxy::edit_key(&editor.session.current_edit_params);
-        if let Some(proxy) = editor.session.edited_proxies.peek_mut(&image_id) {
-            proxy.params.get_or_insert(key);
-        }
-    }
 
     let reveal = reveal_selection(editor);
-    if editor.session.current_tab == AppTab::Develop || editor.session.current_tab == AppTab::Cull {
-        let needs_load = match &editor.session.editor_readiness {
-            EditorReadiness::Ready(id) => *id != image_id,
-            EditorReadiness::Loading(id) => *id != image_id,
-            _ => true,
-        };
+    let load = match load {
+        Some(load) => apply_image_load(editor, load),
+        None => Task::none(),
+    };
+    Task::batch([ai_done, persist, load, reveal])
+}
 
-        if needs_load {
-            return Task::batch([ai_done, persist, trigger_image_load(editor, image_id), reveal]);
+/// Carry out an image load the session started: run its work and show what
+/// it says on the camera-preview image.
+pub fn apply_image_load(editor: &mut RawEditor, load: ImageLoad) -> Task<Message> {
+    match load.preview {
+        PreviewHandle::Keep => {}
+        PreviewHandle::Clear => editor.working_preview = None,
+        PreviewHandle::Cached(preview) => editor.working_preview = Some(preview.to_handle()),
+        PreviewHandle::Path(path) => editor.working_preview = Some(Handle::from_path(path)),
+    }
+    run(load.effects)
+}
+
+/// Follow the session's move of the selection.
+pub fn apply_moved(editor: &mut RawEditor, moved: Moved) -> Task<Message> {
+    match moved {
+        Moved::Stay => Task::none(),
+        Moved::To(next_id) => Task::done(Message::ImageMoved(next_id)),
+        Moved::Cleared => {
+            editor.working_preview = None;
+            Task::none()
         }
     }
-    Task::batch([ai_done, persist, reveal])
 }
 
 /// Scroll the current tab's grid or filmstrip so the selection is visible.
@@ -205,16 +164,6 @@ pub fn handle_open_in_develop(editor: &mut RawEditor, image_id: i64) -> Task<Mes
 }
 
 pub fn handle_tab_changed(editor: &mut RawEditor, tab: AppTab) -> Task<Message> {
-    // Leaving Develop mid-gesture must not strand unsaved slider edits.
-    editor.session.flush_edits();
-    // Leaving Develop is leaving the image, as far as its thumbnail goes.
-    let persist = if editor.session.current_tab == AppTab::Develop && tab != AppTab::Develop {
-        crate::app::handlers::proxy::persist(editor)
-    } else {
-        Task::none()
-    };
-    // Space only peeks in Develop; leaving with it held would strand the flag.
-    editor.session.before_peek = false;
     if editor.session.current_tab != tab {
         // A tab switch rebuilds the grid / filmstrip scrollables from scratch,
         // at offset 0. Match that before anything virtualises against stale
@@ -226,42 +175,16 @@ pub fn handle_tab_changed(editor: &mut RawEditor, tab: AppTab) -> Task<Message> 
         editor.filmstrip_velocity = 0.0;
         editor.last_kinetic_tick = None;
     }
-    editor.session.current_tab = tab;
+    let persist = run(editor.session.set_tab(tab));
     let reveal = reveal_selection_instantly(editor);
-    Task::batch([persist, reveal, load_for_tab(editor, tab)])
+    let load = match editor.session.load_for_tab(tab) {
+        TabLoad::Nothing => Task::none(),
+        TabLoad::Moved(moved) => apply_moved(editor, moved),
+        TabLoad::Load(load) => apply_image_load(editor, load),
+    };
+    Task::batch([persist, reveal, load])
 }
 
-/// The load (if any) that switching to `tab` calls for.
-fn load_for_tab(editor: &mut RawEditor, tab: AppTab) -> Task<Message> {
-    if tab == AppTab::Develop {
-        // An image could have been marked for removal while a different tab
-        // was active — handle_tab_changed itself has no rating-awareness
-        // otherwise, so a stale marked selection would silently load and
-        // display in Develop without this check.
-        if selection_is_marked(editor) {
-            return ensure_develop_selection_not_marked(editor);
-        }
-        if let Some(image_id) = editor.session.selected_image_id {
-            let needs_load = match &editor.session.editor_readiness {
-                EditorReadiness::Ready(id) => *id != image_id,
-                EditorReadiness::Loading(id) => *id != image_id,
-                _ => true,
-            };
-            if needs_load {
-                return trigger_image_load(editor, image_id);
-            }
-        }
-    } else if tab == AppTab::Cull {
-        // Library selection doesn't load previews, so `working_preview` can
-        // still hold the image Cull last showed — and Cull displayed exactly
-        // that, under the new selection's name. Reloading is cheap: a RAM
-        // cache hit in the common case, and it queues the neighbours too.
-        if let Some(image_id) = editor.session.selected_image_id {
-            return trigger_image_load(editor, image_id);
-        }
-    }
-    Task::none()
-}
 
 /// Ids between the selection anchor and `to_id` inclusive, in display order.
 ///
@@ -282,98 +205,22 @@ pub fn handle_select_all(editor: &mut RawEditor) -> Task<Message> {
     if editor.active_modal != crate::app::state::Modal::None {
         return Task::none();
     }
-    let ids = editor.session.displayed_ids();
-    if ids.is_empty() {
-        return Task::none();
-    }
-    editor.session.status = format!("{} images selected", ids.len());
-    editor.session.multi_selection = ids.into_iter().collect();
+    editor.session.select_all();
     Task::none()
 }
 
-/// Cyclic search starting just after `from_id` for the next image that is
-/// NOT marked for removal. Bounded to `images.len()` steps, so it can never
-/// infinite-loop even if every image (including `from_id`) is marked.
-pub fn find_next_unmarked_image_id(editor: &RawEditor, from_id: i64) -> Option<i64> {
-    let idx = editor.session.images.iter().position(|i| i.id == from_id)?;
-    let len = editor.session.images.len();
-    // Prefer an image the active filter shows, so the filmstrip has a
-    // selection to draw; fall back to any unmarked one rather than none.
-    let shown: std::collections::HashSet<i64> = editor.session.displayed_ids().into_iter().collect();
-    let mut any = None;
-    for step in 1..=len {
-        let candidate = &editor.session.images[(idx + step) % len];
-        if crate::database::models::is_marked(candidate.rating) {
-            continue;
-        }
-        if shown.contains(&candidate.id) {
-            return Some(candidate.id);
-        }
-        any.get_or_insert(candidate.id);
-    }
-    any
-}
 
-/// True when Develop is active and its current selection is marked for
-/// removal — the condition `ensure_develop_selection_not_marked` acts on.
-fn selection_is_marked(editor: &RawEditor) -> bool {
-    if editor.session.current_tab != AppTab::Develop {
-        return false;
-    }
-    let Some(sel) = editor.session.selected_image_id else {
-        return false;
-    };
-    editor
-        .session.images
-        .iter()
-        .find(|i| i.id == sel)
-        .map(|i| crate::database::models::is_marked(i.rating))
-        .unwrap_or(false)
-}
 
 /// If Develop is the active tab and its selection is marked for removal,
-/// navigate to the next unmarked image, or clear the selection if none
-/// exists. Called both right after marking an image (handlers::delete) and
-/// when switching into the Develop tab (above), since marking most commonly
-/// happens from Library/Cull, not Develop itself.
+/// move on to the next unmarked image (`Session::ensure_selection_not_marked`).
 pub fn ensure_develop_selection_not_marked(editor: &mut RawEditor) -> Task<Message> {
-    if !selection_is_marked(editor) {
-        return Task::none();
-    }
-    let Some(sel) = editor.session.selected_image_id else {
-        return Task::none();
-    };
-
-    if let Some(next_id) = find_next_unmarked_image_id(editor, sel) {
-        Task::done(Message::ImageMoved(next_id))
-    } else {
-        editor.session.selected_image_id = None;
-        editor.session.editor_readiness = EditorReadiness::NoSelection;
-        editor.working_preview = None;
-        Task::none()
-    }
+    let moved = editor.session.ensure_selection_not_marked();
+    apply_moved(editor, moved)
 }
 
-/// Step through the images the current tab is DISPLAYING.
-///
-/// Previously these indexed the unfiltered `editor.session.images`, so arrow keys
-/// happily navigated to images the active filter was hiding — and in Develop,
-/// to images marked for removal that the tab refuses to show.
+/// The next (or previous) image the current tab displays.
 pub(crate) fn step_selection(editor: &RawEditor, forward: bool) -> Option<i64> {
-    let ids = editor.session.displayed_ids();
-    if ids.is_empty() {
-        return None;
-    }
-    let current = editor.session.selected_image_id?;
-    let idx = ids.iter().position(|id| *id == current)?;
-    let next = if forward {
-        (idx + 1) % ids.len()
-    } else if idx == 0 {
-        ids.len() - 1
-    } else {
-        idx - 1
-    };
-    Some(ids[next])
+    editor.session.step_selection(forward)
 }
 
 pub fn handle_select_next_image(editor: &mut RawEditor) -> Task<Message> {
@@ -555,28 +402,15 @@ pub fn handle_mouse_moved(editor: &mut RawEditor, pos: Point) -> Task<Message> {
 pub fn handle_working_preview_ready(
     editor: &mut RawEditor,
     id: i64,
-    handle: Handle,
     bytes: Option<std::sync::Arc<[u8]>>,
     dims: (u32, u32),
+    path: String,
 ) -> Task<Message> {
-    // Populate the look-ahead cache even when this is no longer the selected
-    // image: the decode already happened, and caching it makes navigating
-    // *back* free too, not just forward into preloaded territory.
-    if let Some(bytes) = &bytes {
-        editor.session.preview_cache.put(
-            id,
-            crate::app::state::CachedPreview {
-                width: dims.0,
-                height: dims.1,
-                bytes: bytes.clone(),
-            },
-        );
-    }
-    if Some(id) == editor.session.selected_image_id {
-        editor.working_preview = Some(handle);
-        editor.session.working_preview_bytes = bytes;
-        editor.session.bump_preview_generation();
-        editor.session.working_preview_dims = dims;
+    if editor.session.working_preview_ready(id, bytes.clone(), dims) {
+        editor.working_preview = Some(match bytes {
+            Some(bytes) => CachedPreview { width: dims.0, height: dims.1, bytes }.to_handle(),
+            None => Handle::from_path(path),
+        });
     }
     Task::none()
 }
@@ -586,21 +420,7 @@ pub fn handle_preview_cached(
     id: i64,
     result: Result<(u32, u32, std::sync::Arc<[u8]>), String>,
 ) -> Task<Message> {
-    // Phase 78: Cleanup pending load
-    editor.session.pending_loads.remove(&id);
-    // Phase 81: Cleanup queued load
-    editor.session.queued_loads.retain(|(i, _)| *i != id);
-    
-    if let Ok((width, height, bytes)) = result {
-        // Store the decoded pixels themselves. Previously this built a Handle
-        // from `pixels.to_vec()` — copying the buffer back out of the Arc — and
-        // dropped the Arc, so the Develop viewport had nothing to use and
-        // re-read the JPEG from disk on navigation.
-        editor.session.preview_cache.put(
-            id,
-            crate::app::state::CachedPreview { width, height, bytes },
-        );
-    }
+    editor.session.preview_cached(id, result);
     Task::none()
 }
 
@@ -840,320 +660,20 @@ fn apply_mask_drag(editor: &mut RawEditor, pos: Point, last: Point, h: MaskHandl
     }
 }
 
-/// Decode the selected image again. Its lens profile is looked up when the
-/// RAW is read, so after the lens database changes the loaded one is stale.
-/// The edits are untouched — only the decode is redone.
+/// Decode the selected image again (`Session::reload_selected_image`).
 pub fn reload_selected_image(editor: &mut RawEditor) -> Task<Message> {
-    let Some(image_id) = editor.session.selected_image_id else { return Task::none() };
-    if editor.session.current_tab == AppTab::Develop {
-        trigger_image_load(editor, image_id)
-    } else {
-        // Not on screen: entering Develop decodes it afresh.
-        editor.session.image_resources = None;
-        editor.session.preview_resources = None;
-        editor.session.editor_readiness = EditorReadiness::NoSelection;
-        Task::none()
-    }
+    let load = editor.session.reload_selected_image();
+    apply_image_load(editor, load)
 }
 
-fn trigger_image_load(editor: &mut RawEditor, image_id: i64) -> Task<Message> {
-    editor.working_preview = None;
-    // `full_res_upgrading` is deliberately NOT reset: an upgrade of the
-    // previous image may still be building, and starting this one's
-    // alongside it would hold two full-size working sets. Its result
-    // releases the guard and re-checks this image (`handle_full_res_ready`).
-    // The pin belongs to the image being left.
-    if editor.session.current_raw.as_ref().is_some_and(|(id, _)| *id != image_id) {
-        editor.session.current_raw = None;
-    }
-    let develop = editor.session.current_tab == AppTab::Develop;
-    if develop {
-        // The outgoing image's GPU resources and render must not stay on
-        // screen: `rendered_preview_bytes` outranks the working preview in the
-        // viewport, so the PREVIOUS photo used to sit there under the new
-        // filename until the new RAW finished decoding. Dropping both lets the
-        // instant JPEG show immediately, frees the old textures now, and keeps
-        // any slider touched mid-load from rendering the old image.
-        editor.session.image_resources = None;
-        editor.session.rendered_preview_bytes = None;
-        editor.session.preview_resources = None;
-        editor.session.rendered_view_rect = crate::gpu::params::FULL_VIEW_RECT;
-        editor.session.requested_view_rect = crate::gpu::params::FULL_VIEW_RECT;
-        editor.session.current_metadata = None;
-        editor.session.bump_preview_generation();
-    }
-    if let Some((working_cache_path, raw_path, saved_proxy)) = editor
-        .session.images
-        .iter()
-        .find(|i| i.id == image_id)
-        .map(|img| (img.cache_path_working.clone(), img.path.clone(), img.cache_path_edited.clone()))
-    {
-        // Develop shows the image's edited proxy while the RAW loads, not the
-        // camera JPEG: that ignores the edit, so the image visibly jumped (in
-        // exposure, colour, crop) when the real render landed. A proxy in
-        // memory goes up at once; a saved one is a ~1 ms decode away.
-        let proxy = develop
-            .then(|| editor.session.edited_proxies.get(&image_id).map(|p| p.preview.clone()))
-            .flatten();
-        let saved_proxy = saved_proxy.filter(|_| develop && proxy.is_none());
-        let camera_preview_shown = proxy.is_none() && saved_proxy.is_none();
-        if let Some(preview) = &proxy {
-            crate::app::handlers::proxy::show_as_placeholder(editor, preview);
-        }
 
-        // Phase 73: Check RAM cache first. A hit is the whole point of the
-        // preloader — it supplies the decoded pixels directly, so the disk
-        // read + JPEG decode below is skipped entirely.
-        let cached_preview = editor.session.preview_cache.get(&image_id).cloned();
-        if let Some(cached) = &cached_preview {
-            editor.working_preview = Some(cached.to_handle());
-            if camera_preview_shown {
-                editor.session.working_preview_bytes = Some(cached.bytes.clone());
-                editor.session.working_preview_dims = (cached.width, cached.height);
-                editor.session.bump_preview_generation();
-            }
-        } else {
-            if proxy.is_none() {
-                editor.session.working_preview_bytes = None;
-            }
-            if let Some(path) = &working_cache_path {
-                editor.working_preview = Some(Handle::from_path(path.clone()));
-            }
-        }
 
-        // `Loading` promises a RAW load is in flight for this image, and only
-        // Develop starts one. Setting it from Cull too left the promise
-        // unfulfilled: switching Cull → Develop then saw "already loading",
-        // started nothing, and sat on "Loading RAW…" forever.
-        if develop {
-            editor.session.editor_readiness = EditorReadiness::Loading(image_id);
-        }
-        let mut tasks = Vec::new();
-        if let Some(path) = saved_proxy {
-            tasks.push(crate::app::handlers::proxy::load(image_id, path));
-        }
-        // Cull displays the camera JPEG (and wants it cached either way);
-        // Develop only needs it when there is no proxy to show instead.
-        if cached_preview.is_none() && (!develop || camera_preview_shown) {
-            if let Some(path) = &working_cache_path {
-                tasks.push(Task::perform(
-                    load_image_handle(image_id, path.clone()),
-                    |(id, h, p, d)| Message::WorkingPreviewReady(id, h, p, d),
-                ));
-            }
-        }
-        
-        // Only load full RAW data if we are in Develop mode
-        if develop {
-            let cached_raw = editor.session.raw_cache.get(&image_id).cloned();
-            if let Some(cached_raw) = cached_raw {
-                tasks.push(crate::app::handlers::loading::prepare_image_resources_from_raw(
-                    editor,
-                    image_id,
-                    cached_raw.clone(),
-                ));
-            } else if !editor.session.pending_raw_loads.contains(&image_id) {
-                // One direct decode per image: stepping A -> B -> A used to
-                // decode A twice, and a held arrow key one image per step.
-                if editor.session.direct_raw_loads.insert(image_id) {
-                    tasks.push(Task::perform(
-                    raw::loader::load_raw_data(raw_path),
-                    move |res| Message::RawDataLoaded(image_id, res),
-                    ));
-                }
-            } else if claim_queued(
-                &mut editor.session.queued_raw_loads,
-                &mut editor.session.pending_raw_loads,
-                image_id,
-                crate::app::loader::MAX_CONCURRENT_RAW_LOADS,
-            ) {
-                // Waiting in the preload queue's tail: decode it now. Moving it
-                // within the tail is not enough, because `schedule_raw_preloads`
-                // runs right after and rebuilds the tail without the selected
-                // image, which would drop it and leave Develop on "Loading".
-                if editor.session.direct_raw_loads.insert(image_id) {
-                    tasks.push(Task::perform(
-                        raw::loader::load_raw_data(raw_path),
-                        move |res| Message::RawDataLoaded(image_id, res),
-                    ));
-                }
-            }
-            // Otherwise the preload for it is already running (the first
-            // `MAX_CONCURRENT_RAW_LOADS` queue entries): its result completes
-            // the load.
-        }
-        
-        // Schedule preloads for adjacent images
-        tasks.push(schedule_preloads(editor));
-        if develop {
-            tasks.push(schedule_raw_preloads(editor));
-            schedule_proxy_preloads(editor);
-        }
-        
-        return Task::batch(tasks);
-    }
-    Task::none()
-}
 
-fn schedule_preloads(editor: &mut RawEditor) -> Task<Message> {
-    let wanted: Vec<(i64, String)> =
-        neighbours(editor, editor.session.preview_preload_behind, editor.session.preview_preload_ahead)
-            .into_iter()
-            .filter(|img| !editor.session.preview_cache.contains(&img.id))
-            .filter_map(|img| img.cache_path_working.clone().map(|path| (img.id, path)))
-            .collect();
-    requeue(
-        &mut editor.session.queued_loads,
-        &mut editor.session.pending_loads,
-        wanted,
-        crate::app::loader::MAX_CONCURRENT_PREVIEW_LOADS,
-    );
-    Task::none()
-}
 
-fn schedule_raw_preloads(editor: &mut RawEditor) -> Task<Message> {
-    if editor.session.raw_preload_budget_mb == 0 {
-        return Task::none();
-    }
 
-    let wanted: Vec<(i64, String)> =
-        neighbours(editor, editor.session.raw_preload_behind, editor.session.raw_preload_ahead)
-            .into_iter()
-            .filter(|img| !editor.session.raw_cache.contains(&img.id))
-            // A direct decode of it is already running (an image stepped
-            // past): queueing it as well would decode it twice.
-            .filter(|img| !editor.session.direct_raw_loads.contains(&img.id))
-            .map(|img| (img.id, img.path.clone()))
-            .collect();
-    requeue(
-        &mut editor.session.queued_raw_loads,
-        &mut editor.session.pending_raw_loads,
-        wanted,
-        crate::app::loader::MAX_CONCURRENT_RAW_LOADS,
-    );
-    Task::none()
-}
 
-/// Read Develop's upcoming neighbours' saved proxies into memory, so the
-/// placeholder for the next image is already decoded when the user gets there.
-fn schedule_proxy_preloads(editor: &mut RawEditor) {
-    let ids: Vec<i64> =
-        neighbours(editor, editor.session.preview_preload_behind, editor.session.preview_preload_ahead)
-            .iter()
-            .map(|img| img.id)
-            .collect();
-    let wanted = crate::app::handlers::proxy::wanted_preloads(editor, &ids);
-    requeue(
-        &mut editor.session.queued_proxy_loads,
-        &mut editor.session.pending_proxy_loads,
-        wanted,
-        crate::app::loader::MAX_CONCURRENT_PREVIEW_LOADS,
-    );
-}
 
-/// The images around the selection, in the order the user will reach them.
-///
-/// Display order (the same list the arrow keys step through), nearest first
-/// — +1, −1, +2, −2, … — wrapping at the ends and listing each image once.
-/// This used to walk the unfiltered catalogue from the farthest image behind
-/// to the farthest ahead: preloads were spent on images a filter hides, and
-/// with only the queue's head running, the image you would open NEXT was
-/// among the last to decode.
-fn neighbours(editor: &RawEditor, behind: usize, ahead: usize) -> Vec<&ImageData> {
-    let shown = editor.session.displayed_images();
-    let Some(current) = editor
-        .session.selected_image_id
-        .and_then(|selected| shown.iter().position(|img| img.id == selected))
-    else {
-        return Vec::new();
-    };
-    let n = shown.len();
-    let mut seen: std::collections::HashSet<i64> = [shown[current].id].into();
-    let mut out = Vec::new();
-    for step in 1..=ahead.max(behind) {
-        if step <= ahead {
-            let img = shown[(current + step) % n];
-            if seen.insert(img.id) {
-                out.push(img);
-            }
-        }
-        if step <= behind {
-            let img = shown[(current + n - step % n) % n];
-            if seen.insert(img.id) {
-                out.push(img);
-            }
-        }
-    }
-    out
-}
 
-/// Take `id` out of the not-yet-started part of a load queue.
-///
-/// Returns true if it was waiting there (so the caller should load it itself).
-/// The first `in_flight` entries are the running decodes: those are left alone
-/// and report false, since their result will arrive on its own.
-fn claim_queued(
-    queue: &mut Vec<(i64, String)>,
-    pending: &mut std::collections::HashSet<i64>,
-    id: i64,
-    in_flight: usize,
-) -> bool {
-    let Some(pos) = queue.iter().position(|(queued, _)| *queued == id) else {
-        return false;
-    };
-    if pos < in_flight {
-        return false; // already running
-    }
-    queue.remove(pos);
-    pending.remove(&id);
-    true
-}
-
-/// Replace a load queue's not-yet-started tail with `wanted`, in order.
-///
-/// The loader subscription runs the first `in_flight` entries, so those stay
-/// put — dropping one would throw away a decode already under way. The rest
-/// is rebuilt from scratch: fast arrow-key navigation used to append a fresh
-/// window per keypress and then grind through every stale one in turn.
-fn requeue(
-    queue: &mut Vec<(i64, String)>,
-    pending: &mut std::collections::HashSet<i64>,
-    wanted: Vec<(i64, String)>,
-    in_flight: usize,
-) {
-    let keep = in_flight.min(queue.len());
-    for (id, _) in queue.drain(keep..) {
-        pending.remove(&id);
-    }
-    for (id, path) in wanted {
-        if pending.insert(id) {
-            queue.push((id, path));
-        }
-    }
-}
-
-async fn load_preview_pixels(path: String) -> Result<(u32, u32, Vec<u8>), String> {
-    tokio::task::spawn_blocking(move || {
-        let img = image::open(&path).map_err(|e| e.to_string())?;
-        let rgba = img.to_rgba8();
-        Ok((rgba.width(), rgba.height(), rgba.into_raw()))
-    }).await.map_err(|e| e.to_string())?
-}
-
-async fn load_image_handle(
-    id: i64,
-    path: String,
-) -> (i64, iced::widget::image::Handle, Option<std::sync::Arc<[u8]>>, (u32, u32)) {
-    match load_preview_pixels(path.clone()).await {
-        Ok((w, h, pixels)) => {
-            // One shared allocation for both consumers, as `CachedPreview`
-            // does — the handle used to get its own full copy of the frame.
-            let preview = crate::app::state::CachedPreview { width: w, height: h, bytes: pixels.into() };
-            (id, preview.to_handle(), Some(preview.bytes), (w, h))
-        }
-        Err(_) => (id, iced::widget::image::Handle::from_path(path), None, crate::app::state::PLACEHOLDER_DIMS),
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -1242,95 +762,5 @@ mod tests {
         e.session.min_filter_rating = 5; // hides everything
         e.selection_anchor = Some(1);
         assert_eq!(select_range(&e, 3), None);
-    }
-
-    #[test]
-    fn neighbours_come_nearest_first_and_wrap() {
-        let mut e = editor_with(&[1, 2, 3, 4, 5, 6]);
-        e.session.selected_image_id = Some(1);
-        let ids: Vec<i64> = neighbours(&e, 2, 3).iter().map(|i| i.id).collect();
-        assert_eq!(ids, vec![2, 6, 3, 5, 4]);
-    }
-
-    /// A window wider than the catalogue lists every other image exactly once.
-    #[test]
-    fn neighbours_never_repeat_or_include_the_selection() {
-        let mut e = editor_with(&[1, 2, 3]);
-        e.session.selected_image_id = Some(2);
-        let ids: Vec<i64> = neighbours(&e, 10, 50).iter().map(|i| i.id).collect();
-        assert_eq!(ids, vec![3, 1]);
-    }
-
-    #[test]
-    fn requeue_keeps_in_flight_loads_and_replaces_the_rest() {
-        let mut queue = vec![(1, "a".into()), (2, "b".into()), (3, "c".into())];
-        let mut pending: std::collections::HashSet<i64> = [1, 2, 3].into();
-        requeue(&mut queue, &mut pending, vec![(2, "b".into()), (9, "z".into())], 2);
-        let ids: Vec<i64> = queue.iter().map(|(id, _)| *id).collect();
-        assert_eq!(ids, vec![1, 2, 9]);
-        assert_eq!(pending, [1, 2, 9].into());
-    }
-
-    /// Arrow keys used to index the unfiltered catalogue and would happily
-    /// land on images the current tab refuses to show.
-    #[test]
-    fn stepping_stays_inside_the_displayed_set() {
-        let mut e = editor_with(&[1, 2, 3]);
-        e.session.images[1].rating = crate::database::models::with_mark(0, true);
-        e.session.current_tab = AppTab::Develop; // excludes marked
-        e.session.selected_image_id = Some(1);
-        assert_eq!(step_selection(&e, true), Some(3));
-        assert_eq!(step_selection(&e, false), Some(3)); // wraps backwards
-    }
-}
-
-#[cfg(test)]
-mod claim_tests {
-    use super::{claim_queued, requeue};
-    use std::collections::HashSet;
-
-    fn q(ids: &[i64]) -> Vec<(i64, String)> {
-        ids.iter().map(|i| (*i, String::new())).collect()
-    }
-    fn ids(q: &[(i64, String)]) -> Vec<i64> {
-        q.iter().map(|(i, _)| *i).collect()
-    }
-
-    #[test]
-    fn a_waiting_image_is_taken_out_of_the_queue_and_pending() {
-        let mut queue = q(&[1, 2, 3, 4]);
-        let mut pending: HashSet<i64> = [1, 2, 3, 4].into();
-        assert!(claim_queued(&mut queue, &mut pending, 4, 2));
-        assert_eq!(ids(&queue), vec![1, 2, 3]);
-        assert!(!pending.contains(&4));
-    }
-
-    #[test]
-    fn a_running_head_is_left_alone() {
-        let mut queue = q(&[1, 2, 3]);
-        let mut pending: HashSet<i64> = [1, 2, 3].into();
-        assert!(!claim_queued(&mut queue, &mut pending, 2, 2));
-        assert_eq!(ids(&queue), vec![1, 2, 3]);
-        assert!(pending.contains(&2));
-    }
-
-    #[test]
-    fn an_absent_image_reports_false() {
-        let mut queue = q(&[1, 2]);
-        let mut pending: HashSet<i64> = [1, 2].into();
-        assert!(!claim_queued(&mut queue, &mut pending, 9, 2));
-    }
-
-    /// The bug: the selected image moved within the tail was then dropped by
-    /// the requeue that follows every selection, so nothing ever decoded it.
-    #[test]
-    fn a_claimed_image_is_not_lost_to_the_requeue_that_follows() {
-        let mut queue = q(&[1, 2, 7, 3]);
-        let mut pending: HashSet<i64> = [1, 2, 7, 3].into();
-        assert!(claim_queued(&mut queue, &mut pending, 7, 2));
-        // the selected image is never in the wanted list
-        requeue(&mut queue, &mut pending, vec![(3, String::new()), (4, String::new())], 2);
-        assert_eq!(ids(&queue), vec![1, 2, 3, 4]);
-        assert!(!pending.contains(&7), "7 is the caller's to decode, not a preload");
     }
 }

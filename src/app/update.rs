@@ -49,6 +49,8 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
     if modal_before == Modal::AiDenoise && editor.active_modal != Modal::AiDenoise {
         handlers::ai_denoise::close(editor);
     }
+    // Thumbnails for whatever proxies the message captured.
+    editor.sync_proxy_handles();
     match track_modal_exit(editor, modal_before) {
         Some(exit) => Task::batch([task, exit]),
         None => task,
@@ -188,6 +190,22 @@ fn session_event(editor: &mut RawEditor, event: crate::session::SessionEvent) ->
         SessionEvent::ExportRawLoaded(id, params, res) => run(editor.session.export_raw_loaded(id, *params, res)),
         SessionEvent::ExportPipelineReady(id, params, res) => run(editor.session.export_pipeline_ready(id, *params, res)),
         SessionEvent::ExportSaveComplete(id, res) => run(editor.session.export_save_complete(id, res)),
+        SessionEvent::PreviewCached(id, res) => handlers::navigation::handle_preview_cached(editor, id, res),
+        SessionEvent::WorkingPreviewReady(id, bytes, dims, path) => {
+            handlers::navigation::handle_working_preview_ready(editor, id, bytes, dims, path)
+        }
+        SessionEvent::RawDataLoaded(id, res) => handlers::loading::handle_raw_data_loaded(editor, id, res),
+        SessionEvent::RawPreloaded(id, res) => handlers::loading::handle_raw_preloaded(editor, id, res),
+        SessionEvent::ImageResourcesReady(id, res) => handlers::loading::handle_image_resources_ready(editor, id, res),
+        SessionEvent::FullResReady(id, res) => handlers::loading::handle_full_res_ready(editor, id, res),
+        SessionEvent::EditedProxySaved(id, generation, result) => {
+            editor.session.proxy_saved(id, generation, result);
+            Task::none()
+        }
+        SessionEvent::EditedProxyLoaded(id, result) => {
+            editor.session.proxy_loaded(id, result);
+            Task::none()
+        }
     }
 }
 
@@ -222,12 +240,6 @@ fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::MousePressed => handlers::navigation::handle_mouse_pressed(editor),
         Message::MouseReleased => handlers::navigation::handle_mouse_released(editor),
         Message::MouseMoved(p) => handlers::navigation::handle_mouse_moved(editor, p),
-        Message::WorkingPreviewReady(id, h, p, d) => {
-            handlers::navigation::handle_working_preview_ready(editor, id, h, p, d)
-        }
-        Message::PreviewCached(id, res) => {
-            handlers::navigation::handle_preview_cached(editor, id, res)
-        }
 
         // Develop
         Message::ExposureChanged(v) => handlers::develop::handle_exposure_changed(editor, v),
@@ -536,11 +548,6 @@ fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::RenderFinished(output) => handlers::develop::handle_render_finished(editor, *output),
-        Message::EditedProxySaved(id, generation, result) => {
-            handlers::proxy::handle_saved(editor, id, generation, result);
-            Task::none()
-        }
-        Message::EditedProxyLoaded(id, result) => handlers::proxy::handle_loaded(editor, id, result),
         Message::ViewportResized(w, h) => {
             let (old_w, old_h) = editor.session.viewport_size;
             editor.session.viewport_size = (w, h);
@@ -556,13 +563,6 @@ fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
         }
         Message::ScaleFactorChanged(s) => handlers::window::handle_scale_factor_changed(editor, s),
 
-        // Loading
-        Message::RawDataLoaded(id, res) => handlers::loading::handle_raw_data_loaded(editor, id, res),
-        Message::RawPreloaded(id, res) => handlers::loading::handle_raw_preloaded(editor, id, res),
-        Message::ImageResourcesReady(id, res) => {
-            handlers::loading::handle_image_resources_ready(editor, id, res)
-        }
-        Message::FullResReady(id, res) => handlers::loading::handle_full_res_ready(editor, id, res),
 
         // Scroll boost + filmstrip momentum
         Message::WheelScrolled(delta) => handlers::scroll::handle_wheel(editor, delta),

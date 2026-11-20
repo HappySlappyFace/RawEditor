@@ -16,7 +16,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use super::{Effects, Session, SessionEvent};
+use super::{Effects, Moved, Session, SessionEvent};
 use crate::app::state::EditorReadiness;
 use crate::database::models::{is_marked, with_mark};
 
@@ -44,17 +44,6 @@ pub enum DeleteRequest {
     Unmarked,
     /// Ask how to delete them (`pending_delete_ids` holds them).
     Confirm,
-}
-
-/// Where the selection went after a hard delete.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AfterDelete {
-    /// The open image survived.
-    Nothing,
-    /// The open image is gone; this neighbour should open.
-    MoveTo(i64),
-    /// The open image is gone and nothing is left to open.
-    Cleared,
 }
 
 impl Session {
@@ -133,7 +122,7 @@ impl Session {
         })
     }
 
-    pub fn hard_delete_complete(&mut self, outcome: HardDeleteOutcome) -> AfterDelete {
+    pub fn hard_delete_complete(&mut self, outcome: HardDeleteOutcome) -> Moved {
         self.is_deleting = false;
         let deleted: std::collections::HashSet<i64> = outcome.deleted_ids.iter().copied().collect();
 
@@ -177,7 +166,7 @@ impl Session {
         self.queued_loads.retain(|(id, _)| !deleted.contains(id));
         self.queued_raw_loads.retain(|(id, _)| !deleted.contains(id));
 
-        let mut after = AfterDelete::Nothing;
+        let mut after = Moved::Stay;
         if let Some(sel) = self.selected_image_id {
             if deleted.contains(&sel) {
                 // The open image is gone: whatever it had unsaved has nowhere to
@@ -191,10 +180,10 @@ impl Session {
                 self.preview_resources = None;
                 self.selected_image_id = fallback;
                 if let Some(next_id) = fallback {
-                    after = AfterDelete::MoveTo(next_id);
+                    after = Moved::To(next_id);
                 } else {
                     self.editor_readiness = EditorReadiness::NoSelection;
-                    after = AfterDelete::Cleared;
+                    after = Moved::Cleared;
                 }
             }
         }

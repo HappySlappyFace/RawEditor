@@ -6,6 +6,7 @@ mod develop_history;
 mod export_size_field;
 mod gpu_render;
 mod loading;
+mod proxy;
 mod mark_keeps_rating;
 mod mask_robustness;
 mod slider_reset;

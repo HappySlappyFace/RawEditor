@@ -1,5 +1,4 @@
 use crate::database::models::Image as ImageData;
-use crate::raw;
 use crate::ui::preview_renderer::{CropHandle, MaskHandle};
 use iced::{Point, Rectangle};
 use std::path::PathBuf;
@@ -583,18 +582,6 @@ pub enum Message {
     /// Select previous image (Left arrow)
     SelectPreviousImage,
 
-    /// Phase 73: Preview loaded from cache/disk
-    /// Phase 76: Eager Background Decoding (width, height, pixels)
-    PreviewCached(i64, Result<(u32, u32, std::sync::Arc<[u8]>), String>),
-    /// Phase 77: Working Preview Ready
-    WorkingPreviewReady(
-        i64,
-        iced::widget::image::Handle,
-        Option<std::sync::Arc<[u8]>>,
-        /// Phase 115: Actual pixel dimensions of the byte buffer
-        (u32, u32),
-    ),
-
     // ========== Phase 25: Zoom & Pan Messages ==========
     /// User zoomed with mouse wheel (delta, cursor position)
     Zoom(f32, Point),
@@ -611,38 +598,6 @@ pub enum Message {
     /// Reset zoom and pan to default (1.0, 0.0)
     ResetView,
 
-    // ========== GPU Pipeline Messages ==========
-    /// Background RAW data loading completed
-    RawDataLoaded(i64, Result<raw::loader::RawDataResult, String>),
-    /// Background RAW preload for adjacent images completed
-    RawPreloaded(i64, Result<std::sync::Arc<raw::loader::RawDataResult>, String>),
-    /// GPU pipeline initialization completed
-    // Phase 95: GPU ImageResources loaded (wrapped in Arc for Clone)
-    ImageResourcesReady(
-        i64,
-        Result<
-            (
-                std::sync::Arc<crate::gpu::shared::SharedContext>,
-                std::sync::Arc<crate::gpu::shared::ImageResources>,
-            ),
-            String,
-        >,
-    ),
-    /// The full-resolution rebuild (`loading::trigger_full_res_upgrade`)
-    /// finished. Separate from `ImageResourcesReady` so only its own result
-    /// releases the one-at-a-time upgrade guard, and so a failed upgrade
-    /// keeps the working preview instead of failing the editor.
-    FullResReady(
-        i64,
-        Result<
-            (
-                std::sync::Arc<crate::gpu::shared::SharedContext>,
-                std::sync::Arc<crate::gpu::shared::ImageResources>,
-            ),
-            String,
-        >,
-    ),
-
     // ========== Export Messages (Phase 19) ==========
     // Legacy export messages removed
 
@@ -658,11 +613,6 @@ pub enum Message {
 
     /// A develop render completed. Boxed: the histogram alone is 3 KB.
     RenderFinished(Box<RenderOutput>),
-    /// An edited proxy finished saving to disk: (image, proxy generation,
-    /// path or error). See `handlers::proxy`.
-    EditedProxySaved(i64, u64, Result<String, String>),
-    /// A saved edited proxy was read back into memory: (image, pixels).
-    EditedProxyLoaded(i64, Result<(u32, u32, std::sync::Arc<[u8]>), String>),
     /// Phase 104: Toggle Profiler Overlay
     ToggleProfiler,
 

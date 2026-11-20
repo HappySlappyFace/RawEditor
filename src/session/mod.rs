@@ -9,18 +9,29 @@
 
 mod camera_profiles;
 mod delete;
+mod develop;
 mod export;
 mod helpers;
 mod lensfun;
 mod library;
+mod loader;
+mod loading;
+mod navigation;
+mod proxy;
 mod models;
 mod updates;
 
 pub use camera_profiles::{CameraProfileState, ProfileJob};
-pub use delete::{AfterDelete, DeleteRequest, HardDeleteOutcome};
+pub use delete::{DeleteRequest, HardDeleteOutcome};
+#[cfg(test)]
+pub use develop::dcp_memo_is_valid;
 pub use export::{ExportFormat, ExportJob, ExportJobState, ExportSettings};
 pub use lensfun::{LensfunJob, LensfunState};
 pub use library::{collect_raw_files, CacheResult, CacheStep, ImportResult};
+pub use loader::{MAX_CONCURRENT_PREVIEW_LOADS, MAX_CONCURRENT_RAW_LOADS};
+pub use loading::{shared_context, BuiltResources, FullRes, Installed};
+pub use navigation::{ImageLoad, Moved, PreviewHandle, SelectionChange, TabLoad};
+pub use proxy::{edit_key, load_proxy, read_jpeg, CachedPreview, EditedProxy, EDITED_PROXY_CAPACITY};
 pub use models::ModelsState;
 pub use updates::{UpdatesAtStartup, UpdatesState};
 
@@ -29,6 +40,8 @@ pub type Effects = raw_editor_session::Effects<SessionEvent>;
 
 /// The result of a piece of work the session asked for.
 #[derive(Debug, Clone)]
+// A decoded RAW travels in its variant once, by move, as it did in `Message`.
+#[allow(clippy::large_enum_variant)]
 pub enum SessionEvent {
     /// An update check finished (`manual`: Check for Updates was clicked).
     UpdateChecked { result: Result<Option<crate::core::updates::Available>, String>, manual: bool },
@@ -83,6 +96,27 @@ pub enum SessionEvent {
     ),
     /// An export image was written (its path), or failed.
     ExportSaveComplete(i64, Result<std::path::PathBuf, String>),
+    /// A working preview (the camera JPEG) was decoded for the RAM cache.
+    PreviewCached(i64, Result<(u32, u32, std::sync::Arc<[u8]>), String>),
+    /// A working preview was read for display: its pixels (`None` when they
+    /// could not be decoded), their size, and the file.
+    WorkingPreviewReady(i64, Option<std::sync::Arc<[u8]>>, (u32, u32), String),
+    /// A direct RAW decode (for Develop) finished.
+    RawDataLoaded(i64, Result<crate::raw::loader::RawDataResult, String>),
+    /// A RAW preload for a neighbouring image finished.
+    RawPreloaded(i64, Result<std::sync::Arc<crate::raw::loader::RawDataResult>, String>),
+    /// The open image's GPU resources are built.
+    ImageResourcesReady(i64, BuiltResources),
+    /// The full-resolution rebuild (`Session::trigger_full_res_upgrade`)
+    /// finished. Separate from `ImageResourcesReady` so only its own result
+    /// releases the one-at-a-time upgrade guard, and so a failed upgrade
+    /// keeps the working preview instead of failing the editor.
+    FullResReady(i64, BuiltResources),
+    /// An edited proxy finished saving to disk: (image, proxy generation,
+    /// path or error). See `session::proxy`.
+    EditedProxySaved(i64, u64, Result<String, String>),
+    /// A saved edited proxy was read back into memory: (image, pixels).
+    EditedProxyLoaded(i64, Result<(u32, u32, std::sync::Arc<[u8]>), String>),
 }
 
 /// Something the app must do after a session call, while that part of the
@@ -92,7 +126,7 @@ pub enum SessionEvent {
 pub enum FollowUp {
     Nothing,
     /// The open image must be decoded or rebuilt again
-    /// (`handlers::navigation::reload_selected_image`).
+    /// (`Session::reload_selected_image`).
     ReloadSelectedImage,
 }
 
@@ -169,7 +203,7 @@ pub struct Session {
     /// Last `EditedProxy::generation` handed out.
     pub proxy_generation: u64,
     /// Images the user left while the render of their final edit was still in
-    /// flight, with that edit: `proxy::resolve_awaiting` saves the proxy when
+    /// flight, with that edit: `Session::resolve_awaiting_proxy` saves the proxy when
     /// the render lands.
     pub proxy_awaiting: HashMap<i64, crate::core::types::EditParams>,
     /// Saved proxies being read back for Develop's neighbours — same queue
@@ -367,7 +401,7 @@ pub struct Session {
     /// True while a full-resolution resource rebuild is in flight. One at a
     /// time, across images: each holds a full-size working set on the GPU,
     /// and navigating quickly must not stack them. Cleared only by that
-    /// rebuild's own result (`Message::FullResReady`).
+    /// rebuild's own result (`SessionEvent::FullResReady`).
     pub full_res_upgrading: bool,
     /// The image whose full-resolution rebuild last failed (out of GPU
     /// memory, say): not retried on every render while it stays selected.

@@ -17,7 +17,7 @@ use crate::app::handlers::navigation;
 use crate::app::message::Message;
 use crate::app::state::{Modal, RawEditor};
 use crate::app::update::run;
-use crate::session::{AfterDelete, DeleteRequest, HardDeleteOutcome};
+use crate::session::{DeleteRequest, HardDeleteOutcome};
 use iced::Task;
 
 /// Dispatcher for Message::DeleteImage: instant-unmark when every target is
@@ -53,14 +53,8 @@ pub fn handle_delete_from_disk_confirmed(editor: &mut RawEditor) -> Task<Message
 }
 
 pub fn handle_hard_delete_complete(editor: &mut RawEditor, outcome: HardDeleteOutcome) -> Task<Message> {
-    match editor.session.hard_delete_complete(outcome) {
-        AfterDelete::Nothing => Task::none(),
-        AfterDelete::MoveTo(next_id) => Task::done(Message::ImageMoved(next_id)),
-        AfterDelete::Cleared => {
-            editor.working_preview = None;
-            Task::none()
-        }
-    }
+    let moved = editor.session.hard_delete_complete(outcome);
+    navigation::apply_moved(editor, moved)
 }
 
 #[cfg(test)]

@@ -8,7 +8,7 @@
 //! **Tasks never run.** `update` returns a `Task` that iced would execute;
 //! here it is dropped. Anything async (a RAW decode, a preview read, a GPU
 //! build) has to be *delivered* by the test as the message it would have
-//! produced: `send(&mut e, Message::RawDataLoaded(id, Ok(raw(id))))`. Which
+//! produced: `send(&mut e, Message::Session(SessionEvent::RawDataLoaded(id, Ok(raw(id)))))`. Which
 //! jobs are in flight is read back from the editor's own bookkeeping (the
 //! load queues, `direct_raw_loads`), and the GPU resource builds — which leave
 //! no trace in state — are tracked by [`World`].
@@ -24,7 +24,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use crate::app::loader::{MAX_CONCURRENT_PREVIEW_LOADS, MAX_CONCURRENT_RAW_LOADS};
+use crate::session::{SessionEvent, MAX_CONCURRENT_PREVIEW_LOADS, MAX_CONCURRENT_RAW_LOADS};
 use crate::app::message::{AppTab, Message};
 use crate::app::state::{EditorReadiness, RawEditor, HISTORY_LIMIT};
 use crate::core::types::EditParams;
@@ -342,24 +342,24 @@ impl World {
         self.serial += 1;
         let tag = self.serial;
         let message = match job {
-            Job::RawPreload(id) => Message::RawPreloaded(
+            Job::RawPreload(id) => Message::Session(SessionEvent::RawPreloaded(
                 id,
                 if ok || !self.preload_failures { Ok(Arc::new(raw(tag))) } else { Err("testkit: unreadable".into()) },
-            ),
-            Job::DirectDecode(id) => Message::RawDataLoaded(
+            )),
+            Job::DirectDecode(id) => Message::Session(SessionEvent::RawDataLoaded(
                 id,
                 if ok { Ok(raw(tag)) } else { Err("testkit: unreadable".into()) },
-            ),
+            )),
             Job::Build(id) => {
                 if let Some(i) = self.builds.iter().position(|b| *b == id) {
                     self.builds.remove(i);
                 }
-                Message::ImageResourcesReady(id, Err("testkit: no GPU".into()))
+                Message::Session(SessionEvent::ImageResourcesReady(id, Err("testkit: no GPU".into())))
             }
-            Job::Preview(id) => Message::PreviewCached(
+            Job::Preview(id) => Message::Session(SessionEvent::PreviewCached(
                 id,
                 if ok { Ok((2, 2, Arc::from(vec![0u8; 16]))) } else { Err("testkit: no file".into()) },
-            ),
+            )),
         };
         self.send(e, message);
     }
@@ -391,11 +391,11 @@ impl World {
 /// A one-line description of a message, without its payload's bulk.
 fn short(m: &Message) -> String {
     match m {
-        Message::RawDataLoaded(id, r) => format!("RawDataLoaded({id}, {})", if r.is_ok() { "Ok" } else { "Err" }),
-        Message::RawPreloaded(id, r) => format!("RawPreloaded({id}, {})", if r.is_ok() { "Ok" } else { "Err" }),
-        Message::ImageResourcesReady(id, _) => format!("ImageResourcesReady({id}, Err)"),
-        Message::PreviewCached(id, _) => format!("PreviewCached({id})"),
-        Message::WorkingPreviewReady(id, ..) => format!("WorkingPreviewReady({id})"),
+        Message::Session(SessionEvent::RawDataLoaded(id, r)) => format!("RawDataLoaded({id}, {})", if r.is_ok() { "Ok" } else { "Err" }),
+        Message::Session(SessionEvent::RawPreloaded(id, r)) => format!("RawPreloaded({id}, {})", if r.is_ok() { "Ok" } else { "Err" }),
+        Message::Session(SessionEvent::ImageResourcesReady(id, _)) => format!("ImageResourcesReady({id}, Err)"),
+        Message::Session(SessionEvent::PreviewCached(id, _)) => format!("PreviewCached({id})"),
+        Message::Session(SessionEvent::WorkingPreviewReady(id, ..)) => format!("WorkingPreviewReady({id})"),
         other => {
             let s = format!("{other:?}");
             s.chars().take(60).collect()

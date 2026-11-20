@@ -147,7 +147,7 @@ pub fn handle_close_window(editor: &mut RawEditor) -> Task<Message> {
     editor.session.flush_edits();
     // And the open image's edited thumbnail, synchronously: a spawned save
     // would never get to run.
-    crate::app::handlers::proxy::persist_now(editor);
+    editor.session.persist_proxy_now();
     window::get_latest().and_then(window::close)
 }
 
