@@ -181,6 +181,9 @@ fn session_event(editor: &mut RawEditor, event: crate::session::SessionEvent) ->
         }
         SessionEvent::CameraProfilesUpdated(r) => handlers::camera_profiles::handle_updated(editor, r),
         SessionEvent::CameraProfilesScanned(changed) => handlers::camera_profiles::handle_scanned(editor, changed),
+        SessionEvent::ImportComplete(res) => handlers::library::handle_import_complete(editor, res),
+        SessionEvent::CacheProcessed(res) => handlers::library::handle_cache_processed(editor, res),
+        SessionEvent::HardDeleteComplete(outcome) => handlers::delete::handle_hard_delete_complete(editor, outcome),
     }
 }
 
@@ -199,8 +202,6 @@ fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::DatabaseLoaded(res) => handlers::library::handle_database_loaded(editor, res),
         Message::ImportFolder => handlers::library::handle_import_folder(editor),
         Message::ImportFromCamera => handlers::library::handle_import_from_camera(editor),
-        Message::ImportComplete(res) => handlers::library::handle_import_complete(editor, res),
-        Message::CacheProcessed(res) => handlers::library::handle_cache_processed(editor, res),
         Message::SetRating(r) => handlers::library::handle_set_rating(editor, r),
         Message::SetFlag(f) => handlers::library::handle_set_flag(editor, f),
         Message::ToggleAutoAdvance => handlers::library::handle_toggle_auto_advance(editor),
@@ -404,7 +405,6 @@ fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::DeleteImage => handlers::delete::handle_delete_image_requested(editor),
         Message::MarkForRemovalConfirmed => handlers::delete::handle_mark_for_removal_confirmed(editor),
         Message::DeleteFromDiskConfirmed => handlers::delete::handle_delete_from_disk_confirmed(editor),
-        Message::HardDeleteComplete(outcome) => handlers::delete::handle_hard_delete_complete(editor, outcome),
 
         // Export
         Message::SetExportFormat(f) => handlers::export::handle_set_export_format(editor, f),

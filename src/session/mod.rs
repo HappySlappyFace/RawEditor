@@ -8,13 +8,17 @@
 //! the app to act on; the session never opens one.
 
 mod camera_profiles;
+mod delete;
 mod helpers;
 mod lensfun;
+mod library;
 mod models;
 mod updates;
 
 pub use camera_profiles::{CameraProfileState, ProfileJob};
+pub use delete::{AfterDelete, DeleteRequest, HardDeleteOutcome};
 pub use lensfun::{LensfunJob, LensfunState};
+pub use library::{collect_raw_files, CacheResult, CacheStep, ImportResult};
 pub use models::ModelsState;
 pub use updates::{UpdatesAtStartup, UpdatesState};
 
@@ -44,6 +48,12 @@ pub enum SessionEvent {
     CameraProfilesUpdated(Result<crate::core::camera_profiles::UpdateReport, String>),
     /// The profile folders were read; `true` when it was a rescan.
     CameraProfilesScanned(bool),
+    /// An import finished (added and skipped counts).
+    ImportComplete(Result<ImportResult, String>),
+    /// One cache-tier job finished.
+    CacheProcessed(CacheResult),
+    /// A delete from disk finished.
+    HardDeleteComplete(HardDeleteOutcome),
 }
 
 /// Something the app must do after a session call, while that part of the

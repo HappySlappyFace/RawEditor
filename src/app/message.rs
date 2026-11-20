@@ -163,13 +163,6 @@ pub enum AppTab {
     Export,  // Batch export queue and settings
 }
 
-/// Result of a folder import operation
-#[derive(Debug, Clone)]
-pub struct ImportResult {
-    pub imported_count: usize,
-    pub skipped_count: usize,
-}
-
 /// Everything a completed develop render hands back to the UI thread.
 #[derive(Debug, Clone)]
 pub struct RenderOutput {
@@ -211,12 +204,6 @@ pub enum Message {
     ImportFolder,
     /// Placeholder for camera import workflow
     ImportFromCamera,
-    /// Background import finished (or failed — e.g. the catalogue could not
-    /// be opened).
-    ImportComplete(Result<ImportResult, String>),
-    /// Phase 28: Multi-tier cache processing completed
-    /// Result is (image_id, thumb_path, instant_path, working_path) or (image_id, error)
-    CacheProcessed(Result<(i64, String, String, String), (i64, String)>),
 
     /// User switched to a different tab
     TabChanged(AppTab),
@@ -397,8 +384,6 @@ pub enum Message {
     MarkForRemovalConfirmed,
     /// "Delete from Disk" button in the delete modal, and the global Enter key.
     DeleteFromDiskConfirmed,
-    /// Background hard-delete (trash move + DB row removal) batch finished.
-    HardDeleteComplete(crate::app::handlers::delete::HardDeleteOutcome),
     /// Phase 65: Undo/Redo History
     Undo,
     Redo,
