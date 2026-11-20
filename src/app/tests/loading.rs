@@ -17,15 +17,15 @@ use crate::app::state::EditorReadiness;
 use crate::app::testkit::*;
 
 fn queue(e: &crate::app::state::RawEditor) -> Vec<i64> {
-    e.queued_raw_loads.iter().map(|(id, _)| *id).collect()
+    e.session.queued_raw_loads.iter().map(|(id, _)| *id).collect()
 }
 
 #[test]
 fn selecting_in_develop_decodes_it_and_preloads_its_neighbours() {
     let e = develop_with_images(10);
-    assert_eq!(e.selected_image_id, Some(1));
-    assert_eq!(e.editor_readiness, EditorReadiness::Loading(1));
-    assert!(e.direct_raw_loads.contains(&1), "no decode started for the selection");
+    assert_eq!(e.session.selected_image_id, Some(1));
+    assert_eq!(e.session.editor_readiness, EditorReadiness::Loading(1));
+    assert!(e.session.direct_raw_loads.contains(&1), "no decode started for the selection");
     assert_eq!(queue(&e), vec![2, 10, 3, 4, 5], "nearest first, in display order");
     assert_invariants(&e);
 }
@@ -38,9 +38,9 @@ fn a_selection_waiting_in_the_preload_tail_is_decoded_directly() {
     let mut e = develop_with_images(10);
     assert_eq!(queue(&e)[2..], [3, 4, 5]); // 4 is waiting, not running
     send(&mut e, Message::ImageSelected(4));
-    assert_eq!(e.editor_readiness, EditorReadiness::Loading(4));
-    assert!(e.direct_raw_loads.contains(&4), "the waiting preload was not taken over");
-    assert!(!queue(&e).contains(&4) && !e.pending_raw_loads.contains(&4));
+    assert_eq!(e.session.editor_readiness, EditorReadiness::Loading(4));
+    assert!(e.session.direct_raw_loads.contains(&4), "the waiting preload was not taken over");
+    assert!(!queue(&e).contains(&4) && !e.session.pending_raw_loads.contains(&4));
     // The running head survives the requeue; the tail is 4's neighbours.
     assert_eq!(queue(&e), vec![2, 10, 5, 3, 6, 7, 8]);
     assert_invariants(&e);
@@ -50,14 +50,14 @@ fn a_selection_waiting_in_the_preload_tail_is_decoded_directly() {
 fn a_selection_already_preloading_is_left_to_its_preload() {
     let mut e = develop_with_images(10);
     send(&mut e, Message::ImageSelected(2)); // running at the head
-    assert_eq!(e.editor_readiness, EditorReadiness::Loading(2));
-    assert!(!e.direct_raw_loads.contains(&2), "decoded twice");
+    assert_eq!(e.session.editor_readiness, EditorReadiness::Loading(2));
+    assert!(!e.session.direct_raw_loads.contains(&2), "decoded twice");
     assert!(running_raw_preloads(&e).contains(&2));
     assert_invariants(&e);
 
     // Its preload landing completes the load: the resources build starts.
     send(&mut e, Message::RawPreloaded(2, Ok(Arc::new(raw("preload")))));
-    assert_eq!(e.current_metadata_id, Some(2), "the preload did not start the build");
+    assert_eq!(e.session.current_metadata_id, Some(2), "the preload did not start the build");
     assert!(!queue(&e).contains(&2));
     assert_invariants(&e);
 }
@@ -67,17 +67,17 @@ fn a_decode_landing_after_the_user_moved_on_is_cached_not_shown() {
     let mut e = develop_with_images(10);
     send(&mut e, Message::ImageSelected(3));
     send(&mut e, Message::RawDataLoaded(1, Ok(raw("late"))));
-    assert_eq!(e.editor_readiness, EditorReadiness::Loading(3), "a stale RAW took over");
-    assert_ne!(e.current_metadata_id, Some(1));
-    assert!(!e.direct_raw_loads.contains(&1));
-    assert!(e.raw_cache.contains(&1), "the stale decode was thrown away");
+    assert_eq!(e.session.editor_readiness, EditorReadiness::Loading(3), "a stale RAW took over");
+    assert_ne!(e.session.current_metadata_id, Some(1));
+    assert!(!e.session.direct_raw_loads.contains(&1));
+    assert!(e.session.raw_cache.contains(&1), "the stale decode was thrown away");
     assert_invariants(&e);
 
     // Going back is instant: the cached RAW goes straight to the build.
     send(&mut e, Message::ImageSelected(1));
-    assert_eq!(e.editor_readiness, EditorReadiness::Loading(1));
-    assert_eq!(e.current_metadata_id, Some(1));
-    assert!(!e.direct_raw_loads.contains(&1), "re-decoded a cached RAW");
+    assert_eq!(e.session.editor_readiness, EditorReadiness::Loading(1));
+    assert_eq!(e.session.current_metadata_id, Some(1));
+    assert!(!e.session.direct_raw_loads.contains(&1), "re-decoded a cached RAW");
     assert_invariants(&e);
 }
 
@@ -86,15 +86,15 @@ fn a_failed_decode_fails_only_the_selected_image_and_can_be_retried() {
     let mut e = develop_with_images(10);
     send(&mut e, Message::ImageSelected(3));
     send(&mut e, Message::RawDataLoaded(1, Err("bad file".into())));
-    assert_eq!(e.editor_readiness, EditorReadiness::Loading(3), "another image's failure failed this one");
+    assert_eq!(e.session.editor_readiness, EditorReadiness::Loading(3), "another image's failure failed this one");
     send(&mut e, Message::RawDataLoaded(3, Err("bad file".into())));
-    assert!(matches!(e.editor_readiness, EditorReadiness::Failed(3, _)));
+    assert!(matches!(e.session.editor_readiness, EditorReadiness::Failed(3, _)));
     assert_invariants(&e);
 
     send(&mut e, Message::ImageSelected(4));
     send(&mut e, Message::ImageSelected(3));
-    assert_eq!(e.editor_readiness, EditorReadiness::Loading(3));
-    assert!(e.direct_raw_loads.contains(&3), "a failed image is never retried");
+    assert_eq!(e.session.editor_readiness, EditorReadiness::Loading(3));
+    assert!(e.session.direct_raw_loads.contains(&3), "a failed image is never retried");
     assert_invariants(&e);
 }
 
@@ -102,10 +102,10 @@ fn a_failed_decode_fails_only_the_selected_image_and_can_be_retried() {
 fn resources_built_for_an_image_left_behind_are_ignored() {
     let mut e = develop_with_images(10);
     send(&mut e, Message::RawDataLoaded(1, Ok(raw("1"))));
-    assert_eq!(e.current_metadata_id, Some(1)); // building 1
+    assert_eq!(e.session.current_metadata_id, Some(1)); // building 1
     send(&mut e, Message::ImageSelected(3));
     send(&mut e, Message::ImageResourcesReady(1, Err("late".into())));
-    assert_eq!(e.editor_readiness, EditorReadiness::Loading(3));
+    assert_eq!(e.session.editor_readiness, EditorReadiness::Loading(3));
     assert_invariants(&e);
 }
 
@@ -118,13 +118,13 @@ fn holding_an_arrow_key_keeps_the_selection_in_flight_at_every_step() {
             panic!("after step {step}: {why}\n{}", dump(&e));
         }
     }
-    let sel = e.selected_image_id.expect("selection");
-    assert_eq!(e.editor_readiness, EditorReadiness::Loading(sel));
+    let sel = e.session.selected_image_id.expect("selection");
+    assert_eq!(e.session.editor_readiness, EditorReadiness::Loading(sel));
     // Stepping back onto an image whose decode is still running reuses it.
-    let before = e.direct_raw_loads.len();
+    let before = e.session.direct_raw_loads.len();
     press_arrow(&mut e, false);
     press_arrow(&mut e, true);
-    assert_eq!(e.direct_raw_loads.len(), before, "a second decode of the same image");
+    assert_eq!(e.session.direct_raw_loads.len(), before, "a second decode of the same image");
 }
 
 /// Random interleavings of selections, arrow-key holds and async results
@@ -135,7 +135,7 @@ fn fuzz(seed: u64, steps: usize, tabs: bool, preload_failures: bool) -> Result<(
     let n = 3 + rng.below(10);
     let mut e = editor_with_images(n);
     let mut w = World { preload_failures, ..World::default() };
-    let ids: Vec<i64> = e.images.iter().map(|i| i.id).collect();
+    let ids: Vec<i64> = e.session.images.iter().map(|i| i.id).collect();
     w.send(&mut e, Message::TabChanged(AppTab::Develop));
     w.send(&mut e, Message::ImageSelected(ids[0]));
 
@@ -198,7 +198,7 @@ fn fuzz(seed: u64, steps: usize, tabs: bool, preload_failures: bool) -> Result<(
         w.check(&e).map_err(|why| fail(&w, &e, steps, why))?;
     }
     w.drain(&mut e, &mut rng).map_err(|why| fail(&w, &e, steps, why))?;
-    if let EditorReadiness::Loading(id) = e.editor_readiness {
+    if let EditorReadiness::Loading(id) = e.session.editor_readiness {
         return Err(fail(&w, &e, steps, format!("still Loading({id}) with every job delivered")));
     }
     Ok(())
@@ -243,14 +243,14 @@ fn a_failed_preload_of_the_selection_fails_it() {
     send(&mut e, Message::ImageSelected(2)); // left to its running preload
     assert!(running_raw_preloads(&e).contains(&2));
     send(&mut e, Message::RawPreloaded(2, Err("unreadable".into())));
-    assert!(matches!(e.editor_readiness, EditorReadiness::Failed(2, _)));
+    assert!(matches!(e.session.editor_readiness, EditorReadiness::Failed(2, _)));
     assert_invariants(&e);
 
     send(&mut e, Message::ImageSelected(3));
     send(&mut e, Message::ImageSelected(2));
-    assert_eq!(e.editor_readiness, EditorReadiness::Loading(2));
+    assert_eq!(e.session.editor_readiness, EditorReadiness::Loading(2));
     assert!(
-        e.direct_raw_loads.contains(&2) || running_raw_preloads(&e).contains(&2),
+        e.session.direct_raw_loads.contains(&2) || running_raw_preloads(&e).contains(&2),
         "a failed preload is never retried"
     );
     assert_invariants(&e);
@@ -265,14 +265,14 @@ fn a_failed_preload_of_the_selection_fails_it() {
 #[test]
 fn selecting_elsewhere_while_develop_loads_reloads_it() {
     let mut e = develop_with_images(10);
-    assert_eq!(e.editor_readiness, EditorReadiness::Loading(1));
+    assert_eq!(e.session.editor_readiness, EditorReadiness::Loading(1));
     send(&mut e, Message::TabChanged(AppTab::Library));
     send(&mut e, Message::ImageSelected(2));
     send(&mut e, Message::RawDataLoaded(1, Ok(raw("1"))));
     send(&mut e, Message::ImageSelected(1));
     send(&mut e, Message::TabChanged(AppTab::Develop));
-    assert_eq!(e.editor_readiness, EditorReadiness::Loading(1));
-    assert_eq!(e.current_metadata_id, Some(1), "the cached RAW was not built");
+    assert_eq!(e.session.editor_readiness, EditorReadiness::Loading(1));
+    assert_eq!(e.session.current_metadata_id, Some(1), "the cached RAW was not built");
     assert_invariants(&e);
 }
 
@@ -285,12 +285,12 @@ fn returning_to_an_image_whose_decode_still_runs_reuses_it() {
     send(&mut e, Message::ImageSelected(2));
     send(&mut e, Message::ImageSelected(1));
     send(&mut e, Message::TabChanged(AppTab::Develop));
-    assert_eq!(e.editor_readiness, EditorReadiness::Loading(1));
-    assert!(e.direct_raw_loads.contains(&1));
+    assert_eq!(e.session.editor_readiness, EditorReadiness::Loading(1));
+    assert!(e.session.direct_raw_loads.contains(&1));
     assert!(!queue(&e).contains(&1), "decoded twice");
     assert_invariants(&e);
     send(&mut e, Message::RawDataLoaded(1, Ok(raw("1"))));
-    assert_eq!(e.current_metadata_id, Some(1));
+    assert_eq!(e.session.current_metadata_id, Some(1));
     assert_invariants(&e);
 }
 
@@ -300,17 +300,17 @@ fn returning_to_an_image_whose_decode_still_runs_reuses_it() {
 #[test]
 fn a_running_direct_decode_is_not_queued_again_as_a_preload() {
     let mut e = develop_with_images(10);
-    assert!(e.direct_raw_loads.contains(&1));
+    assert!(e.session.direct_raw_loads.contains(&1));
     send(&mut e, Message::ImageSelected(2)); // 1 is now its neighbour behind
-    assert!(e.direct_raw_loads.contains(&1));
+    assert!(e.session.direct_raw_loads.contains(&1));
     assert!(!queue(&e).contains(&1), "a running decode was queued again: {:?}", queue(&e));
     assert_invariants(&e);
 
     // Its result is still kept for when the user steps back.
     send(&mut e, Message::RawDataLoaded(1, Ok(raw("1"))));
-    assert!(e.raw_cache.contains(&1));
+    assert!(e.session.raw_cache.contains(&1));
     send(&mut e, Message::ImageSelected(1));
-    assert_eq!(e.current_metadata_id, Some(1));
+    assert_eq!(e.session.current_metadata_id, Some(1));
     assert_invariants(&e);
 }
 
@@ -325,7 +325,7 @@ fn turning_raw_preloads_off_mid_load_keeps_the_awaited_preload() {
     assert_eq!(queue(&e), vec![2]);
     assert_invariants(&e);
     send(&mut e, Message::RawPreloaded(2, Ok(Arc::new(raw("2")))));
-    assert_eq!(e.current_metadata_id, Some(2));
+    assert_eq!(e.session.current_metadata_id, Some(2));
     assert!(e.raw_for(2).is_some(), "the open image's RAW is not pinned");
     assert_invariants(&e);
 }

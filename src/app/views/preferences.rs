@@ -187,7 +187,7 @@ fn general(editor: &RawEditor) -> Element<'_, Message> {
         .spacing(theme::space::XS),
         group_label("Workflow"),
         column![
-            checkbox("Auto-advance", editor.auto_advance)
+            checkbox("Auto-advance", editor.session.auto_advance)
                 .on_toggle(|_| Message::ToggleAutoAdvance)
                 .size(16)
                 .spacing(theme::space::M)
@@ -286,28 +286,28 @@ fn update_status(editor: &RawEditor) -> Option<Element<'_, Message>> {
 }
 
 fn performance(editor: &RawEditor) -> Element<'_, Message> {
-    let used_mb = editor.raw_cache_bytes as f32 / (1024.0 * 1024.0);
-    let budget_mb = editor.raw_preload_budget_mb as f32;
+    let used_mb = editor.session.raw_cache_bytes as f32 / (1024.0 * 1024.0);
+    let budget_mb = editor.session.raw_preload_budget_mb as f32;
 
     column![
         heading("Performance"),
         readout(format!("RAW Cache Usage: {used_mb:.0} / {budget_mb:.0} MB")),
         group_label("Previews"),
-        value_row("Memory Cache Size:", format!("{} Images", editor.cache_capacity)),
-        slider(20.0..=500.0, editor.cache_capacity as f32, Message::SetCacheCapacity)
+        value_row("Memory Cache Size:", format!("{} Images", editor.session.cache_capacity)),
+        slider(20.0..=500.0, editor.session.cache_capacity as f32, Message::SetCacheCapacity)
             .on_release(Message::SavePreferences)
             .step(10.0_f32)
             .style(ui::styles::ProSlider::style),
         hint("Controls how many high-res previews are kept in RAM."),
         value_row(
             "Preview Preload (Behind/Ahead):",
-            format!("{}/{}", editor.preview_preload_behind, editor.preview_preload_ahead),
+            format!("{}/{}", editor.session.preview_preload_behind, editor.session.preview_preload_ahead),
         ),
         labelled_slider(
             "Behind",
             slider(
                 0.0..=crate::app::state::PREVIEW_PRELOAD_BEHIND_MAX as f32,
-                editor.preview_preload_behind as f32,
+                editor.session.preview_preload_behind as f32,
                 Message::SetPreviewPreloadBehind,
             )
             .on_release(Message::SavePreferences)
@@ -318,7 +318,7 @@ fn performance(editor: &RawEditor) -> Element<'_, Message> {
             "Ahead",
             slider(
                 0.0..=crate::app::state::PREVIEW_PRELOAD_AHEAD_MAX as f32,
-                editor.preview_preload_ahead as f32,
+                editor.session.preview_preload_ahead as f32,
                 Message::SetPreviewPreloadAhead,
             )
             .on_release(Message::SavePreferences)
@@ -327,21 +327,21 @@ fn performance(editor: &RawEditor) -> Element<'_, Message> {
         ),
         hint("How many working previews stay queued around your current image."),
         group_label("RAW Files"),
-        value_row("RAW Preload Budget:", format!("{} MB", editor.raw_preload_budget_mb)),
-        slider(0.0..=4096.0, editor.raw_preload_budget_mb as f32, Message::SetRawPreloadBudget)
+        value_row("RAW Preload Budget:", format!("{} MB", editor.session.raw_preload_budget_mb)),
+        slider(0.0..=4096.0, editor.session.raw_preload_budget_mb as f32, Message::SetRawPreloadBudget)
             .on_release(Message::SavePreferences)
             .step(64.0_f32)
             .style(ui::styles::ProSlider::style),
         hint("Develop RAW preloading budget. Set to 0 to disable RAW preloading."),
         value_row(
             "RAW Preload (Behind/Ahead):",
-            format!("{}/{}", editor.raw_preload_behind, editor.raw_preload_ahead),
+            format!("{}/{}", editor.session.raw_preload_behind, editor.session.raw_preload_ahead),
         ),
         labelled_slider(
             "Behind",
             slider(
                 0.0..=crate::app::state::RAW_PRELOAD_BEHIND_MAX as f32,
-                editor.raw_preload_behind as f32,
+                editor.session.raw_preload_behind as f32,
                 Message::SetRawPreloadBehind,
             )
             .on_release(Message::SavePreferences)
@@ -352,7 +352,7 @@ fn performance(editor: &RawEditor) -> Element<'_, Message> {
             "Ahead",
             slider(
                 0.0..=crate::app::state::RAW_PRELOAD_AHEAD_MAX as f32,
-                editor.raw_preload_ahead as f32,
+                editor.session.raw_preload_ahead as f32,
                 Message::SetRawPreloadAhead,
             )
             .on_release(Message::SavePreferences)
@@ -378,15 +378,15 @@ fn memory(editor: &RawEditor) -> Element<'_, Message> {
         group_label("Memory Safety"),
         value_row(
             "Keep RAM Free:",
-            if editor.min_free_ram_mb == 0 {
+            if editor.session.min_free_ram_mb == 0 {
                 "Off".to_string()
             } else {
-                format!("{} MB", editor.min_free_ram_mb)
+                format!("{} MB", editor.session.min_free_ram_mb)
             },
         ),
         slider(
             0.0..=crate::app::state::MIN_FREE_RAM_MB_MAX as f32,
-            editor.min_free_ram_mb as f32,
+            editor.session.min_free_ram_mb as f32,
             Message::SetMinFreeRam,
         )
         .on_release(Message::SavePreferences)
@@ -423,7 +423,7 @@ fn camera_profiles(editor: &RawEditor) -> Element<'_, Message> {
     use crate::core::camera_profiles::{camera_name, Catalog, Origin};
 
     let catalog = Catalog::loaded();
-    let state = &editor.camera_profiles;
+    let state = &editor.session.camera_profiles;
     let idle = state.busy.is_none();
 
     let installed: Element<'_, Message> = match &catalog {
@@ -439,7 +439,7 @@ fn camera_profiles(editor: &RawEditor) -> Element<'_, Message> {
                 label: p.name.clone(),
             }));
             options.push(DefaultOption { value: Some("builtin".to_string()), label: "None (built-in colour)".to_string() });
-            let current = editor.camera_profile_defaults.get(&camera).cloned();
+            let current = editor.session.camera_profile_defaults.get(&camera).cloned();
             let selected = options.iter().find(|o| o.value == current).or(options.first()).cloned();
             let key = camera.clone();
             let default = iced::widget::pick_list(options, selected, move |o: DefaultOption| {
@@ -504,7 +504,7 @@ fn camera_profiles(editor: &RawEditor) -> Element<'_, Message> {
     };
 
     // Download for the image open in Develop, when there is one.
-    let open_camera = editor.current_metadata.as_ref().map(|m| camera_name(&m.make, &m.model));
+    let open_camera = editor.session.current_metadata.as_ref().map(|m| camera_name(&m.make, &m.model));
     let mut actions = row![].spacing(theme::space::M);
     if let Some(camera) = &open_camera {
         actions = actions.push(
@@ -596,7 +596,7 @@ fn lens_profiles(editor: &RawEditor) -> Element<'_, Message> {
     use crate::core::lensfun::format_date;
 
     let db = crate::core::lens::LensDb::loaded();
-    let state = &editor.lensfun;
+    let state = &editor.session.lensfun;
     let busy = state.busy;
     let own_dir = crate::core::paths::lensfun_dir();
     let downloaded_dir = crate::core::paths::lensfun_updates_dir();
@@ -749,8 +749,8 @@ fn ai_models(editor: &RawEditor) -> Element<'_, Message> {
     let cards = ALL.iter().fold(column![].spacing(theme::space::XL), |list, model| {
         let id = model.id;
         let installed = is_installed(id);
-        let job = editor.models.job.as_ref().filter(|(j, _)| *j == id);
-        let busy = editor.models.job.is_some();
+        let job = editor.session.models.job.as_ref().filter(|(j, _)| *j == id);
+        let busy = editor.session.models.job.is_some();
         let action: Element<'_, Message> = match (job, installed) {
             (Some((_, progress)), _) => row![
                 iced::widget::progress_bar(0.0..=1.0, progress.fraction()).height(6).width(Length::Fixed(160.0)),
@@ -789,7 +789,7 @@ fn ai_models(editor: &RawEditor) -> Element<'_, Message> {
             hint(model.licence),
         ]
         .spacing(theme::space::M);
-        if let Some((_, e)) = editor.models.error.as_ref().filter(|(e, _)| *e == id) {
+        if let Some((_, e)) = editor.session.models.error.as_ref().filter(|(e, _)| *e == id) {
             body = body.push(text(format!("Download failed: {e}")).size(theme::size::SMALL).style(|_| text::Style {
                 color: Some(theme::colours().warn),
             }));

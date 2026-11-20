@@ -39,23 +39,23 @@ fn a_push_during_a_render_waits_for_the_next_render() {
         .expect("image resources");
         res.update_uniforms(&ctx, &EditParams::default(), None, None);
         let mut e = RawEditor::new().0;
-        e.selected_image_id = Some(1);
-        e.gpu_context = Some(ctx);
-        e.image_resources = Some(Arc::new(res));
-        e.viewport_size = (800.0, 600.0);
-        e.scale_factor = 1.0;
+        e.session.selected_image_id = Some(1);
+        e.session.gpu_context = Some(ctx);
+        e.session.image_resources = Some(Arc::new(res));
+        e.session.viewport_size = (800.0, 600.0);
+        e.session.scale_factor = 1.0;
 
-        e.is_rendering = true; // a render task is in flight
+        e.session.is_rendering = true; // a render task is in flight
         let edit = EditParams { exposure: 1.5, ..EditParams::default() };
         let _ = push_uniforms_and_render(&mut e, &edit);
-        let pushed = || e.image_resources.as_ref().unwrap().pushed_params().exposure;
+        let pushed = || e.session.image_resources.as_ref().unwrap().pushed_params().exposure;
         assert_eq!(pushed(), 0.0, "the UI thread wrote the uniforms mid-render");
-        assert!(e.pending_render);
+        assert!(e.session.pending_render);
 
         // The finished render's follow-up applies it before it renders.
-        e.is_rendering = true;
+        e.session.is_rendering = true;
         let _ = trigger_async_render(&mut e);
-        assert_eq!(e.image_resources.as_ref().unwrap().pushed_params().exposure, 1.5);
+        assert_eq!(e.session.image_resources.as_ref().unwrap().pushed_params().exposure, 1.5);
     });
 }
 
@@ -72,12 +72,12 @@ fn a_lost_device_is_detected_and_the_context_replaced() {
         assert!(ctx.is_lost(), "destroying the device was not noticed");
 
         let mut e = RawEditor::new().0;
-        e.gpu_context = Some(ctx.clone());
-        e.gpu_init.set(ctx.clone()).ok();
+        e.session.gpu_context = Some(ctx.clone());
+        e.session.gpu_init.set(ctx.clone()).ok();
         let _ = handle_gpu_lost(&mut e);
-        assert!(e.gpu_context.is_none());
-        assert!(e.gpu_init.get().is_none(), "the dead context would be handed out again");
-        assert!(e.status.contains("GPU"));
+        assert!(e.session.gpu_context.is_none());
+        assert!(e.session.gpu_init.get().is_none(), "the dead context would be handed out again");
+        assert!(e.session.status.contains("GPU"));
     });
 }
 
@@ -114,12 +114,12 @@ fn bench_slider_ticks() {
     .expect("image resources");
     res.update_uniforms(&ctx, &EditParams::default(), None, None);
     let mut e = RawEditor::new().0;
-    e.selected_image_id = Some(1);
-    e.current_tab = AppTab::Develop;
-    e.gpu_context = Some(ctx);
-    e.image_resources = Some(Arc::new(res));
-    e.viewport_size = (1600.0, 1000.0);
-    e.scale_factor = 1.0;
+    e.session.selected_image_id = Some(1);
+    e.session.current_tab = AppTab::Develop;
+    e.session.gpu_context = Some(ctx);
+    e.session.image_resources = Some(Arc::new(res));
+    e.session.viewport_size = (1600.0, 1000.0);
+    e.session.scale_factor = 1.0;
 
     // Run a task to completion, returning the messages it produced.
     let run = |task: iced::Task<Message>| -> Vec<Message> {

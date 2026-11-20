@@ -21,10 +21,430 @@ pub enum SessionEvent {
     UpdateChecked { result: Result<Option<crate::core::updates::Available>, String>, manual: bool },
 }
 
-#[derive(Debug, Default)]
+// The state below moved here from `RawEditor` as is (comments included); the
+// functions that use it follow area by area. Its types still live in the app
+// (`app::state` and the handlers) until the session leaves the app.
+use crate::app::message::AppTab;
+use crate::app::state::*;
+use crate::{database, gpu, raw};
+use lru::LruCache;
+use std::collections::{HashMap, HashSet};
+use crate::database::models::Image as ImageData;
+use std::num::NonZeroUsize;
+use std::sync::Arc;
+
+#[derive(Debug)]
 pub struct Session {
     /// `AppSettings::update_check`: `None` until the first-run prompt is answered.
     pub update_check: Option<bool>,
     /// The update check's progress and result.
     pub updates: UpdatesState,
+    /// Per-camera default profile (`AppSettings::camera_profile_defaults`).
+    pub camera_profile_defaults: std::collections::HashMap<String, String>,
+
+    /// Image IDs the open Delete modal acts on — a stable snapshot taken
+    /// when the modal opens, not re-read live from multi_selection.
+    pub pending_delete_ids: Vec<i64>,
+    /// Guards against a double Enter-press firing two overlapping delete
+    /// batches while a hard-delete is already in flight.
+    pub is_deleting: bool,
+
+    // Phase 85: User-configurable cache capacity
+    pub cache_capacity: usize,
+
+    // Phase 89: Export Studio
+    pub export_settings: ExportSettings,
+    /// Remaining work, consumed with `pop()`. Stored REVERSED relative to
+    /// display order so popping yields images front-to-back.
+    pub export_queue: Vec<i64>,
+    /// The whole batch in display order, with per-image progress. Survives the
+    /// run so the Export tab can show results afterwards.
+    pub export_jobs: Vec<ExportJob>,
+    pub is_exporting: bool,
+
+    /// The catalog database (Phase 23: Optional during startup)
+    pub library: Option<database::library::Library>,
+    /// Status message to display to the user
+    pub status: String,
+    /// All images loaded from the database
+    pub images: Vec<ImageData>,
+    /// Images still awaiting cache-tier generation. Seeded from SQLite once
+    /// when the workers start, then decremented in memory as each completes —
+    /// re-querying (and reloading the whole catalog) per completed image made
+    /// import O(N^2) and froze the UI.
+    pub pending_cache_count: i64,
+    /// Currently selected image ID
+    pub selected_image_id: Option<i64>,
+    /// Phase 73: RAM cache for 1280px previews (Look-Ahead)
+    pub preview_cache: LruCache<i64, CachedPreview>,
+    /// Small renders of images as edited, newest per image.
+    pub edited_proxies: LruCache<i64, EditedProxy>,
+    /// Last `EditedProxy::generation` handed out.
+    pub proxy_generation: u64,
+    /// Images the user left while the render of their final edit was still in
+    /// flight, with that edit: `proxy::resolve_awaiting` saves the proxy when
+    /// the render lands.
+    pub proxy_awaiting: HashMap<i64, crate::core::types::EditParams>,
+    /// Saved proxies being read back for Develop's neighbours — same queue
+    /// discipline as `queued_loads`.
+    pub pending_proxy_loads: HashSet<i64>,
+    pub queued_proxy_loads: Vec<(i64, String)>,
+    /// RAW preload RAM budget in MB (0 = disabled)
+    pub raw_preload_budget_mb: u32,
+    /// Physical RAM to keep free during batch export, in MB (0 = disabled).
+    /// Unlike `raw_preload_budget_mb`, which caps the app's OWN cache, this is
+    /// a check against the whole system — see `core::memory`.
+    pub min_free_ram_mb: u32,
+    /// True while a batch is paused waiting for memory, so the UI can say so
+    /// and the log can fire once per transition instead of once per check.
+    pub export_paused_for_memory: bool,
+    /// Decoded RAW cache for fast develop navigation
+    pub raw_cache: LruCache<i64, Arc<raw::loader::RawDataResult>>,
+    /// Approximate memory usage of raw_cache in bytes
+    pub raw_cache_bytes: usize,
+    /// Cache workers currently running (`library::spawn_cache_workers` tops
+    /// this up to `CACHE_WORKERS`; a retiring worker gives its slot back).
+    pub cache_workers_live: usize,
+    /// The open image's RAW, held outside the preload budget (which can be 0,
+    /// or evict the open image first). Read through `raw_for`.
+    pub current_raw: Option<(i64, Arc<raw::loader::RawDataResult>)>,
+    /// Number of previews to keep preloaded behind current image
+    pub preview_preload_behind: usize,
+    /// Number of previews to keep preloaded ahead of current image
+    pub preview_preload_ahead: usize,
+    /// Number of RAW files to preload behind current image
+    pub raw_preload_behind: usize,
+    /// Number of RAW files to preload ahead of current image
+    pub raw_preload_ahead: usize,
+    /// Currently active tab
+    pub current_tab: AppTab,
+    /// Current edit parameters for the selected image
+    pub current_edit_params: crate::core::types::EditParams,
+    // Phase 140: Currently loaded DCP profile
+    pub current_dcp_profile: Option<Arc<crate::raw::dcp::DcpProfile>>,
+    /// Memo for `resolve_wb_and_dcp`, keyed on the only two inputs the
+    /// interpolation depends on: `(kelvin, ToneSettings)`.
+    ///
+    /// Without it, every slider tick — exposure, contrast, a mask drag —
+    /// rebuilt the full HueSatMap LUT and re-baked the 1024-entry tone curve,
+    /// then handed the result to `update_uniforms`, which discarded it via its
+    /// own dirty-check on the same two values.
+    ///
+    /// `RefCell` rather than a plain field so `resolve_wb_and_dcp` can keep its
+    /// `&RawEditor` signature: the crop and mask drag paths call it while
+    /// holding an immutable borrow of `gpu_context`/`image_resources`.
+    /// Cleared on image load, where `current_dcp_profile` changes.
+    pub dcp_memo: std::cell::RefCell<Option<DcpMemo>>,
+    /// As-shot white balance of the current image as (Kelvin, Adobe tint),
+    /// solved from the camera's WB multipliers via the color matrix (Robertson
+    /// CCT). Anchor for the Temp/Tint sliders; None until a raw is loaded.
+    pub as_shot_wb: Option<(f32, f32)>,
+
+    // Phase 95: Unified GPU Pipeline Architecture
+    /// Shared GPU context (created once, reused for all images)
+    pub gpu_context: Option<Arc<gpu::shared::SharedContext>>,
+    /// Where the context is created, exactly once (see
+    /// `handlers::loading::shared_context`): tasks started before the first
+    /// finishes would otherwise each build their own device.
+    pub gpu_init: Arc<tokio::sync::OnceCell<Arc<gpu::shared::SharedContext>>>,
+    /// Current image resources (created per image, wrapped in Arc)
+    pub image_resources: Option<Arc<gpu::shared::ImageResources>>,
+    /// The subsampled develop preview of the same image, kept once
+    /// `image_resources` has been upgraded to full resolution. Renders use it
+    /// whenever full resolution would add nothing — a view that does not
+    /// magnify it, the whole-image overview, a noise-reduction drag — because
+    /// the cached stages (denoise) cost per SOURCE pixel: at 24 MP every NR
+    /// tick re-ran them over the whole sensor, a few fps on an iGPU. Always
+    /// None or the same image as `image_resources`; cleared with it.
+    pub preview_resources: Option<Arc<gpu::shared::ImageResources>>,
+    /// Editor readiness status
+    pub editor_readiness: EditorReadiness,
+
+    /// Phase 21: Histogram data [R[256], G[256], B[256]]
+    pub histogram_data: std::cell::RefCell<[[u32; 256]; 3]>,
+    /// True while Space is held to peek at the unedited original.
+    ///
+    /// Actually read, unlike the `show_before` flag this replaces: it selects
+    /// which params `handlers::develop::refresh_for_peek_state` uploads, and
+    /// drives the BEFORE badge in the develop view. Never persisted, and the
+    /// peek's params are never written to `current_edit_params` — doing so
+    /// would let a flush point save them over the user's real edits.
+    pub before_peek: bool,
+    /// Phase 25: Zoom level (1.0 = 100%, 2.0 = 200%, etc.)
+    pub zoom: f32,
+    /// Phase 115: Native GPU Shader Viewport raw pixel buffers
+    pub working_preview_bytes: Option<std::sync::Arc<[u8]>>,
+    pub rendered_preview_bytes: Option<std::sync::Arc<[u8]>>,
+    /// Monotonic id of the preview pixel contents, handed to the viewport
+    /// shader so it can skip re-uploading an unchanged texture every redraw.
+    /// Bump via `bump_preview_generation` whenever either bytes field is
+    /// replaced. Starts at 1; 0 is the shader's placeholder sentinel.
+    pub preview_generation: u64,
+    /// Region of the image the preview buffer ACTUALLY on screen covers,
+    /// `(u0, v0, du, dv)` in view UV.
+    ///
+    /// Published only when new bytes land, never when a render is merely
+    /// requested — the two must move together or the still-current texture
+    /// gets drawn at the incoming window's placement, which reads as the whole
+    /// image jumping for a frame.
+    pub rendered_view_rect: [f32; 4],
+    /// Region the in-flight (or most recently requested) render covers.
+    ///
+    /// Separate from `rendered_view_rect` so "do we need to re-render?" can be
+    /// answered against what is already on its way, rather than re-requesting
+    /// the same window on every pan event while it is still rendering.
+    pub requested_view_rect: [f32; 4],
+    /// Phase 115: Pixel dimensions for the above preview byte buffers
+    pub working_preview_dims: (u32, u32),
+    pub rendered_preview_dims: (u32, u32),
+    /// Phase 25: Pan offset in normalized coordinates
+    pub pan_offset: cgmath::Vector2<f32>,
+    /// Phase 26: Viewport size for zoom-to-cursor calculations (actual displayed size)
+    pub viewport_size: (f32, f32), // (width, height) in screen pixels
+    /// Set by the per-tick edit path, cleared by `flush_edits` at commit
+    /// points. Keeps SQLite writes off the slider-drag hot path.
+    pub edits_dirty: bool,
+    pub scale_factor: f32,
+    /// Phase 103: High-quality rendered preview (async updated)
+    /// Phase 41: Current image metadata for inspection
+    pub current_metadata: Option<raw::loader::RawDataResult>,
+    /// Which image `current_metadata` was read from. It is only refreshed by
+    /// a Develop RAW load, so without this the Cull overlay showed whatever
+    /// photo was last opened in Develop. Read it via `selected_metadata`.
+    pub current_metadata_id: Option<i64>,
+    /// Phase 54: Edit settings clipboard for copy/paste.
+    ///
+    /// Carries the copied params AND which categories were selected, so paste
+    /// can merge rather than overwrite — see `core::types::EditClipboard`.
+    pub edit_clipboard: Option<crate::core::types::EditClipboard>,
+    /// Current selection in the Copy Settings picker. Persisted to
+    /// `AppSettings` so it survives a restart.
+    pub copy_categories: crate::core::types::CopyCategories,
+    /// Phase 55: Multi-selection set (image IDs)
+    pub multi_selection: HashSet<i64>,
+    /// Phase 83: Auto-advance to next image after rating/flagging
+    pub auto_advance: bool,
+    /// Phase 59: Minimum rating filter (0 = show all, 1-5 = show rating or higher)
+    pub min_filter_rating: u8,
+    /// Library folder filter (path prefix)
+    pub library_folder_filter: Option<String>,
+    /// Phase 65: Undo/Redo History Map<ImageID, (HistoryStack, CurrentIndex)>
+    pub history_map: HashMap<i64, (Vec<crate::core::types::EditParams>, usize)>,
+    /// Phase 67: Interactive crop mode
+    pub is_cropping: bool,
+    /// WB eyedropper tool active: next click on the preview samples a neutral.
+    /// Mutually exclusive with `is_cropping`.
+    pub is_wb_picking: bool,
+    /// Level tool armed: the next drag on the preview draws a line that
+    /// should be level (or upright), and sets Straighten from it. Mutually
+    /// exclusive with every other tool.
+    pub is_leveling: bool,
+    /// Local adjustment mask tool (placement mode). Mutually exclusive with
+    /// crop and WB picker.
+    pub mask_tool: MaskTool,
+    /// Index into current_edit_params.masks of the mask being edited
+    /// (overlay handles + sidebar sliders). None = no mask selected.
+    pub selected_mask: Option<usize>,
+    /// Brush tool settings for painting masks (UI state).
+    pub brush_settings: BrushSettings,
+    /// A stroke is in progress.
+    pub is_painting: bool,
+    /// Tint the selected mask's coverage over the render.
+    pub show_mask_overlay: bool,
+    /// The colour-range eyedropper is armed for this mask.
+    pub color_picking_mask: Option<usize>,
+    /// Phase 78: Async Task Deduplication (track pending preview loads)
+    pub pending_loads: HashSet<i64>,
+    /// Phase 81: Throttled preview loader queue
+    pub queued_loads: Vec<(i64, String)>,
+    /// Pending RAW preload jobs
+    pub pending_raw_loads: HashSet<i64>,
+    /// Throttled RAW preload queue
+    pub queued_raw_loads: Vec<(i64, String)>,
+    /// Images whose selected-image RAW decode is in flight (started outside the
+    /// preload queue), so a second selection does not start a second decode.
+    pub direct_raw_loads: HashSet<i64>,
+
+    /// Phase 104: Performance Profiler
+    pub profiler: crate::core::profiler::Profiler,
+
+    /// Phase 106: Render Throttling
+    pub is_rendering: bool,
+    pub pending_render: bool,
+    /// Params pushed while a render was in flight, with the image they belong
+    /// to. The render task is the only writer of the uniform block while it
+    /// runs (it patches `view_rect` between its own submits, and the stages
+    /// read `stage_params` at render time), so the UI thread parks the push
+    /// here and `trigger_async_render` applies it before the next frame.
+    pub deferred_push: Option<(i64, crate::core::types::EditParams)>,
+    /// True while a full-resolution resource rebuild is in flight. One at a
+    /// time, across images: each holds a full-size working set on the GPU,
+    /// and navigating quickly must not stack them. Cleared only by that
+    /// rebuild's own result (`Message::FullResReady`).
+    pub full_res_upgrading: bool,
+    /// The image whose full-resolution rebuild last failed (out of GPU
+    /// memory, say): not retried on every render while it stays selected.
+    pub full_res_failed: Option<i64>,
+    /// A noise-reduction slider is being dragged (set by its change handlers,
+    /// cleared by `commit_current_state` — the slider's release). While set,
+    /// a zoomed-in view renders from `preview_resources` so the drag stays
+    /// interactive; the release re-renders at full resolution.
+    pub stage_drag: bool,
+    /// When the last undo step was pushed (`commit_current_state`). A double-click
+    /// reset on a slider amends that step instead of adding a second one.
+    pub last_commit: Option<std::time::Instant>,
+    /// The on-screen render came from `preview_resources` only because of a
+    /// `stage_drag`, so it is softer than the view calls for.
+    pub display_from_drag_preview: bool,
+    /// See [`HeldNoise`]. `Some` from a noise slider's first tick until the
+    /// drag pauses (`NOISE_SETTLE`) or ends.
+    pub held_noise: Option<HeldNoise>,
+    /// Matches the settle timer to the latest noise-slider tick.
+    pub noise_settle_token: u64,
+    pub loupe: LoupeState,
+    pub lensfun: LensfunState,
+    /// The open AI-select session, if any (`handlers::ai_mask`).
+    pub ai_select: Option<crate::app::handlers::ai_mask::AiSelect>,
+    /// The selected image's decoded AI-mask bitmaps.
+    pub ai_bitmaps: crate::app::handlers::ai_mask::AiBitmapState,
+    /// AI model downloads (`handlers::models`).
+    pub models: crate::app::handlers::models::ModelsState,
+    /// The AI denoise modal (`handlers::ai_denoise`).
+    pub ai_denoise: crate::app::handlers::ai_denoise::AiDenoiseState,
+    pub camera_profiles: CameraProfileState,
+}
+
+impl Session {
+    /// A session with no catalogue yet (it loads in the background), set up
+    /// from the saved settings.
+    pub fn new(settings: &crate::core::settings::AppSettings) -> Self {
+        let cache_capacity = settings.cache_capacity.clamp(20, 500);
+        let raw_preload_budget_mb = settings.raw_preload_budget_mb.min(4096);
+        let preview_preload_behind = settings
+            .preview_preload_behind
+            .min(PREVIEW_PRELOAD_BEHIND_MAX);
+        let preview_preload_ahead = settings
+            .preview_preload_ahead
+            .min(PREVIEW_PRELOAD_AHEAD_MAX);
+        let raw_preload_behind = settings.raw_preload_behind.min(RAW_PRELOAD_BEHIND_MAX);
+        let raw_preload_ahead = settings.raw_preload_ahead.min(RAW_PRELOAD_AHEAD_MAX);
+        Self {
+                update_check: settings.update_check,
+                updates: UpdatesState::default(),
+                library: None, // Phase 23: Database loads in background
+                status: "Starting…".to_string(),
+                images: Vec::new(), // Empty until database loads
+                pending_cache_count: 0,
+                selected_image_id: None,
+                preview_cache: LruCache::new(NonZeroUsize::new(cache_capacity).unwrap()),
+                edited_proxies: LruCache::new(
+                    NonZeroUsize::new(EDITED_PROXY_CAPACITY).unwrap_or(NonZeroUsize::MIN),
+                ),
+                proxy_generation: 0,
+                proxy_awaiting: HashMap::new(),
+                pending_proxy_loads: HashSet::new(),
+                queued_proxy_loads: Vec::new(),
+                raw_preload_budget_mb,
+                min_free_ram_mb: settings.min_free_ram_mb.min(MIN_FREE_RAM_MB_MAX),
+                export_paused_for_memory: false,
+                raw_cache: LruCache::new(NonZeroUsize::new(RAW_CACHE_ENTRY_CAPACITY).unwrap()),
+                raw_cache_bytes: 0,
+                cache_workers_live: 0,
+                current_raw: None,
+                preview_preload_behind,
+                preview_preload_ahead,
+                raw_preload_behind,
+                raw_preload_ahead,
+                current_tab: AppTab::Library, // Start in Library view
+                current_edit_params: crate::core::types::EditParams::default(),
+                current_dcp_profile: None, // Phase 140: No DCP profile initially
+                dcp_memo: std::cell::RefCell::new(None),
+                as_shot_wb: None,
+
+                // Phase 95: Unified GPU Pipeline Architecture
+                gpu_context: None, // Will be initialized on first image load
+                gpu_init: Arc::new(tokio::sync::OnceCell::new()),
+                image_resources: None,
+                preview_resources: None,
+                editor_readiness: EditorReadiness::NoSelection,
+
+                histogram_data: std::cell::RefCell::new([[0; 256]; 3]),
+                before_peek: false,
+                zoom: 1.0,
+                pan_offset: cgmath::Vector2::new(0.0, 0.0),
+                viewport_size: (800.0, 400.0),
+                edits_dirty: false,
+                scale_factor: 1.0,
+                working_preview_bytes: None,
+                rendered_preview_bytes: None,
+                preview_generation: 1,
+                rendered_view_rect: crate::gpu::params::FULL_VIEW_RECT,
+                requested_view_rect: crate::gpu::params::FULL_VIEW_RECT,
+                working_preview_dims: (1, 1),
+                rendered_preview_dims: (1, 1),
+                current_metadata: None,
+                current_metadata_id: None,
+                edit_clipboard: None,
+                copy_categories: settings.copy_categories,
+                multi_selection: HashSet::new(),
+                auto_advance: settings.auto_advance,
+                min_filter_rating: 0,
+                library_folder_filter: None,
+                pending_delete_ids: Vec::new(),
+                is_deleting: false,
+                // Phase 85
+                cache_capacity,
+                // Phase 89
+                export_settings: ExportSettings::default(),
+                export_queue: Vec::new(),
+                export_jobs: Vec::new(),
+                is_exporting: false,
+
+                // Phase 104/105: Profiler
+                profiler: crate::core::profiler::Profiler::new(),
+                is_rendering: false,
+                pending_render: false,
+                deferred_push: None,
+                full_res_upgrading: false,
+                full_res_failed: None,
+                stage_drag: false,
+                last_commit: None,
+                display_from_drag_preview: false,
+                held_noise: None,
+                noise_settle_token: 0,
+                loupe: LoupeState::default(),
+                lensfun: LensfunState::default(),
+                ai_select: None,
+                ai_bitmaps: Default::default(),
+                models: Default::default(),
+                ai_denoise: Default::default(),
+                camera_profiles: CameraProfileState::default(),
+                camera_profile_defaults: settings.camera_profile_defaults.clone(),
+
+                // Background task
+                // background_task: None, // This field is not defined in the struct
+                history_map: HashMap::new(),
+                is_cropping: false,
+                is_wb_picking: false,
+                is_leveling: false,
+                mask_tool: MaskTool::Inactive,
+                selected_mask: None,
+                brush_settings: BrushSettings::default(),
+                is_painting: false,
+                show_mask_overlay: false,
+                color_picking_mask: None,
+                pending_loads: HashSet::new(),
+                queued_loads: Vec::new(),
+                pending_raw_loads: HashSet::new(),
+                queued_raw_loads: Vec::new(),
+                direct_raw_loads: HashSet::new(),
+        }
+    }
+}
+
+impl Default for Session {
+    /// The session for default settings (tests).
+    fn default() -> Self {
+        Self::new(&crate::core::settings::AppSettings::default())
+    }
 }

@@ -130,27 +130,27 @@ fn session_token() -> u64 {
 
 /// `+ AI Select`: a new AI mask, selecting into it straight away.
 pub fn handle_start(editor: &mut RawEditor) -> Task<Message> {
-    if editor.ai_select.is_some() {
+    if editor.session.ai_select.is_some() {
         return Task::none();
     }
     if !crate::ml::models::is_installed(ModelId::Segment) {
         return crate::app::handlers::models::offer(editor, ModelId::Segment);
     }
-    let count = editor.current_edit_params.mask_count as usize;
+    let count = editor.session.current_edit_params.mask_count as usize;
     if count >= MAX_MASKS {
-        editor.status = format!("At most {MAX_MASKS} masks per image");
+        editor.session.status = format!("At most {MAX_MASKS} masks per image");
         return Task::none();
     }
-    editor.current_edit_params.masks[count] = MaskParams::new_ai();
-    editor.current_edit_params.mask_count = (count + 1) as u32;
+    editor.session.current_edit_params.masks[count] = MaskParams::new_ai();
+    editor.session.current_edit_params.mask_count = (count + 1) as u32;
     open(editor, count, true)
 }
 
 /// `Refine` on an existing AI mask: reopen it with its prompts.
 pub fn handle_refine(editor: &mut RawEditor, slot: usize) -> Task<Message> {
-    if editor.ai_select.is_some()
-        || slot >= editor.current_edit_params.mask_count as usize
-        || editor.current_edit_params.masks[slot].mask_type != MASK_AI
+    if editor.session.ai_select.is_some()
+        || slot >= editor.session.current_edit_params.mask_count as usize
+        || editor.session.current_edit_params.masks[slot].mask_type != MASK_AI
     {
         return Task::none();
     }
@@ -161,17 +161,17 @@ pub fn handle_refine(editor: &mut RawEditor, slot: usize) -> Task<Message> {
 }
 
 fn open(editor: &mut RawEditor, slot: usize, created: bool) -> Task<Message> {
-    let Some(image_id) = editor.selected_image_id else { return Task::none() };
-    let Some(res) = editor.image_resources.clone() else { return Task::none() };
+    let Some(image_id) = editor.session.selected_image_id else { return Task::none() };
+    let Some(res) = editor.session.image_resources.clone() else { return Task::none() };
     if res.image_id != image_id {
         return Task::none();
     }
-    let params = editor.current_edit_params;
+    let params = editor.session.current_edit_params;
     let orientation = res.display_orientation(params.quarter_turns);
     let prev_ai_id = params.masks[slot].ai_id;
     let prompts = if prev_ai_id != 0 { masks::load_prompts(image_id, prev_ai_id) } else { Prompts::default() };
     let token = session_token();
-    editor.ai_select = Some(AiSelect {
+    editor.session.ai_select = Some(AiSelect {
         image_id,
         slot,
         orientation,
@@ -185,15 +185,15 @@ fn open(editor: &mut RawEditor, slot: usize, created: bool) -> Task<Message> {
         token,
     });
     // Other tools off: the canvas belongs to AI select now.
-    editor.mask_tool = crate::app::state::MaskTool::Inactive;
+    editor.session.mask_tool = crate::app::state::MaskTool::Inactive;
     editor.brush_armed = false;
-    editor.color_picking_mask = None;
-    editor.selected_mask = Some(slot);
-    editor.status = "AI Select: analysing the image…".into();
+    editor.session.color_picking_mask = None;
+    editor.session.selected_mask = Some(slot);
+    editor.session.status = "AI Select: analysing the image…".into();
     let draw = crate::app::handlers::develop::update_pipeline(editor);
 
     let cached = editor.raw_for(image_id);
-    let path = editor.images.iter().find(|i| i.id == image_id).map(|i| i.path.clone());
+    let path = editor.session.images.iter().find(|i| i.id == image_id).map(|i| i.path.clone());
     let black_offsets = params.black_offsets;
     let build = Task::perform(
         async move {
@@ -218,18 +218,18 @@ fn open(editor: &mut RawEditor, slot: usize, created: bool) -> Task<Message> {
 }
 
 pub fn handle_engine_ready(editor: &mut RawEditor, token: u64, result: Result<EngineHandle, String>) -> Task<Message> {
-    let Some(s) = editor.ai_select.as_mut().filter(|s| s.token == token) else {
+    let Some(s) = editor.session.ai_select.as_mut().filter(|s| s.token == token) else {
         return Task::none(); // the session ended meanwhile; the engine drops here
     };
     match result {
         Ok(engine) => {
             s.engine = Some(engine);
-            editor.status = HINT.into();
+            editor.session.status = HINT.into();
             decode(editor)
         }
         Err(e) => {
             tracing::error!("AI select: {e}");
-            editor.status = format!("AI Select unavailable: {e}");
+            editor.session.status = format!("AI Select unavailable: {e}");
             s.error = Some(e);
             Task::none()
         }
@@ -243,11 +243,11 @@ pub const HINT: &str = "AI Select: click to add · right-click or Alt-click to s
 /// SAM is prompted at the content that was clicked. The mask is read back at
 /// the same source position (`core::viewport::frame_to_layer_uv`).
 fn source_uv(editor: &RawEditor, u: f32, v: f32) -> (f32, f32) {
-    let Some(s) = editor.ai_select.as_ref() else { return (u, v) };
+    let Some(s) = editor.session.ai_select.as_ref() else { return (u, v) };
     match crate::app::handlers::develop::source_geometry(editor, s.image_id) {
         Some(geo) => {
             crate::core::viewport::frame_to_source_uv(
-                &editor.current_edit_params,
+                &editor.session.current_edit_params,
                 &geo.lens,
                 s.orientation,
                 geo.width,
@@ -264,7 +264,7 @@ fn source_uv(editor: &RawEditor, u: f32, v: f32) -> (f32, f32) {
 /// A click on the photo, in full-image display UV.
 pub fn handle_prompt(editor: &mut RawEditor, u: f32, v: f32, positive: bool) -> Task<Message> {
     let (su, sv) = source_uv(editor, u, v);
-    let Some(s) = editor.ai_select.as_mut() else { return Task::none() };
+    let Some(s) = editor.session.ai_select.as_mut() else { return Task::none() };
     s.prompts.points.push(Point { u: su, v: sv, positive });
     decode(editor)
 }
@@ -274,7 +274,7 @@ pub fn handle_prompt(editor: &mut RawEditor, u: f32, v: f32, positive: bool) -> 
 /// (whose boxes are axis-aligned) gets the bounds of all four corners.
 pub fn handle_rect(editor: &mut RawEditor, u0: f32, v0: f32, u1: f32, v1: f32) -> Task<Message> {
     let corners = [(u0, v0), (u1, v0), (u1, v1), (u0, v1)].map(|(u, v)| source_uv(editor, u, v));
-    let Some(s) = editor.ai_select.as_mut() else { return Task::none() };
+    let Some(s) = editor.session.ai_select.as_mut() else { return Task::none() };
     let lo = corners.iter().fold((f32::MAX, f32::MAX), |m, c| (m.0.min(c.0), m.1.min(c.1)));
     let hi = corners.iter().fold((f32::MIN, f32::MIN), |m, c| (m.0.max(c.0), m.1.max(c.1)));
     s.prompts.rect = Some([lo.0, lo.1, hi.0, hi.1]);
@@ -284,7 +284,7 @@ pub fn handle_rect(editor: &mut RawEditor, u0: f32, v0: f32, u1: f32, v1: f32) -
 /// Run the decoder on the current prompts, unless it is already running
 /// (the result handler starts another if prompts arrived meanwhile).
 fn decode(editor: &mut RawEditor) -> Task<Message> {
-    let Some(s) = editor.ai_select.as_mut() else { return Task::none() };
+    let Some(s) = editor.session.ai_select.as_mut() else { return Task::none() };
     let Some(engine) = s.engine.clone() else { return Task::none() };
     if s.decoding || s.prompts.is_empty() {
         return Task::none();
@@ -310,7 +310,7 @@ fn decode(editor: &mut RawEditor) -> Task<Message> {
 }
 
 pub fn handle_mask_ready(editor: &mut RawEditor, token: u64, result: Result<Selection, String>) -> Task<Message> {
-    let Some(s) = editor.ai_select.as_mut().filter(|s| s.token == token) else {
+    let Some(s) = editor.session.ai_select.as_mut().filter(|s| s.token == token) else {
         return Task::none();
     };
     s.decoding = false;
@@ -318,7 +318,7 @@ pub fn handle_mask_ready(editor: &mut RawEditor, token: u64, result: Result<Sele
         Ok(sel) => sel,
         Err(e) => {
             tracing::error!("AI select: {e}");
-            editor.status = format!("AI Select: {e}");
+            editor.session.status = format!("AI Select: {e}");
             return Task::none();
         }
     };
@@ -328,10 +328,10 @@ pub fn handle_mask_ready(editor: &mut RawEditor, token: u64, result: Result<Sele
     insert_bitmap(editor, image_id, sel.ai_id, sel.bitmap);
     // Only into a slot that is still an AI mask: if the list shifted under the
     // session, the index may now name another kind of mask.
-    if slot < editor.current_edit_params.mask_count as usize
-        && editor.current_edit_params.masks[slot].mask_type == MASK_AI
+    if slot < editor.session.current_edit_params.mask_count as usize
+        && editor.session.current_edit_params.masks[slot].mask_type == MASK_AI
     {
-        editor.current_edit_params.masks[slot].ai_id = sel.ai_id;
+        editor.session.current_edit_params.masks[slot].ai_id = sel.ai_id;
     }
     let draw = crate::app::handlers::develop::update_pipeline(editor);
     if stale {
@@ -342,10 +342,10 @@ pub fn handle_mask_ready(editor: &mut RawEditor, token: u64, result: Result<Sele
 
 /// Done (button or Enter): keep the selection.
 pub fn handle_done(editor: &mut RawEditor) -> Task<Message> {
-    let Some(s) = editor.ai_select.take() else { return Task::none() };
-    editor.status = String::new();
+    let Some(s) = editor.session.ai_select.take() else { return Task::none() };
+    editor.session.status = String::new();
     // Nothing was ever selected in a new mask: drop the empty slot.
-    if s.created && editor.current_edit_params.masks.get(s.slot).is_some_and(|m| m.ai_id == 0) {
+    if s.created && editor.session.current_edit_params.masks.get(s.slot).is_some_and(|m| m.ai_id == 0) {
         return crate::app::handlers::masks::handle_delete_mask(editor, s.slot);
     }
     let task = crate::app::handlers::develop::update_pipeline(editor);
@@ -355,13 +355,13 @@ pub fn handle_done(editor: &mut RawEditor) -> Task<Message> {
 
 /// Cancel (button or Escape): put the slot back the way it was.
 pub fn handle_cancel(editor: &mut RawEditor) -> Task<Message> {
-    let Some(s) = editor.ai_select.take() else { return Task::none() };
-    editor.status = String::new();
+    let Some(s) = editor.session.ai_select.take() else { return Task::none() };
+    editor.session.status = String::new();
     if s.created {
         return crate::app::handlers::masks::handle_delete_mask(editor, s.slot);
     }
-    if s.slot < editor.current_edit_params.mask_count as usize {
-        editor.current_edit_params.masks[s.slot].ai_id = s.prev_ai_id;
+    if s.slot < editor.session.current_edit_params.mask_count as usize {
+        editor.session.current_edit_params.masks[s.slot].ai_id = s.prev_ai_id;
     }
     let task = crate::app::handlers::develop::update_pipeline(editor);
     editor.commit_current_state();
@@ -370,7 +370,7 @@ pub fn handle_cancel(editor: &mut RawEditor) -> Task<Message> {
 
 /// Make a bitmap available to the renderer for `image_id`.
 fn insert_bitmap(editor: &mut RawEditor, image_id: i64, ai_id: u64, bitmap: Arc<Bitmap>) {
-    let st = &mut editor.ai_bitmaps;
+    let st = &mut editor.session.ai_bitmaps;
     if st.image_id != Some(image_id) {
         *st = AiBitmapState { image_id: Some(image_id), ..AiBitmapState::default() };
     }
@@ -380,8 +380,8 @@ fn insert_bitmap(editor: &mut RawEditor, image_id: i64, ai_id: u64, bitmap: Arc<
 
 /// Hand the current bitmaps to the image's GPU resources.
 pub fn install(editor: &RawEditor) {
-    let st = &editor.ai_bitmaps;
-    for res in [&editor.image_resources, &editor.preview_resources].into_iter().flatten() {
+    let st = &editor.session.ai_bitmaps;
+    for res in [&editor.session.image_resources, &editor.session.preview_resources].into_iter().flatten() {
         if st.image_id == Some(res.image_id) {
             res.set_ai_bitmaps(st.bitmaps.clone());
         }
@@ -408,18 +408,18 @@ pub fn handle_bitmaps_loaded(
     image_id: i64,
     loaded: Vec<(u64, Result<Arc<Bitmap>, String>)>,
 ) -> Task<Message> {
-    if editor.ai_bitmaps.image_id != Some(image_id) {
+    if editor.session.ai_bitmaps.image_id != Some(image_id) {
         return Task::none();
     }
     for (id, result) in loaded {
-        editor.ai_bitmaps.loading.retain(|&l| l != id);
+        editor.session.ai_bitmaps.loading.retain(|&l| l != id);
         match result {
             Ok(b) => {
-                Arc::make_mut(&mut editor.ai_bitmaps.bitmaps).insert(id, b);
+                Arc::make_mut(&mut editor.session.ai_bitmaps.bitmaps).insert(id, b);
             }
             Err(e) => {
                 tracing::error!("AI mask {id} of image {image_id} could not be read: {e}");
-                editor.ai_bitmaps.failed.push(id);
+                editor.session.ai_bitmaps.failed.push(id);
             }
         }
     }
@@ -431,42 +431,42 @@ pub fn handle_bitmaps_loaded(
 /// edits, and end a session whose image, tab or orientation went away.
 pub fn track(editor: &mut RawEditor) -> Option<Task<Message>> {
     let mut tasks = Vec::new();
-    if let Some(s) = &editor.ai_select {
-        if editor.selected_image_id != Some(s.image_id) {
+    if let Some(s) = &editor.session.ai_select {
+        if editor.session.selected_image_id != Some(s.image_id) {
             // The params are another image's now: only drop the session.
             // (`handle_image_selected` ends it properly before the switch.)
-            editor.ai_select = None;
-            editor.status = String::new();
+            editor.session.ai_select = None;
+            editor.session.status = String::new();
             return track(editor);
         }
-        let gone = editor.current_tab != crate::app::message::AppTab::Develop
+        let gone = editor.session.current_tab != crate::app::message::AppTab::Develop
             || editor
-                .image_resources
+                .session.image_resources
                 .as_ref()
                 .is_some_and(|r| r.image_id == s.image_id
-                    && r.display_orientation(editor.current_edit_params.quarter_turns) != s.orientation)
-            || s.slot >= editor.current_edit_params.mask_count as usize;
+                    && r.display_orientation(editor.session.current_edit_params.quarter_turns) != s.orientation)
+            || s.slot >= editor.session.current_edit_params.mask_count as usize;
         if gone {
             // Keep whatever was selected: leaving is not cancelling.
             tasks.push(handle_done(editor));
         }
     }
 
-    let Some(image_id) = editor.selected_image_id else {
+    let Some(image_id) = editor.session.selected_image_id else {
         return (!tasks.is_empty()).then(|| Task::batch(tasks));
     };
-    if editor.ai_bitmaps.image_id != Some(image_id) {
-        editor.ai_bitmaps = AiBitmapState { image_id: Some(image_id), ..AiBitmapState::default() };
+    if editor.session.ai_bitmaps.image_id != Some(image_id) {
+        editor.session.ai_bitmaps = AiBitmapState { image_id: Some(image_id), ..AiBitmapState::default() };
     }
-    let st = &editor.ai_bitmaps;
+    let st = &editor.session.ai_bitmaps;
     let missing: Vec<u64> = editor
-        .current_edit_params
+        .session.current_edit_params
         .ai_masks()
         .map(|(_, id)| id)
         .filter(|id| !st.bitmaps.contains_key(id) && !st.loading.contains(id) && !st.failed.contains(id))
         .collect();
     if !missing.is_empty() {
-        editor.ai_bitmaps.loading.extend(&missing);
+        editor.session.ai_bitmaps.loading.extend(&missing);
         tasks.push(Task::perform(
             async move {
                 tokio::task::spawn_blocking(move || {
@@ -486,7 +486,7 @@ pub fn track(editor: &mut RawEditor) -> Option<Task<Message>> {
 /// lens remap, so a dot stays on its subject (and under the cursor that made
 /// it) however the image is straightened.
 pub fn display_points(editor: &RawEditor) -> Vec<(f32, f32, bool)> {
-    let Some(s) = editor.ai_select.as_ref() else { return Vec::new() };
+    let Some(s) = editor.session.ai_select.as_ref() else { return Vec::new() };
     let geo = crate::app::handlers::develop::source_geometry(editor, s.image_id);
     s.prompts
         .points
@@ -494,7 +494,7 @@ pub fn display_points(editor: &RawEditor) -> Vec<(f32, f32, bool)> {
         .map(|p| {
             let (u, v) = match &geo {
                 Some(g) => crate::core::viewport::source_to_frame_uv(
-                    &editor.current_edit_params,
+                    &editor.session.current_edit_params,
                     &g.lens,
                     s.orientation,
                     g.width,
@@ -541,19 +541,19 @@ mod tests {
         let mut b = EditParams::default();
         b.masks[0] = MaskParams::new_linear(0.1, 0.1, 0.9, 0.9);
         b.mask_count = 1;
-        e.library.as_ref().unwrap().save_edit_params(2, &b).unwrap();
+        e.session.library.as_ref().unwrap().save_edit_params(2, &b).unwrap();
 
         // Image 1: a new AI slot, session open.
-        e.current_edit_params.masks[0] = MaskParams::new_ai();
-        e.current_edit_params.mask_count = 1;
-        e.ai_select = Some(session(1, 0, true));
+        e.session.current_edit_params.masks[0] = MaskParams::new_ai();
+        e.session.current_edit_params.mask_count = 1;
+        e.session.ai_select = Some(session(1, 0, true));
 
         send(&mut e, Message::ImageSelected(2));
 
-        assert!(e.ai_select.is_none());
-        assert_eq!(e.selected_image_id, Some(2));
-        assert_eq!(e.current_edit_params.mask_count, 1, "image 2's mask was deleted");
-        assert_eq!(e.current_edit_params.masks[0].mask_type, MASK_LINEAR);
+        assert!(e.session.ai_select.is_none());
+        assert_eq!(e.session.selected_image_id, Some(2));
+        assert_eq!(e.session.current_edit_params.mask_count, 1, "image 2's mask was deleted");
+        assert_eq!(e.session.current_edit_params.masks[0].mask_type, MASK_LINEAR);
         assert_eq!(saved_edits(&e, 2).mask_count, 1);
         assert_eq!(saved_edits(&e, 1).mask_count, 0, "image 1 kept an empty AI slot");
     }
@@ -563,9 +563,9 @@ mod tests {
     #[test]
     fn a_selection_is_not_written_into_a_non_ai_slot() {
         let mut e = develop_with_images(1);
-        e.current_edit_params.masks[0] = MaskParams::new_linear(0.1, 0.1, 0.9, 0.9);
-        e.current_edit_params.mask_count = 1;
-        e.ai_select = Some(session(1, 0, false));
+        e.session.current_edit_params.masks[0] = MaskParams::new_linear(0.1, 0.1, 0.9, 0.9);
+        e.session.current_edit_params.mask_count = 1;
+        e.session.ai_select = Some(session(1, 0, false));
         let sel = Selection {
             ai_id: 42,
             bitmap: Arc::new(Bitmap { width: 1, height: 1, data: vec![255] }),
@@ -573,6 +573,6 @@ mod tests {
             prompts: 0,
         };
         let _ = handle_mask_ready(&mut e, 7, Ok(sel));
-        assert_eq!(e.current_edit_params.masks[0].ai_id, 0);
+        assert_eq!(e.session.current_edit_params.masks[0].ai_id, 0);
     }
 }

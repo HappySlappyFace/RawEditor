@@ -10,7 +10,7 @@ pub fn handle_raw_data_loaded(
     image_id: i64,
     result: Result<raw::loader::RawDataResult, String>,
 ) -> Task<Message> {
-    editor.direct_raw_loads.remove(&image_id);
+    editor.session.direct_raw_loads.remove(&image_id);
     match result {
         Ok(raw) => {
             let raw = Arc::new(raw);
@@ -24,9 +24,9 @@ pub fn handle_raw_data_loaded(
             }
         }
         Err(e) => { 
-            if editor.selected_image_id == Some(image_id) {
-                editor.status = format!("Failed to load RAW: {}", e);
-                editor.editor_readiness = EditorReadiness::Failed(image_id, e);
+            if editor.session.selected_image_id == Some(image_id) {
+                editor.session.status = format!("Failed to load RAW: {}", e);
+                editor.session.editor_readiness = EditorReadiness::Failed(image_id, e);
             }
             Task::none()
         }
@@ -55,8 +55,8 @@ pub fn handle_raw_preloaded(
             // for a direct decode. Only logging it left `Loading` with nothing
             // in flight. `Failed` makes a re-select decode it again.
             if awaiting_raw(editor, image_id) {
-                editor.status = format!("Failed to load RAW: {}", e);
-                editor.editor_readiness = EditorReadiness::Failed(image_id, e);
+                editor.session.status = format!("Failed to load RAW: {}", e);
+                editor.session.editor_readiness = EditorReadiness::Failed(image_id, e);
             }
             Task::none()
         }
@@ -70,8 +70,8 @@ pub fn handle_raw_preloaded(
 /// and the result were dropped, coming back would find "still loading", start
 /// nothing, and wait forever.
 fn awaiting_raw(editor: &RawEditor, image_id: i64) -> bool {
-    editor.selected_image_id == Some(image_id)
-        && matches!(editor.editor_readiness, EditorReadiness::Loading(id) if id == image_id)
+    editor.session.selected_image_id == Some(image_id)
+        && matches!(editor.session.editor_readiness, EditorReadiness::Loading(id) if id == image_id)
 }
 
 pub fn prepare_image_resources_from_raw(
@@ -79,26 +79,26 @@ pub fn prepare_image_resources_from_raw(
     image_id: i64,
     raw: Arc<raw::loader::RawDataResult>,
 ) -> Task<Message> {
-    editor.current_raw = Some((image_id, raw.clone()));
-    editor.current_metadata = Some(metadata_snapshot(&raw));
-    editor.current_metadata_id = Some(image_id);
+    editor.session.current_raw = Some((image_id, raw.clone()));
+    editor.session.current_metadata = Some(metadata_snapshot(&raw));
+    editor.session.current_metadata_id = Some(image_id);
 
     // Phase 140: Store current DCP profile
-    editor.current_dcp_profile = raw.dcp_profile.clone();
+    editor.session.current_dcp_profile = raw.dcp_profile.clone();
     // The memo is keyed only on (kelvin, profile_curve), so a new profile at
     // the same slider values would otherwise return the previous image's LUT.
-    editor.dcp_memo.replace(None);
+    editor.session.dcp_memo.replace(None);
 
     // As-shot WB anchor: solve the camera multipliers to (Kelvin, tint) so the
     // Temp/Tint sliders can display and pivot around the real camera values.
     let (as_kelvin, as_tint) = crate::color::as_shot_kelvin_tint(&raw);
-    editor.as_shot_wb = Some((as_kelvin, as_tint));
+    editor.session.as_shot_wb = Some((as_kelvin, as_tint));
     tracing::info!("As-shot WB: {:.0}K, tint {:+.1}", as_kelvin, as_tint);
 
-    let params = editor.current_edit_params;
-    let profile_defaults = editor.camera_profile_defaults.clone();
-    let context = editor.gpu_context.clone();
-    let gpu_init = editor.gpu_init.clone();
+    let params = editor.session.current_edit_params;
+    let profile_defaults = editor.session.camera_profile_defaults.clone();
+    let context = editor.session.gpu_context.clone();
+    let gpu_init = editor.session.gpu_init.clone();
 
     Task::perform(
         async move {
@@ -187,32 +187,32 @@ pub async fn shared_context(
 
 pub fn handle_image_resources_ready(editor: &mut RawEditor, image_id: i64, result: Result<(Arc<gpu::shared::SharedContext>, Arc<gpu::shared::ImageResources>), String>) -> Task<Message> {
     // Ignore stale results from a previous image selection
-    if editor.selected_image_id != Some(image_id) {
+    if editor.session.selected_image_id != Some(image_id) {
         return Task::none();
     }
 
     match result {
         Ok((context, resources)) => {
-            if editor.gpu_context.is_none() {
-                editor.gpu_context = Some(context.clone());
+            if editor.session.gpu_context.is_none() {
+                editor.session.gpu_context = Some(context.clone());
             }
             // The profile these resources were built with is the image's
             // profile from here on — the WB solve below already reads it.
             if let Some(used) = &resources.profile_use {
-                if editor.current_dcp_profile.as_ref().map(Arc::as_ptr)
+                if editor.session.current_dcp_profile.as_ref().map(Arc::as_ptr)
                     != used.profile.as_ref().map(Arc::as_ptr)
                 {
-                    editor.dcp_memo.replace(None);
+                    editor.session.dcp_memo.replace(None);
                 }
-                editor.current_dcp_profile = used.profile.clone();
-                editor.as_shot_wb = Some(used.as_shot);
-                if let Some(meta) = editor.current_metadata.as_mut() {
+                editor.session.current_dcp_profile = used.profile.clone();
+                editor.session.as_shot_wb = Some(used.as_shot);
+                if let Some(meta) = editor.session.current_metadata.as_mut() {
                     meta.dcp_profile = used.profile.clone();
                 }
             }
 
             editor.sync_tool_flags();
-            if let Some(ctx) = &editor.gpu_context {
+            if let Some(ctx) = &editor.session.gpu_context {
                 let params = editor.view_params();
                 let (interpolated, wb_override) =
                     crate::app::handlers::develop::resolve_wb_and_dcp(editor, &params);
@@ -223,15 +223,15 @@ pub fn handle_image_resources_ready(editor: &mut RawEditor, image_id: i64, resul
             // that full resolution would not sharpen use it instead
             // (`RawEditor::preview_resources`). Anything else drops it.
             // AI masks: the new resources start with no bitmaps.
-            if editor.ai_bitmaps.image_id == Some(image_id) {
-                resources.set_ai_bitmaps(editor.ai_bitmaps.bitmaps.clone());
+            if editor.session.ai_bitmaps.image_id == Some(image_id) {
+                resources.set_ai_bitmaps(editor.session.ai_bitmaps.bitmaps.clone());
             }
             let upgrade = resources.width == resources.original_width;
-            editor.preview_resources = editor.image_resources.take().filter(|old| {
+            editor.session.preview_resources = editor.session.image_resources.take().filter(|old| {
                 upgrade && old.image_id == image_id && old.width < old.original_width
             });
-            editor.image_resources = Some(resources);
-            editor.editor_readiness = EditorReadiness::Ready(image_id);
+            editor.session.image_resources = Some(resources);
+            editor.session.editor_readiness = EditorReadiness::Ready(image_id);
             editor.working_preview = None;
             editor.canvas_cache.clear();
             editor.histogram_cache.clear();
@@ -244,8 +244,8 @@ pub fn handle_image_resources_ready(editor: &mut RawEditor, image_id: i64, resul
             Task::batch([render, crate::app::handlers::ai_denoise::after_resources(editor)])
         }
         Err(e) => {
-            editor.status = format!("GPU Init Failed: {}", e);
-            editor.editor_readiness = EditorReadiness::Failed(image_id, e);
+            editor.session.status = format!("GPU Init Failed: {}", e);
+            editor.session.editor_readiness = EditorReadiness::Failed(image_id, e);
             Task::none()
         }
     }
@@ -260,8 +260,8 @@ pub fn handle_full_res_ready(
     image_id: i64,
     result: Result<(Arc<gpu::shared::SharedContext>, Arc<gpu::shared::ImageResources>), String>,
 ) -> Task<Message> {
-    editor.full_res_upgrading = false;
-    if editor.selected_image_id != Some(image_id) {
+    editor.session.full_res_upgrading = false;
+    if editor.session.selected_image_id != Some(image_id) {
         return upgrade_if_soft(editor);
     }
     match result {
@@ -269,7 +269,7 @@ pub fn handle_full_res_ready(
         Err(e) => {
             // The preview resources still work: keep editing on them.
             tracing::warn!("Full-resolution rebuild of image {image_id} failed, keeping the preview: {e}");
-            editor.full_res_failed = Some(image_id);
+            editor.session.full_res_failed = Some(image_id);
             Task::none()
         }
     }
@@ -278,8 +278,8 @@ pub fn handle_full_res_ready(
 /// Start the full-resolution rebuild if the current view shows the
 /// subsampled develop texture magnified (`develop::render_target`).
 fn upgrade_if_soft(editor: &mut RawEditor) -> Task<Message> {
-    if editor.current_tab != crate::app::message::AppTab::Develop
-        || !matches!(editor.editor_readiness, EditorReadiness::Ready(_))
+    if editor.session.current_tab != crate::app::message::AppTab::Develop
+        || !matches!(editor.session.editor_readiness, EditorReadiness::Ready(_))
         || crate::app::handlers::develop::render_target(editor).magnification
             <= crate::core::viewport::FULL_RES_MAGNIFICATION
     {
@@ -294,35 +294,35 @@ fn upgrade_if_soft(editor: &mut RawEditor) -> Task<Message> {
 /// `raw_cache`, or from disk if the cache no longer holds it — skipping the
 /// upgrade there left a zoomed-in view soft with no way to sharpen it.
 pub fn trigger_full_res_upgrade(editor: &mut RawEditor) -> Task<Message> {
-    let Some(image_id) = editor.selected_image_id else { return Task::none(); };
+    let Some(image_id) = editor.session.selected_image_id else { return Task::none(); };
 
     // Only upgrade if currently subsampled
-    if let Some(res) = &editor.image_resources {
+    if let Some(res) = &editor.session.image_resources {
         if res.width == res.original_width { return Task::none(); } // already full-res
         if res.image_id != image_id { return Task::none(); } // still loading this one
     } else {
         return Task::none();
     }
 
-    if editor.full_res_upgrading || editor.full_res_failed == Some(image_id) {
+    if editor.session.full_res_upgrading || editor.session.full_res_failed == Some(image_id) {
         return Task::none();
     }
 
     let cached = editor.raw_for(image_id);
     let path = match &cached {
         Some(_) => None,
-        None => match editor.images.iter().find(|i| i.id == image_id) {
+        None => match editor.session.images.iter().find(|i| i.id == image_id) {
             Some(img) => Some(img.path.clone()),
             None => return Task::none(),
         },
     };
 
-    editor.full_res_upgrading = true;
-    let params = editor.current_edit_params;
-    let profile_use = editor.image_resources.as_ref().and_then(|r| r.profile_use.clone());
-    let profile_defaults = editor.camera_profile_defaults.clone();
-    let context = editor.gpu_context.clone();
-    let gpu_init = editor.gpu_init.clone();
+    editor.session.full_res_upgrading = true;
+    let params = editor.session.current_edit_params;
+    let profile_use = editor.session.image_resources.as_ref().and_then(|r| r.profile_use.clone());
+    let profile_defaults = editor.session.camera_profile_defaults.clone();
+    let context = editor.session.gpu_context.clone();
+    let gpu_init = editor.session.gpu_init.clone();
 
     tracing::info!(
         "Upgrading to full-res resources for image {} ({})",
@@ -398,8 +398,8 @@ pub fn trigger_full_res_upgrade(editor: &mut RawEditor) -> Task<Message> {
 }
 
 fn apply_raw_preload_cleanup(editor: &mut RawEditor, image_id: i64) {
-    editor.pending_raw_loads.remove(&image_id);
-    editor.queued_raw_loads.retain(|(id, _)| *id != image_id);
+    editor.session.pending_raw_loads.remove(&image_id);
+    editor.session.queued_raw_loads.retain(|(id, _)| *id != image_id);
 }
 
 fn metadata_snapshot(raw: &raw::loader::RawDataResult) -> raw::loader::RawDataResult {
@@ -439,12 +439,12 @@ mod tests {
     #[test]
     fn the_open_images_raw_is_pinned_with_a_zero_preload_budget() {
         let mut e = RawEditor::new().0;
-        e.raw_preload_budget_mb = 0;
-        e.selected_image_id = Some(1);
-        e.editor_readiness = EditorReadiness::Loading(1);
+        e.session.raw_preload_budget_mb = 0;
+        e.session.selected_image_id = Some(1);
+        e.session.editor_readiness = EditorReadiness::Loading(1);
         let raw = crate::ml::segment::test_support::disc_raw(60, 40);
         let _ = handle_raw_data_loaded(&mut e, 1, Ok(raw));
-        assert!(e.raw_cache.is_empty(), "budget 0 caches nothing");
+        assert!(e.session.raw_cache.is_empty(), "budget 0 caches nothing");
         assert!(e.raw_for(1).is_some(), "the open image's RAW was dropped");
         assert!(e.raw_for(2).is_none());
         assert!(crate::app::handlers::develop::sample_raw_rgb(&e, 1, 0.5, 0.5).is_ok());
@@ -484,8 +484,8 @@ mod tests {
         assert!(preview.width < preview.original_width, "the develop preview is subsampled");
 
         let mut e = RawEditor::new().0;
-        e.current_tab = AppTab::Develop;
-        e.images = vec![crate::database::models::Image {
+        e.session.current_tab = AppTab::Develop;
+        e.session.images = vec![crate::database::models::Image {
             id: 1,
             filename: "x.NEF".into(),
             path,
@@ -497,45 +497,45 @@ mod tests {
             rating: 0,
             flag: 0,
         }];
-        e.selected_image_id = Some(1);
-        e.gpu_context = Some(ctx.clone());
-        e.viewport_size = (1500.0, 1000.0);
-        e.scale_factor = 1.0;
-        e.editor_readiness = EditorReadiness::Loading(1);
+        e.session.selected_image_id = Some(1);
+        e.session.gpu_context = Some(ctx.clone());
+        e.session.viewport_size = (1500.0, 1000.0);
+        e.session.scale_factor = 1.0;
+        e.session.editor_readiness = EditorReadiness::Loading(1);
 
         // At fit on a standard display the preview is sharp: no upgrade.
-        e.zoom = 1.0;
+        e.session.zoom = 1.0;
         let _ = handle_image_resources_ready(&mut e, 1, Ok((ctx.clone(), preview.clone())));
-        assert!(!e.full_res_upgrading, "upgraded at fit");
+        assert!(!e.session.full_res_upgrading, "upgraded at fit");
 
         // The same image arriving in a view zoomed in on the previous one —
         // with its RAW not cached: the render requests the upgrade, from disk.
-        e.is_rendering = false;
-        e.zoom = 3.0;
-        e.editor_readiness = EditorReadiness::Loading(1);
-        assert!(e.raw_cache.get(&1).is_none());
+        e.session.is_rendering = false;
+        e.session.zoom = 3.0;
+        e.session.editor_readiness = EditorReadiness::Loading(1);
+        assert!(e.session.raw_cache.get(&1).is_none());
         let _ = handle_image_resources_ready(&mut e, 1, Ok((ctx.clone(), preview.clone())));
-        assert!(e.full_res_upgrading, "a zoomed-in view stayed on the subsampled preview");
+        assert!(e.session.full_res_upgrading, "a zoomed-in view stayed on the subsampled preview");
 
         // One upgrade at a time: a second request waits for the first.
-        assert!(e.full_res_upgrading);
+        assert!(e.session.full_res_upgrading);
         let _ = trigger_full_res_upgrade(&mut e);
-        assert!(e.full_res_upgrading);
+        assert!(e.session.full_res_upgrading);
 
         // A failed upgrade keeps the preview to edit on, and is not retried
         // on every render.
         let _ = handle_full_res_ready(&mut e, 1, Err("out of memory".into()));
-        assert!(!e.full_res_upgrading);
-        assert!(matches!(e.editor_readiness, EditorReadiness::Ready(1)), "editor failed");
-        assert!(e.image_resources.is_some());
-        e.is_rendering = false;
+        assert!(!e.session.full_res_upgrading);
+        assert!(matches!(e.session.editor_readiness, EditorReadiness::Ready(1)), "editor failed");
+        assert!(e.session.image_resources.is_some());
+        e.session.is_rendering = false;
         let _ = crate::app::handlers::develop::trigger_async_render(&mut e);
-        assert!(!e.full_res_upgrading, "retried a failed upgrade");
+        assert!(!e.session.full_res_upgrading, "retried a failed upgrade");
         // A successful upgrade keeps the preview beside it: renders that full
         // resolution would not sharpen — and a noise-reduction drag, whose
         // stage costs per source pixel — come from the preview instead.
         let full = rt.block_on(async {
-            let raw = raw::loader::load_raw_data(e.images[0].path.clone()).await.expect("decode");
+            let raw = raw::loader::load_raw_data(e.session.images[0].path.clone()).await.expect("decode");
             let fm = crate::color::calculate_cam_to_srgb(raw.color_matrix, raw.wb_multipliers, raw.color_matrix_is_d65);
             let res = gpu::shared::ImageResources::new(
                 &ctx, 1, &raw.data, raw.width, raw.height, &Default::default(), raw.wb_multipliers, fm,
@@ -545,32 +545,32 @@ mod tests {
             .expect("resources");
             Arc::new(res)
         });
-        e.full_res_upgrading = true;
-        e.is_rendering = false;
+        e.session.full_res_upgrading = true;
+        e.session.is_rendering = false;
         let _ = handle_full_res_ready(&mut e, 1, Ok((ctx.clone(), full.clone())));
-        assert!(e.image_resources.as_ref().is_some_and(|r| Arc::ptr_eq(r, &full)));
-        assert!(e.preview_resources.as_ref().is_some_and(|p| Arc::ptr_eq(p, &preview)), "preview dropped");
+        assert!(e.session.image_resources.as_ref().is_some_and(|r| Arc::ptr_eq(r, &full)));
+        assert!(e.session.preview_resources.as_ref().is_some_and(|p| Arc::ptr_eq(p, &preview)), "preview dropped");
 
         // Zoomed in, an NR drag holds the main view's noise reduction (the
         // detail loupe shows it live); when the drag pauses the main view
         // catches up from the preview, whose stage costs per SOURCE pixel,
         // and the release goes back to full resolution.
-        e.is_rendering = false;
+        e.session.is_rendering = false;
         let _ = crate::app::handlers::develop::handle_luma_noise_changed(&mut e, 0.5);
-        assert!(e.held_noise.is_some(), "a drag tick re-ran noise reduction on the main view");
-        assert!(!e.is_rendering, "a held drag tick rendered the main view");
-        let token = e.noise_settle_token;
+        assert!(e.session.held_noise.is_some(), "a drag tick re-ran noise reduction on the main view");
+        assert!(!e.session.is_rendering, "a held drag tick rendered the main view");
+        let token = e.session.noise_settle_token;
         let _ = crate::app::handlers::loupe::handle_noise_settled(&mut e, token);
-        assert!(e.held_noise.is_none());
-        assert!(e.display_from_drag_preview, "the paused drag rendered at full resolution");
-        e.is_rendering = false;
+        assert!(e.session.held_noise.is_none());
+        assert!(e.session.display_from_drag_preview, "the paused drag rendered at full resolution");
+        e.session.is_rendering = false;
         let _ = crate::app::handlers::develop::handle_commit_edit(&mut e);
-        assert!(!e.stage_drag);
-        assert!(!e.display_from_drag_preview, "the release stayed on the preview");
+        assert!(!e.session.stage_drag);
+        assert!(!e.session.display_from_drag_preview, "the release stayed on the preview");
 
         // Any load that is not a full-resolution upgrade drops it.
-        e.is_rendering = true;
+        e.session.is_rendering = true;
         let _ = handle_image_resources_ready(&mut e, 1, Ok((ctx.clone(), preview.clone())));
-        assert!(e.preview_resources.is_none());
+        assert!(e.session.preview_resources.is_none());
     }
 }

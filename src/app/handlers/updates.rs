@@ -68,7 +68,7 @@ pub fn handle_toggle(editor: &mut RawEditor) -> Task<Message> {
 pub fn handle_open_page(editor: &mut RawEditor) -> Task<Message> {
     let url = editor.session.update_page_url();
     crate::app::handlers::window::open_url(&url);
-    editor.status = format!("Opened {url}");
+    editor.session.status = format!("Opened {url}");
     editor.active_modal = Modal::None;
     Task::none()
 }

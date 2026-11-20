@@ -16,9 +16,9 @@ pub fn handle_database_loaded(editor: &mut RawEditor, result: Result<Vec<crate::
             match database::library::Library::new() {
                 Ok(library) => {
                     let image_count = images.len();
-                    editor.library = Some(library);
-                    editor.images = images;
-                    editor.status = format!("Loaded {} images.", image_count);
+                    editor.session.library = Some(library);
+                    editor.session.images = images;
+                    editor.session.status = format!("Loaded {} images.", image_count);
                     
                     use iced::window;
                     let maximize_window = window::get_latest().and_then(|id| window::maximize(id, true));
@@ -26,9 +26,9 @@ pub fn handle_database_loaded(editor: &mut RawEditor, result: Result<Vec<crate::
                     let scale = crate::app::handlers::window::query_scale_factor();
                     // The first-run question, or the check the user agreed to.
                     let updates = crate::app::handlers::updates::on_startup(editor);
-                    if let Some(lib) = &editor.library {
+                    if let Some(lib) = &editor.session.library {
                         let db_path = lib.path().clone();
-                        editor.pending_cache_count = lib.count_pending_cache().unwrap_or(0);
+                        editor.session.pending_cache_count = lib.count_pending_cache().unwrap_or(0);
                         return Task::batch(vec![
                             maximize_window,
                             scale,
@@ -38,16 +38,16 @@ pub fn handle_database_loaded(editor: &mut RawEditor, result: Result<Vec<crate::
                     }
                     return Task::batch(vec![maximize_window, scale, updates]);
                 }
-                Err(e) => editor.status = format!("Failed to create library: {:?}", e),
+                Err(e) => editor.session.status = format!("Failed to create library: {:?}", e),
             }
         }
-        Err(e) => editor.status = format!("Failed to load database: {}", e),
+        Err(e) => editor.session.status = format!("Failed to load database: {}", e),
     }
     Task::none()
 }
 
 pub fn handle_import_folder(editor: &mut RawEditor) -> Task<Message> {
-    if editor.library.is_none() {
+    if editor.session.library.is_none() {
         return Task::none();
     }
     // AsyncFileDialog, not the blocking FileDialog: the blocking one runs the
@@ -74,10 +74,10 @@ pub fn handle_import_folder_picked(
     editor: &mut RawEditor,
     folder: Option<PathBuf>,
 ) -> Task<Message> {
-    let (Some(folder), Some(library)) = (folder, &editor.library) else {
+    let (Some(folder), Some(library)) = (folder, &editor.session.library) else {
         return Task::none();
     };
-    editor.status = format!("Importing {}…", folder.display());
+    editor.session.status = format!("Importing {}…", folder.display());
     let db_path = library.path().clone();
     Task::perform(import_folder_async(folder, db_path), Message::ImportComplete)
 }
@@ -90,7 +90,7 @@ pub fn handle_import_folder_picked(
 /// drop collapse into one scan of their folder here, without touching disk.
 pub fn handle_file_dropped(editor: &mut RawEditor, path: PathBuf) -> Task<Message> {
     use crate::app::state::Modal;
-    if editor.library.is_none() || !matches!(editor.active_modal, Modal::None | Modal::ImportDropped) {
+    if editor.session.library.is_none() || !matches!(editor.active_modal, Modal::None | Modal::ImportDropped) {
         return Task::none();
     }
     let key = if raw::is_supported_raw(&path) {
@@ -133,7 +133,7 @@ pub fn handle_drop_scanned(
     let Some((folder, files)) = scan else {
         return Task::none();
     };
-    let catalogued: std::collections::HashSet<&str> = editor.images.iter().map(|img| img.path.as_str()).collect();
+    let catalogued: std::collections::HashSet<&str> = editor.session.images.iter().map(|img| img.path.as_str()).collect();
     let new: Vec<PathBuf> = files
         .iter()
         .filter(|f| !catalogued.contains(f.to_string_lossy().as_ref()))
@@ -146,12 +146,12 @@ pub fn handle_drop_scanned(
             return Task::none();
         }
         if files.is_empty() {
-            editor.status = format!("No RAW files in {}.", folder.display());
+            editor.session.status = format!("No RAW files in {}.", folder.display());
             return Task::none();
         }
         // All catalogued: show it (the folder filter is a path prefix, so
         // this works for a folder whose photos sit in subfolders too).
-        editor.status = format!("{} is already in the library.", folder.display());
+        editor.session.status = format!("{} is already in the library.", folder.display());
         let key = folder.to_string_lossy().into_owned();
         if editor.active_modal == Modal::None {
             let tab = crate::app::handlers::navigation::handle_tab_changed(editor, crate::app::message::AppTab::Library);
@@ -184,14 +184,14 @@ pub fn handle_drop_import_confirmed(editor: &mut RawEditor) -> Task<Message> {
     }
     editor.active_modal = Modal::None;
     let drop = std::mem::take(&mut editor.drop_import);
-    let Some(library) = &editor.library else {
+    let Some(library) = &editor.session.library else {
         return Task::none();
     };
     let folders: Vec<PathBuf> = drop.folders.into_iter().map(|(f, _)| f).collect();
     if folders.is_empty() {
         return Task::none();
     }
-    editor.status = match folders.as_slice() {
+    editor.session.status = match folders.as_slice() {
         [one] => format!("Importing {}…", one.display()),
         many => format!("Importing {} folders…", many.len()),
     };
@@ -215,7 +215,7 @@ pub fn handle_drop_import_confirmed(editor: &mut RawEditor) -> Task<Message> {
 }
 
 pub fn handle_import_from_camera(editor: &mut RawEditor) -> Task<Message> {
-    editor.status = "Camera import is not implemented yet.".to_string();
+    editor.session.status = "Camera import is not implemented yet.".to_string();
     Task::none()
 }
 
@@ -227,16 +227,16 @@ pub fn handle_import_complete(
         Ok(result) => result,
         Err(e) => {
             tracing::error!("Import failed: {e}");
-            editor.status = format!("Import failed: {e}");
+            editor.session.status = format!("Import failed: {e}");
             return Task::none();
         }
     };
-    if let Some(library) = &editor.library {
+    if let Some(library) = &editor.session.library {
         // Full reload is correct here: the import added rows this process has
         // never seen. It runs once per import, not once per cached image.
-        editor.images = library.get_all_images().unwrap_or_default();
-        editor.pending_cache_count = library.count_pending_cache().unwrap_or(0);
-        editor.status = format!("Import complete! Added {}, skipped {}.", result.imported_count, result.skipped_count);
+        editor.session.images = library.get_all_images().unwrap_or_default();
+        editor.session.pending_cache_count = library.count_pending_cache().unwrap_or(0);
+        editor.session.status = format!("Import complete! Added {}, skipped {}.", result.imported_count, result.skipped_count);
         let db_path = library.path().clone();
         return spawn_cache_workers(editor, db_path);
     }
@@ -244,7 +244,7 @@ pub fn handle_import_complete(
 }
 
 pub fn handle_cache_processed(editor: &mut RawEditor, result: Result<(i64, String, String, String), (i64, String)>) -> Task<Message> {
-    let Some(library) = &editor.library else {
+    let Some(library) = &editor.session.library else {
         return Task::none();
     };
 
@@ -257,7 +257,7 @@ pub fn handle_cache_processed(editor: &mut RawEditor, result: Result<(i64, Strin
     match result {
         Ok((image_id, thumb, instant, working)) => {
             let _ = library.set_image_cache_paths(image_id, &thumb, &instant, &working);
-            apply_cache_paths(&mut editor.images, image_id, thumb, instant, working);
+            apply_cache_paths(&mut editor.session.images, image_id, thumb, instant, working);
         }
         Err((image_id, ref err)) if image_id != 0 => {
             if let Err(db_err) = library.mark_cache_failed(image_id) {
@@ -269,15 +269,15 @@ pub fn handle_cache_processed(editor: &mut RawEditor, result: Result<(i64, Strin
     }
 
     if claimed_one {
-        editor.pending_cache_count = (editor.pending_cache_count - 1).max(0);
+        editor.session.pending_cache_count = (editor.session.pending_cache_count - 1).max(0);
     }
 
-    if editor.pending_cache_count > 0 && claimed_one {
-        let total = editor.images.len() as i64;
-        let done = total - editor.pending_cache_count;
-        editor.status = format!(
+    if editor.session.pending_cache_count > 0 && claimed_one {
+        let total = editor.session.images.len() as i64;
+        let done = total - editor.session.pending_cache_count;
+        editor.session.status = format!(
             "Caching: {}/{} - {} remaining",
-            done, total, editor.pending_cache_count
+            done, total, editor.session.pending_cache_count
         );
         let db_path = library.path().clone();
         // One replacement worker per completion keeps concurrency steady
@@ -285,9 +285,9 @@ pub fn handle_cache_processed(editor: &mut RawEditor, result: Result<(i64, Strin
     }
 
     // This worker retires: free its slot so a later import can top up.
-    editor.cache_workers_live = editor.cache_workers_live.saturating_sub(1);
-    if editor.pending_cache_count == 0 {
-        editor.status = format!("{} All cache tiers generated!", ui::icons::CHECK);
+    editor.session.cache_workers_live = editor.session.cache_workers_live.saturating_sub(1);
+    if editor.session.pending_cache_count == 0 {
+        editor.session.status = format!("{} All cache tiers generated!", ui::icons::CHECK);
     }
     Task::none()
 }
@@ -297,7 +297,7 @@ pub fn handle_set_rating(editor: &mut RawEditor, rating: u8) -> Task<Message> {
         return Task::none();
     }
     let ids = editor.action_target_ids();
-    let Some(lib) = &editor.library else {
+    let Some(lib) = &editor.session.library else {
         return Task::none();
     };
     // Memory follows the database: only touch the in-memory rows once the
@@ -305,12 +305,12 @@ pub fn handle_set_rating(editor: &mut RawEditor, rating: u8) -> Task<Message> {
     // would silently take back.
     if let Err(e) = lib.set_ratings(&ids, rating) {
         tracing::error!("Failed to rate {} image(s): {e}", ids.len());
-        editor.status = format!("Could not save rating: {e}");
+        editor.session.status = format!("Could not save rating: {e}");
         return Task::none();
     }
     editor.apply_to_images(&ids, |img| img.rating = rating);
-    editor.status = format!("Rated {} image(s)", ids.len());
-    if editor.auto_advance {
+    editor.session.status = format!("Rated {} image(s)", ids.len());
+    if editor.session.auto_advance {
         return Task::done(Message::SelectNextImage);
     }
     Task::none()
@@ -321,24 +321,24 @@ pub fn handle_set_flag(editor: &mut RawEditor, flag: i8) -> Task<Message> {
         return Task::none();
     }
     let ids = editor.action_target_ids();
-    let Some(lib) = &editor.library else {
+    let Some(lib) = &editor.session.library else {
         return Task::none();
     };
     if let Err(e) = lib.set_flags(&ids, flag) {
         tracing::error!("Failed to flag {} image(s): {e}", ids.len());
-        editor.status = format!("Could not save flag: {e}");
+        editor.session.status = format!("Could not save flag: {e}");
         return Task::none();
     }
     editor.apply_to_images(&ids, |img| img.flag = flag);
-    editor.status = format!("Flagged {} image(s)", ids.len());
-    if editor.auto_advance {
+    editor.session.status = format!("Flagged {} image(s)", ids.len());
+    if editor.session.auto_advance {
         return Task::done(Message::SelectNextImage);
     }
     Task::none()
 }
 
 pub fn handle_toggle_auto_advance(editor: &mut RawEditor) -> Task<Message> {
-    editor.auto_advance = !editor.auto_advance;
+    editor.session.auto_advance = !editor.session.auto_advance;
     editor.save_preferences();
     Task::none()
 }
@@ -347,12 +347,12 @@ pub fn handle_set_library_folder_filter(
     editor: &mut RawEditor,
     folder_filter: Option<String>,
 ) -> Task<Message> {
-    editor.library_folder_filter = folder_filter;
+    editor.session.library_folder_filter = folder_filter;
     // Drop anything the new filter hides. Otherwise a selection made under a
     // previous filter stays live but invisible, and Export or a bulk rating
     // would silently act on images the user can no longer see.
     let visible: std::collections::HashSet<i64> = editor.displayed_ids().into_iter().collect();
-    editor.multi_selection.retain(|id| visible.contains(id));
+    editor.session.multi_selection.retain(|id| visible.contains(id));
     if editor.selection_anchor.is_some_and(|a| !visible.contains(&a)) {
         editor.selection_anchor = None;
     }
@@ -367,7 +367,7 @@ pub fn handle_set_library_folder_filter(
 /// which appear as their own sidebar rows and are removable on their own.
 fn images_in_folder(editor: &RawEditor, folder: &str) -> Vec<i64> {
     editor
-        .images
+        .session.images
         .iter()
         .filter(|img| {
             std::path::Path::new(&img.path)
@@ -416,7 +416,7 @@ pub fn handle_remove_folder_confirmed(editor: &mut RawEditor) -> Task<Message> {
 
     // Collect cache paths before the rows go away.
     let cache_files: Vec<String> = editor
-        .images
+        .session.images
         .iter()
         .filter(|img| ids.contains(&img.id))
         .flat_map(|img| {
@@ -430,12 +430,12 @@ pub fn handle_remove_folder_confirmed(editor: &mut RawEditor) -> Task<Message> {
         .flatten()
         .collect();
 
-    let removed = match &mut editor.library {
+    let removed = match &mut editor.session.library {
         Some(lib) => match lib.forget_images(&ids) {
             Ok(n) => n,
             Err(e) => {
                 tracing::error!("Failed to forget folder {folder}: {e}");
-                editor.status = format!("Could not remove {folder}: {e}");
+                editor.session.status = format!("Could not remove {folder}: {e}");
                 return Task::none();
             }
         },
@@ -454,36 +454,36 @@ pub fn handle_remove_folder_confirmed(editor: &mut RawEditor) -> Task<Message> {
 
     // Same in-memory cleanup the hard-delete path does.
     let gone: std::collections::HashSet<i64> = ids.iter().copied().collect();
-    editor.images.retain(|img| !gone.contains(&img.id));
-    editor.multi_selection.retain(|id| !gone.contains(id));
-    editor.history_map.retain(|id, _| !gone.contains(id));
-    editor.pending_loads.retain(|id| !gone.contains(id));
-    editor.queued_loads.retain(|(id, _)| !gone.contains(id));
-    editor.pending_raw_loads.retain(|id| !gone.contains(id));
-    editor.queued_raw_loads.retain(|(id, _)| !gone.contains(id));
+    editor.session.images.retain(|img| !gone.contains(&img.id));
+    editor.session.multi_selection.retain(|id| !gone.contains(id));
+    editor.session.history_map.retain(|id, _| !gone.contains(id));
+    editor.session.pending_loads.retain(|id| !gone.contains(id));
+    editor.session.queued_loads.retain(|(id, _)| !gone.contains(id));
+    editor.session.pending_raw_loads.retain(|id| !gone.contains(id));
+    editor.session.queued_raw_loads.retain(|(id, _)| !gone.contains(id));
     for id in &ids {
-        editor.preview_cache.pop(id);
-        editor.edited_proxies.pop(id);
+        editor.session.preview_cache.pop(id);
+        editor.session.edited_proxies.pop(id);
         editor.remove_from_raw_cache(*id);
     }
     if editor.selection_anchor.is_some_and(|a| gone.contains(&a)) {
         editor.selection_anchor = None;
     }
-    if editor.selected_image_id.is_some_and(|id| gone.contains(&id)) {
-        editor.selected_image_id = None;
-        editor.editor_readiness = crate::app::state::EditorReadiness::NoSelection;
+    if editor.session.selected_image_id.is_some_and(|id| gone.contains(&id)) {
+        editor.session.selected_image_id = None;
+        editor.session.editor_readiness = crate::app::state::EditorReadiness::NoSelection;
         editor.working_preview = None;
-        editor.working_preview_bytes = None;
-        editor.rendered_preview_bytes = None;
-        editor.image_resources = None;
-        editor.preview_resources = None;
+        editor.session.working_preview_bytes = None;
+        editor.session.rendered_preview_bytes = None;
+        editor.session.image_resources = None;
+        editor.session.preview_resources = None;
     }
     // The filter would otherwise point at a folder that no longer exists.
-    if editor.library_folder_filter.as_deref() == Some(folder.as_str()) {
-        editor.library_folder_filter = None;
+    if editor.session.library_folder_filter.as_deref() == Some(folder.as_str()) {
+        editor.session.library_folder_filter = None;
     }
 
-    editor.status = format!("Removed {removed} images from the catalogue (files kept)");
+    editor.session.status = format!("Removed {removed} images from the catalogue (files kept)");
     Task::none()
 }
 
@@ -498,8 +498,8 @@ const CACHE_WORKERS: usize = 4;
 /// starts its own replacement, so starting a full set again while some are
 /// still running (a second import) would multiply the concurrency.
 fn spawn_cache_workers(editor: &mut RawEditor, db_path: PathBuf) -> Task<Message> {
-    let missing = CACHE_WORKERS.saturating_sub(editor.cache_workers_live);
-    editor.cache_workers_live += missing;
+    let missing = CACHE_WORKERS.saturating_sub(editor.session.cache_workers_live);
+    editor.session.cache_workers_live += missing;
     Task::batch(
         (0..missing).map(|_| {
             Task::perform(process_cache_async(db_path.clone()), Message::CacheProcessed)
@@ -704,7 +704,7 @@ mod tests {
 
     fn folder_editor() -> RawEditor {
         let mut e = RawEditor::new().0;
-        e.images = vec![
+        e.session.images = vec![
             folder_img(1, "/photos/2024/a.NEF"),
             folder_img(2, "/photos/2024/b.NEF"),
             folder_img(3, "/photos/2024-old/c.NEF"),
@@ -787,16 +787,16 @@ mod tests {
     fn cache_workers_are_topped_up_not_multiplied() {
         let dir = scratch_dir("workers");
         let mut e = RawEditor::new().0;
-        e.library = Some(crate::database::library::Library::open_at(&dir.join("c.db")).unwrap());
+        e.session.library = Some(crate::database::library::Library::open_at(&dir.join("c.db")).unwrap());
         let db = dir.join("c.db");
         let _ = spawn_cache_workers(&mut e, db.clone());
         let _ = spawn_cache_workers(&mut e, db.clone());
-        assert_eq!(e.cache_workers_live, CACHE_WORKERS);
+        assert_eq!(e.session.cache_workers_live, CACHE_WORKERS);
         // A worker that finds nothing left retires and frees its slot.
         let _ = handle_cache_processed(&mut e, Err((0, "empty".into())));
-        assert_eq!(e.cache_workers_live, CACHE_WORKERS - 1);
+        assert_eq!(e.session.cache_workers_live, CACHE_WORKERS - 1);
         let _ = spawn_cache_workers(&mut e, db);
-        assert_eq!(e.cache_workers_live, CACHE_WORKERS);
+        assert_eq!(e.session.cache_workers_live, CACHE_WORKERS);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

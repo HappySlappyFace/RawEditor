@@ -27,17 +27,17 @@ fn background<T: Send + 'static>(
 
 /// The open image's camera, as `(make, model)`.
 fn camera(editor: &RawEditor) -> Option<(String, String)> {
-    editor.current_metadata.as_ref().map(|m| (m.make.clone(), m.model.clone()))
+    editor.session.current_metadata.as_ref().map(|m| (m.make.clone(), m.model.clone()))
 }
 
 /// Were the open image's GPU resources built with a different profile
 /// choice than it now has (its own, or its camera's default)?
 pub fn resources_stale(editor: &RawEditor) -> bool {
-    let (Some(resources), Some((make, model))) = (&editor.image_resources, camera(editor)) else {
+    let (Some(resources), Some((make, model))) = (&editor.session.image_resources, camera(editor)) else {
         return false;
     };
     let Some(used) = &resources.profile_use else { return false };
-    used.is_stale(editor.current_edit_params.camera_profile, &editor.camera_profile_defaults, &make, &model)
+    used.is_stale(editor.session.current_edit_params.camera_profile, &editor.session.camera_profile_defaults, &make, &model)
 }
 
 /// Rebuild the open image so it picks its profile again.
@@ -46,10 +46,10 @@ pub fn rebuild(editor: &mut RawEditor) -> Task<Message> {
 }
 
 pub fn handle_selected(editor: &mut RawEditor, choice: ProfileChoice) -> Task<Message> {
-    if editor.current_edit_params.camera_profile == choice {
+    if editor.session.current_edit_params.camera_profile == choice {
         return Task::none();
     }
-    editor.current_edit_params.camera_profile = choice;
+    editor.session.current_edit_params.camera_profile = choice;
     // An edit like any other: undoable, saved now.
     editor.mark_edits_dirty();
     editor.commit_current_state();
@@ -58,8 +58,8 @@ pub fn handle_selected(editor: &mut RawEditor, choice: ProfileChoice) -> Task<Me
 
 pub fn handle_set_default(editor: &mut RawEditor, camera: String, value: Option<String>) -> Task<Message> {
     match value {
-        Some(v) => editor.camera_profile_defaults.insert(camera, v),
-        None => editor.camera_profile_defaults.remove(&camera),
+        Some(v) => editor.session.camera_profile_defaults.insert(camera, v),
+        None => editor.session.camera_profile_defaults.remove(&camera),
     };
     editor.save_preferences();
     if resources_stale(editor) {
@@ -71,7 +71,7 @@ pub fn handle_set_default(editor: &mut RawEditor, camera: String, value: Option<
 
 /// The installed set changed: the open image may now resolve differently.
 fn catalog_changed(editor: &mut RawEditor) -> Task<Message> {
-    if editor.image_resources.is_some() {
+    if editor.session.image_resources.is_some() {
         rebuild(editor)
     } else {
         Task::none()
@@ -79,11 +79,11 @@ fn catalog_changed(editor: &mut RawEditor) -> Task<Message> {
 }
 
 fn start(editor: &mut RawEditor, job: ProfileJob) -> bool {
-    if editor.camera_profiles.busy.is_some() {
+    if editor.session.camera_profiles.busy.is_some() {
         return false;
     }
-    editor.camera_profiles.busy = Some(job);
-    editor.camera_profiles.notice = None;
+    editor.session.camera_profiles.busy = Some(job);
+    editor.session.camera_profiles.notice = None;
     true
 }
 
@@ -106,30 +106,30 @@ pub fn handle_download(editor: &mut RawEditor) -> Task<Message> {
 }
 
 pub fn handle_downloaded(editor: &mut RawEditor, camera_name: String, result: Result<Option<String>, String>) -> Task<Message> {
-    editor.camera_profiles.busy = None;
+    editor.session.camera_profiles.busy = None;
     match result {
         Ok(Some(file)) => {
-            editor.status = format!("Camera profile downloaded: {file}");
-            editor.camera_profiles.notice = Some(Ok(format!("Downloaded {file}")));
-            editor.camera_profiles.unavailable = None;
+            editor.session.status = format!("Camera profile downloaded: {file}");
+            editor.session.camera_profiles.notice = Some(Ok(format!("Downloaded {file}")));
+            editor.session.camera_profiles.unavailable = None;
             catalog_changed(editor)
         }
         Ok(None) => {
             let name = camera_name;
-            editor.camera_profiles.notice = Some(Err(format!("RawTherapee has no profile for {name}")));
-            editor.camera_profiles.unavailable = Some(name);
+            editor.session.camera_profiles.notice = Some(Err(format!("RawTherapee has no profile for {name}")));
+            editor.session.camera_profiles.unavailable = Some(name);
             Task::none()
         }
         Err(e) => {
             tracing::error!("Camera profile download failed: {e}");
-            editor.camera_profiles.notice = Some(Err(format!("Download failed: {e}")));
+            editor.session.camera_profiles.notice = Some(Err(format!("Download failed: {e}")));
             Task::none()
         }
     }
 }
 
 pub fn handle_import(editor: &mut RawEditor) -> Task<Message> {
-    if editor.camera_profiles.busy.is_some() {
+    if editor.session.camera_profiles.busy.is_some() {
         return Task::none();
     }
     // Async, like every picker in the app: the blocking one would freeze the
@@ -168,8 +168,8 @@ pub fn handle_picked(editor: &mut RawEditor, files: Option<Vec<std::path::PathBu
 }
 
 pub fn handle_imported(editor: &mut RawEditor, ok: Vec<String>, failed: Vec<String>) -> Task<Message> {
-    editor.camera_profiles.busy = None;
-    editor.camera_profiles.notice = Some(match (ok.len(), failed.is_empty()) {
+    editor.session.camera_profiles.busy = None;
+    editor.session.camera_profiles.notice = Some(match (ok.len(), failed.is_empty()) {
         (_, false) => Err(format!(
             "Imported {} — could not import: {}",
             ok.len(),
@@ -205,9 +205,9 @@ pub fn handle_updated(
     editor: &mut RawEditor,
     result: Result<profiles::UpdateReport, String>,
 ) -> Task<Message> {
-    editor.camera_profiles.busy = None;
+    editor.session.camera_profiles.busy = None;
     let changed = result.as_ref().is_ok_and(|r| !r.updated.is_empty());
-    editor.camera_profiles.notice = Some(match result {
+    editor.session.camera_profiles.notice = Some(match result {
         Ok(r) if r.checked == 0 => Ok("No downloaded profiles to update".to_string()),
         Ok(r) if r.updated.is_empty() => Ok(format!(
             "All {} downloaded profile{} up to date",
@@ -251,8 +251,8 @@ pub fn ensure_loaded() -> Task<Message> {
 }
 
 pub fn handle_scanned(editor: &mut RawEditor, changed: bool) -> Task<Message> {
-    if editor.camera_profiles.busy == Some(ProfileJob::Rescanning) {
-        editor.camera_profiles.busy = None;
+    if editor.session.camera_profiles.busy == Some(ProfileJob::Rescanning) {
+        editor.session.camera_profiles.busy = None;
     }
     if changed {
         catalog_changed(editor)
@@ -270,11 +270,11 @@ mod tests {
     fn one_profile_job_at_a_time() {
         let (mut e, _) = RawEditor::new();
         let _ = handle_rescan(&mut e);
-        assert_eq!(e.camera_profiles.busy, Some(ProfileJob::Rescanning));
+        assert_eq!(e.session.camera_profiles.busy, Some(ProfileJob::Rescanning));
         let _ = handle_update(&mut e);
-        assert_eq!(e.camera_profiles.busy, Some(ProfileJob::Rescanning));
+        assert_eq!(e.session.camera_profiles.busy, Some(ProfileJob::Rescanning));
         let _ = handle_scanned(&mut e, false);
-        assert_eq!(e.camera_profiles.busy, None);
+        assert_eq!(e.session.camera_profiles.busy, None);
     }
 
     /// Choosing a profile is an edit: it lands in the params, unchanged
@@ -284,9 +284,9 @@ mod tests {
         let (mut e, _) = RawEditor::new();
         let choice = ProfileChoice::named("Nikon D3300 Camera Standard.dcp").unwrap();
         let _ = handle_selected(&mut e, choice);
-        assert_eq!(e.current_edit_params.camera_profile, choice);
+        assert_eq!(e.session.current_edit_params.camera_profile, choice);
         let _ = handle_selected(&mut e, choice);
-        assert_eq!(e.current_edit_params.camera_profile, choice);
+        assert_eq!(e.session.current_edit_params.camera_profile, choice);
     }
 
     /// A camera RawTherapee doesn't cover is remembered, so the prompt can
@@ -294,13 +294,13 @@ mod tests {
     #[test]
     fn a_missing_remote_profile_is_reported() {
         let (mut e, _) = RawEditor::new();
-        e.camera_profiles.busy = Some(ProfileJob::Downloading);
+        e.session.camera_profiles.busy = Some(ProfileJob::Downloading);
         // The name comes from the request, not from whichever image is open
         // when the download finishes.
         let _ = handle_downloaded(&mut e, "Nikon D3300".into(), Ok(None));
-        assert_eq!(e.camera_profiles.busy, None);
-        assert_eq!(e.camera_profiles.unavailable.as_deref(), Some("Nikon D3300"));
-        assert!(matches!(e.camera_profiles.notice, Some(Err(_))));
+        assert_eq!(e.session.camera_profiles.busy, None);
+        assert_eq!(e.session.camera_profiles.unavailable.as_deref(), Some("Nikon D3300"));
+        assert!(matches!(e.session.camera_profiles.notice, Some(Err(_))));
     }
 
     /// Defaults are saved per camera; `None` clears one back to automatic.
@@ -308,8 +308,8 @@ mod tests {
     fn camera_defaults_set_and_clear() {
         let (mut e, _) = RawEditor::new();
         let _ = handle_set_default(&mut e, "NIKON D3300".into(), Some("builtin".into()));
-        assert_eq!(e.camera_profile_defaults.get("NIKON D3300").map(String::as_str), Some("builtin"));
+        assert_eq!(e.session.camera_profile_defaults.get("NIKON D3300").map(String::as_str), Some("builtin"));
         let _ = handle_set_default(&mut e, "NIKON D3300".into(), None);
-        assert!(!e.camera_profile_defaults.contains_key("NIKON D3300"));
+        assert!(!e.session.camera_profile_defaults.contains_key("NIKON D3300"));
     }
 }

@@ -24,7 +24,7 @@ fn select_image(editor: &mut RawEditor, image_id: i64, from_click: bool) -> Task
     // the switch would write this image's edits onto the next one.
     // End an AI-select session where the image is left, while the params are
     // still this image's (the clean-up edits masks by slot index).
-    let ai_done = if editor.selected_image_id != Some(image_id) {
+    let ai_done = if editor.session.selected_image_id != Some(image_id) {
         crate::app::handlers::ai_mask::handle_done(editor)
     } else {
         Task::none()
@@ -32,14 +32,14 @@ fn select_image(editor: &mut RawEditor, image_id: i64, from_click: bool) -> Task
     editor.flush_edits();
     // Leaving an image: bring its edited thumbnail on disk up to date. Also
     // before the selection moves — it checks against the outgoing edits.
-    let persist = if editor.selected_image_id != Some(image_id) {
+    let persist = if editor.session.selected_image_id != Some(image_id) {
         crate::app::handlers::proxy::persist(editor)
     } else {
         Task::none()
     };
     // The peek belongs to the outgoing image; carrying it across would show
     // the new image unedited with no way to notice why.
-    editor.before_peek = false;
+    editor.session.before_peek = false;
     let shift = from_click && editor.last_modifiers.shift();
     let command = from_click && editor.last_modifiers.command();
 
@@ -49,22 +49,22 @@ fn select_image(editor: &mut RawEditor, image_id: i64, from_click: bool) -> Task
         if let Some(range) = select_range(editor, image_id) {
             if !command {
                 // Shift alone replaces the selection; Shift+Ctrl adds to it.
-                editor.multi_selection.clear();
+                editor.session.multi_selection.clear();
             }
-            editor.multi_selection.extend(range);
+            editor.session.multi_selection.extend(range);
         } else {
-            editor.multi_selection.clear();
-            editor.multi_selection.insert(image_id);
+            editor.session.multi_selection.clear();
+            editor.session.multi_selection.insert(image_id);
             editor.selection_anchor = Some(image_id);
         }
     } else if command {
-        if !editor.multi_selection.remove(&image_id) {
-            editor.multi_selection.insert(image_id);
+        if !editor.session.multi_selection.remove(&image_id) {
+            editor.session.multi_selection.insert(image_id);
         }
         editor.selection_anchor = Some(image_id);
     } else {
-        editor.multi_selection.clear();
-        editor.multi_selection.insert(image_id);
+        editor.session.multi_selection.clear();
+        editor.session.multi_selection.insert(image_id);
         editor.selection_anchor = Some(image_id);
     }
     // `Loading(id)` promises a load of `id` that will finish it, and only a
@@ -74,26 +74,26 @@ fn select_image(editor: &mut RawEditor, image_id: i64, from_click: bool) -> Task
     // nothing, and Develop sat on "Loading" forever. Drop the promise with
     // the selection; entering Develop on an image loads it afresh (a decode
     // still running is reused, not repeated: `direct_raw_loads`).
-    if editor.current_tab != AppTab::Develop
-        && matches!(editor.editor_readiness, EditorReadiness::Loading(id) if id != image_id)
+    if editor.session.current_tab != AppTab::Develop
+        && matches!(editor.session.editor_readiness, EditorReadiness::Loading(id) if id != image_id)
     {
-        editor.editor_readiness = EditorReadiness::NoSelection;
+        editor.session.editor_readiness = EditorReadiness::NoSelection;
     }
-    editor.selected_image_id = Some(image_id);
+    editor.session.selected_image_id = Some(image_id);
     editor.canvas_cache.clear();
     // Mask selection is an index into the previous image's mask list — clear
     // both it and any pending placement mode when the image changes.
-    editor.selected_mask = None;
-    editor.mask_tool = crate::app::state::MaskTool::Inactive;
+    editor.session.selected_mask = None;
+    editor.session.mask_tool = crate::app::state::MaskTool::Inactive;
 
-    if let Some(library) = &editor.library {
-        editor.current_edit_params = match library.load_saved_edit(image_id) {
+    if let Some(library) = &editor.session.library {
+        editor.session.current_edit_params = match library.load_saved_edit(image_id) {
             Ok(saved) => saved.unwrap_or_default(),
             Err(e) => {
                 // The library backs the old JSON up before the next flush
                 // replaces it with these defaults.
                 tracing::error!("Could not read the saved edit for image {image_id}: {e}");
-                editor.status =
+                editor.session.status =
                     "This image's saved edit could not be read, so it opens unedited. The old edit is kept as a backup.".to_string();
                 Default::default()
             }
@@ -101,18 +101,18 @@ fn select_image(editor: &mut RawEditor, image_id: i64, from_click: bool) -> Task
         // Crop mode survives the switch, so the freshly loaded params (which
         // never carry the flag) must pick it up before anything renders them.
         editor.sync_tool_flags();
-        editor.history_map.entry(image_id).or_insert_with(|| (vec![editor.current_edit_params], 0));
+        editor.session.history_map.entry(image_id).or_insert_with(|| (vec![editor.session.current_edit_params], 0));
         // A proxy read from disk matches the saved edits just loaded — record
         // which edit it shows, so leaving can tell if it has fallen behind.
-        let key = crate::app::handlers::proxy::edit_key(&editor.current_edit_params);
-        if let Some(proxy) = editor.edited_proxies.peek_mut(&image_id) {
+        let key = crate::app::handlers::proxy::edit_key(&editor.session.current_edit_params);
+        if let Some(proxy) = editor.session.edited_proxies.peek_mut(&image_id) {
             proxy.params.get_or_insert(key);
         }
     }
 
     let reveal = reveal_selection(editor);
-    if editor.current_tab == AppTab::Develop || editor.current_tab == AppTab::Cull {
-        let needs_load = match &editor.editor_readiness {
+    if editor.session.current_tab == AppTab::Develop || editor.session.current_tab == AppTab::Cull {
+        let needs_load = match &editor.session.editor_readiness {
             EditorReadiness::Ready(id) => *id != image_id,
             EditorReadiness::Loading(id) => *id != image_id,
             _ => true,
@@ -146,7 +146,7 @@ fn reveal(editor: &mut RawEditor, animate: bool) -> Task<Message> {
     use crate::app::handlers::scroll::{glide_destination, glide_to};
     use crate::app::state::GlideTarget;
 
-    let Some(selected) = editor.selected_image_id else {
+    let Some(selected) = editor.session.selected_image_id else {
         return Task::none();
     };
     let Some(index) = editor.displayed_ids().iter().position(|&id| id == selected) else {
@@ -155,7 +155,7 @@ fn reveal(editor: &mut RawEditor, animate: bool) -> Task<Message> {
     // "Is it in view?" is asked of where the view is *heading*: mid-glide,
     // the current offset is a transient, and holding an arrow key would
     // otherwise keep re-aiming at stale positions.
-    match editor.current_tab {
+    match editor.session.current_tab {
         AppTab::Library => {
             let geom = crate::app::views::library::GridGeometry::of(editor);
             let from = glide_destination(editor, GlideTarget::Grid).unwrap_or(editor.grid_scroll_y);
@@ -196,7 +196,7 @@ pub fn handle_open_in_develop(editor: &mut RawEditor, image_id: i64) -> Task<Mes
     if editor.active_modal != crate::app::state::Modal::None {
         return Task::none();
     }
-    let select = if editor.selected_image_id != Some(image_id) {
+    let select = if editor.session.selected_image_id != Some(image_id) {
         handle_image_selected(editor, image_id)
     } else {
         Task::none()
@@ -208,14 +208,14 @@ pub fn handle_tab_changed(editor: &mut RawEditor, tab: AppTab) -> Task<Message> 
     // Leaving Develop mid-gesture must not strand unsaved slider edits.
     editor.flush_edits();
     // Leaving Develop is leaving the image, as far as its thumbnail goes.
-    let persist = if editor.current_tab == AppTab::Develop && tab != AppTab::Develop {
+    let persist = if editor.session.current_tab == AppTab::Develop && tab != AppTab::Develop {
         crate::app::handlers::proxy::persist(editor)
     } else {
         Task::none()
     };
     // Space only peeks in Develop; leaving with it held would strand the flag.
-    editor.before_peek = false;
-    if editor.current_tab != tab {
+    editor.session.before_peek = false;
+    if editor.session.current_tab != tab {
         // A tab switch rebuilds the grid / filmstrip scrollables from scratch,
         // at offset 0. Match that before anything virtualises against stale
         // offsets (which would build slots far from what is on screen: a
@@ -226,7 +226,7 @@ pub fn handle_tab_changed(editor: &mut RawEditor, tab: AppTab) -> Task<Message> 
         editor.filmstrip_velocity = 0.0;
         editor.last_kinetic_tick = None;
     }
-    editor.current_tab = tab;
+    editor.session.current_tab = tab;
     let reveal = reveal_selection_instantly(editor);
     Task::batch([persist, reveal, load_for_tab(editor, tab)])
 }
@@ -241,8 +241,8 @@ fn load_for_tab(editor: &mut RawEditor, tab: AppTab) -> Task<Message> {
         if selection_is_marked(editor) {
             return ensure_develop_selection_not_marked(editor);
         }
-        if let Some(image_id) = editor.selected_image_id {
-            let needs_load = match &editor.editor_readiness {
+        if let Some(image_id) = editor.session.selected_image_id {
+            let needs_load = match &editor.session.editor_readiness {
                 EditorReadiness::Ready(id) => *id != image_id,
                 EditorReadiness::Loading(id) => *id != image_id,
                 _ => true,
@@ -256,7 +256,7 @@ fn load_for_tab(editor: &mut RawEditor, tab: AppTab) -> Task<Message> {
         // still hold the image Cull last showed — and Cull displayed exactly
         // that, under the new selection's name. Reloading is cheap: a RAM
         // cache hit in the common case, and it queues the neighbours too.
-        if let Some(image_id) = editor.selected_image_id {
+        if let Some(image_id) = editor.session.selected_image_id {
             return trigger_image_load(editor, image_id);
         }
     }
@@ -286,8 +286,8 @@ pub fn handle_select_all(editor: &mut RawEditor) -> Task<Message> {
     if ids.is_empty() {
         return Task::none();
     }
-    editor.status = format!("{} images selected", ids.len());
-    editor.multi_selection = ids.into_iter().collect();
+    editor.session.status = format!("{} images selected", ids.len());
+    editor.session.multi_selection = ids.into_iter().collect();
     Task::none()
 }
 
@@ -295,14 +295,14 @@ pub fn handle_select_all(editor: &mut RawEditor) -> Task<Message> {
 /// NOT marked for removal. Bounded to `images.len()` steps, so it can never
 /// infinite-loop even if every image (including `from_id`) is marked.
 pub fn find_next_unmarked_image_id(editor: &RawEditor, from_id: i64) -> Option<i64> {
-    let idx = editor.images.iter().position(|i| i.id == from_id)?;
-    let len = editor.images.len();
+    let idx = editor.session.images.iter().position(|i| i.id == from_id)?;
+    let len = editor.session.images.len();
     // Prefer an image the active filter shows, so the filmstrip has a
     // selection to draw; fall back to any unmarked one rather than none.
     let shown: std::collections::HashSet<i64> = editor.displayed_ids().into_iter().collect();
     let mut any = None;
     for step in 1..=len {
-        let candidate = &editor.images[(idx + step) % len];
+        let candidate = &editor.session.images[(idx + step) % len];
         if crate::database::models::is_marked(candidate.rating) {
             continue;
         }
@@ -317,14 +317,14 @@ pub fn find_next_unmarked_image_id(editor: &RawEditor, from_id: i64) -> Option<i
 /// True when Develop is active and its current selection is marked for
 /// removal — the condition `ensure_develop_selection_not_marked` acts on.
 fn selection_is_marked(editor: &RawEditor) -> bool {
-    if editor.current_tab != AppTab::Develop {
+    if editor.session.current_tab != AppTab::Develop {
         return false;
     }
-    let Some(sel) = editor.selected_image_id else {
+    let Some(sel) = editor.session.selected_image_id else {
         return false;
     };
     editor
-        .images
+        .session.images
         .iter()
         .find(|i| i.id == sel)
         .map(|i| crate::database::models::is_marked(i.rating))
@@ -340,15 +340,15 @@ pub fn ensure_develop_selection_not_marked(editor: &mut RawEditor) -> Task<Messa
     if !selection_is_marked(editor) {
         return Task::none();
     }
-    let Some(sel) = editor.selected_image_id else {
+    let Some(sel) = editor.session.selected_image_id else {
         return Task::none();
     };
 
     if let Some(next_id) = find_next_unmarked_image_id(editor, sel) {
         Task::done(Message::ImageMoved(next_id))
     } else {
-        editor.selected_image_id = None;
-        editor.editor_readiness = EditorReadiness::NoSelection;
+        editor.session.selected_image_id = None;
+        editor.session.editor_readiness = EditorReadiness::NoSelection;
         editor.working_preview = None;
         Task::none()
     }
@@ -356,7 +356,7 @@ pub fn ensure_develop_selection_not_marked(editor: &mut RawEditor) -> Task<Messa
 
 /// Step through the images the current tab is DISPLAYING.
 ///
-/// Previously these indexed the unfiltered `editor.images`, so arrow keys
+/// Previously these indexed the unfiltered `editor.session.images`, so arrow keys
 /// happily navigated to images the active filter was hiding — and in Develop,
 /// to images marked for removal that the tab refuses to show.
 pub(crate) fn step_selection(editor: &RawEditor, forward: bool) -> Option<i64> {
@@ -364,7 +364,7 @@ pub(crate) fn step_selection(editor: &RawEditor, forward: bool) -> Option<i64> {
     if ids.is_empty() {
         return None;
     }
-    let current = editor.selected_image_id?;
+    let current = editor.session.selected_image_id?;
     let idx = ids.iter().position(|id| *id == current)?;
     let next = if forward {
         (idx + 1) % ids.len()
@@ -397,15 +397,15 @@ pub fn handle_select_previous_image(editor: &mut RawEditor) -> Task<Message> {
 }
 
 pub fn handle_zoom(editor: &mut RawEditor, d: f32, mut p: Point) -> Task<Message> {
-    if editor.is_cropping { return Task::none(); }
+    if editor.session.is_cropping { return Task::none(); }
     if p.x < 0.0 { p = editor.last_cursor_position.unwrap_or(Point::ORIGIN); }
 
-    if editor.image_resources.is_some() {
-        let old_zoom = editor.zoom;
+    if editor.session.image_resources.is_some() {
+        let old_zoom = editor.session.zoom;
         let (dw, dh) = editor.image_display_dims();
-        let (vw, vh) = editor.viewport_size;
+        let (vw, vh) = editor.session.viewport_size;
         let (fw, fh) = crate::core::viewport::fitted_size(dw, dh, vw, vh);
-        let ib = crate::core::viewport::image_rect(dw, dh, vw, vh, old_zoom, editor.pan_offset);
+        let ib = crate::core::viewport::image_rect(dw, dh, vw, vh, old_zoom, editor.session.pan_offset);
 
         // Fraction of the CURRENT on-screen image rect under the cursor —
         // this is the point we want to keep fixed on screen as zoom changes.
@@ -413,24 +413,24 @@ pub fn handle_zoom(editor: &mut RawEditor, d: f32, mut p: Point) -> Task<Message
         let ty = ((p.y - ib.y) / ib.height.max(1.0)).clamp(0.0, 1.0);
 
         let new_zoom = if d > 0.0 { old_zoom * (1.0 + d * 0.8) } else { old_zoom / (1.0 + (-d * 0.8)) }.clamp(0.1, 10.0);
-        editor.zoom = new_zoom;
+        editor.session.zoom = new_zoom;
 
         // Closed-form inversion of image_rect: solve pan so that the point at
         // fraction (tx, ty) of the rect lands back under the cursor at the
         // new zoom. From image_rect: p.x = vw/2 - fw*zoom/2 + offset.x*fw + tx*fw*zoom
         //   => offset.x = (p.x - vw/2)/fw - zoom*(tx - 0.5)
-        editor.pan_offset.x = (p.x - vw / 2.0) / fw.max(1.0) - new_zoom * (tx - 0.5);
-        editor.pan_offset.y = (p.y - vh / 2.0) / fh.max(1.0) - new_zoom * (ty - 0.5);
+        editor.session.pan_offset.x = (p.x - vw / 2.0) / fw.max(1.0) - new_zoom * (tx - 0.5);
+        editor.session.pan_offset.y = (p.y - vh / 2.0) / fh.max(1.0) - new_zoom * (ty - 0.5);
     } else {
-        editor.zoom = if d > 0.0 { editor.zoom * (1.0 + d * 0.8) } else { editor.zoom / (1.0 + (-d * 0.8)) }.clamp(0.1, 10.0);
+        editor.session.zoom = if d > 0.0 { editor.session.zoom * (1.0 + d * 0.8) } else { editor.session.zoom / (1.0 + (-d * 0.8)) }.clamp(0.1, 10.0);
     }
     editor.canvas_cache.clear();
 
     // Re-render at zoom-appropriate resolution (which upgrades to the full-res
     // debayer once the subsampled texture is past its useful range).
     use crate::app::state::EditorReadiness;
-    if editor.current_tab == AppTab::Develop
-        && matches!(editor.editor_readiness, EditorReadiness::Ready(_))
+    if editor.session.current_tab == AppTab::Develop
+        && matches!(editor.session.editor_readiness, EditorReadiness::Ready(_))
     {
         // Zoom always re-renders: the window and its resolution both change.
         // Throttled so a stream of scroll events can't pile up GPU tasks.
@@ -442,10 +442,10 @@ pub fn handle_zoom(editor: &mut RawEditor, d: f32, mut p: Point) -> Task<Message
 }
 
 pub fn handle_pan(editor: &mut RawEditor, d: cgmath::Vector2<f32>) -> Task<Message> {
-    if editor.is_cropping { return Task::none(); }
+    if editor.session.is_cropping { return Task::none(); }
     // Phase 116: Remove 1/zoom scaling. Standardised to 1:1 mapping with screen pixels.
-    editor.pan_offset.x += d.x;
-    editor.pan_offset.y += d.y;
+    editor.session.pan_offset.x += d.x;
+    editor.session.pan_offset.y += d.y;
     editor.canvas_cache.clear();
 
     // The pan itself stays free — the viewport shader just re-projects the
@@ -462,41 +462,41 @@ pub fn handle_pan(editor: &mut RawEditor, d: cgmath::Vector2<f32>) -> Task<Messa
 /// buffer covers. Always false at fit, where the buffer holds the whole image.
 fn needs_render_for_view(editor: &RawEditor) -> bool {
     use crate::app::state::EditorReadiness;
-    if editor.current_tab != AppTab::Develop
-        || !matches!(editor.editor_readiness, EditorReadiness::Ready(_))
+    if editor.session.current_tab != AppTab::Develop
+        || !matches!(editor.session.editor_readiness, EditorReadiness::Ready(_))
     {
         return false;
     }
     let (dw, dh) = editor.image_display_dims();
-    let (vw, vh) = editor.viewport_size;
+    let (vw, vh) = editor.session.viewport_size;
     // Overscan 1.0: ask only what is strictly visible right now. The rendered
     // window already carries the margin, so this asks "have we run out of
     // margin?" rather than "has anything moved at all?".
     let needed = crate::core::viewport::visible_view_rect(
-        dw, dh, vw, vh, editor.zoom, editor.pan_offset, 1.0,
+        dw, dh, vw, vh, editor.session.zoom, editor.session.pan_offset, 1.0,
     );
     // Against the REQUESTED window: if a render covering this area is already
     // on its way, asking for another one would just churn.
-    !crate::core::viewport::view_rect_contains(editor.requested_view_rect, needed)
+    !crate::core::viewport::view_rect_contains(editor.session.requested_view_rect, needed)
 }
 
 /// Start a render unless one is already in flight, in which case mark a
 /// follow-up. At most one running plus one pending — without this, a stream of
 /// scroll or drag events spawns a GPU task each, piling up readback buffers.
 pub fn throttled_render(editor: &mut RawEditor) -> Task<Message> {
-    if editor.is_rendering {
-        editor.pending_render = true;
+    if editor.session.is_rendering {
+        editor.session.pending_render = true;
         Task::none()
     } else {
-        editor.is_rendering = true;
-        editor.pending_render = false;
+        editor.session.is_rendering = true;
+        editor.session.pending_render = false;
         crate::app::handlers::develop::trigger_async_render(editor)
     }
 }
 
 pub fn handle_reset_view(editor: &mut RawEditor) -> Task<Message> {
-    editor.zoom = 1.0;
-    editor.pan_offset = cgmath::Vector2::new(0.0, 0.0);
+    editor.session.zoom = 1.0;
+    editor.session.pan_offset = cgmath::Vector2::new(0.0, 0.0);
     editor.canvas_cache.clear();
     // Must re-render: the buffer holds whatever window the previous zoom
     // needed, so without this the viewport would draw that small slice
@@ -509,7 +509,7 @@ pub fn handle_mouse_pressed(editor: &mut RawEditor) -> Task<Message> {
     let double = editor.last_click_time.map(|t| now.duration_since(t).as_millis() < 300).unwrap_or(false);
     editor.last_click_time = Some(now);
     if double { return Task::done(Message::ResetView); }
-    if !editor.is_cropping && !editor.is_wb_picking && !editor.is_leveling && !editor.mask_overlay_active() {
+    if !editor.session.is_cropping && !editor.session.is_wb_picking && !editor.session.is_leveling && !editor.mask_overlay_active() {
         editor.is_dragging = true;
         editor.drag_mode = DragMode::Pan;
     }
@@ -524,7 +524,7 @@ pub fn handle_mouse_released(editor: &mut RawEditor) -> Task<Message> {
         )
     {
         editor.commit_current_state();
-        if let (Some(ctx), Some(res)) = (&editor.gpu_context, &editor.image_resources) {
+        if let (Some(ctx), Some(res)) = (&editor.session.gpu_context, &editor.session.image_resources) {
             let params = editor.view_params();
             let (interpolated, wb_override) =
                 crate::app::handlers::develop::resolve_wb_and_dcp(editor, &params);
@@ -541,7 +541,7 @@ pub fn handle_mouse_moved(editor: &mut RawEditor, pos: Point) -> Task<Message> {
     // Phase 116: Remove broken viewport_size auto-inflation loop.
     // viewport_size is now managed via Message::ViewportResized.
     
-    if editor.is_cropping {
+    if editor.session.is_cropping {
         handle_crop_interaction(editor, pos)
     } else if editor.mask_overlay_active()
         || matches!(editor.drag_mode, DragMode::MaskHandle(_))
@@ -563,7 +563,7 @@ pub fn handle_working_preview_ready(
     // image: the decode already happened, and caching it makes navigating
     // *back* free too, not just forward into preloaded territory.
     if let Some(bytes) = &bytes {
-        editor.preview_cache.put(
+        editor.session.preview_cache.put(
             id,
             crate::app::state::CachedPreview {
                 width: dims.0,
@@ -572,11 +572,11 @@ pub fn handle_working_preview_ready(
             },
         );
     }
-    if Some(id) == editor.selected_image_id {
+    if Some(id) == editor.session.selected_image_id {
         editor.working_preview = Some(handle);
-        editor.working_preview_bytes = bytes;
+        editor.session.working_preview_bytes = bytes;
         editor.bump_preview_generation();
-        editor.working_preview_dims = dims;
+        editor.session.working_preview_dims = dims;
     }
     Task::none()
 }
@@ -587,16 +587,16 @@ pub fn handle_preview_cached(
     result: Result<(u32, u32, std::sync::Arc<[u8]>), String>,
 ) -> Task<Message> {
     // Phase 78: Cleanup pending load
-    editor.pending_loads.remove(&id);
+    editor.session.pending_loads.remove(&id);
     // Phase 81: Cleanup queued load
-    editor.queued_loads.retain(|(i, _)| *i != id);
+    editor.session.queued_loads.retain(|(i, _)| *i != id);
     
     if let Ok((width, height, bytes)) = result {
         // Store the decoded pixels themselves. Previously this built a Handle
         // from `pixels.to_vec()` — copying the buffer back out of the Arc — and
         // dropped the Arc, so the Develop viewport had nothing to use and
         // re-read the JPEG from disk on navigation.
-        editor.preview_cache.put(
+        editor.session.preview_cache.put(
             id,
             crate::app::state::CachedPreview { width, height, bytes },
         );
@@ -612,7 +612,7 @@ fn handle_pan_interaction(editor: &mut RawEditor, pos: Point) -> Task<Message> {
             let delta = pos - last;
             editor.last_cursor_position = Some(pos);
 
-            let (vw, vh) = editor.viewport_size;
+            let (vw, vh) = editor.session.viewport_size;
             let (dw, dh) = editor.image_display_dims();
             let (fw, fh) = crate::core::viewport::fitted_size(dw, dh, vw, vh);
 
@@ -644,23 +644,23 @@ fn handle_crop_interaction(editor: &mut RawEditor, pos: Point) -> Task<Message> 
 }
 
 fn apply_crop_drag(editor: &mut RawEditor, pos: Point, last: Point, h: CropHandle) {
-    let resources = match &editor.image_resources {
+    let resources = match &editor.session.image_resources {
         Some(r) => r,
         None => return,
     };
     
     let (dw, dh) = editor.image_display_dims();
-    let (bw, bh) = editor.viewport_size;
+    let (bw, bh) = editor.session.viewport_size;
     let (fw, fh) = crate::core::viewport::fitted_size(dw, dh, bw, bh);
 
-    let zw = fw * editor.zoom;
-    let zh = fh * editor.zoom;
+    let zw = fw * editor.session.zoom;
+    let zh = fh * editor.session.zoom;
     
     // Scale delta from screen pixels to normalized image [0,1]
     let dx = (pos.x - last.x) / zw;
     let dy = (pos.y - last.y) / zh;
     
-    let c = editor.current_edit_params.crop;
+    let c = editor.session.current_edit_params.crop;
     let (mut l, mut t, mut r, mut b) = (c[0], c[1], c[0]+c[2], c[1]+c[3]);
     
     match h {
@@ -693,14 +693,14 @@ fn apply_crop_drag(editor: &mut RawEditor, pos: Point, last: Point, h: CropHandl
     let r = r.clamp(0.0, 1.0);
     let b = b.clamp(0.0, 1.0);
     
-    editor.current_edit_params.crop = [l, t, (r - l).max(0.0), (b - t).max(0.0)];
+    editor.session.current_edit_params.crop = [l, t, (r - l).max(0.0), (b - t).max(0.0)];
     // The release commits via commit_current_state, whose flush only writes
     // when dirty. Nothing else marks a crop drag dirty, so every drag after
     // the first in one crop session was dropped on close. (The field, not
-    // `mark_edits_dirty()`: `resources` still borrows `editor.image_resources`.)
-    editor.edits_dirty = true;
+    // `mark_edits_dirty()`: `resources` still borrows `editor.session.image_resources`.)
+    editor.session.edits_dirty = true;
 
-    if let Some(ctx) = &editor.gpu_context {
+    if let Some(ctx) = &editor.session.gpu_context {
         let params = editor.view_params();
         let (interpolated, wb_override) =
             crate::app::handlers::develop::resolve_wb_and_dcp(editor, &params);
@@ -727,32 +727,32 @@ fn handle_mask_interaction(editor: &mut RawEditor, pos: Point) -> Task<Message> 
 }
 
 fn apply_mask_drag(editor: &mut RawEditor, pos: Point, last: Point, h: MaskHandle) {
-    let Some(index) = editor.selected_mask else {
+    let Some(index) = editor.session.selected_mask else {
         return;
     };
-    if index >= editor.current_edit_params.mask_count as usize {
+    if index >= editor.session.current_edit_params.mask_count as usize {
         return;
     }
-    if editor.image_resources.is_none() {
+    if editor.session.image_resources.is_none() {
         return;
     }
 
     // Same letterbox/zoom math as apply_crop_drag, sharing the same dims
     // source as every other on-screen geometry consumer.
     let (dw, dh) = editor.image_display_dims();
-    let (bw, bh) = editor.viewport_size;
+    let (bw, bh) = editor.session.viewport_size;
     let (fw, fh) = crate::core::viewport::fitted_size(dw, dh, bw, bh);
-    // Captured before `m` borrows editor.current_edit_params below — needed
+    // Captured before `m` borrows editor.session.current_edit_params below — needed
     // by the Rotation arm's image_rect call.
-    let zoom = editor.zoom;
-    let pan_offset = editor.pan_offset;
+    let zoom = editor.session.zoom;
+    let pan_offset = editor.session.pan_offset;
 
     let zw = fw * zoom;
     let zh = fh * zoom;
 
     // Screen deltas map to visible-area UV; mask geometry lives in full-image
     // UV (the crop sub-rect is what's displayed), so scale by the crop extent.
-    let crop = editor.current_edit_params.crop;
+    let crop = editor.session.current_edit_params.crop;
     let du = (pos.x - last.x) / zw.max(1.0) * crop[2];
     let dv = (pos.y - last.y) / zh.max(1.0) * crop[3];
     // dw/dh are already the oriented display dims (editor.image_display_dims()), so
@@ -763,7 +763,7 @@ fn apply_mask_drag(editor: &mut RawEditor, pos: Point, last: Point, h: MaskHandl
     // pixel-per-unit scales (see core::viewport::mask_uv_aspect).
     let aspect = crate::core::viewport::mask_uv_aspect(dw, dh, crop);
 
-    let m = &mut editor.current_edit_params.masks[index];
+    let m = &mut editor.session.current_edit_params.masks[index];
     match h {
         MaskHandle::LinearStart => {
             m.ax += du;
@@ -844,14 +844,14 @@ fn apply_mask_drag(editor: &mut RawEditor, pos: Point, last: Point, h: MaskHandl
 /// RAW is read, so after the lens database changes the loaded one is stale.
 /// The edits are untouched — only the decode is redone.
 pub fn reload_selected_image(editor: &mut RawEditor) -> Task<Message> {
-    let Some(image_id) = editor.selected_image_id else { return Task::none() };
-    if editor.current_tab == AppTab::Develop {
+    let Some(image_id) = editor.session.selected_image_id else { return Task::none() };
+    if editor.session.current_tab == AppTab::Develop {
         trigger_image_load(editor, image_id)
     } else {
         // Not on screen: entering Develop decodes it afresh.
-        editor.image_resources = None;
-        editor.preview_resources = None;
-        editor.editor_readiness = EditorReadiness::NoSelection;
+        editor.session.image_resources = None;
+        editor.session.preview_resources = None;
+        editor.session.editor_readiness = EditorReadiness::NoSelection;
         Task::none()
     }
 }
@@ -863,10 +863,10 @@ fn trigger_image_load(editor: &mut RawEditor, image_id: i64) -> Task<Message> {
     // alongside it would hold two full-size working sets. Its result
     // releases the guard and re-checks this image (`handle_full_res_ready`).
     // The pin belongs to the image being left.
-    if editor.current_raw.as_ref().is_some_and(|(id, _)| *id != image_id) {
-        editor.current_raw = None;
+    if editor.session.current_raw.as_ref().is_some_and(|(id, _)| *id != image_id) {
+        editor.session.current_raw = None;
     }
-    let develop = editor.current_tab == AppTab::Develop;
+    let develop = editor.session.current_tab == AppTab::Develop;
     if develop {
         // The outgoing image's GPU resources and render must not stay on
         // screen: `rendered_preview_bytes` outranks the working preview in the
@@ -874,16 +874,16 @@ fn trigger_image_load(editor: &mut RawEditor, image_id: i64) -> Task<Message> {
         // filename until the new RAW finished decoding. Dropping both lets the
         // instant JPEG show immediately, frees the old textures now, and keeps
         // any slider touched mid-load from rendering the old image.
-        editor.image_resources = None;
-        editor.rendered_preview_bytes = None;
-        editor.preview_resources = None;
-        editor.rendered_view_rect = crate::gpu::params::FULL_VIEW_RECT;
-        editor.requested_view_rect = crate::gpu::params::FULL_VIEW_RECT;
-        editor.current_metadata = None;
+        editor.session.image_resources = None;
+        editor.session.rendered_preview_bytes = None;
+        editor.session.preview_resources = None;
+        editor.session.rendered_view_rect = crate::gpu::params::FULL_VIEW_RECT;
+        editor.session.requested_view_rect = crate::gpu::params::FULL_VIEW_RECT;
+        editor.session.current_metadata = None;
         editor.bump_preview_generation();
     }
     if let Some((working_cache_path, raw_path, saved_proxy)) = editor
-        .images
+        .session.images
         .iter()
         .find(|i| i.id == image_id)
         .map(|img| (img.cache_path_working.clone(), img.path.clone(), img.cache_path_edited.clone()))
@@ -893,7 +893,7 @@ fn trigger_image_load(editor: &mut RawEditor, image_id: i64) -> Task<Message> {
         // exposure, colour, crop) when the real render landed. A proxy in
         // memory goes up at once; a saved one is a ~1 ms decode away.
         let proxy = develop
-            .then(|| editor.edited_proxies.get(&image_id).map(|p| p.preview.clone()))
+            .then(|| editor.session.edited_proxies.get(&image_id).map(|p| p.preview.clone()))
             .flatten();
         let saved_proxy = saved_proxy.filter(|_| develop && proxy.is_none());
         let camera_preview_shown = proxy.is_none() && saved_proxy.is_none();
@@ -904,17 +904,17 @@ fn trigger_image_load(editor: &mut RawEditor, image_id: i64) -> Task<Message> {
         // Phase 73: Check RAM cache first. A hit is the whole point of the
         // preloader — it supplies the decoded pixels directly, so the disk
         // read + JPEG decode below is skipped entirely.
-        let cached_preview = editor.preview_cache.get(&image_id).cloned();
+        let cached_preview = editor.session.preview_cache.get(&image_id).cloned();
         if let Some(cached) = &cached_preview {
             editor.working_preview = Some(cached.to_handle());
             if camera_preview_shown {
-                editor.working_preview_bytes = Some(cached.bytes.clone());
-                editor.working_preview_dims = (cached.width, cached.height);
+                editor.session.working_preview_bytes = Some(cached.bytes.clone());
+                editor.session.working_preview_dims = (cached.width, cached.height);
                 editor.bump_preview_generation();
             }
         } else {
             if proxy.is_none() {
-                editor.working_preview_bytes = None;
+                editor.session.working_preview_bytes = None;
             }
             if let Some(path) = &working_cache_path {
                 editor.working_preview = Some(Handle::from_path(path.clone()));
@@ -926,7 +926,7 @@ fn trigger_image_load(editor: &mut RawEditor, image_id: i64) -> Task<Message> {
         // unfulfilled: switching Cull → Develop then saw "already loading",
         // started nothing, and sat on "Loading RAW…" forever.
         if develop {
-            editor.editor_readiness = EditorReadiness::Loading(image_id);
+            editor.session.editor_readiness = EditorReadiness::Loading(image_id);
         }
         let mut tasks = Vec::new();
         if let Some(path) = saved_proxy {
@@ -945,25 +945,25 @@ fn trigger_image_load(editor: &mut RawEditor, image_id: i64) -> Task<Message> {
         
         // Only load full RAW data if we are in Develop mode
         if develop {
-            let cached_raw = editor.raw_cache.get(&image_id).cloned();
+            let cached_raw = editor.session.raw_cache.get(&image_id).cloned();
             if let Some(cached_raw) = cached_raw {
                 tasks.push(crate::app::handlers::loading::prepare_image_resources_from_raw(
                     editor,
                     image_id,
                     cached_raw.clone(),
                 ));
-            } else if !editor.pending_raw_loads.contains(&image_id) {
+            } else if !editor.session.pending_raw_loads.contains(&image_id) {
                 // One direct decode per image: stepping A -> B -> A used to
                 // decode A twice, and a held arrow key one image per step.
-                if editor.direct_raw_loads.insert(image_id) {
+                if editor.session.direct_raw_loads.insert(image_id) {
                     tasks.push(Task::perform(
                     raw::loader::load_raw_data(raw_path),
                     move |res| Message::RawDataLoaded(image_id, res),
                     ));
                 }
             } else if claim_queued(
-                &mut editor.queued_raw_loads,
-                &mut editor.pending_raw_loads,
+                &mut editor.session.queued_raw_loads,
+                &mut editor.session.pending_raw_loads,
                 image_id,
                 crate::app::loader::MAX_CONCURRENT_RAW_LOADS,
             ) {
@@ -971,7 +971,7 @@ fn trigger_image_load(editor: &mut RawEditor, image_id: i64) -> Task<Message> {
                 // within the tail is not enough, because `schedule_raw_preloads`
                 // runs right after and rebuilds the tail without the selected
                 // image, which would drop it and leave Develop on "Loading".
-                if editor.direct_raw_loads.insert(image_id) {
+                if editor.session.direct_raw_loads.insert(image_id) {
                     tasks.push(Task::perform(
                         raw::loader::load_raw_data(raw_path),
                         move |res| Message::RawDataLoaded(image_id, res),
@@ -997,14 +997,14 @@ fn trigger_image_load(editor: &mut RawEditor, image_id: i64) -> Task<Message> {
 
 fn schedule_preloads(editor: &mut RawEditor) -> Task<Message> {
     let wanted: Vec<(i64, String)> =
-        neighbours(editor, editor.preview_preload_behind, editor.preview_preload_ahead)
+        neighbours(editor, editor.session.preview_preload_behind, editor.session.preview_preload_ahead)
             .into_iter()
-            .filter(|img| !editor.preview_cache.contains(&img.id))
+            .filter(|img| !editor.session.preview_cache.contains(&img.id))
             .filter_map(|img| img.cache_path_working.clone().map(|path| (img.id, path)))
             .collect();
     requeue(
-        &mut editor.queued_loads,
-        &mut editor.pending_loads,
+        &mut editor.session.queued_loads,
+        &mut editor.session.pending_loads,
         wanted,
         crate::app::loader::MAX_CONCURRENT_PREVIEW_LOADS,
     );
@@ -1012,22 +1012,22 @@ fn schedule_preloads(editor: &mut RawEditor) -> Task<Message> {
 }
 
 fn schedule_raw_preloads(editor: &mut RawEditor) -> Task<Message> {
-    if editor.raw_preload_budget_mb == 0 {
+    if editor.session.raw_preload_budget_mb == 0 {
         return Task::none();
     }
 
     let wanted: Vec<(i64, String)> =
-        neighbours(editor, editor.raw_preload_behind, editor.raw_preload_ahead)
+        neighbours(editor, editor.session.raw_preload_behind, editor.session.raw_preload_ahead)
             .into_iter()
-            .filter(|img| !editor.raw_cache.contains(&img.id))
+            .filter(|img| !editor.session.raw_cache.contains(&img.id))
             // A direct decode of it is already running (an image stepped
             // past): queueing it as well would decode it twice.
-            .filter(|img| !editor.direct_raw_loads.contains(&img.id))
+            .filter(|img| !editor.session.direct_raw_loads.contains(&img.id))
             .map(|img| (img.id, img.path.clone()))
             .collect();
     requeue(
-        &mut editor.queued_raw_loads,
-        &mut editor.pending_raw_loads,
+        &mut editor.session.queued_raw_loads,
+        &mut editor.session.pending_raw_loads,
         wanted,
         crate::app::loader::MAX_CONCURRENT_RAW_LOADS,
     );
@@ -1038,14 +1038,14 @@ fn schedule_raw_preloads(editor: &mut RawEditor) -> Task<Message> {
 /// placeholder for the next image is already decoded when the user gets there.
 fn schedule_proxy_preloads(editor: &mut RawEditor) {
     let ids: Vec<i64> =
-        neighbours(editor, editor.preview_preload_behind, editor.preview_preload_ahead)
+        neighbours(editor, editor.session.preview_preload_behind, editor.session.preview_preload_ahead)
             .iter()
             .map(|img| img.id)
             .collect();
     let wanted = crate::app::handlers::proxy::wanted_preloads(editor, &ids);
     requeue(
-        &mut editor.queued_proxy_loads,
-        &mut editor.pending_proxy_loads,
+        &mut editor.session.queued_proxy_loads,
+        &mut editor.session.pending_proxy_loads,
         wanted,
         crate::app::loader::MAX_CONCURRENT_PREVIEW_LOADS,
     );
@@ -1062,7 +1062,7 @@ fn schedule_proxy_preloads(editor: &mut RawEditor) {
 fn neighbours(editor: &RawEditor, behind: usize, ahead: usize) -> Vec<&ImageData> {
     let shown = editor.displayed_images();
     let Some(current) = editor
-        .selected_image_id
+        .session.selected_image_id
         .and_then(|selected| shown.iter().position(|img| img.id == selected))
     else {
         return Vec::new();
@@ -1178,8 +1178,8 @@ mod tests {
 
     fn editor_with(ids: &[i64]) -> RawEditor {
         let mut e = RawEditor::new().0;
-        e.current_tab = AppTab::Library;
-        e.images = ids.iter().map(|i| img(*i, "/p/x.NEF")).collect();
+        e.session.current_tab = AppTab::Library;
+        e.session.images = ids.iter().map(|i| img(*i, "/p/x.NEF")).collect();
         e
     }
 
@@ -1192,17 +1192,17 @@ mod tests {
         let _ = handle_image_selected(&mut e, 1);
         e.last_modifiers = iced::keyboard::Modifiers::SHIFT;
         let _ = crate::app::update::update(&mut e, Message::ImageMoved(3));
-        assert_eq!(e.multi_selection, [3].into_iter().collect(), "a range select");
-        assert_eq!(e.selected_image_id, Some(3));
+        assert_eq!(e.session.multi_selection, [3].into_iter().collect(), "a range select");
+        assert_eq!(e.session.selected_image_id, Some(3));
 
         e.last_modifiers = iced::keyboard::Modifiers::CTRL;
         let _ = crate::app::update::update(&mut e, Message::ImageMoved(2));
-        assert_eq!(e.multi_selection, [2].into_iter().collect(), "toggled out");
+        assert_eq!(e.session.multi_selection, [2].into_iter().collect(), "toggled out");
 
         // A real Shift-click still extends.
         e.last_modifiers = iced::keyboard::Modifiers::SHIFT;
         let _ = crate::app::update::update(&mut e, Message::ImageSelected(3));
-        assert_eq!(e.multi_selection.len(), 2);
+        assert_eq!(e.session.multi_selection.len(), 2);
     }
 
     #[test]
@@ -1238,8 +1238,8 @@ mod tests {
     #[test]
     fn range_ignores_endpoints_the_filter_hides() {
         let mut e = editor_with(&[1, 2, 3]);
-        e.images[1].rating = 0;
-        e.min_filter_rating = 5; // hides everything
+        e.session.images[1].rating = 0;
+        e.session.min_filter_rating = 5; // hides everything
         e.selection_anchor = Some(1);
         assert_eq!(select_range(&e, 3), None);
     }
@@ -1247,7 +1247,7 @@ mod tests {
     #[test]
     fn neighbours_come_nearest_first_and_wrap() {
         let mut e = editor_with(&[1, 2, 3, 4, 5, 6]);
-        e.selected_image_id = Some(1);
+        e.session.selected_image_id = Some(1);
         let ids: Vec<i64> = neighbours(&e, 2, 3).iter().map(|i| i.id).collect();
         assert_eq!(ids, vec![2, 6, 3, 5, 4]);
     }
@@ -1256,7 +1256,7 @@ mod tests {
     #[test]
     fn neighbours_never_repeat_or_include_the_selection() {
         let mut e = editor_with(&[1, 2, 3]);
-        e.selected_image_id = Some(2);
+        e.session.selected_image_id = Some(2);
         let ids: Vec<i64> = neighbours(&e, 10, 50).iter().map(|i| i.id).collect();
         assert_eq!(ids, vec![3, 1]);
     }
@@ -1276,9 +1276,9 @@ mod tests {
     #[test]
     fn stepping_stays_inside_the_displayed_set() {
         let mut e = editor_with(&[1, 2, 3]);
-        e.images[1].rating = crate::database::models::with_mark(0, true);
-        e.current_tab = AppTab::Develop; // excludes marked
-        e.selected_image_id = Some(1);
+        e.session.images[1].rating = crate::database::models::with_mark(0, true);
+        e.session.current_tab = AppTab::Develop; // excludes marked
+        e.session.selected_image_id = Some(1);
         assert_eq!(step_selection(&e, true), Some(3));
         assert_eq!(step_selection(&e, false), Some(3)); // wraps backwards
     }

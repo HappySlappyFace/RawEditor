@@ -13,7 +13,7 @@ fn set_exposure(e: &mut crate::app::state::RawEditor, v: f32) {
 }
 
 fn exposure(e: &crate::app::state::RawEditor) -> f32 {
-    e.current_edit_params.exposure
+    e.session.current_edit_params.exposure
 }
 
 #[test]
@@ -103,10 +103,10 @@ fn reset_is_one_undoable_step() {
     send(&mut e, Message::ContrastChanged(0.4));
     send(&mut e, Message::CommitEdit);
     send(&mut e, Message::ResetEdits);
-    assert_eq!(e.current_edit_params.without_tool_state(), Default::default());
+    assert_eq!(e.session.current_edit_params.without_tool_state(), Default::default());
     assert_eq!(saved_edits(&e, 1).exposure, 0.0, "reset not saved");
     send(&mut e, Message::Undo);
-    assert_eq!((exposure(&e), e.current_edit_params.contrast), (1.0, 0.4));
+    assert_eq!((exposure(&e), e.session.current_edit_params.contrast), (1.0, 0.4));
 }
 
 /// Paste merges only the copied categories, onto every selected image:
@@ -123,7 +123,7 @@ fn paste_onto_a_selection_merges_into_each_image_and_its_history() {
     send(&mut e, Message::SetAllCopyCategories(false));
     send(&mut e, Message::ToggleCopyCategory(CopyCategory::Tone, true));
     send(&mut e, Message::CopySettingsConfirmed);
-    assert!(e.edit_clipboard.is_some());
+    assert!(e.session.edit_clipboard.is_some());
 
     // Image 3 visited and given its own colour edit; then paste from 2.
     send(&mut e, Message::ImageSelected(3));
@@ -131,10 +131,10 @@ fn paste_onto_a_selection_merges_into_each_image_and_its_history() {
     send(&mut e, Message::CommitEdit);
     send(&mut e, Message::ImageSelected(2));
     send(&mut e, Message::SelectAll);
-    assert_eq!(e.multi_selection.len(), 5);
+    assert_eq!(e.session.multi_selection.len(), 5);
     send(&mut e, Message::PasteSettings);
 
-    assert_eq!((exposure(&e), e.current_edit_params.contrast), (1.5, 0.3));
+    assert_eq!((exposure(&e), e.session.current_edit_params.contrast), (1.5, 0.3));
     for id in [3, 4, 5] {
         let p = saved_edits(&e, id);
         assert_eq!((p.exposure, p.contrast), (1.5, 0.3), "image {id} missed the paste");
@@ -150,7 +150,7 @@ fn paste_onto_a_selection_merges_into_each_image_and_its_history() {
     send(&mut e, Message::ImageSelected(3));
     assert_eq!(exposure(&e), 1.5);
     send(&mut e, Message::Undo);
-    assert_eq!((exposure(&e), e.current_edit_params.saturation), (0.0, 0.4));
+    assert_eq!((exposure(&e), e.session.current_edit_params.saturation), (0.0, 0.4));
     // An unvisited one opens on the pasted edit, with nothing to undo.
     send(&mut e, Message::ImageSelected(4));
     assert_eq!(exposure(&e), 1.5);
@@ -182,22 +182,22 @@ fn the_before_peek_never_reaches_the_edit_or_the_catalogue() {
     let mut e = develop_with_images(3);
     set_exposure(&mut e, 1.0);
     // The peek needs a loaded image; the harness has no GPU to load one.
-    e.editor_readiness = EditorReadiness::Ready(1);
+    e.session.editor_readiness = EditorReadiness::Ready(1);
 
     send(&mut e, Message::SetBeforePeek(true));
-    assert!(e.before_peek);
+    assert!(e.session.before_peek);
     assert_eq!(exposure(&e), 1.0, "the peek wrote current_edit_params");
     send(&mut e, Message::CommitEdit);
     assert_eq!(saved_edits(&e, 1).exposure, 1.0);
     send(&mut e, Message::TabChanged(AppTab::Library));
-    assert!(!e.before_peek, "the peek outlived Develop");
+    assert!(!e.session.before_peek, "the peek outlived Develop");
     assert_eq!(saved_edits(&e, 1).exposure, 1.0);
 
     send(&mut e, Message::TabChanged(AppTab::Develop));
-    e.editor_readiness = EditorReadiness::Ready(1);
+    e.session.editor_readiness = EditorReadiness::Ready(1);
     send(&mut e, Message::SetBeforePeek(true));
     send(&mut e, Message::ImageSelected(2));
-    assert!(!e.before_peek, "the peek carried over to the next image");
+    assert!(!e.session.before_peek, "the peek carried over to the next image");
     assert_eq!(saved_edits(&e, 1).exposure, 1.0);
     assert_eq!(exposure(&e), 0.0);
 }
@@ -205,7 +205,7 @@ fn the_before_peek_never_reaches_the_edit_or_the_catalogue() {
 #[test]
 fn the_peek_is_refused_while_the_image_loads() {
     let mut e = develop_with_images(3);
-    assert_eq!(e.editor_readiness, EditorReadiness::Loading(1));
+    assert_eq!(e.session.editor_readiness, EditorReadiness::Loading(1));
     send(&mut e, Message::SetBeforePeek(true));
-    assert!(!e.before_peek);
+    assert!(!e.session.before_peek);
 }

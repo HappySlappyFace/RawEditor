@@ -53,7 +53,7 @@ pub fn view_develop(editor: &RawEditor) -> Element<'_, Message> {
     let (has_pixels, overlay_content) = prepare_preview(editor);
     let main_content = view_main_content(editor, has_pixels, overlay_content);
 
-    if matches!(editor.editor_readiness, EditorReadiness::NoSelection) {
+    if matches!(editor.session.editor_readiness, EditorReadiness::NoSelection) {
         return main_content;
     }
 
@@ -98,7 +98,7 @@ fn sidebar_histogram(editor: &RawEditor) -> Option<Element<'_, Message>> {
         return None;
     }
     let histogram = iced::widget::canvas::Canvas::new(crate::ui::histogram::Histogram {
-        data: *editor.histogram_data.borrow(),
+        data: *editor.session.histogram_data.borrow(),
     })
     .width(Length::Fill)
     .height(Length::Fixed(96.0));
@@ -146,7 +146,7 @@ fn sidebar_actions(editor: &RawEditor) -> Element<'_, Message> {
             Some(Message::HistogramToggled(!editor.histogram_enabled)),
         ),
         icon(ui::icons::COPY, "Copy settings", false, Some(Message::CopySettings)),
-        icon(ui::icons::PASTE, "Paste settings", false, editor.edit_clipboard.as_ref().map(|_| Message::PasteSettings)),
+        icon(ui::icons::PASTE, "Paste settings", false, editor.session.edit_clipboard.as_ref().map(|_| Message::PasteSettings)),
         icon(ui::icons::RESET, "Reset all edits", false, Some(Message::ResetEdits)),
         export,
     ]
@@ -173,7 +173,7 @@ fn section<'a>(
     body: Element<'a, Message>,
 ) -> Element<'a, Message> {
     let open = expanded(editor, which);
-    let edited = crate::app::handlers::develop::section_edited(which, &editor.current_edit_params);
+    let edited = crate::app::handlers::develop::section_edited(which, &editor.session.current_edit_params);
     let toggle = button(
         row![
             text(if open { ui::icons::CARET_DOWN } else { ui::icons::CARET_RIGHT })
@@ -233,7 +233,7 @@ fn rows<'a>(items: impl IntoIterator<Item = Element<'a, Message>>) -> Element<'a
 }
 
 fn view_sidebar(editor: &RawEditor) -> iced::widget::Column<'_, Message> {
-    let p = &editor.current_edit_params;
+    let p = &editor.session.current_edit_params;
     let d = crate::core::types::EditParams::default();
 
     let light = rows([
@@ -249,7 +249,7 @@ fn view_sidebar(editor: &RawEditor) -> iced::widget::Column<'_, Message> {
 
     // WB sliders pivot around the camera's as-shot values, shown in the
     // header; double-clicking either slider returns to them.
-    let (as_k, as_t) = editor.as_shot_wb.unwrap_or((5000.0, 0.0));
+    let (as_k, as_t) = editor.session.as_shot_wb.unwrap_or((5000.0, 0.0));
     let kelvin = p.kelvin_from_anchor(as_k);
     let tint = p.tint_from_anchor(as_t);
     let colour = rows([
@@ -282,7 +282,7 @@ fn view_sidebar(editor: &RawEditor) -> iced::widget::Column<'_, Message> {
     // The picker lives in the header, so it works with Colour folded.
     let wb_picker = with_tooltip(
         button(text(ui::icons::EYEDROPPER).font(ICON_FONT).size(theme::size::SMALL))
-            .style(if editor.is_wb_picking { ui::styles::AccentButton::style } else { ui::styles::ghost_button })
+            .style(if editor.session.is_wb_picking { ui::styles::AccentButton::style } else { ui::styles::ghost_button })
             .padding([theme::space::XS, theme::space::S])
             .on_press(Message::ToggleWbPicker),
         "Pick white balance",
@@ -355,7 +355,7 @@ fn view_sidebar(editor: &RawEditor) -> iced::widget::Column<'_, Message> {
 
 /// Debug-only black-level controls (`debug::SHOW_SENSOR_CORRECTION`).
 fn sensor_correction(editor: &RawEditor) -> Element<'_, Message> {
-    let p = &editor.current_edit_params;
+    let p = &editor.session.current_edit_params;
     let mut col = column![
         group_label("Sensor correction"),
         checkbox("Shift Grid X", p.black_phase_x != 0)
@@ -383,14 +383,14 @@ fn crop_presets(editor: &RawEditor) -> Element<'_, Message> {
         container(
             row![
                 text(ui::icons::CROP).font(ICON_FONT).size(theme::size::SMALL),
-                text(if editor.is_cropping { "Done" } else { "Crop Tool" }).size(theme::size::SMALL),
+                text(if editor.session.is_cropping { "Done" } else { "Crop Tool" }).size(theme::size::SMALL),
             ]
             .spacing(theme::space::S)
             .align_y(Alignment::Center),
         )
         .center_x(Length::Fill),
     )
-    .style(if editor.is_cropping { ui::styles::AccentButton::style } else { ui::styles::NeutralButton::style })
+    .style(if editor.session.is_cropping { ui::styles::AccentButton::style } else { ui::styles::NeutralButton::style })
     .on_press(Message::ToggleCrop)
     .padding([theme::space::XS, 0])
     .width(Length::Fill);
@@ -423,9 +423,9 @@ fn crop_presets(editor: &RawEditor) -> Element<'_, Message> {
 
 fn geometry_tools(editor: &RawEditor) -> Element<'_, Message> {
     let ready = editor
-        .image_resources
+        .session.image_resources
         .as_ref()
-        .is_some_and(|r| Some(r.image_id) == editor.selected_image_id);
+        .is_some_and(|r| Some(r.image_id) == editor.session.selected_image_id);
     let turn = |icon: &'static str, label: &'static str, clockwise: bool| {
         with_tooltip(
             button(text(icon).font(ICON_FONT).size(theme::size::BODY))
@@ -444,7 +444,7 @@ fn geometry_tools(editor: &RawEditor) -> Element<'_, Message> {
         .spacing(theme::space::S)
         .align_y(Alignment::Center),
     )
-    .style(if editor.is_leveling { ui::styles::AccentButton::style } else { ui::styles::NeutralButton::style })
+    .style(if editor.session.is_leveling { ui::styles::AccentButton::style } else { ui::styles::NeutralButton::style })
     .on_press_maybe(ready.then_some(Message::ToggleLevelTool))
     .padding([theme::space::XS, theme::space::L]);
     row![
@@ -471,8 +471,8 @@ fn aspect_crop_button<'a>(editor: &RawEditor, label: &'a str, ratio: f32) -> Ele
         .style(ui::styles::NeutralButton::style)
         .padding([theme::space::XS, 0])
         .width(Length::Fill)
-        .on_press_maybe(editor.image_resources.as_ref().map(|res| {
-            let (w, h) = res.oriented_dims(editor.current_edit_params.quarter_turns);
+        .on_press_maybe(editor.session.image_resources.as_ref().map(|res| {
+            let (w, h) = res.oriented_dims(editor.session.current_edit_params.quarter_turns);
             Message::SetCrop(RawEditor::calculate_center_crop(ratio, w, h))
         }))
         .into()
@@ -484,10 +484,10 @@ fn aspect_crop_button<'a>(editor: &RawEditor, label: &'a str, ratio: f32) -> Ele
 /// `Option<Handle>` that was only ever pattern-matched for presence, which cost
 /// a full extra copy of every rendered frame to construct.
 fn prepare_preview(editor: &RawEditor) -> (bool, Option<Element<'_, Message>>) {
-    match &editor.editor_readiness {
+    match &editor.session.editor_readiness {
         EditorReadiness::NoSelection => (false, Option::<Element<Message>>::None),
         EditorReadiness::Loading(_) => {
-            let has_pixels = editor.working_preview_bytes.is_some();
+            let has_pixels = editor.session.working_preview_bytes.is_some();
             let overlay = container(
                 column![row![
                     text(ui::icons::HOURGLASS)
@@ -516,12 +516,12 @@ fn prepare_preview(editor: &RawEditor) -> (bool, Option<Element<'_, Message>>) {
             (has_pixels, Some(entrance(overlay).starting_scale(0.94).starting_offset(0.0, 10.0).into()))
         }
         EditorReadiness::Ready(_) => {
-            if let (Some(_ctx), Some(_resources)) = (&editor.gpu_context, &editor.image_resources) {
+            if let (Some(_ctx), Some(_resources)) = (&editor.session.gpu_context, &editor.session.image_resources) {
                 // Phase 103/104: Use async rendered preview, falling back to
                 // the working preview until the first GPU render lands. Mirrors
                 // the byte-buffer priority in `view_main_content`.
-                let has_pixels = editor.rendered_preview_bytes.is_some()
-                    || editor.working_preview_bytes.is_some();
+                let has_pixels = editor.session.rendered_preview_bytes.is_some()
+                    || editor.session.working_preview_bytes.is_some();
                 (has_pixels, None)
             } else {
                 (false, None)
@@ -542,7 +542,7 @@ fn view_main_content<'a>(
     has_pixels: bool,
     overlay_content: Option<Element<'a, Message>>,
 ) -> Element<'a, Message> {
-    if matches!(editor.editor_readiness, EditorReadiness::NoSelection) {
+    if matches!(editor.session.editor_readiness, EditorReadiness::NoSelection) {
         return container(ui::text::empty_state("No image selected", ui::text::body("Pick a photo in Library to start editing.")))
         .width(Length::Fill)
         .height(Length::Fill)
@@ -560,10 +560,10 @@ fn view_main_content<'a>(
         // they must never come from different renders. The working preview is
         // a whole-image JPEG, so it is always FULL_VIEW_RECT; only the GPU
         // render produces a windowed buffer.
-        let (active_bytes, active_view_rect) = match editor.rendered_preview_bytes.clone() {
-            Some(b) => (Some(b), editor.rendered_view_rect),
+        let (active_bytes, active_view_rect) = match editor.session.rendered_preview_bytes.clone() {
+            Some(b) => (Some(b), editor.session.rendered_view_rect),
             None => (
-                editor.working_preview_bytes.clone(),
+                editor.session.working_preview_bytes.clone(),
                 crate::gpu::params::FULL_VIEW_RECT,
             ),
         };
@@ -580,7 +580,7 @@ fn view_main_content<'a>(
         let (buf_w, buf_h) = editor.buffer_dims();
         let (img_w, img_h) = editor.image_display_dims();
 
-        match &editor.editor_readiness {
+        match &editor.session.editor_readiness {
             EditorReadiness::Loading(_) | EditorReadiness::Ready(_) => {
                 // Phase 115: Bottom layer – native GPU shader viewport (respects scissor rects!)
                 let viewport: Element<'_, Message> = Shader::new(ViewportProgram {
@@ -590,9 +590,9 @@ fn view_main_content<'a>(
                     image_width: img_w,
                     image_height: img_h,
                     view_rect: active_view_rect,
-                    zoom: editor.zoom,
-                    offset: editor.pan_offset,
-                    generation: editor.preview_generation,
+                    zoom: editor.session.zoom,
+                    offset: editor.session.pan_offset,
+                    generation: editor.session.preview_generation,
                 })
                 .width(Length::Fill)
                 .height(Length::Fill)
@@ -606,31 +606,31 @@ fn view_main_content<'a>(
                 // applied to what's on screen. The Canvas itself must STAY in
                 // the stack regardless: its update() is what emits
                 // ViewportResized, which keeps viewport_size accurate.
-                let peeking = editor.before_peek;
+                let peeking = editor.session.before_peek;
                 let overlay: Element<'_, Message> = Canvas::new(CropOverlay {
-                    zoom: editor.zoom,
-                    offset: editor.pan_offset,
+                    zoom: editor.session.zoom,
+                    offset: editor.session.pan_offset,
                     image_width: img_w,
                     image_height: img_h,
-                    is_cropping: editor.is_cropping && !peeking,
-                    is_wb_picking: editor.is_wb_picking && !peeking,
-                    crop: editor.current_edit_params.crop,
+                    is_cropping: editor.session.is_cropping && !peeking,
+                    is_wb_picking: editor.session.is_wb_picking && !peeking,
+                    crop: editor.session.current_edit_params.crop,
                     is_mask_placing: !peeking
-                        && editor.mask_tool != crate::app::state::MaskTool::Inactive,
+                        && editor.session.mask_tool != crate::app::state::MaskTool::Inactive,
                     selected_mask: if peeking {
                         None
                     } else {
-                        editor.selected_mask.and_then(|i| {
-                            (i < editor.current_edit_params.mask_count as usize)
-                                .then(|| editor.current_edit_params.masks[i])
+                        editor.session.selected_mask.and_then(|i| {
+                            (i < editor.session.current_edit_params.mask_count as usize)
+                                .then(|| editor.session.current_edit_params.masks[i])
                         })
                     },
-                    brush: (!peeking && editor.brush_armed && editor.selected_mask.is_some())
-                        .then_some((editor.brush_settings.size, editor.brush_settings.feather)),
-                    is_color_picking: !peeking && editor.color_picking_mask.is_some(),
-                    is_loupe_targeting: !peeking && editor.loupe.targeting,
-                    is_leveling: !peeking && editor.is_leveling,
-                    ai_select: (!peeking && editor.ai_select.as_ref().is_some_and(|s| s.engine.is_some()))
+                    brush: (!peeking && editor.brush_armed && editor.session.selected_mask.is_some())
+                        .then_some((editor.session.brush_settings.size, editor.session.brush_settings.feather)),
+                    is_color_picking: !peeking && editor.session.color_picking_mask.is_some(),
+                    is_loupe_targeting: !peeking && editor.session.loupe.targeting,
+                    is_leveling: !peeking && editor.session.is_leveling,
+                    ai_select: (!peeking && editor.session.ai_select.as_ref().is_some_and(|s| s.engine.is_some()))
                         .then(|| crate::app::handlers::ai_mask::display_points(editor)),
                 })
                 .width(Length::Fill)
@@ -695,12 +695,12 @@ fn view_main_content<'a>(
         // `I` appeared to show the same panel twice before hiding.
         crate::app::state::InfoOverlayState::CacheDebug => {
             let budget = editor.raw_cache_budget_bytes().max(1);
-            let used_pct = (editor.raw_cache_bytes as f64 / budget as f64 * 100.0).min(999.0);
+            let used_pct = (editor.session.raw_cache_bytes as f64 / budget as f64 * 100.0).min(999.0);
             let selected_cached = editor
-                .selected_image_id
+                .session.selected_image_id
                 .map(|id| {
-                    let raw = editor.raw_cache.contains(&id);
-                    let prev = editor.preview_cache.contains(&id);
+                    let raw = editor.session.raw_cache.contains(&id);
+                    let prev = editor.session.preview_cache.contains(&id);
                     match (raw, prev) {
                         (true, true) => "raw + preview",
                         (true, false) => "raw only",
@@ -717,25 +717,25 @@ fn view_main_content<'a>(
                     }),
                     info_line(format!(
                         "RAW  {} files  {:.0} / {} MB  ({:.0}%)",
-                        editor.raw_cache.len(),
-                        editor.raw_cache_bytes as f64 / (1024.0 * 1024.0),
-                        editor.raw_preload_budget_mb,
+                        editor.session.raw_cache.len(),
+                        editor.session.raw_cache_bytes as f64 / (1024.0 * 1024.0),
+                        editor.session.raw_preload_budget_mb,
                         used_pct,
                     )),
                     info_line(format!(
                         "Preview  {} / {} entries",
-                        editor.preview_cache.len(),
-                        editor.cache_capacity,
+                        editor.session.preview_cache.len(),
+                        editor.session.cache_capacity,
                     )),
                     info_line(format!(
                         "In flight  {} preview  {} raw",
-                        editor.pending_loads.len(),
-                        editor.pending_raw_loads.len(),
+                        editor.session.pending_loads.len(),
+                        editor.session.pending_raw_loads.len(),
                     )),
                     info_line(format!(
                         "Queued  {} preview  {} raw",
-                        editor.queued_loads.len(),
-                        editor.queued_raw_loads.len(),
+                        editor.session.queued_loads.len(),
+                        editor.session.queued_raw_loads.len(),
                     )),
                     info_line(format!("This image  {}", selected_cached)),
                 ]
@@ -764,8 +764,8 @@ fn view_main_content<'a>(
     let filename_overlay = container(
         text(
             editor
-                .selected_image_id
-                .and_then(|id| editor.images.iter().find(|img| img.id == id))
+                .session.selected_image_id
+                .and_then(|id| editor.session.images.iter().find(|img| img.id == id))
                 .map(|img| img.filename.clone())
                 .unwrap_or_default(),
         )
@@ -851,7 +851,7 @@ fn mask_rows<'a>(
     use crate::app::state::MaskTool;
     use crate::core::types::{MASK_AI, MASK_BRUSH, MASK_LINEAR, MASK_RADIAL, MASK_RANGE, MAX_MASKS};
 
-    let params = &editor.current_edit_params;
+    let params = &editor.session.current_edit_params;
     let count = params.mask_count as usize;
 
     // Add-mask buttons. Linear/radial toggle placement mode (the next
@@ -859,8 +859,8 @@ fn mask_rows<'a>(
     // no geometry and are created straight away. Disabled at the mask limit,
     // except to cancel a mode.
     let can_add = count < MAX_MASKS;
-    let linear_active = editor.mask_tool == MaskTool::PlacingLinear;
-    let radial_active = editor.mask_tool == MaskTool::PlacingRadial;
+    let linear_active = editor.session.mask_tool == MaskTool::PlacingLinear;
+    let radial_active = editor.session.mask_tool == MaskTool::PlacingRadial;
     let add_button = |label: &'static str, active: bool, msg: Option<Message>| {
         button(text(label).size(theme::size::CAPTION).align_x(iced::alignment::Horizontal::Center))
             .style(if active {
@@ -881,8 +881,8 @@ fn mask_rows<'a>(
             add_button("Range", false, place(MASK_RANGE, false)),
             add_button(
                 "AI",
-                editor.ai_select.is_some(),
-                (can_add && editor.ai_select.is_none()).then_some(Message::AiSelectStart),
+                editor.session.ai_select.is_some(),
+                (can_add && editor.session.ai_select.is_none()).then_some(Message::AiSelectStart),
             ),
         ]
         .spacing(theme::space::XS),
@@ -893,7 +893,7 @@ fn mask_rows<'a>(
 
     // An open AI selection owns the canvas: say what clicks do, and how to
     // finish.
-    if let Some(s) = &editor.ai_select {
+    if let Some(s) = &editor.session.ai_select {
         let status = if let Some(e) = &s.error {
             format!("Unavailable: {e}")
         } else if s.analysing() {
@@ -933,7 +933,7 @@ fn mask_rows<'a>(
     // Mask list: select / enable / delete
     for i in 0..count {
         let m = params.masks[i];
-        let selected = editor.selected_mask == Some(i);
+        let selected = editor.session.selected_mask == Some(i);
         let kind = match m.mask_type {
             MASK_LINEAR => "Linear",
             MASK_RADIAL => "Radial",
@@ -969,7 +969,7 @@ fn mask_rows<'a>(
                     .style(ui::styles::NeutralButton::style)
                     // The open AI-select session's own mask stays until Done / Cancel.
                     .on_press_maybe(
-                        (!editor.ai_select.as_ref().is_some_and(|s| s.slot == i)).then_some(Message::DeleteMask(i)),
+                        (!editor.session.ai_select.as_ref().is_some_and(|s| s.slot == i)).then_some(Message::DeleteMask(i)),
                     )
                     .padding(theme::space::S),
             ]
@@ -979,7 +979,7 @@ fn mask_rows<'a>(
     }
 
     // Per-mask controls for the selected mask
-    let Some(i) = editor.selected_mask.filter(|&i| i < count) else {
+    let Some(i) = editor.session.selected_mask.filter(|&i| i < count) else {
         return sidebar;
     };
     let m = params.masks[i];
@@ -989,11 +989,11 @@ fn mask_rows<'a>(
     sidebar = sidebar.push(
         row![
             small("Invert", m.invert != 0).on_toggle(Message::ToggleMaskInvert),
-            small("Show overlay", editor.show_mask_overlay).on_toggle(Message::ToggleMaskOverlay),
+            small("Show overlay", editor.session.show_mask_overlay).on_toggle(Message::ToggleMaskOverlay),
         ]
         .spacing(theme::space::XL),
     );
-    if m.mask_type == MASK_AI && editor.ai_select.is_none() {
+    if m.mask_type == MASK_AI && editor.session.ai_select.is_none() {
         sidebar = sidebar.push(
             button(text("Refine Selection").size(theme::size::CAPTION))
                 .style(ui::styles::NeutralButton::style)
@@ -1003,7 +1003,7 @@ fn mask_rows<'a>(
 
     // Brush: painting is the whole of a brush mask, and a refinement
     // (add / erase) for any other.
-    let b = editor.brush_settings;
+    let b = editor.session.brush_settings;
     let is_brush = m.mask_type == MASK_BRUSH;
     let mut brush_row = row![].spacing(theme::space::XS).align_y(Alignment::Center);
     if !is_brush {
@@ -1067,7 +1067,7 @@ fn mask_rows<'a>(
                 Message::MaskAdjustmentChanged(MaskAdjustment::LumaSmooth, v)
             }));
     }
-    let picking = editor.color_picking_mask == Some(i);
+    let picking = editor.session.color_picking_mask == Some(i);
     sidebar = sidebar.push(
         row![
             small("Colour range", m.color_range != 0 || picking).on_toggle(Message::ToggleMaskColorRange),
@@ -1140,7 +1140,7 @@ fn mask_rows<'a>(
 /// replaces them (`DenoiseSettings::from_params`), so they would do nothing.
 /// Their values are kept for when it is removed.
 fn noise_reduction(editor: &RawEditor) -> Element<'_, Message> {
-    let p = &editor.current_edit_params;
+    let p = &editor.session.current_edit_params;
     let d = crate::core::types::EditParams::default();
     if p.ai_denoise > 0.0 {
         return rows([
@@ -1158,7 +1158,7 @@ fn noise_reduction(editor: &RawEditor) -> Element<'_, Message> {
 
 /// `AI Denoise…` and, when applied, how much.
 fn ai_denoise_row(editor: &RawEditor) -> Element<'_, Message> {
-    let amount = editor.current_edit_params.ai_denoise;
+    let amount = editor.session.current_edit_params.ai_denoise;
     let label = if amount > 0.0 { format!("AI Denoise · {:.0}%", amount * 100.0) } else { "AI Denoise…".to_string() };
     button(
         row![text(ui::icons::MAGIC).font(ICON_FONT).size(theme::size::SMALL), text(label).size(theme::size::SMALL)]
@@ -1176,7 +1176,7 @@ fn ai_denoise_row(editor: &RawEditor) -> Element<'_, Message> {
 /// sensor's own resolution — the only scale grain can be judged at.
 fn loupe_section(editor: &RawEditor) -> Element<'_, Message> {
     use crate::app::handlers::loupe::LOUPE_SIZE;
-    let frame = editor.loupe.frame.as_ref().filter(|f| Some(f.image_id) == editor.selected_image_id);
+    let frame = editor.session.loupe.frame.as_ref().filter(|f| Some(f.image_id) == editor.session.selected_image_id);
     let picture: Element<'_, Message> = match frame {
         Some(f) => stack![
             iced::widget::image(f.handle.clone())
@@ -1188,7 +1188,7 @@ fn loupe_section(editor: &RawEditor) -> Element<'_, Message> {
         ]
         .into(),
         None => {
-            let failed = editor.loupe.failed.as_ref().filter(|(id, _)| Some(*id) == editor.selected_image_id);
+            let failed = editor.session.loupe.failed.as_ref().filter(|(id, _)| Some(*id) == editor.session.selected_image_id);
             let message = match failed {
                 Some((_, e)) => format!("Unavailable: {e}"),
                 None => "Preparing 1:1 preview…".to_string(),
@@ -1207,7 +1207,7 @@ fn loupe_section(editor: &RawEditor) -> Element<'_, Message> {
         ..Default::default()
     });
 
-    let targeting = editor.loupe.targeting;
+    let targeting = editor.session.loupe.targeting;
     let pick = button(
         row![
             text(ui::icons::CROSSHAIRS).font(ICON_FONT).size(theme::size::SMALL), // crosshairs
@@ -1247,7 +1247,7 @@ impl std::fmt::Display for ProfileOption {
 /// download an open-source one (`handlers::camera_profiles`).
 fn camera_profile_block(editor: &RawEditor) -> Element<'_, Message> {
     use crate::core::camera_profiles::{camera_name, Catalog, ProfileChoice};
-    let Some(meta) = editor.current_metadata.as_ref() else { return column![].into() };
+    let Some(meta) = editor.session.current_metadata.as_ref() else { return column![].into() };
     let Some(catalog) = Catalog::loaded() else {
         return hint("Reading camera profiles…".to_string());
     };
@@ -1266,7 +1266,7 @@ fn camera_profile_block(editor: &RawEditor) -> Element<'_, Message> {
         }
     };
     // What "Default" means for this camera right now.
-    let default_label = match catalog.default_for(&editor.camera_profile_defaults, &meta.make, &meta.model).map(String::as_str) {
+    let default_label = match catalog.default_for(&editor.session.camera_profile_defaults, &meta.make, &meta.model).map(String::as_str) {
         Some("builtin") => "Default (none)".to_string(),
         Some(file) => match catalog.find(file) {
             Some(p) => format!("Default ({})", label(p)),
@@ -1279,7 +1279,7 @@ fn camera_profile_block(editor: &RawEditor) -> Element<'_, Message> {
         ProfileChoice::named(&p.file_name).map(|choice| ProfileOption { choice, label: label(p) })
     }));
     options.push(ProfileOption { choice: ProfileChoice::BUILTIN, label: "None (built-in colour)".to_string() });
-    let current = editor.current_edit_params.camera_profile;
+    let current = editor.session.current_edit_params.camera_profile;
     // A named profile that has since been removed resolves like Default.
     let selected = options.iter().find(|o| o.choice == current).or(options.first()).cloned();
 
@@ -1301,7 +1301,7 @@ fn camera_profile_block(editor: &RawEditor) -> Element<'_, Message> {
 /// offer RawTherapee's open-source profile or an import.
 fn missing_profile_prompt(editor: &RawEditor, camera: String) -> Element<'_, Message> {
     use crate::app::state::ProfileJob;
-    let state = &editor.camera_profiles;
+    let state = &editor.session.camera_profiles;
     let unavailable = state.unavailable.as_deref() == Some(camera.as_str());
     let warn = theme::colours().warn;
 
@@ -1353,7 +1353,7 @@ fn missing_profile_prompt(editor: &RawEditor, camera: String) -> Element<'_, Mes
 /// install it by hand instead (`handlers::lensfun`).
 fn missing_database_prompt(editor: &RawEditor) -> Element<'_, Message> {
     use crate::app::state::LensfunJob;
-    let downloading = editor.lensfun.busy == Some(LensfunJob::Downloading);
+    let downloading = editor.session.lensfun.busy == Some(LensfunJob::Downloading);
     let download = button(
         row![
             text(ui::icons::DOWNLOAD).font(ICON_FONT).size(theme::size::BODY), // download
@@ -1363,7 +1363,7 @@ fn missing_database_prompt(editor: &RawEditor) -> Element<'_, Message> {
         .align_y(Alignment::Center),
     )
     .style(ui::styles::AccentButton::style)
-    .on_press_maybe(editor.lensfun.busy.is_none().then_some(Message::LensfunDownload))
+    .on_press_maybe(editor.session.lensfun.busy.is_none().then_some(Message::LensfunDownload))
     .padding([theme::space::XS, theme::space::L]);
     let mut col = column![
         hint("No lens profiles are installed.".to_string()),
@@ -1374,7 +1374,7 @@ fn missing_database_prompt(editor: &RawEditor) -> Element<'_, Message> {
         )),
     ]
     .spacing(theme::space::S);
-    if let Some(Err(e)) = &editor.lensfun.installed {
+    if let Some(Err(e)) = &editor.session.lensfun.installed {
         col = col.push(
             text(format!("Download failed: {e}"))
                 .size(theme::size::CAPTION)
@@ -1391,9 +1391,9 @@ fn hint<'a>(s: String) -> Element<'a, Message> {
 /// Profile toggles (with what was matched, or why nothing was) and the
 /// manual sliders.
 fn lens_section(editor: &RawEditor) -> Element<'_, Message> {
-    let l = editor.current_edit_params.lens;
+    let l = editor.session.current_edit_params.lens;
     let d = crate::core::lens::LensParams::default();
-    let ctx = editor.current_metadata.as_ref().map(|m| m.lens_context.clone());
+    let ctx = editor.session.current_metadata.as_ref().map(|m| m.lens_context.clone());
     let lens_name = ctx
         .as_ref()
         .and_then(|c| c.lens_name.clone())
@@ -1472,7 +1472,7 @@ fn lens_section(editor: &RawEditor) -> Element<'_, Message> {
 }
 
 fn defringe_section(editor: &RawEditor) -> Element<'_, Message> {
-    let f = editor.current_edit_params.defringe;
+    let f = editor.session.current_edit_params.defringe;
     let d = crate::core::lens::DefringeParams::default();
     column![
         slider_row(editor, "Purple", f.purple_amount, d.purple_amount, 0.0..=1.0, 0.01, |v| {
@@ -1497,7 +1497,7 @@ fn curve_section(editor: &RawEditor) -> Element<'_, Message> {
     use crate::core::curves::CurveChannel;
     let mut tabs = row![].spacing(theme::space::XS).align_y(Alignment::Center);
     for ch in CurveChannel::ALL {
-        let edited = !editor.current_edit_params.curves.get(ch).is_identity();
+        let edited = !editor.session.current_edit_params.curves.get(ch).is_identity();
         let label = if edited { format!("{}•", ch.label()) } else { ch.label().to_string() };
         tabs = tabs.push(
             button(text(label).size(theme::size::CAPTION))
@@ -1516,9 +1516,9 @@ fn curve_section(editor: &RawEditor) -> Element<'_, Message> {
             .on_press(Message::ResetCurve),
     );
     let canvas = iced::widget::canvas::Canvas::new(crate::ui::curve_editor::CurveEditor {
-        curves: editor.current_edit_params.curves,
+        curves: editor.session.current_edit_params.curves,
         channel: editor.curve_channel,
-        histogram: *editor.histogram_data.borrow(),
+        histogram: *editor.session.histogram_data.borrow(),
     })
     .width(Length::Fill)
     .height(Length::Fixed(230.0));
@@ -1529,7 +1529,7 @@ fn curve_section(editor: &RawEditor) -> Element<'_, Message> {
 /// the section folded. The hint under it says what the choice does.
 fn tone_mapper_selector(editor: &RawEditor) -> Element<'_, Message> {
     use crate::core::tonemap::ToneMapper;
-    iced::widget::pick_list(ToneMapper::ALL, Some(editor.current_edit_params.tone_mapper), Message::ToneMapperChanged)
+    iced::widget::pick_list(ToneMapper::ALL, Some(editor.session.current_edit_params.tone_mapper), Message::ToneMapperChanged)
         .text_size(theme::size::SMALL)
         .padding([theme::space::XS, theme::space::M])
         .width(Length::Fixed(112.0))
@@ -1544,7 +1544,7 @@ fn tone_mapper_selector(editor: &RawEditor) -> Element<'_, Message> {
 /// most useful thing to know here.
 fn tone_mapper_hint(editor: &RawEditor) -> Element<'_, Message> {
     use crate::core::tonemap::ToneMapper;
-    let hint = match editor.current_edit_params.tone_mapper {
+    let hint = match editor.session.current_edit_params.tone_mapper {
         ToneMapper::Camera => "Profile curve — calibrated to the camera's own rendering",
         ToneMapper::Filmic => "Built-in S-curve: midtone lift + highlight rolloff",
         ToneMapper::Reinhard => "Reference only — flat midtones by design",
@@ -1567,7 +1567,7 @@ fn tone_shape_controls(editor: &RawEditor) -> Element<'_, Message> {
     use crate::app::message::GtParam;
     use crate::core::tonemap::ToneMapper;
 
-    let p = &editor.current_edit_params;
+    let p = &editor.session.current_edit_params;
     let d = crate::core::types::EditParams::default();
     match p.tone_mapper {
         ToneMapper::Camera => column![slider_row(editor,
@@ -1913,8 +1913,8 @@ mod tests {
 
     fn develop_view_builds_in_every_tool_state_body() {
         let mut e = RawEditor::new().0;
-        e.selected_image_id = Some(1);
-        e.editor_readiness = EditorReadiness::Ready(1);
+        e.session.selected_image_id = Some(1);
+        e.session.editor_readiness = EditorReadiness::Ready(1);
         e.collapsed_sections.clear();
         let _ = view_develop(&e);
 
@@ -1929,10 +1929,10 @@ mod tests {
             let _ = update(&mut e, Message::PickMaskColor);
             let _ = view_develop(&e);
         }
-        e.current_edit_params.lens.profile = true;
-        e.current_edit_params.curves.master.insert(0.3, 0.2);
+        e.session.current_edit_params.lens.profile = true;
+        e.session.current_edit_params.curves.master.insert(0.3, 0.2);
         let _ = view_develop(&e);
-        e.is_leveling = true;
+        e.session.is_leveling = true;
         e.slider_entry = Some(crate::app::state::SliderEntry { key: slider_key(&Message::ExposureChanged), text: "1".into() });
         let _ = view_develop(&e);
     }

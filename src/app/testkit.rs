@@ -62,8 +62,8 @@ pub fn editor_with_images(n: usize) -> RawEditor {
         });
     }
     let mut e = RawEditor::new().0;
-    e.library = Some(lib);
-    e.images = images;
+    e.session.library = Some(lib);
+    e.session.images = images;
     e
 }
 
@@ -72,7 +72,7 @@ pub fn editor_with_images(n: usize) -> RawEditor {
 pub fn develop_with_images(n: usize) -> RawEditor {
     let mut e = editor_with_images(n);
     send(&mut e, Message::TabChanged(AppTab::Develop));
-    if let Some(first) = e.images.first().map(|i| i.id) {
+    if let Some(first) = e.session.images.first().map(|i| i.id) {
         send(&mut e, Message::ImageSelected(first));
     }
     e
@@ -127,30 +127,30 @@ pub fn raw(tag: impl std::fmt::Display) -> RawDataResult {
 
 /// The RAW preloads the loader subscription is running: the queue's head.
 pub fn running_raw_preloads(e: &RawEditor) -> Vec<i64> {
-    e.queued_raw_loads.iter().take(MAX_CONCURRENT_RAW_LOADS).map(|(id, _)| *id).collect()
+    e.session.queued_raw_loads.iter().take(MAX_CONCURRENT_RAW_LOADS).map(|(id, _)| *id).collect()
 }
 
 /// The preview reads the loader subscription is running.
 pub fn running_preview_loads(e: &RawEditor) -> Vec<i64> {
-    e.queued_loads.iter().take(MAX_CONCURRENT_PREVIEW_LOADS).map(|(id, _)| *id).collect()
+    e.session.queued_loads.iter().take(MAX_CONCURRENT_PREVIEW_LOADS).map(|(id, _)| *id).collect()
 }
 
 /// The image's saved edits, read back from the catalogue.
 pub fn saved_edits(e: &RawEditor, id: i64) -> EditParams {
-    e.library.as_ref().expect("library").load_edit_params(id).unwrap_or_default()
+    e.session.library.as_ref().expect("library").load_edit_params(id).unwrap_or_default()
 }
 
 /// `(stack length, index)` of an image's undo history, if it has one.
 pub fn history(e: &RawEditor, id: i64) -> Option<(usize, usize)> {
-    e.history_map.get(&id).map(|(stack, index)| (stack.len(), *index))
+    e.session.history_map.get(&id).map(|(stack, index)| (stack.len(), *index))
 }
 
 /// The resources build `prepare_image_resources_from_raw` starts leaves one
 /// mark in state: `current_metadata` for that image while it is `Loading`.
 fn build_mark(e: &RawEditor) -> Option<(i64, String)> {
-    match e.editor_readiness {
-        EditorReadiness::Loading(id) if e.current_metadata_id == Some(id) => {
-            e.current_metadata.as_ref().map(|m| (id, m.model.clone()))
+    match e.session.editor_readiness {
+        EditorReadiness::Loading(id) if e.session.current_metadata_id == Some(id) => {
+            e.session.current_metadata.as_ref().map(|m| (id, m.model.clone()))
         }
         _ => None,
     }
@@ -176,9 +176,9 @@ pub fn assert_invariants(e: &RawEditor) {
 fn check_with(e: &RawEditor, build_in_flight: impl Fn(i64) -> bool) -> Result<(), String> {
     // Every load queue is mirrored exactly by its pending set, no duplicates.
     for (name, queue, pending) in [
-        ("raw", &e.queued_raw_loads, &e.pending_raw_loads),
-        ("preview", &e.queued_loads, &e.pending_loads),
-        ("proxy", &e.queued_proxy_loads, &e.pending_proxy_loads),
+        ("raw", &e.session.queued_raw_loads, &e.session.pending_raw_loads),
+        ("preview", &e.session.queued_loads, &e.session.pending_loads),
+        ("proxy", &e.session.queued_proxy_loads, &e.session.pending_proxy_loads),
     ] {
         let ids: Vec<i64> = queue.iter().map(|(id, _)| *id).collect();
         let set: HashSet<i64> = ids.iter().copied().collect();
@@ -191,8 +191,8 @@ fn check_with(e: &RawEditor, build_in_flight: impl Fn(i64) -> bool) -> Result<()
     }
 
     // `Loading(id)` is a promise that something will finish loading it.
-    if let EditorReadiness::Loading(id) = e.editor_readiness {
-        let in_flight = e.direct_raw_loads.contains(&id)
+    if let EditorReadiness::Loading(id) = e.session.editor_readiness {
+        let in_flight = e.session.direct_raw_loads.contains(&id)
             || running_raw_preloads(e).contains(&id)
             || build_in_flight(id);
         if !in_flight {
@@ -204,21 +204,21 @@ fn check_with(e: &RawEditor, build_in_flight: impl Fn(i64) -> bool) -> Result<()
     }
 
     // In Develop, what the editor is busy with is the selected image.
-    if e.current_tab == AppTab::Develop {
-        if let Some(sel) = e.selected_image_id {
-            let ok = match &e.editor_readiness {
+    if e.session.current_tab == AppTab::Develop {
+        if let Some(sel) = e.session.selected_image_id {
+            let ok = match &e.session.editor_readiness {
                 EditorReadiness::Loading(id) | EditorReadiness::Ready(id) => *id == sel,
                 EditorReadiness::Failed(id, _) => *id == sel,
                 EditorReadiness::NoSelection => false,
             };
             if !ok {
-                return Err(format!("Develop shows {sel} but the editor is {:?}", e.editor_readiness));
+                return Err(format!("Develop shows {sel} but the editor is {:?}", e.session.editor_readiness));
             }
         }
     }
 
     // Undo history stays in range and within its cap.
-    for (id, (stack, index)) in &e.history_map {
+    for (id, (stack, index)) in &e.session.history_map {
         if stack.is_empty() || *index >= stack.len() || stack.len() > HISTORY_LIMIT {
             return Err(format!("image {id}: history of {} with index {index}", stack.len()));
         }
@@ -229,21 +229,21 @@ fn check_with(e: &RawEditor, build_in_flight: impl Fn(i64) -> bool) -> Result<()
 /// The loading state worth printing when an invariant breaks.
 pub fn dump(e: &RawEditor) -> String {
     let ids = |q: &[(i64, String)]| q.iter().map(|(id, _)| *id).collect::<Vec<_>>();
-    let mut direct: Vec<i64> = e.direct_raw_loads.iter().copied().collect();
+    let mut direct: Vec<i64> = e.session.direct_raw_loads.iter().copied().collect();
     direct.sort_unstable();
-    let mut cached: Vec<i64> = e.raw_cache.iter().map(|(id, _)| *id).collect();
+    let mut cached: Vec<i64> = e.session.raw_cache.iter().map(|(id, _)| *id).collect();
     cached.sort_unstable();
     format!(
         "  tab {:?}, selected {:?}, readiness {:?}\n  raw queue {:?} (running {:?})\n  \
          direct decodes {:?}\n  raw cache {:?}\n  metadata for {:?}",
-        e.current_tab,
-        e.selected_image_id,
-        e.editor_readiness,
-        ids(&e.queued_raw_loads),
+        e.session.current_tab,
+        e.session.selected_image_id,
+        e.session.editor_readiness,
+        ids(&e.session.queued_raw_loads),
         running_raw_preloads(e),
         direct,
         cached,
-        e.current_metadata_id,
+        e.session.current_metadata_id,
     )
 }
 
@@ -325,7 +325,7 @@ impl World {
 
     /// Every result that could arrive now.
     pub fn jobs(&self, e: &RawEditor) -> Vec<Job> {
-        let mut direct: Vec<i64> = e.direct_raw_loads.iter().copied().collect();
+        let mut direct: Vec<i64> = e.session.direct_raw_loads.iter().copied().collect();
         direct.sort_unstable(); // HashSet order is not deterministic
         running_raw_preloads(e)
             .into_iter()

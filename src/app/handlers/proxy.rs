@@ -42,16 +42,16 @@ pub fn capture(
     if pixels.len() != width as usize * height as usize * 4 {
         return;
     }
-    editor.proxy_generation += 1;
+    editor.session.proxy_generation += 1;
     let preview = CachedPreview { width, height, bytes: pixels };
-    editor.edited_proxies.put(
+    editor.session.edited_proxies.put(
         image_id,
         EditedProxy {
             handle: preview.to_handle(),
             preview,
             edited: !edit_key(&params).is_unedited(),
             params: Some(edit_key(&params)),
-            generation: editor.proxy_generation,
+            generation: editor.session.proxy_generation,
             persisted: false,
         },
     );
@@ -91,21 +91,21 @@ fn plan(proxy: Option<&EditedProxy>, current: &EditParams, has_camera_thumb: boo
 /// quitting): bring its proxy on disk up to date. Must run BEFORE the
 /// selection moves — it compares against `current_edit_params`.
 pub fn persist(editor: &mut RawEditor) -> Task<Message> {
-    let Some(id) = editor.selected_image_id else {
+    let Some(id) = editor.session.selected_image_id else {
         return Task::none();
     };
-    match plan(editor.edited_proxies.peek(&id), &editor.current_edit_params, has_camera_thumb(editor, id)) {
+    match plan(editor.session.edited_proxies.peek(&id), &editor.session.current_edit_params, has_camera_thumb(editor, id)) {
         Persist::Nothing => Task::none(),
         Persist::Invalidate => {
             // Releasing a slider and moving straight on leaves the render of
             // the final value still in flight, so the proxy is one step
             // behind. When that render IS the latest edit (nothing queued
             // after it), wait for it instead of discarding the thumbnail.
-            let latest_in_flight = editor.is_rendering
-                && !editor.pending_render
-                && editor.image_resources.as_ref().map(|r| r.image_id) == Some(id);
+            let latest_in_flight = editor.session.is_rendering
+                && !editor.session.pending_render
+                && editor.session.image_resources.as_ref().map(|r| r.image_id) == Some(id);
             if latest_in_flight {
-                editor.proxy_awaiting.insert(id, edit_key(&editor.current_edit_params));
+                editor.session.proxy_awaiting.insert(id, edit_key(&editor.session.current_edit_params));
             } else {
                 editor.invalidate_proxies(&[id]);
             }
@@ -118,7 +118,7 @@ pub fn persist(editor: &mut RawEditor) -> Task<Message> {
 /// A render of `id` landed while `persist` was waiting on it: save it if it
 /// shows the edit the user left the image with, otherwise drop the proxy.
 pub fn resolve_awaiting(editor: &mut RawEditor, id: i64, rendered: Option<EditParams>) -> Task<Message> {
-    let Some(expected) = editor.proxy_awaiting.remove(&id) else {
+    let Some(expected) = editor.session.proxy_awaiting.remove(&id) else {
         return Task::none();
     };
     if rendered.map(|p| edit_key(&p)) == Some(expected) {
@@ -132,12 +132,12 @@ pub fn resolve_awaiting(editor: &mut RawEditor, id: i64, rendered: Option<EditPa
 /// Make `id`'s saved proxy match its in-memory one: write it out if it shows
 /// an edit, forget the saved one if the image is back to its defaults.
 fn write(editor: &mut RawEditor, id: i64) -> Task<Message> {
-    let Some(proxy) = editor.edited_proxies.peek(&id) else {
+    let Some(proxy) = editor.session.edited_proxies.peek(&id) else {
         return Task::none();
     };
     if !proxy.edited && has_camera_thumb(editor, id) {
         set_saved_path(editor, id, None);
-        if let Some(proxy) = editor.edited_proxies.peek_mut(&id) {
+        if let Some(proxy) = editor.session.edited_proxies.peek_mut(&id) {
             proxy.persisted = true;
         }
         return Task::none();
@@ -158,17 +158,17 @@ fn write(editor: &mut RawEditor, id: i64) -> Task<Message> {
 /// nor a render still in flight would ever get to finish. A 384px JPEG is a
 /// millisecond of work.
 pub fn persist_now(editor: &mut RawEditor) {
-    let Some(id) = editor.selected_image_id else {
+    let Some(id) = editor.session.selected_image_id else {
         return;
     };
-    match plan(editor.edited_proxies.peek(&id), &editor.current_edit_params, has_camera_thumb(editor, id)) {
+    match plan(editor.session.edited_proxies.peek(&id), &editor.session.current_edit_params, has_camera_thumb(editor, id)) {
         Persist::Nothing => {}
         Persist::Invalidate => editor.invalidate_proxies(&[id]),
         Persist::Clear => {
             let _ = write(editor, id);
         }
         Persist::Save(generation) => {
-            if let Some(proxy) = editor.edited_proxies.peek(&id) {
+            if let Some(proxy) = editor.session.edited_proxies.peek(&id) {
                 let result = write_jpeg(id, generation, &proxy.preview);
                 handle_saved(editor, id, generation, result);
             }
@@ -181,7 +181,7 @@ pub fn handle_saved(editor: &mut RawEditor, id: i64, generation: u64, result: Re
         Ok(path) => {
             set_saved_path(editor, id, Some(path));
             // Only if nothing newer was rendered while the file was written.
-            if let Some(proxy) = editor.edited_proxies.peek_mut(&id) {
+            if let Some(proxy) = editor.session.edited_proxies.peek_mut(&id) {
                 if proxy.generation == generation {
                     proxy.persisted = true;
                 }
@@ -192,14 +192,14 @@ pub fn handle_saved(editor: &mut RawEditor, id: i64, generation: u64, result: Re
 }
 
 fn has_camera_thumb(editor: &RawEditor, id: i64) -> bool {
-    editor.images.iter().any(|img| img.id == id && img.cache_path_thumb.is_some())
+    editor.session.images.iter().any(|img| img.id == id && img.cache_path_thumb.is_some())
 }
 
 /// Record (or clear) an image's saved proxy, in the catalogue and in memory.
 /// The previous file is left for `Library::sweep_edited_proxies` at the next
 /// launch, so a rapid re-save can never delete a file still in use.
 fn set_saved_path(editor: &mut RawEditor, id: i64, path: Option<String>) {
-    if let Some(lib) = &editor.library {
+    if let Some(lib) = &editor.session.library {
         if let Err(e) = lib.set_edited_proxy_path(id, path.as_deref()) {
             tracing::warn!("Could not record the edited thumbnail of image {id}: {e}");
             return;
@@ -249,8 +249,8 @@ pub fn handle_loaded(
     id: i64,
     result: Result<(u32, u32, Arc<[u8]>), String>,
 ) -> Task<Message> {
-    editor.pending_proxy_loads.remove(&id);
-    editor.queued_proxy_loads.retain(|(queued, _)| *queued != id);
+    editor.session.pending_proxy_loads.remove(&id);
+    editor.session.queued_proxy_loads.retain(|(queued, _)| *queued != id);
 
     let (width, height, bytes) = match result {
         Ok(decoded) => decoded,
@@ -260,11 +260,11 @@ pub fn handle_loaded(
         }
     };
     // A capture of a live render is always newer than what is on disk.
-    if editor.edited_proxies.contains(&id) {
+    if editor.session.edited_proxies.contains(&id) {
         return Task::none();
     }
     let preview = CachedPreview { width, height, bytes };
-    editor.edited_proxies.put(
+    editor.session.edited_proxies.put(
         id,
         EditedProxy {
             handle: preview.to_handle(),
@@ -272,18 +272,18 @@ pub fn handle_loaded(
             edited: true,
             // Unknown until the image is selected, when its saved edits load
             // — which the saved proxy matches by construction.
-            params: (editor.selected_image_id == Some(id))
-                .then(|| edit_key(&editor.current_edit_params)),
+            params: (editor.session.selected_image_id == Some(id))
+                .then(|| edit_key(&editor.session.current_edit_params)),
             generation: 0,
             persisted: true,
         },
     );
 
     // Still waiting on this image's RAW in Develop: show it now.
-    if editor.current_tab == AppTab::Develop
-        && editor.selected_image_id == Some(id)
-        && matches!(editor.editor_readiness, EditorReadiness::Loading(l) if l == id)
-        && editor.rendered_preview_bytes.is_none()
+    if editor.session.current_tab == AppTab::Develop
+        && editor.session.selected_image_id == Some(id)
+        && matches!(editor.session.editor_readiness, EditorReadiness::Loading(l) if l == id)
+        && editor.session.rendered_preview_bytes.is_none()
     {
         show_as_placeholder(editor, &preview);
     }
@@ -292,8 +292,8 @@ pub fn handle_loaded(
 
 /// Put a proxy on screen while the image's RAW loads.
 pub fn show_as_placeholder(editor: &mut RawEditor, preview: &CachedPreview) {
-    editor.working_preview_bytes = Some(preview.bytes.clone());
-    editor.working_preview_dims = (preview.width, preview.height);
+    editor.session.working_preview_bytes = Some(preview.bytes.clone());
+    editor.session.working_preview_dims = (preview.width, preview.height);
     editor.bump_preview_generation();
 }
 
@@ -302,12 +302,12 @@ pub fn show_as_placeholder(editor: &mut RawEditor, preview: &CachedPreview) {
 /// immediately instead of a frame of nothing.
 pub fn wanted_preloads(editor: &RawEditor, ids: &[i64]) -> Vec<(i64, String)> {
     let saved: std::collections::HashMap<i64, &String> = editor
-        .images
+        .session.images
         .iter()
         .filter_map(|img| img.cache_path_edited.as_ref().map(|path| (img.id, path)))
         .collect();
     ids.iter()
-        .filter(|id| !editor.edited_proxies.contains(id))
+        .filter(|id| !editor.session.edited_proxies.contains(id))
         .filter_map(|id| saved.get(id).map(|path| (*id, (*path).clone())))
         .collect()
 }
@@ -383,12 +383,12 @@ mod tests {
         let mut e = RawEditor::new().0;
         let px: Arc<[u8]> = Arc::from(vec![0u8; 8]);
         capture(&mut e, 1, px.clone(), (2, 1), EditParams::default());
-        assert!(!e.edited_proxies.peek(&1).unwrap().edited);
+        assert!(!e.session.edited_proxies.peek(&1).unwrap().edited);
         capture(&mut e, 2, px.clone(), (2, 1), edited());
-        assert!(e.edited_proxies.peek(&2).unwrap().edited);
+        assert!(e.session.edited_proxies.peek(&2).unwrap().edited);
         // A buffer that doesn't match its dims (failed readback) is ignored.
         capture(&mut e, 3, px, (4, 4), edited());
-        assert!(e.edited_proxies.peek(&3).is_none());
+        assert!(e.session.edited_proxies.peek(&3).is_none());
     }
 
     fn late_render(id: i64, edit: EditParams) -> crate::app::message::RenderOutput {
@@ -412,21 +412,21 @@ mod tests {
     #[test]
     fn the_awaited_final_render_becomes_the_proxy() {
         let mut e = RawEditor::new().0;
-        e.proxy_awaiting.insert(5, edit_key(&edited()));
+        e.session.proxy_awaiting.insert(5, edit_key(&edited()));
         let _ = crate::app::handlers::develop::handle_render_finished(&mut e, late_render(5, edited()));
-        assert!(e.edited_proxies.peek(&5).is_some_and(|p| p.edited));
-        assert!(e.proxy_awaiting.is_empty());
+        assert!(e.session.edited_proxies.peek(&5).is_some_and(|p| p.edited));
+        assert!(e.session.proxy_awaiting.is_empty());
     }
 
     /// ...but a render of an older step of the edit must not.
     #[test]
     fn an_awaited_render_of_an_older_edit_is_dropped() {
         let mut e = RawEditor::new().0;
-        e.proxy_awaiting.insert(5, edit_key(&edited()));
+        e.session.proxy_awaiting.insert(5, edit_key(&edited()));
         let older = EditParams { exposure: -0.5, ..EditParams::default() };
         let _ = crate::app::handlers::develop::handle_render_finished(&mut e, late_render(5, older));
-        assert!(e.edited_proxies.peek(&5).is_none());
-        assert!(e.proxy_awaiting.is_empty());
+        assert!(e.session.edited_proxies.peek(&5).is_none());
+        assert!(e.session.proxy_awaiting.is_empty());
     }
 
     /// Without anyone waiting on it, a render of an image no longer loaded
@@ -435,6 +435,6 @@ mod tests {
     fn a_stray_render_of_another_image_is_ignored() {
         let mut e = RawEditor::new().0;
         let _ = crate::app::handlers::develop::handle_render_finished(&mut e, late_render(5, edited()));
-        assert!(e.edited_proxies.peek(&5).is_none());
+        assert!(e.session.edited_proxies.peek(&5).is_none());
     }
 }

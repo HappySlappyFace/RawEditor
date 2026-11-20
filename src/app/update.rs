@@ -295,11 +295,11 @@ fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
         }
         Message::ToggleBrushArmed => handlers::masks::handle_toggle_brush_armed(editor),
         Message::SetBrushErase(erase) => {
-            editor.brush_settings.erase = erase;
+            editor.session.brush_settings.erase = erase;
             Task::none()
         }
         Message::BrushSettingChanged(which, v) => {
-            let b = &mut editor.brush_settings;
+            let b = &mut editor.session.brush_settings;
             match which {
                 crate::app::message::BrushSetting::Size => b.size = v.clamp(0.002, 0.5),
                 crate::app::message::BrushSetting::Feather => b.feather = v.clamp(0.0, 1.0),
@@ -311,14 +311,14 @@ fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::BrushStroke(ev) => handlers::masks::handle_brush_stroke(editor, ev),
         Message::ClearMaskBrush => handlers::masks::handle_clear_mask_brush(editor),
         Message::ToggleMaskOverlay(on) => {
-            editor.show_mask_overlay = on;
+            editor.session.show_mask_overlay = on;
             crate::app::handlers::develop::update_pipeline(editor)
         }
         Message::ToggleMaskLumaRange(on) => handlers::masks::handle_toggle_luma_range(editor, on),
         Message::ToggleMaskColorRange(on) => handlers::masks::handle_toggle_color_range(editor, on),
         Message::PickMaskColor => {
-            editor.color_picking_mask = editor.selected_mask;
-            editor.status = "Color range: click the colour to select".to_string();
+            editor.session.color_picking_mask = editor.session.selected_mask;
+            editor.session.status = "Color range: click the colour to select".to_string();
             Task::none()
         }
         Message::MaskColorPicked(u, v) => handlers::masks::handle_mask_color_picked(editor, u, v),
@@ -375,7 +375,7 @@ fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::SetMinRating(r) => {
-            editor.min_filter_rating = r;
+            editor.session.min_filter_rating = r;
             Task::none()
         }
         Message::SetLibraryFolderFilter(folder_filter) => {
@@ -540,8 +540,8 @@ fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
         }
         Message::EditedProxyLoaded(id, result) => handlers::proxy::handle_loaded(editor, id, result),
         Message::ViewportResized(w, h) => {
-            let (old_w, old_h) = editor.viewport_size;
-            editor.viewport_size = (w, h);
+            let (old_w, old_h) = editor.session.viewport_size;
+            editor.session.viewport_size = (w, h);
 
             // Re-render on a size change: a different visible window, and at
             // zoom the buffer only covers the window the old size implied.
@@ -625,26 +625,26 @@ mod tests {
     #[test]
     fn a_typed_slider_value_is_applied_as_one_undo_step() {
         let mut e = editor();
-        e.selected_image_id = Some(1);
+        e.session.selected_image_id = Some(1);
         let base = history_len(&mut e);
         type_into(&mut e, "ExposureChanged(0.0)");
         let _ = update(&mut e, Message::SliderSet { change: Box::new(Message::ExposureChanged(1.5)), commit: true });
-        assert_eq!(e.current_edit_params.exposure, 1.5);
+        assert_eq!(e.session.current_edit_params.exposure, 1.5);
         assert!(e.slider_entry.is_none(), "the field closes");
         assert_eq!(history_len(&mut e), base + 1);
         let _ = update(&mut e, Message::Undo);
-        assert_eq!(e.current_edit_params.exposure, 0.0);
+        assert_eq!(e.session.current_edit_params.exposure, 0.0);
     }
 
     /// A tool setting (brush size) is set, but is not an edit to undo.
     #[test]
     fn a_typed_tool_setting_adds_no_undo_step() {
         let mut e = editor();
-        e.selected_image_id = Some(1);
+        e.session.selected_image_id = Some(1);
         let base = history_len(&mut e);
         let size = crate::app::message::BrushSetting::Size;
         let _ = update(&mut e, Message::SliderSet { change: Box::new(Message::BrushSettingChanged(size, 0.1)), commit: false });
-        assert_eq!(e.brush_settings.size, 0.1);
+        assert_eq!(e.session.brush_settings.size, 0.1);
         assert_eq!(history_len(&mut e), base);
     }
 
@@ -659,11 +659,11 @@ mod tests {
         assert!(e.slider_entry.is_none());
 
         type_into(&mut e, "ContrastChanged(0.0)");
-        e.is_wb_picking = true;
+        e.session.is_wb_picking = true;
         let _ = update(&mut e, Message::Escape);
         assert!(e.slider_entry.is_none());
-        assert!(e.is_wb_picking, "the first Escape only closes the field");
-        assert_eq!(e.current_edit_params.contrast, 0.0);
+        assert!(e.session.is_wb_picking, "the first Escape only closes the field");
+        assert_eq!(e.session.current_edit_params.contrast, 0.0);
     }
 
     /// iced's text field has no blur event: moving on to anything else
@@ -684,16 +684,16 @@ mod tests {
     #[test]
     fn the_level_tool_takes_turns_with_the_other_tools() {
         let mut e = editor();
-        e.current_tab = crate::app::message::AppTab::Develop;
+        e.session.current_tab = crate::app::message::AppTab::Develop;
         let _ = update(&mut e, Message::ToggleWbPicker);
         let _ = update(&mut e, Message::ToggleLevelTool);
-        assert!(e.is_leveling && !e.is_wb_picking);
+        assert!(e.session.is_leveling && !e.session.is_wb_picking);
         let _ = update(&mut e, Message::ToggleCrop);
-        assert!(e.is_cropping && !e.is_leveling);
+        assert!(e.session.is_cropping && !e.session.is_leveling);
         let _ = update(&mut e, Message::ToggleLevelTool);
-        assert!(e.is_leveling && !e.is_cropping);
+        assert!(e.session.is_leveling && !e.session.is_cropping);
         let _ = update(&mut e, Message::Escape);
-        assert!(!e.is_leveling);
+        assert!(!e.session.is_leveling);
     }
 
     /// A drawn line straightens and disarms the tool; a click that is not a
@@ -701,16 +701,16 @@ mod tests {
     #[test]
     fn a_level_line_sets_straighten_once() {
         let mut e = editor();
-        e.selected_image_id = Some(1);
-        e.current_tab = crate::app::message::AppTab::Develop;
+        e.session.selected_image_id = Some(1);
+        e.session.current_tab = crate::app::message::AppTab::Develop;
         let _ = update(&mut e, Message::ToggleLevelTool);
         let _ = update(&mut e, Message::LevelLineDrawn(2.0, 1.0));
-        assert!(e.is_leveling);
-        assert_eq!(e.current_edit_params.rotation, 0.0);
+        assert!(e.session.is_leveling);
+        assert_eq!(e.session.current_edit_params.rotation, 0.0);
         let _ = update(&mut e, Message::LevelLineDrawn(400.0, 20.0));
-        assert!(!e.is_leveling);
+        assert!(!e.session.is_leveling);
         let want = (20.0f32 / 400.0).atan().to_degrees();
-        assert!((e.current_edit_params.rotation - want).abs() < 1e-4);
+        assert!((e.session.current_edit_params.rotation - want).abs() < 1e-4);
     }
 
     #[test]
@@ -764,7 +764,7 @@ mod tests {
     fn dropped_folders_offer_only_new_photos_once() {
         use std::path::PathBuf;
         let mut e = editor();
-        e.images = vec![crate::database::models::Image {
+        e.session.images = vec![crate::database::models::Image {
             id: 1,
             filename: "a.nef".into(),
             path: "/card/a.nef".into(),
@@ -800,7 +800,7 @@ mod tests {
     #[test]
     fn a_catalogued_folder_is_shown_not_offered() {
         let mut e = editor();
-        e.images = vec![crate::database::models::Image {
+        e.session.images = vec![crate::database::models::Image {
             id: 1,
             filename: "a.nef".into(),
             path: "/card/a.nef".into(),
@@ -812,10 +812,10 @@ mod tests {
             rating: 0,
             flag: 0,
         }];
-        e.current_tab = crate::app::message::AppTab::Develop;
+        e.session.current_tab = crate::app::message::AppTab::Develop;
         scanned(&mut e, "/card", &["/card/a.nef"]);
         assert_eq!(e.active_modal, Modal::None);
-        assert_eq!(e.current_tab, crate::app::message::AppTab::Library);
-        assert_eq!(e.library_folder_filter.as_deref(), Some("/card"));
+        assert_eq!(e.session.current_tab, crate::app::message::AppTab::Library);
+        assert_eq!(e.session.library_folder_filter.as_deref(), Some("/card"));
     }
 }

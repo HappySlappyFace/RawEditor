@@ -323,7 +323,7 @@ pub enum Message {
     ProcessNextExport,
     /// Carries the exported image's OWN saved edit params alongside its RAW
     /// data. They must travel with the job rather than be read from
-    /// `editor.current_edit_params`, which is whatever image happens to be open
+    /// `editor.session.current_edit_params`, which is whatever image happens to be open
     /// in Develop — a batch export previously applied that one image's edits to
     /// every image in the queue.
     /// (Boxed: `EditParams` is ~21 KB and would size every `Message`.)

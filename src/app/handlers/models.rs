@@ -30,19 +30,19 @@ pub fn offer(editor: &mut RawEditor, id: ModelId) -> Task<Message> {
         ModelId::Segment => Message::AiSelectStart,
         ModelId::Denoise => Message::OpenAiDenoise,
     };
-    editor.models.offered = Some(id);
-    editor.models.then = Some(then);
+    editor.session.models.offered = Some(id);
+    editor.session.models.then = Some(then);
     editor.active_modal = Modal::AiModel;
     Task::none()
 }
 
 pub fn handle_download(editor: &mut RawEditor, id: ModelId) -> Task<Message> {
-    if editor.models.job.is_some() {
+    if editor.session.models.job.is_some() {
         return Task::none();
     }
     let progress = Arc::new(Progress::default());
-    editor.models.job = Some((id, progress.clone()));
-    editor.models.error = None;
+    editor.session.models.job = Some((id, progress.clone()));
+    editor.session.models.error = None;
     Task::perform(
         async move {
             tokio::task::spawn_blocking(move || crate::ml::models::install(id, &progress))
@@ -54,15 +54,15 @@ pub fn handle_download(editor: &mut RawEditor, id: ModelId) -> Task<Message> {
 }
 
 pub fn handle_downloaded(editor: &mut RawEditor, id: ModelId, result: Result<(), String>) -> Task<Message> {
-    editor.models.job = None;
+    editor.session.models.job = None;
     match result {
         Ok(()) => {
-            editor.status = format!("{} installed", id.model().title);
+            editor.session.status = format!("{} installed", id.model().title);
             // The dialog that asked for it closes and the feature carries on.
-            if editor.active_modal == Modal::AiModel && editor.models.offered == Some(id) {
+            if editor.active_modal == Modal::AiModel && editor.session.models.offered == Some(id) {
                 editor.active_modal = Modal::None;
-                editor.models.offered = None;
-                if let Some(then) = editor.models.then.take() {
+                editor.session.models.offered = None;
+                if let Some(then) = editor.session.models.then.take() {
                     return Task::done(then);
                 }
             }
@@ -71,32 +71,32 @@ pub fn handle_downloaded(editor: &mut RawEditor, id: ModelId, result: Result<(),
         Err(e) if e == crate::ml::CANCELLED => Task::none(),
         Err(e) => {
             tracing::error!("AI model {id:?}: {e}");
-            editor.models.error = Some((id, e));
+            editor.session.models.error = Some((id, e));
             Task::none()
         }
     }
 }
 
 pub fn handle_cancel_download(editor: &mut RawEditor) -> Task<Message> {
-    if let Some((_, progress)) = &editor.models.job {
+    if let Some((_, progress)) = &editor.session.models.job {
         progress.cancel();
     }
     Task::none()
 }
 
 pub fn handle_remove(editor: &mut RawEditor, id: ModelId) -> Task<Message> {
-    if editor.models.job.as_ref().is_some_and(|(j, _)| *j == id) {
+    if editor.session.models.job.as_ref().is_some_and(|(j, _)| *j == id) {
         return Task::none();
     }
     match crate::ml::models::remove(id) {
-        Ok(()) => editor.status = format!("{} removed", id.model().title),
-        Err(e) => editor.status = e,
+        Ok(()) => editor.session.status = format!("{} removed", id.model().title),
+        Err(e) => editor.session.status = e,
     }
     Task::none()
 }
 
 /// The confirm dialog closed without installing: forget what it was for.
 pub fn dismissed(editor: &mut RawEditor) {
-    editor.models.offered = None;
-    editor.models.then = None;
+    editor.session.models.offered = None;
+    editor.session.models.then = None;
 }

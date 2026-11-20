@@ -55,7 +55,7 @@ fn hint(s: String) -> Element<'static, Message> {
 /// Format, size and destination: the Export tab's side panel, and the body
 /// of the Export dialog.
 pub fn settings_panel(editor: &RawEditor) -> Element<'_, Message> {
-    let s = &editor.export_settings;
+    let s = &editor.session.export_settings;
 
     let format_row = row![
         radio("JPEG", ExportFormat::Jpeg, Some(s.format), Message::SetExportFormat)
@@ -186,24 +186,24 @@ pub fn settings_panel(editor: &RawEditor) -> Element<'_, Message> {
 fn view_queue(editor: &RawEditor) -> Element<'_, Message> {
     // Before a run, show what the current selection WOULD export. During and
     // after, show the actual batch with its progress.
-    let showing_batch = !editor.export_jobs.is_empty();
+    let showing_batch = !editor.session.export_jobs.is_empty();
     let pending_ids = crate::app::handlers::export::export_target_ids(editor);
 
     let header = if showing_batch {
         let done = editor
-            .export_jobs
+            .session.export_jobs
             .iter()
             .filter(|j| matches!(j.state, ExportJobState::Done(_)))
             .count();
         let failed = editor
-            .export_jobs
+            .session.export_jobs
             .iter()
             .filter(|j| matches!(j.state, ExportJobState::Failed(_)))
             .count();
-        let total = editor.export_jobs.len();
-        if editor.export_paused_for_memory {
+        let total = editor.session.export_jobs.len();
+        if editor.session.export_paused_for_memory {
             format!("Paused for memory — {done} of {total} done")
-        } else if editor.is_exporting {
+        } else if editor.session.is_exporting {
             format!("Exporting — {done} of {total} done")
         } else if failed > 0 {
             format!("Finished — {done} exported, {failed} failed")
@@ -220,7 +220,7 @@ fn view_queue(editor: &RawEditor) -> Element<'_, Message> {
 
     let mut list = column![].spacing(theme::space::XXS);
     if showing_batch {
-        for job in &editor.export_jobs {
+        for job in &editor.session.export_jobs {
             let (mark, colour, detail) = match &job.state {
                 ExportJobState::Pending => (
                     "·",
@@ -267,7 +267,7 @@ fn view_queue(editor: &RawEditor) -> Element<'_, Message> {
         }
     } else {
         for id in &pending_ids {
-            if let Some(img) = editor.images.iter().find(|i| i.id == *id) {
+            if let Some(img) = editor.session.images.iter().find(|i| i.id == *id) {
                 list = list.push(
                     container(
                         text(img.filename.clone())
@@ -296,7 +296,7 @@ fn view_queue(editor: &RawEditor) -> Element<'_, Message> {
 
     // Start is disabled during a run — the handler also guards, but a live
     // button that silently does nothing is worse than a greyed-out one.
-    let start: Element<'_, Message> = if editor.is_exporting {
+    let start: Element<'_, Message> = if editor.session.is_exporting {
         button(text("Cancel").align_x(iced::alignment::Horizontal::Center))
             .on_press(Message::CancelExport)
             .padding(theme::space::L)
@@ -311,7 +311,7 @@ fn view_queue(editor: &RawEditor) -> Element<'_, Message> {
             })
             .align_x(iced::alignment::Horizontal::Center),
         )
-        .on_press_maybe((!pending_ids.is_empty() && !editor.export_settings.size_invalid()).then_some(Message::ExportConfirmed))
+        .on_press_maybe((!pending_ids.is_empty() && !editor.session.export_settings.size_invalid()).then_some(Message::ExportConfirmed))
         .padding(theme::space::L)
         .width(Length::Fixed(180.0))
         .style(ui::styles::AccentButton::style)

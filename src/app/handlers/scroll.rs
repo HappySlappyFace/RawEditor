@@ -66,7 +66,7 @@ const DECAY_FAST: f32 = 6.5;
 
 /// Library grid boost, applied while the cursor is over the grid.
 pub fn handle_wheel(editor: &mut RawEditor, delta: ScrollDelta) -> Task<Message> {
-    if editor.active_modal != Modal::None || editor.current_tab != AppTab::Library {
+    if editor.active_modal != Modal::None || editor.session.current_tab != AppTab::Library {
         return Task::none();
     }
     let lines = match delta {
@@ -154,7 +154,7 @@ pub fn handle_kinetic_tick(editor: &mut RawEditor, now: std::time::Instant) -> T
         return glide;
     }
     // Tab switched mid-glide (the filmstrip may not even be mounted) — stop.
-    if editor.current_tab == AppTab::Library {
+    if editor.session.current_tab == AppTab::Library {
         editor.filmstrip_velocity = 0.0;
         editor.last_kinetic_tick = None;
         return Task::none();
@@ -431,8 +431,8 @@ fn step_glide(editor: &mut RawEditor, now: std::time::Instant) -> Task<Message> 
     };
     // The scrollable may not even be mounted any more.
     let mounted = match glide.target {
-        GlideTarget::Grid => editor.current_tab == AppTab::Library,
-        GlideTarget::Filmstrip => matches!(editor.current_tab, AppTab::Cull | AppTab::Develop),
+        GlideTarget::Grid => editor.session.current_tab == AppTab::Library,
+        GlideTarget::Filmstrip => matches!(editor.session.current_tab, AppTab::Cull | AppTab::Develop),
     };
     if !mounted || editor.active_modal != Modal::None {
         editor.scroll_glide = None;
@@ -497,7 +497,7 @@ mod tests {
     #[test]
     fn re_aiming_a_glide_keeps_its_speed() {
         let mut e = editor();
-        e.current_tab = AppTab::Develop;
+        e.session.current_tab = AppTab::Develop;
         let _ = glide_to(&mut e, GlideTarget::Filmstrip, 1000.0, true);
         let start = std::time::Instant::now();
         for i in 0..6 {
@@ -520,7 +520,7 @@ mod tests {
     #[test]
     fn a_glide_ends_even_at_huge_offsets() {
         let mut e = editor();
-        e.current_tab = AppTab::Develop;
+        e.session.current_tab = AppTab::Develop;
         e.filmstrip_scroll_x = 171_000.0;
         let _ = glide_to(&mut e, GlideTarget::Filmstrip, 172_345.67, true);
         let start = std::time::Instant::now();
@@ -536,7 +536,7 @@ mod tests {
     #[test]
     fn a_glide_lands_on_its_target_and_ends() {
         let mut e = editor();
-        e.current_tab = AppTab::Library;
+        e.session.current_tab = AppTab::Library;
         let _ = glide_to(&mut e, GlideTarget::Grid, 640.0, true);
         let start = std::time::Instant::now();
         let mut frames = 0;
@@ -553,7 +553,7 @@ mod tests {
     #[test]
     fn long_or_instant_reveals_jump() {
         let mut e = editor();
-        e.current_tab = AppTab::Develop;
+        e.session.current_tab = AppTab::Develop;
         e.filmstrip_view_w = 1600.0;
         let _ = glide_to(&mut e, GlideTarget::Filmstrip, 50_000.0, true);
         assert!(e.scroll_glide.is_none());
@@ -597,7 +597,7 @@ mod tests {
 
     fn develop() -> RawEditor {
         let mut e = editor();
-        e.current_tab = AppTab::Develop;
+        e.session.current_tab = AppTab::Develop;
         e.filmstrip_view_w = 1600.0;
         e
     }
@@ -718,7 +718,7 @@ mod tests {
     #[test]
     fn wheel_input_cancels_a_glide() {
         let mut e = editor();
-        e.current_tab = AppTab::Develop;
+        e.session.current_tab = AppTab::Develop;
         let _ = glide_to(&mut e, GlideTarget::Filmstrip, 500.0, true);
         let _ = handle_filmstrip_wheel(&mut e, ScrollDelta::Lines { x: 0.0, y: -1.0 });
         assert!(e.scroll_glide.is_none());
@@ -727,9 +727,9 @@ mod tests {
     #[test]
     fn leaving_the_tab_drops_the_glide() {
         let mut e = editor();
-        e.current_tab = AppTab::Develop;
+        e.session.current_tab = AppTab::Develop;
         let _ = glide_to(&mut e, GlideTarget::Filmstrip, 500.0, true);
-        e.current_tab = AppTab::Library;
+        e.session.current_tab = AppTab::Library;
         let _ = step_glide(&mut e, std::time::Instant::now());
         assert!(e.scroll_glide.is_none());
     }

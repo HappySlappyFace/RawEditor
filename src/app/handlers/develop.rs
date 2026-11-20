@@ -6,38 +6,38 @@ use crate::ui::preview_renderer::CropHandle;
 use iced::Task;
 
 pub fn handle_exposure_changed(editor: &mut RawEditor, v: f32) -> Task<Message> {
-    editor.current_edit_params.exposure = v;
+    editor.session.current_edit_params.exposure = v;
     update_pipeline(editor)
 }
 
 pub fn handle_contrast_changed(editor: &mut RawEditor, v: f32) -> Task<Message> {
-    editor.current_edit_params.contrast = v;
+    editor.session.current_edit_params.contrast = v;
     update_pipeline(editor)
 }
 
 pub fn handle_highlights_changed(editor: &mut RawEditor, v: f32) -> Task<Message> {
-    editor.current_edit_params.highlights = v;
+    editor.session.current_edit_params.highlights = v;
     update_pipeline(editor)
 }
 
 pub fn handle_shadows_changed(editor: &mut RawEditor, v: f32) -> Task<Message> {
-    editor.current_edit_params.shadows = v;
+    editor.session.current_edit_params.shadows = v;
     update_pipeline(editor)
 }
 
 pub fn handle_whites_changed(editor: &mut RawEditor, v: f32) -> Task<Message> {
-    editor.current_edit_params.whites = v;
+    editor.session.current_edit_params.whites = v;
     update_pipeline(editor)
 }
 
 pub fn handle_blacks_changed(editor: &mut RawEditor, v: f32) -> Task<Message> {
-    editor.current_edit_params.blacks = v;
+    editor.session.current_edit_params.blacks = v;
     update_pipeline(editor)
 }
 
 pub fn handle_black_offset_changed(editor: &mut RawEditor, i: usize, v: f32) -> Task<Message> {
     if i < 4 {
-        editor.current_edit_params.black_offsets[i] = v;
+        editor.session.current_edit_params.black_offsets[i] = v;
         update_pipeline(editor)
     } else {
         Task::none()
@@ -46,9 +46,9 @@ pub fn handle_black_offset_changed(editor: &mut RawEditor, i: usize, v: f32) -> 
 
 pub fn handle_black_phase_changed(editor: &mut RawEditor, y: bool, v: u32) -> Task<Message> {
     if y {
-        editor.current_edit_params.black_phase_y = v;
+        editor.session.current_edit_params.black_phase_y = v;
     } else {
-        editor.current_edit_params.black_phase_x = v;
+        editor.session.current_edit_params.black_phase_x = v;
     }
     let task = update_pipeline(editor);
     // A checkbox has no release: this click is the whole gesture.
@@ -57,12 +57,12 @@ pub fn handle_black_phase_changed(editor: &mut RawEditor, y: bool, v: u32) -> Ta
 }
 
 pub fn handle_vibrance_changed(editor: &mut RawEditor, v: f32) -> Task<Message> {
-    editor.current_edit_params.vibrance = v;
+    editor.session.current_edit_params.vibrance = v;
     update_pipeline(editor)
 }
 
 pub fn handle_profile_curve_changed(editor: &mut RawEditor, v: f32) -> Task<Message> {
-    editor.current_edit_params.profile_curve = v;
+    editor.session.current_edit_params.profile_curve = v;
     update_pipeline(editor)
 }
 
@@ -72,7 +72,7 @@ pub fn handle_curve_changed(
     curve: crate::core::curves::Curve,
     commit: bool,
 ) -> Task<Message> {
-    *editor.current_edit_params.curves.get_mut(channel) = curve;
+    *editor.session.current_edit_params.curves.get_mut(channel) = curve;
     let task = update_pipeline(editor);
     if commit {
         editor.commit_current_state();
@@ -89,10 +89,10 @@ pub fn handle_tone_mapper_changed(
     editor: &mut RawEditor,
     mapper: crate::core::tonemap::ToneMapper,
 ) -> Task<Message> {
-    if editor.current_edit_params.tone_mapper == mapper {
+    if editor.session.current_edit_params.tone_mapper == mapper {
         return Task::none();
     }
-    editor.current_edit_params.tone_mapper = mapper;
+    editor.session.current_edit_params.tone_mapper = mapper;
     let task = update_pipeline(editor);
     editor.commit_current_state();
     task
@@ -107,7 +107,7 @@ pub fn handle_gt_param_changed(
     v: f32,
 ) -> Task<Message> {
     use crate::app::message::GtParam;
-    let gt = &mut editor.current_edit_params.gt;
+    let gt = &mut editor.session.current_edit_params.gt;
     match param {
         GtParam::Contrast => gt.contrast = v,
         GtParam::LinearStart => gt.linear_start = v,
@@ -119,32 +119,32 @@ pub fn handle_gt_param_changed(
 }
 
 pub fn handle_saturation_changed(editor: &mut RawEditor, v: f32) -> Task<Message> {
-    editor.current_edit_params.saturation = v;
+    editor.session.current_edit_params.saturation = v;
     update_pipeline(editor)
 }
 
 pub fn handle_temperature_changed(editor: &mut RawEditor, v: f32) -> Task<Message> {
-    editor.current_edit_params.temperature = v;
+    editor.session.current_edit_params.temperature = v;
     update_pipeline(editor)
 }
 
 pub fn handle_tint_changed(editor: &mut RawEditor, v: f32) -> Task<Message> {
-    editor.current_edit_params.tint = v;
+    editor.session.current_edit_params.tint = v;
     update_pipeline(editor)
 }
 
 pub fn handle_texture_changed(editor: &mut RawEditor, v: f32) -> Task<Message> {
-    editor.current_edit_params.texture = v;
+    editor.session.current_edit_params.texture = v;
     update_pipeline(editor)
 }
 
 pub fn handle_clarity_changed(editor: &mut RawEditor, v: f32) -> Task<Message> {
-    editor.current_edit_params.clarity = v;
+    editor.session.current_edit_params.clarity = v;
     update_pipeline(editor)
 }
 
 pub fn handle_dehaze_changed(editor: &mut RawEditor, v: f32) -> Task<Message> {
-    editor.current_edit_params.dehaze = v;
+    editor.session.current_edit_params.dehaze = v;
     update_pipeline(editor)
 }
 
@@ -163,17 +163,17 @@ pub fn handle_color_noise_changed(editor: &mut RawEditor, v: f32) -> Task<Messag
 }
 
 pub fn handle_sharpening_changed(editor: &mut RawEditor, v: f32) -> Task<Message> {
-    editor.current_edit_params.sharpening = v;
+    editor.session.current_edit_params.sharpening = v;
     update_pipeline(editor)
 }
 
 pub fn handle_sharpen_masking_changed(editor: &mut RawEditor, v: f32) -> Task<Message> {
-    editor.current_edit_params.sharpen_masking = v;
+    editor.session.current_edit_params.sharpen_masking = v;
     update_pipeline(editor)
 }
 
 pub fn handle_rotation_changed(editor: &mut RawEditor, v: f32) -> Task<Message> {
-    editor.current_edit_params.rotation = v;
+    editor.session.current_edit_params.rotation = v;
     update_pipeline(editor)
 }
 
@@ -186,22 +186,22 @@ pub fn handle_turn_image(editor: &mut RawEditor, clockwise: bool) -> Task<Messag
     // another image (Library with a different selection) would scale its
     // brush strokes by the wrong aspect.
     let Some(res) = editor
-        .image_resources
+        .session.image_resources
         .as_ref()
-        .filter(|r| Some(r.image_id) == editor.selected_image_id)
+        .filter(|r| Some(r.image_id) == editor.session.selected_image_id)
     else {
         // Not silent: say why nothing turned.
-        editor.status = "Turn: the image is still loading".to_string();
+        editor.session.status = "Turn: the image is still loading".to_string();
         return Task::none();
     };
-    let (w, h) = res.oriented_dims(editor.current_edit_params.quarter_turns);
-    editor.current_edit_params.turn_quarter(clockwise, w as f32 / h.max(1) as f32);
+    let (w, h) = res.oriented_dims(editor.session.current_edit_params.quarter_turns);
+    editor.session.current_edit_params.turn_quarter(clockwise, w as f32 / h.max(1) as f32);
     // The crop turned rigidly with the frame, so a point in crop-local UV
     // turns the same way inside it.
-    let [u, v] = editor.loupe.center;
-    editor.loupe.center = if clockwise { [1.0 - v, u] } else { [v, 1.0 - u] };
-    editor.zoom = 1.0;
-    editor.pan_offset = cgmath::Vector2::new(0.0, 0.0);
+    let [u, v] = editor.session.loupe.center;
+    editor.session.loupe.center = if clockwise { [1.0 - v, u] } else { [v, 1.0 - u] };
+    editor.session.zoom = 1.0;
+    editor.session.pan_offset = cgmath::Vector2::new(0.0, 0.0);
     let task = update_pipeline(editor);
     editor.commit_current_state();
     task
@@ -222,25 +222,25 @@ pub fn handle_slider_entry_start(editor: &mut RawEditor, key: String, text: Stri
 /// tool, like the WB picker: a drag on the image can only mean one thing.
 pub fn handle_toggle_level_tool(editor: &mut RawEditor) -> Task<Message> {
     if editor.active_modal != crate::app::state::Modal::None
-        || editor.current_tab != crate::app::message::AppTab::Develop
+        || editor.session.current_tab != crate::app::message::AppTab::Develop
     {
         return Task::none();
     }
-    editor.is_leveling = !editor.is_leveling;
-    if editor.is_leveling {
-        if editor.is_cropping {
-            editor.is_cropping = false;
+    editor.session.is_leveling = !editor.session.is_leveling;
+    if editor.session.is_leveling {
+        if editor.session.is_cropping {
+            editor.session.is_cropping = false;
             editor.drag_mode = DragMode::None;
         }
-        editor.is_wb_picking = false;
-        editor.mask_tool = crate::app::state::MaskTool::Inactive;
-        editor.selected_mask = None;
+        editor.session.is_wb_picking = false;
+        editor.session.mask_tool = crate::app::state::MaskTool::Inactive;
+        editor.session.selected_mask = None;
         editor.brush_armed = false;
-        editor.color_picking_mask = None;
-        editor.loupe.targeting = false;
-        editor.status = "Level: drag along a line that should be level or upright".to_string();
+        editor.session.color_picking_mask = None;
+        editor.session.loupe.targeting = false;
+        editor.session.status = "Level: drag along a line that should be level or upright".to_string();
     } else {
-        editor.status.clear();
+        editor.session.status.clear();
     }
     update_pipeline(editor)
 }
@@ -248,21 +248,21 @@ pub fn handle_toggle_level_tool(editor: &mut RawEditor) -> Task<Message> {
 /// The level line was drawn: straighten so it shows level (or upright). A
 /// line too short to aim with keeps the tool armed for another try.
 pub fn handle_level_line(editor: &mut RawEditor, dx: f32, dy: f32) -> Task<Message> {
-    let current = editor.current_edit_params.rotation;
+    let current = editor.session.current_edit_params.rotation;
     let Some(angle) = crate::core::viewport::straighten_from_line(current, dx, dy) else {
-        editor.status = "Level: drag a longer line along the horizon or an upright".to_string();
+        editor.session.status = "Level: drag a longer line along the horizon or an upright".to_string();
         return Task::none();
     };
-    editor.is_leveling = false;
-    editor.status = format!("Straightened by {:+.1}°", angle - current);
-    editor.current_edit_params.rotation = angle;
+    editor.session.is_leveling = false;
+    editor.session.status = format!("Straightened by {:+.1}°", angle - current);
+    editor.session.current_edit_params.rotation = angle;
     let task = update_pipeline(editor);
     editor.commit_current_state();
     task
 }
 
 pub fn handle_set_crop(editor: &mut RawEditor, crop: [f32; 4]) -> Task<Message> {
-    editor.current_edit_params.crop = crop;
+    editor.session.current_edit_params.crop = crop;
     let task = update_pipeline(editor);
     editor.commit_current_state();
     task
@@ -274,19 +274,19 @@ pub fn handle_toggle_crop(editor: &mut RawEditor) -> Task<Message> {
     // screen to show for it — the user only met the consequences on their next
     // visit to Develop.
     if editor.active_modal != crate::app::state::Modal::None
-        || editor.current_tab != crate::app::message::AppTab::Develop
+        || editor.session.current_tab != crate::app::message::AppTab::Develop
     {
         return Task::none();
     }
-    editor.is_wb_picking = false; // tools are mutually exclusive
-    editor.is_leveling = false;
-    editor.mask_tool = crate::app::state::MaskTool::Inactive;
-    editor.selected_mask = None;
+    editor.session.is_wb_picking = false; // tools are mutually exclusive
+    editor.session.is_leveling = false;
+    editor.session.mask_tool = crate::app::state::MaskTool::Inactive;
+    editor.session.selected_mask = None;
     editor.brush_armed = false;
-    editor.color_picking_mask = None;
-    editor.loupe.targeting = false;
-    editor.is_cropping = !editor.is_cropping;
-    if editor.is_cropping {
+    editor.session.color_picking_mask = None;
+    editor.session.loupe.targeting = false;
+    editor.session.is_cropping = !editor.session.is_cropping;
+    if editor.session.is_cropping {
         editor.drag_mode = DragMode::Crop;
     } else {
         editor.drag_mode = DragMode::None;
@@ -321,10 +321,10 @@ pub fn handle_commit_edit(editor: &mut RawEditor) -> Task<Message> {
 /// (`handlers::loupe`); or, if a mid-drag pause already did, from the
 /// subsampled preview (`RawEditor::stage_drag`), render it at full resolution.
 pub fn finish_stage_drag(editor: &mut RawEditor) -> Task<Message> {
-    if editor.held_noise.is_some() {
+    if editor.session.held_noise.is_some() {
         // `stage_drag` is already clear, so this render is full resolution.
         crate::app::handlers::loupe::release_noise(editor)
-    } else if editor.display_from_drag_preview {
+    } else if editor.session.display_from_drag_preview {
         crate::app::handlers::navigation::throttled_render(editor)
     } else {
         Task::none()
@@ -338,7 +338,7 @@ pub fn handle_undo(editor: &mut RawEditor) -> Task<Message> {
     if let Some((stack, index)) = editor.get_current_history() {
         if *index > 0 {
             *index -= 1;
-            editor.current_edit_params = stack[*index];
+            editor.session.current_edit_params = stack[*index];
             // Undo/redo don't commit to history (they move within it), so they
             // don't get commit_current_state's flush — persist explicitly.
             let task = update_pipeline(editor);
@@ -359,7 +359,7 @@ pub fn handle_redo(editor: &mut RawEditor) -> Task<Message> {
     if let Some((stack, index)) = editor.get_current_history() {
         if *index < stack.len() - 1 {
             *index += 1;
-            editor.current_edit_params = stack[*index];
+            editor.session.current_edit_params = stack[*index];
             // See handle_undo.
             let task = update_pipeline(editor);
             editor.flush_edits();
@@ -450,26 +450,26 @@ pub fn section_edited(section: SidebarSection, p: &EditParams) -> bool {
 }
 
 pub fn handle_reset_section(editor: &mut RawEditor, section: SidebarSection) -> Task<Message> {
-    if editor.active_modal != crate::app::state::Modal::None || !section_edited(section, &editor.current_edit_params) {
+    if editor.active_modal != crate::app::state::Modal::None || !section_edited(section, &editor.session.current_edit_params) {
         return Task::none();
     }
     if section == SidebarSection::Geometry {
         // Turn back one quarter at a time, as the user turned it, so the
         // crop, masks and strokes come back with the frame.
-        if let Some(res) = editor.image_resources.as_ref().filter(|r| Some(r.image_id) == editor.selected_image_id) {
-            while editor.current_edit_params.quarter_turns != 0 {
-                let (w, h) = res.oriented_dims(editor.current_edit_params.quarter_turns);
-                editor.current_edit_params.turn_quarter(false, w as f32 / h.max(1) as f32);
+        if let Some(res) = editor.session.image_resources.as_ref().filter(|r| Some(r.image_id) == editor.session.selected_image_id) {
+            while editor.session.current_edit_params.quarter_turns != 0 {
+                let (w, h) = res.oriented_dims(editor.session.current_edit_params.quarter_turns);
+                editor.session.current_edit_params.turn_quarter(false, w as f32 / h.max(1) as f32);
             }
         }
         let d = EditParams::default();
-        editor.current_edit_params.rotation = d.rotation;
-        editor.current_edit_params.crop = d.crop;
-        editor.loupe.center = [0.5, 0.5];
-        editor.zoom = 1.0;
-        editor.pan_offset = cgmath::Vector2::new(0.0, 0.0);
+        editor.session.current_edit_params.rotation = d.rotation;
+        editor.session.current_edit_params.crop = d.crop;
+        editor.session.loupe.center = [0.5, 0.5];
+        editor.session.zoom = 1.0;
+        editor.session.pan_offset = cgmath::Vector2::new(0.0, 0.0);
     } else {
-        reset_section(section, &mut editor.current_edit_params);
+        reset_section(section, &mut editor.session.current_edit_params);
     }
     let task = update_pipeline(editor);
     editor.commit_current_state();
@@ -480,14 +480,14 @@ pub fn handle_reset_edits(editor: &mut RawEditor) -> Task<Message> {
     if editor.active_modal != crate::app::state::Modal::None {
         return Task::none();
     }
-    editor.current_edit_params.reset();
+    editor.session.current_edit_params.reset();
     // The masks just got wiped; drop the selection/tool that pointed at them.
-    editor.selected_mask = None;
-    editor.mask_tool = crate::app::state::MaskTool::Inactive;
+    editor.session.selected_mask = None;
+    editor.session.mask_tool = crate::app::state::MaskTool::Inactive;
     editor.brush_armed = false;
-    editor.color_picking_mask = None;
-    editor.ai_select = None;
-    editor.status = String::new();
+    editor.session.color_picking_mask = None;
+    editor.session.ai_select = None;
+    editor.session.status = String::new();
     // No `delete_edits` here: `update_pipeline` marks the (default) params
     // dirty and `commit_current_state` flushes them, which would write the
     // row straight back.
@@ -499,14 +499,14 @@ pub fn handle_reset_edits(editor: &mut RawEditor) -> Task<Message> {
 /// Ctrl+C — open the category picker so the user chooses what to copy.
 pub fn handle_copy_settings(editor: &mut RawEditor) -> Task<Message> {
     if editor.active_modal != crate::app::state::Modal::None
-        || editor.selected_image_id.is_none()
+        || editor.session.selected_image_id.is_none()
     {
         return Task::none();
     }
     // Masks can't be copied if there are none — drop the tick rather than let
     // the user confirm a category that would silently do nothing.
-    if editor.current_edit_params.mask_count == 0 {
-        editor.copy_categories.masks = false;
+    if editor.session.current_edit_params.mask_count == 0 {
+        editor.session.copy_categories.masks = false;
     }
     editor.active_modal = crate::app::state::Modal::CopySettings;
     Task::none()
@@ -516,7 +516,7 @@ pub fn handle_copy_settings(editor: &mut RawEditor) -> Task<Message> {
 /// zero friction.
 pub fn handle_copy_all_settings(editor: &mut RawEditor) -> Task<Message> {
     if editor.active_modal != crate::app::state::Modal::None
-        || editor.selected_image_id.is_none()
+        || editor.session.selected_image_id.is_none()
     {
         return Task::none();
     }
@@ -530,10 +530,10 @@ pub fn handle_copy_settings_confirmed(editor: &mut RawEditor) -> Task<Message> {
         return Task::none();
     }
     editor.active_modal = crate::app::state::Modal::None;
-    if editor.copy_categories.is_empty() {
+    if editor.session.copy_categories.is_empty() {
         return Task::none();
     }
-    store_clipboard(editor, editor.copy_categories);
+    store_clipboard(editor, editor.session.copy_categories);
     Task::none()
 }
 
@@ -543,12 +543,12 @@ pub fn handle_copy_settings_confirmed(editor: &mut RawEditor) -> Task<Message> {
 /// would make "not copied" indistinguishable from "copied as the default
 /// value" at paste time.
 fn store_clipboard(editor: &mut RawEditor, categories: crate::core::types::CopyCategories) {
-    editor.edit_clipboard = Some(crate::core::types::EditClipboard {
-        params: editor.current_edit_params,
+    editor.session.edit_clipboard = Some(crate::core::types::EditClipboard {
+        params: editor.session.current_edit_params,
         categories,
-        source_image: editor.selected_image_id,
+        source_image: editor.session.selected_image_id,
     });
-    editor.status = format!("Copied {}", describe_categories(&categories));
+    editor.session.status = format!("Copied {}", describe_categories(&categories));
 }
 
 /// Human-readable summary of a selection, for the status line.
@@ -581,7 +581,7 @@ pub fn handle_toggle_copy_category(
     value: bool,
 ) -> Task<Message> {
     use crate::app::message::CopyCategory;
-    let c = &mut editor.copy_categories;
+    let c = &mut editor.session.copy_categories;
     match category {
         CopyCategory::Tone => c.tone = value,
         CopyCategory::Color => c.color = value,
@@ -600,14 +600,14 @@ pub fn handle_toggle_copy_category(
 }
 
 pub fn handle_set_all_copy_categories(editor: &mut RawEditor, all: bool) -> Task<Message> {
-    editor.copy_categories = if all {
+    editor.session.copy_categories = if all {
         crate::core::types::CopyCategories::all()
     } else {
         crate::core::types::CopyCategories::none()
     };
     // Never leave Masks ticked on an image that has none.
-    if editor.current_edit_params.mask_count == 0 {
-        editor.copy_categories.masks = false;
+    if editor.session.current_edit_params.mask_count == 0 {
+        editor.session.copy_categories.masks = false;
     }
     editor.save_preferences();
     Task::none()
@@ -621,7 +621,7 @@ pub fn handle_paste_settings(editor: &mut RawEditor) -> Task<Message> {
     if editor.active_modal != crate::app::state::Modal::None {
         return Task::none();
     }
-    let Some(clip) = editor.edit_clipboard else {
+    let Some(clip) = editor.session.edit_clipboard else {
         return Task::none();
     };
     if clip.categories.is_empty() {
@@ -638,15 +638,15 @@ pub fn handle_paste_settings(editor: &mut RawEditor) -> Task<Message> {
     let for_target = |id: Option<i64>, dst_turns: u32| {
         crate::core::types::turned_for_paste(&for_image(id), clip.categories, dst_turns, aspect)
     };
-    let src_for_current = for_target(editor.selected_image_id, editor.current_edit_params.quarter_turns);
-    crate::core::types::apply_categories(&mut editor.current_edit_params, &src_for_current, clip.categories);
+    let src_for_current = for_target(editor.session.selected_image_id, editor.session.current_edit_params.quarter_turns);
+    crate::core::types::apply_categories(&mut editor.session.current_edit_params, &src_for_current, clip.categories);
 
     // A paste that lowered mask_count can leave `selected_mask` pointing past
     // the end of the live masks, exactly as handle_reset_edits guards against.
-    let live_masks = editor.current_edit_params.mask_count as usize;
-    if editor.selected_mask.is_some_and(|i| i >= live_masks) {
-        editor.selected_mask = None;
-        editor.mask_tool = crate::app::state::MaskTool::Inactive;
+    let live_masks = editor.session.current_edit_params.mask_count as usize;
+    if editor.session.selected_mask.is_some_and(|i| i >= live_masks) {
+        editor.session.selected_mask = None;
+        editor.session.mask_tool = crate::app::state::MaskTool::Inactive;
     }
 
     // Other images in the selection: load each one's own params and merge into
@@ -655,11 +655,11 @@ pub fn handle_paste_settings(editor: &mut RawEditor) -> Task<Message> {
     // Written in one transaction: a paste onto a few hundred images used to
     // commit once per image on the UI thread.
     let mut others = 0usize;
-    if let Some(lib) = &editor.library {
+    if let Some(lib) = &editor.session.library {
         let merged: Vec<(i64, crate::core::types::EditParams)> = editor
-            .multi_selection
+            .session.multi_selection
             .iter()
-            .filter(|&&id| Some(id) != editor.selected_image_id)
+            .filter(|&&id| Some(id) != editor.session.selected_image_id)
             .filter_map(|&id| {
                 // An unreadable saved edit must not be merged into defaults
                 // and written back: skip the image and keep what it has.
@@ -688,7 +688,7 @@ pub fn handle_paste_settings(editor: &mut RawEditor) -> Task<Message> {
         // that left an image as it was adds no step, as for any commit
         // (`commit_current_state`), or the next Undo there does nothing.
         for (id, params) in &merged {
-            if let Some((stack, index)) = editor.history_map.get_mut(id) {
+            if let Some((stack, index)) = editor.session.history_map.get_mut(id) {
                 let unchanged = stack
                     .get(*index)
                     .is_some_and(|top| top.without_tool_state() == params.without_tool_state());
@@ -707,7 +707,7 @@ pub fn handle_paste_settings(editor: &mut RawEditor) -> Task<Message> {
         }
     }
 
-    editor.status = if others > 0 {
+    editor.session.status = if others > 0 {
         format!(
             "Pasted {} to {} images",
             describe_categories(&clip.categories),
@@ -736,27 +736,27 @@ pub fn handle_render_finished(
     editor: &mut RawEditor,
     out: crate::app::message::RenderOutput,
 ) -> Task<Message> {
-    if editor.gpu_context.as_ref().is_some_and(|c| c.is_lost()) {
+    if editor.session.gpu_context.as_ref().is_some_and(|c| c.is_lost()) {
         return handle_gpu_lost(editor);
     }
     // A render of the image the user has since navigated away from: drop the
     // pixels, but still release the throttle below so the next render runs.
-    let current = editor.image_resources.as_ref().map(|r| r.image_id);
+    let current = editor.session.image_resources.as_ref().map(|r| r.image_id);
     if current == Some(out.image_id) && !out.display.is_empty() {
-        editor.rendered_preview_bytes = Some(out.display);
-        editor.rendered_preview_dims = out.dims;
+        editor.session.rendered_preview_bytes = Some(out.display);
+        editor.session.rendered_preview_dims = out.dims;
         // Buffer and window swap in the same frame — see the note in
         // trigger_async_render about why this is not published earlier.
-        editor.rendered_view_rect = out.view_rect;
+        editor.session.rendered_view_rect = out.view_rect;
         editor.bump_preview_generation();
-        *editor.histogram_data.borrow_mut() = out.histogram;
+        *editor.session.histogram_data.borrow_mut() = out.histogram;
         editor.histogram_cache.clear();
         editor.canvas_cache.clear();
     }
     // The overview is a faithful render of `out.image_id` even when the user
     // has already moved on — which is exactly when `persist` may be waiting
     // for it (see `proxy::resolve_awaiting`).
-    let awaited = editor.proxy_awaiting.contains_key(&out.image_id);
+    let awaited = editor.session.proxy_awaiting.contains_key(&out.image_id);
     if let Some(params) = out.edit.filter(|_| current == Some(out.image_id) || awaited) {
         crate::app::handlers::proxy::capture(
             editor,
@@ -768,7 +768,7 @@ pub fn handle_render_finished(
     }
     let save = crate::app::handlers::proxy::resolve_awaiting(editor, out.image_id, out.edit);
 
-    editor.profiler.push_frame(crate::core::profiler::ProfilerFrame {
+    editor.session.profiler.push_frame(crate::core::profiler::ProfilerFrame {
         update_ms: out.update_ms,
         upload_ms: out.upload_ms,
         render_ms: out.render_ms,
@@ -780,10 +780,10 @@ pub fn handle_render_finished(
     // view without pushing params; the loupe catches up here.
     let loupe = crate::app::handlers::loupe::refresh_if_stale(editor);
 
-    editor.is_rendering = false;
-    if editor.pending_render {
-        editor.is_rendering = true;
-        editor.pending_render = false;
+    editor.session.is_rendering = false;
+    if editor.session.pending_render {
+        editor.session.is_rendering = true;
+        editor.session.pending_render = false;
         return Task::batch([save, loupe, trigger_async_render(editor)]);
     }
     Task::batch([save, loupe])
@@ -796,14 +796,14 @@ pub fn handle_render_finished(
 /// selected image.
 pub(crate) fn handle_gpu_lost(editor: &mut RawEditor) -> Task<Message> {
     tracing::error!("GPU device lost; rebuilding the GPU context");
-    editor.status = "The GPU was reset; reloading the image.".into();
-    editor.gpu_context = None;
-    editor.gpu_init = std::sync::Arc::new(tokio::sync::OnceCell::new());
-    editor.image_resources = None;
-    editor.preview_resources = None;
-    editor.is_rendering = false;
-    editor.pending_render = false;
-    editor.deferred_push = None;
+    editor.session.status = "The GPU was reset; reloading the image.".into();
+    editor.session.gpu_context = None;
+    editor.session.gpu_init = std::sync::Arc::new(tokio::sync::OnceCell::new());
+    editor.session.image_resources = None;
+    editor.session.preview_resources = None;
+    editor.session.is_rendering = false;
+    editor.session.pending_render = false;
+    editor.session.deferred_push = None;
     crate::app::handlers::navigation::reload_selected_image(editor)
 }
 
@@ -813,16 +813,16 @@ pub(crate) fn handle_gpu_lost(editor: &mut RawEditor) -> Task<Message> {
 /// preview reports the magnification the full-resolution rebuild would fix.
 pub fn render_target(editor: &RawEditor) -> crate::core::viewport::RenderTarget {
     let (disp_w, disp_h) = editor.image_display_dims();
-    let (vw, vh) = editor.viewport_size;
+    let (vw, vh) = editor.session.viewport_size;
     crate::core::viewport::render_target(
         disp_w,
         disp_h,
         vw,
         vh,
-        editor.zoom,
-        editor.pan_offset,
-        editor.scale_factor,
-        editor.is_cropping,
+        editor.session.zoom,
+        editor.session.pan_offset,
+        editor.session.scale_factor,
+        editor.session.is_cropping,
     )
 }
 
@@ -836,7 +836,7 @@ pub fn trigger_async_render(editor: &mut RawEditor) -> Task<Message> {
     // different shape than it was rendered for.
     let (disp_w, disp_h) = editor.image_display_dims();
 
-    if let (Some(ctx), Some(resources)) = (&editor.gpu_context, &editor.image_resources) {
+    if let (Some(ctx), Some(resources)) = (&editor.session.gpu_context, &editor.session.image_resources) {
         let ctx = ctx.clone();
         let resources = resources.clone();
 
@@ -856,10 +856,10 @@ pub fn trigger_async_render(editor: &mut RawEditor) -> Task<Message> {
         // Updating it now would place the still-current texture at the incoming
         // window's position for the length of the render, which looks like the
         // image jumping.
-        editor.requested_view_rect = view_rect;
+        editor.session.requested_view_rect = view_rect;
         tracing::debug!(
             "render window: zoom={:.2} view_rect=[{:.3},{:.3},{:.3},{:.3}] target={}x{}",
-            editor.zoom,
+            editor.session.zoom,
             view_rect[0],
             view_rect[1],
             view_rect[2],
@@ -878,11 +878,11 @@ pub fn trigger_async_render(editor: &mut RawEditor) -> Task<Message> {
         // them is pushed to the GPU as it happens.
         // The mask overlay tints the render, so it disqualifies too.
         // So does one whose noise reduction is held back mid-drag.
-        let edit = (!editor.before_peek
-            && !editor.is_cropping
-            && editor.current_edit_params.mask_overlay == 0
-            && editor.held_noise.is_none())
-            .then_some(editor.current_edit_params);
+        let edit = (!editor.session.before_peek
+            && !editor.session.is_cropping
+            && editor.session.current_edit_params.mask_overlay == 0
+            && editor.session.held_noise.is_none())
+            .then_some(editor.session.current_edit_params);
 
         // A subsampled texture shown larger than its own pixels is soft
         // however it is rendered: fetch full resolution. Asked here, by the
@@ -890,7 +890,7 @@ pub fn trigger_async_render(editor: &mut RawEditor) -> Task<Message> {
         // a view that is already zoomed in when an image loads (zoom is kept
         // across images and tabs), a window resize, and HiDPI screens.
         let upgrade = if target.magnification > crate::core::viewport::FULL_RES_MAGNIFICATION
-            && editor.current_tab == crate::app::message::AppTab::Develop
+            && editor.session.current_tab == crate::app::message::AppTab::Develop
         {
             crate::app::handlers::loading::trigger_full_res_upgrade(editor)
         } else {
@@ -904,7 +904,7 @@ pub fn trigger_async_render(editor: &mut RawEditor) -> Task<Message> {
         // slider is dragged, whose stage re-runs over every SOURCE pixel per
         // tick. The release re-renders at full resolution (`finish_stage_drag`).
         let preview = editor
-            .preview_resources
+            .session.preview_resources
             .clone()
             .filter(|p| p.image_id == resources.image_id);
         let (display_res, overview_res) = match preview {
@@ -917,12 +917,12 @@ pub fn trigger_async_render(editor: &mut RawEditor) -> Task<Message> {
                 let preview_magnification =
                     target.magnification * resources.width as f32 / preview.width.max(1) as f32;
                 let fits = preview_magnification <= crate::core::viewport::FULL_RES_MAGNIFICATION;
-                editor.display_from_drag_preview = !fits && editor.stage_drag;
-                let display = if fits || editor.stage_drag { preview.clone() } else { resources };
+                editor.session.display_from_drag_preview = !fits && editor.session.stage_drag;
+                let display = if fits || editor.session.stage_drag { preview.clone() } else { resources };
                 (display, preview)
             }
             None => {
-                editor.display_from_drag_preview = false;
+                editor.session.display_from_drag_preview = false;
                 (resources.clone(), resources)
             }
         };
@@ -962,35 +962,35 @@ pub fn trigger_async_render(editor: &mut RawEditor) -> Task<Message> {
         return Task::batch([render, upgrade]);
     }
     // GPU context not ready — release the lock so the next slider event can retry.
-    editor.is_rendering = false;
-    editor.pending_render = false;
+    editor.session.is_rendering = false;
+    editor.session.pending_render = false;
     Task::none()
 }
 
 pub fn handle_toggle_wb_picker(editor: &mut RawEditor) -> Task<Message> {
     // Develop-only, same reasoning as handle_toggle_crop.
     if editor.active_modal != crate::app::state::Modal::None
-        || editor.current_tab != crate::app::message::AppTab::Develop
+        || editor.session.current_tab != crate::app::message::AppTab::Develop
     {
         return Task::none();
     }
-    editor.is_wb_picking = !editor.is_wb_picking;
-    if editor.is_wb_picking {
+    editor.session.is_wb_picking = !editor.session.is_wb_picking;
+    if editor.session.is_wb_picking {
         // Tools are mutually exclusive; update_pipeline below clears the
         // shader's crop flag to match.
-        if editor.is_cropping {
-            editor.is_cropping = false;
+        if editor.session.is_cropping {
+            editor.session.is_cropping = false;
             editor.drag_mode = DragMode::None;
         }
-        editor.mask_tool = crate::app::state::MaskTool::Inactive;
-        editor.selected_mask = None;
+        editor.session.mask_tool = crate::app::state::MaskTool::Inactive;
+        editor.session.selected_mask = None;
         editor.brush_armed = false;
-        editor.color_picking_mask = None;
-        editor.loupe.targeting = false;
-        editor.is_leveling = false;
-        editor.status = "WB picker: click a neutral grey/white area".to_string();
+        editor.session.color_picking_mask = None;
+        editor.session.loupe.targeting = false;
+        editor.session.is_leveling = false;
+        editor.session.status = "WB picker: click a neutral grey/white area".to_string();
     } else {
-        editor.status.clear();
+        editor.session.status.clear();
     }
     update_pipeline(editor)
 }
@@ -1009,7 +1009,7 @@ pub(crate) struct SourceGeometry {
 /// cache: an entry can be evicted while the image is open, and the brush and
 /// AI-select mappings then silently fell back to the un-straightened frame.
 pub(crate) fn source_geometry(editor: &RawEditor, image_id: i64) -> Option<SourceGeometry> {
-    if let Some(res) = editor.image_resources.as_ref().filter(|r| r.image_id == image_id) {
+    if let Some(res) = editor.session.image_resources.as_ref().filter(|r| r.image_id == image_id) {
         return Some(SourceGeometry {
             lens: res.lens.clone(),
             exif_orientation: res.orientation,
@@ -1017,7 +1017,7 @@ pub(crate) fn source_geometry(editor: &RawEditor, image_id: i64) -> Option<Sourc
             height: res.original_height,
         });
     }
-    editor.raw_cache.peek(&image_id).map(|raw| SourceGeometry {
+    editor.session.raw_cache.peek(&image_id).map(|raw| SourceGeometry {
         lens: raw.lens_context.clone(),
         exif_orientation: raw.orientation,
         width: raw.width,
@@ -1055,9 +1055,9 @@ pub(crate) fn sample_raw_rgb(
     // Display UV → sensor UV through the colour pass's own chain: crop remap,
     // Straighten, EXIF orientation plus the user's quarter turns, lens remap.
     let orientation =
-        crate::color::compose_orientation(raw.orientation, editor.current_edit_params.quarter_turns);
+        crate::color::compose_orientation(raw.orientation, editor.session.current_edit_params.quarter_turns);
     let (su, sv) = crate::core::viewport::display_to_source_uv(
-        &editor.current_edit_params,
+        &editor.session.current_edit_params,
         &raw.lens_context,
         orientation,
         raw.width,
@@ -1076,7 +1076,7 @@ pub(crate) fn sample_raw_rgb(
     // demosaic uploads them. (Reads `raw.data`: with AI denoise on, the shader
     // sees the blended mosaic and this the original; a 16x16 mean hardly
     // notices.)
-    let offsets = editor.current_edit_params.black_offsets;
+    let offsets = editor.session.current_edit_params.black_offsets;
     let slots = crate::gpu::demosaic::tile_black_slots(raw.cfa_pattern);
     let site_black = |x: i64, y: i64| {
         let slot = slots[((y % 2) * 2 + (x % 2)) as usize];
@@ -1118,31 +1118,31 @@ pub(crate) fn mean_black(raw: &crate::raw::loader::RawDataResult, offsets: [f32;
 pub fn handle_wb_picked(editor: &mut RawEditor, u: f32, v: f32) -> Task<Message> {
     // On a failed pick (clipped/dark area) the tool stays active so the user
     // can simply click elsewhere; it exits on success or on missing data.
-    let Some(image_id) = editor.selected_image_id else {
-        editor.is_wb_picking = false;
+    let Some(image_id) = editor.session.selected_image_id else {
+        editor.session.is_wb_picking = false;
         return Task::none();
     };
     let (rgb, clipped, raw) = match sample_raw_rgb(editor, image_id, u, v) {
         Ok(sample) => sample,
         Err(RawSampleError::Missing(msg)) => {
-            editor.is_wb_picking = false;
-            editor.status = format!("WB picker: {msg}");
+            editor.session.is_wb_picking = false;
+            editor.session.status = format!("WB picker: {msg}");
             return Task::none();
         }
     };
     if clipped {
-        editor.status = "WB picker: area is clipped — pick a darker neutral".to_string();
+        editor.session.status = "WB picker: area is clipped — pick a darker neutral".to_string();
         return Task::none();
     }
     let [r, g, b] = rgb;
     if r < 1.0 || g < 1.0 || b < 1.0 {
-        editor.status = "WB picker: area too dark for a reliable neutral".to_string();
+        editor.session.status = "WB picker: area too dark for a reliable neutral".to_string();
         return Task::none();
     }
 
     // Neutral → multipliers → (Kelvin, tint) through the camera matrix.
     let wb_picked = [(g / r).clamp(0.05, 20.0), 1.0, (g / b).clamp(0.05, 20.0), 1.0];
-    let matrices = match editor.current_dcp_profile.as_deref() {
+    let matrices = match editor.session.current_dcp_profile.as_deref() {
         Some(p) => crate::color::CameraMatrices::Dcp(p),
         None => crate::color::CameraMatrices::Single(raw.color_matrix),
     };
@@ -1150,17 +1150,17 @@ pub fn handle_wb_picked(editor: &mut RawEditor, u: f32, v: f32) -> Task<Message>
 
     // Absolute Kelvin/tint → slider offsets around the as-shot anchor
     // (inverse of EditParams::kelvin_from_anchor / tint_from_anchor).
-    let (anchor_kelvin, anchor_tint) = editor.as_shot_wb.unwrap_or((5000.0, 0.0));
+    let (anchor_kelvin, anchor_tint) = editor.session.as_shot_wb.unwrap_or((5000.0, 0.0));
     let temperature = crate::core::types::EditParams::temperature_for_kelvin(anchor_kelvin, kelvin);
     let tint_offset = crate::core::types::EditParams::tint_slider_for(anchor_tint, tint);
 
-    editor.is_wb_picking = false;
-    editor.current_edit_params.temperature = temperature;
-    editor.current_edit_params.tint = tint_offset;
+    editor.session.is_wb_picking = false;
+    editor.session.current_edit_params.temperature = temperature;
+    editor.session.current_edit_params.tint = tint_offset;
     // Report what the sliders now render, which differs from the pick when
     // it was out of their range and got clamped.
-    let set = &editor.current_edit_params;
-    editor.status = format!(
+    let set = &editor.session.current_edit_params;
+    editor.session.status = format!(
         "WB picked: {:.0}K, tint {:+.0}",
         set.kelvin_from_anchor(anchor_kelvin),
         set.tint_from_anchor(anchor_tint)
@@ -1197,7 +1197,7 @@ fn dcp_memo_is_valid(
 ///
 /// The interpolation depends only on `(kelvin, ToneSettings)`, but this is
 /// called from `update_pipeline` on every slider tick — including sliders that
-/// cannot affect it. It is memoized in `editor.dcp_memo` because rebuilding the
+/// cannot affect it. It is memoized in `editor.session.dcp_memo` because rebuilding the
 /// HueSatMap LUT and re-baking the tone curve is a multi-allocation,
 /// `powf`-heavy job that `update_uniforms` would then throw away via its own
 /// dirty-check.
@@ -1208,16 +1208,16 @@ fn dcp_memo_is_valid(
 ///
 /// `params` is passed in rather than read from `editor` because the
 /// before/after peek renders a DIFFERENT set of params than the ones the user
-/// is editing. Reading `editor.current_edit_params` here would give the peek
+/// is editing. Reading `editor.session.current_edit_params` here would give the peek
 /// default exposure with slider-derived white balance and tone curve — a
 /// hybrid of neither state.
 pub fn resolve_wb_and_dcp(
     editor: &RawEditor,
     params: &crate::core::types::EditParams,
 ) -> (Option<std::sync::Arc<crate::raw::dcp::InterpolatedProfile>>, Option<[f32; 4]>) {
-    let as_shot = editor.as_shot_wb.unwrap_or((5000.0, 0.0));
+    let as_shot = editor.session.as_shot_wb.unwrap_or((5000.0, 0.0));
     let fallback_matrix = editor
-        .current_metadata
+        .session.current_metadata
         .as_ref()
         .map(|m| m.color_matrix)
         .unwrap_or([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
@@ -1225,16 +1225,16 @@ pub fn resolve_wb_and_dcp(
     let (kelvin, _tint, wb_override) = crate::color::solve_wb(
         params,
         as_shot,
-        editor.current_dcp_profile.as_deref(),
+        editor.session.current_dcp_profile.as_deref(),
         fallback_matrix,
     );
 
-    let Some(dcp) = editor.current_dcp_profile.as_ref() else {
+    let Some(dcp) = editor.session.current_dcp_profile.as_ref() else {
         return (None, wb_override);
     };
     let tone = ToneSettings::from_params(params);
 
-    if let Ok(memo) = editor.dcp_memo.try_borrow() {
+    if let Ok(memo) = editor.session.dcp_memo.try_borrow() {
         if let Some((k, t, profile, source)) = memo.as_ref() {
             if std::sync::Arc::ptr_eq(source, dcp) && dcp_memo_is_valid(*k, *t, kelvin, tone) {
                 return (Some(profile.clone()), wb_override);
@@ -1245,7 +1245,7 @@ pub fn resolve_wb_and_dcp(
     let interpolated = std::sync::Arc::new(crate::raw::dcp::interpolate_at_temperature(
         dcp, kelvin, tone,
     ));
-    if let Ok(mut memo) = editor.dcp_memo.try_borrow_mut() {
+    if let Ok(mut memo) = editor.session.dcp_memo.try_borrow_mut() {
         *memo = Some((kelvin, tone, interpolated.clone(), dcp.clone()));
     }
 
@@ -1255,7 +1255,7 @@ pub fn resolve_wb_and_dcp(
 /// Write `params` (with the resolved DCP and slider WB) to the uniforms. Only
 /// while no render is in flight — see `RawEditor::deferred_push`.
 fn push_uniforms(editor: &RawEditor, params: &crate::core::types::EditParams) {
-    if let (Some(ctx), Some(resources)) = (&editor.gpu_context, &editor.image_resources) {
+    if let (Some(ctx), Some(resources)) = (&editor.session.gpu_context, &editor.session.image_resources) {
         // Phase 140: Interpolate DCP + resolve slider WB
         let (interpolated, wb_override) = resolve_wb_and_dcp(editor, params);
         resources.update_uniforms(ctx, params, interpolated.as_deref(), wb_override);
@@ -1265,8 +1265,8 @@ fn push_uniforms(editor: &RawEditor, params: &crate::core::types::EditParams) {
 /// Apply a push that arrived mid-render. Runs at the start of every render,
 /// when the previous one has finished, so the uniform block has one writer.
 fn apply_deferred_push(editor: &mut RawEditor) {
-    let Some((id, params)) = editor.deferred_push.take() else { return };
-    if editor.image_resources.as_ref().map(|r| r.image_id) == Some(id) {
+    let Some((id, params)) = editor.session.deferred_push.take() else { return };
+    if editor.session.image_resources.as_ref().map(|r| r.image_id) == Some(id) {
         push_uniforms(editor, &params);
     }
 }
@@ -1285,7 +1285,7 @@ pub(crate) fn push_uniforms_and_render(
     // loading. Rendering them together (an undo or reset pressed in Library)
     // drew the previous Develop image with this image's edits, and Develop
     // then showed that frame when the user went back to it.
-    if editor.image_resources.as_ref().map(|r| r.image_id) != editor.selected_image_id {
+    if editor.session.image_resources.as_ref().map(|r| r.image_id) != editor.session.selected_image_id {
         return Task::none();
     }
     // A different camera profile can't be pushed as uniforms (its LUT sizes
@@ -1297,13 +1297,13 @@ pub(crate) fn push_uniforms_and_render(
     if crate::app::handlers::ai_denoise::resources_stale(editor) {
         return crate::app::handlers::navigation::reload_selected_image(editor);
     }
-    if editor.is_rendering {
+    if editor.session.is_rendering {
         // A render task is between its own uniform writes and submits: writing
         // the block from here could land `view_rect = FULL` in its main pass,
         // or change the params between its stages and its colour pass. Park
         // the push; `trigger_async_render` applies it before the next frame.
-        if let Some(id) = editor.selected_image_id {
-            editor.deferred_push = Some((id, *params));
+        if let Some(id) = editor.session.selected_image_id {
+            editor.session.deferred_push = Some((id, *params));
         }
         editor.canvas_cache.clear();
     } else {
@@ -1315,12 +1315,12 @@ pub(crate) fn push_uniforms_and_render(
     let loupe = crate::app::handlers::loupe::request(editor);
 
     // Phase 106: Throttling
-    let render = if editor.is_rendering {
-        editor.pending_render = true;
+    let render = if editor.session.is_rendering {
+        editor.session.pending_render = true;
         Task::none()
     } else {
-        editor.is_rendering = true;
-        editor.pending_render = false;
+        editor.session.is_rendering = true;
+        editor.session.pending_render = false;
         trigger_async_render(editor)
     };
     Task::batch([render, loupe])
@@ -1345,8 +1345,8 @@ pub(crate) fn update_pipeline(editor: &mut RawEditor) -> Task<Message> {
 /// poking `before_peek` directly, so the flag and the uploaded uniforms can
 /// never disagree.
 pub(crate) fn refresh_for_peek_state(editor: &mut RawEditor) -> Task<Message> {
-    let params = if editor.before_peek {
-        editor.current_edit_params.before_reference()
+    let params = if editor.session.before_peek {
+        editor.session.current_edit_params.before_reference()
     } else {
         editor.view_params()
     };
@@ -1359,10 +1359,10 @@ pub(crate) fn refresh_for_peek_state(editor: &mut RawEditor) -> Task<Message> {
 /// image change, modal open, window focus loss. Returns `Task::none()` when
 /// there was nothing to do, so it is safe to call unconditionally.
 pub fn clear_before_peek(editor: &mut RawEditor) -> Task<Message> {
-    if !editor.before_peek {
+    if !editor.session.before_peek {
         return Task::none();
     }
-    editor.before_peek = false;
+    editor.session.before_peek = false;
     refresh_for_peek_state(editor)
 }
 
@@ -1374,7 +1374,7 @@ pub fn clear_before_peek(editor: &mut RawEditor) -> Task<Message> {
 pub fn handle_set_before_peek(editor: &mut RawEditor, active: bool) -> Task<Message> {
     // Key auto-repeat delivers KeyPressed continuously while Space is held.
     // Without this guard every repeat would queue another GPU render.
-    if editor.before_peek == active {
+    if editor.session.before_peek == active {
         return Task::none();
     }
 
@@ -1383,9 +1383,9 @@ pub fn handle_set_before_peek(editor: &mut RawEditor, active: bool) -> Task<Mess
         // to editor state, so all gating lives here — the same pattern the
         // Delete modal's Enter/D bindings use.
         if editor.active_modal != crate::app::state::Modal::None
-            || editor.current_tab != crate::app::message::AppTab::Develop
+            || editor.session.current_tab != crate::app::message::AppTab::Develop
             || !matches!(
-                editor.editor_readiness,
+                editor.session.editor_readiness,
                 crate::app::state::EditorReadiness::Ready(_)
             )
         {
@@ -1393,7 +1393,7 @@ pub fn handle_set_before_peek(editor: &mut RawEditor, active: bool) -> Task<Mess
         }
     }
 
-    editor.before_peek = active;
+    editor.session.before_peek = active;
     refresh_for_peek_state(editor)
 }
 

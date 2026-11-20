@@ -10,7 +10,7 @@ use crate::app::state::RawEditor;
 use iced::Task;
 
 pub fn handle_lens_param_changed(editor: &mut RawEditor, which: LensParam, v: f32) -> Task<Message> {
-    let l = &mut editor.current_edit_params.lens;
+    let l = &mut editor.session.current_edit_params.lens;
     match which {
         LensParam::ProfileDistortion => l.profile_distortion = v.clamp(0.0, 2.0),
         LensParam::ProfileVignetting => l.profile_vignetting = v.clamp(0.0, 2.0),
@@ -23,7 +23,7 @@ pub fn handle_lens_param_changed(editor: &mut RawEditor, which: LensParam, v: f3
 }
 
 pub fn handle_lens_toggled(editor: &mut RawEditor, which: LensToggle, on: bool) -> Task<Message> {
-    let l = &mut editor.current_edit_params.lens;
+    let l = &mut editor.session.current_edit_params.lens;
     match which {
         LensToggle::Profile => l.profile = on,
         LensToggle::ProfileCa => l.profile_ca = on,
@@ -35,7 +35,7 @@ pub fn handle_lens_toggled(editor: &mut RawEditor, which: LensToggle, on: bool) 
 }
 
 pub fn handle_defringe_changed(editor: &mut RawEditor, which: DefringeParam, v: f32) -> Task<Message> {
-    let d = &mut editor.current_edit_params.defringe;
+    let d = &mut editor.session.current_edit_params.defringe;
     match which {
         DefringeParam::PurpleAmount => d.purple_amount = v.clamp(0.0, 1.0),
         DefringeParam::PurpleHue => d.purple_hue = v.rem_euclid(360.0),

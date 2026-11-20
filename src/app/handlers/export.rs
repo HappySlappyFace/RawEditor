@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub fn handle_set_export_format(editor: &mut RawEditor, format: ExportFormat) -> Task<Message> {
-    editor.export_settings.format = format;
+    editor.session.export_settings.format = format;
     Task::none()
 }
 
@@ -15,34 +15,34 @@ pub fn handle_set_export_color_space(
     editor: &mut RawEditor,
     space: crate::core::output_space::OutputSpace,
 ) -> Task<Message> {
-    editor.export_settings.color_space = space;
+    editor.session.export_settings.color_space = space;
     Task::none()
 }
 
 pub fn handle_set_export_quality(editor: &mut RawEditor, quality: u8) -> Task<Message> {
-    editor.export_settings.quality = quality;
+    editor.session.export_settings.quality = quality;
     Task::none()
 }
 
 pub fn handle_toggle_export_resize(editor: &mut RawEditor, resize: bool) -> Task<Message> {
-    editor.export_settings.resize = resize;
+    editor.session.export_settings.resize = resize;
     Task::none()
 }
 
 pub fn handle_set_export_width(editor: &mut RawEditor, text: String) -> Task<Message> {
     // 0 means "not a usable number" (empty, a stray letter, a minus sign).
-    editor.export_settings.max_width = text.trim().parse::<u32>().unwrap_or(0);
-    editor.export_settings.max_width_text = text;
+    editor.session.export_settings.max_width = text.trim().parse::<u32>().unwrap_or(0);
+    editor.session.export_settings.max_width_text = text;
     Task::none()
 }
 
 pub fn handle_set_export_subfolder(editor: &mut RawEditor, subfolder: String) -> Task<Message> {
-    editor.export_settings.subfolder = subfolder;
+    editor.session.export_settings.subfolder = subfolder;
     Task::none()
 }
 
 pub fn handle_pick_export_base_path(editor: &mut RawEditor) -> Task<Message> {
-    let current = editor.export_settings.base_path.clone();
+    let current = editor.session.export_settings.base_path.clone();
     Task::perform(
         async move {
             rfd::AsyncFileDialog::new()
@@ -63,7 +63,7 @@ pub fn handle_pick_export_base_path(editor: &mut RawEditor) -> Task<Message> {
 
 pub fn handle_set_export_base_path(editor: &mut RawEditor, path: PathBuf) -> Task<Message> {
     if !path.as_os_str().is_empty() {
-        editor.export_settings.base_path = path;
+        editor.session.export_settings.base_path = path;
     }
     Task::none()
 }
@@ -72,11 +72,11 @@ pub fn handle_open_export_modal(editor: &mut RawEditor) -> Task<Message> {
     editor.active_modal = Modal::Export;
 
     let default_dir = dirs::picture_dir().unwrap_or_else(|| PathBuf::from("."));
-    if editor.export_settings.base_path == default_dir {
-        if let Some(id) = editor.selected_image_id {
-            if let Some(img) = editor.images.iter().find(|i| i.id == id) {
+    if editor.session.export_settings.base_path == default_dir {
+        if let Some(id) = editor.session.selected_image_id {
+            if let Some(img) = editor.session.images.iter().find(|i| i.id == id) {
                 if let Some(parent) = Path::new(&img.path).parent() {
-                    editor.export_settings.base_path = parent.to_path_buf();
+                    editor.session.export_settings.base_path = parent.to_path_buf();
                 }
             }
         }
@@ -92,18 +92,18 @@ pub fn handle_open_export_modal(editor: &mut RawEditor) -> Task<Message> {
 /// back-to-front in a different order every time. Ordering through
 /// `displayed_ids` makes a run reproducible and the progress list readable.
 pub fn export_target_ids(editor: &RawEditor) -> Vec<i64> {
-    if editor.multi_selection.is_empty() {
-        return editor.selected_image_id.into_iter().collect();
+    if editor.session.multi_selection.is_empty() {
+        return editor.session.selected_image_id.into_iter().collect();
     }
     let mut ids: Vec<i64> = editor
         .displayed_ids()
         .into_iter()
-        .filter(|id| editor.multi_selection.contains(id))
+        .filter(|id| editor.session.multi_selection.contains(id))
         .collect();
     // Anything selected but not currently displayed still belongs in the
     // batch; append it rather than silently dropping it.
     let mut extra: Vec<i64> = editor
-        .multi_selection
+        .session.multi_selection
         .iter()
         .copied()
         .filter(|id| !ids.contains(id))
@@ -114,8 +114,8 @@ pub fn export_target_ids(editor: &RawEditor) -> Vec<i64> {
 }
 
 pub fn handle_export_confirmed(editor: &mut RawEditor) -> Task<Message> {
-    if editor.export_settings.size_invalid() {
-        editor.status = "Enter a long edge in pixels, or untick Resize long edge.".to_string();
+    if editor.session.export_settings.size_invalid() {
+        editor.session.status = "Enter a long edge in pixels, or untick Resize long edge.".to_string();
         return Task::none();
     }
     editor.active_modal = Modal::None;
@@ -123,23 +123,23 @@ pub fn handle_export_confirmed(editor: &mut RawEditor) -> Task<Message> {
     // Re-entrancy guard, matching handle_delete_from_disk_confirmed's
     // `is_deleting` check. Without it, confirming again mid-run overwrote
     // export_queue and started a second interleaved ProcessNextExport chain.
-    if editor.is_exporting {
-        editor.status = "An export is already running.".to_string();
+    if editor.session.is_exporting {
+        editor.session.status = "An export is already running.".to_string();
         return Task::none();
     }
 
     let ids = export_target_ids(editor);
     if ids.is_empty() {
-        editor.status = "Nothing to export.".to_string();
+        editor.session.status = "Nothing to export.".to_string();
         return Task::none();
     }
 
-    editor.export_jobs = ids
+    editor.session.export_jobs = ids
         .iter()
         .map(|id| crate::app::state::ExportJob {
             id: *id,
             filename: editor
-                .images
+                .session.images
                 .iter()
                 .find(|i| i.id == *id)
                 .map(|i| i.filename.clone())
@@ -148,10 +148,10 @@ pub fn handle_export_confirmed(editor: &mut RawEditor) -> Task<Message> {
         })
         .collect();
     // Reversed: the queue is drained with `pop()`, so this yields display order.
-    editor.export_queue = ids.into_iter().rev().collect();
+    editor.session.export_queue = ids.into_iter().rev().collect();
 
-    editor.is_exporting = true;
-    editor.status = format!("Starting export of {} images…", editor.export_jobs.len());
+    editor.session.is_exporting = true;
+    editor.session.status = format!("Starting export of {} images…", editor.session.export_jobs.len());
     Task::perform(async {}, |_| Message::ProcessNextExport)
 }
 
@@ -159,24 +159,24 @@ pub fn handle_export_confirmed(editor: &mut RawEditor) -> Task<Message> {
 /// interruptible, so this drains the pending work rather than killing a task
 /// mid-readback.
 pub fn handle_cancel_export(editor: &mut RawEditor) -> Task<Message> {
-    if !editor.is_exporting {
+    if !editor.session.is_exporting {
         return Task::none();
     }
-    let dropped = editor.export_queue.len();
-    editor.export_queue.clear();
-    for job in editor.export_jobs.iter_mut() {
+    let dropped = editor.session.export_queue.len();
+    editor.session.export_queue.clear();
+    for job in editor.session.export_jobs.iter_mut() {
         if job.state == crate::app::state::ExportJobState::Pending {
             job.state = crate::app::state::ExportJobState::Failed("cancelled".to_string());
         }
     }
-    editor.status = format!("Export cancelled — {dropped} images skipped");
+    editor.session.status = format!("Export cancelled — {dropped} images skipped");
     Task::none()
 }
 
 /// Update one job's progress. Silently ignores unknown ids so a stale message
 /// from a cancelled batch can't panic.
 fn set_job_state(editor: &mut RawEditor, id: i64, state: crate::app::state::ExportJobState) {
-    if let Some(job) = editor.export_jobs.iter_mut().find(|j| j.id == id) {
+    if let Some(job) = editor.session.export_jobs.iter_mut().find(|j| j.id == id) {
         job.state = state;
     }
 }
@@ -238,18 +238,18 @@ fn check_memory_gate(editor: &mut RawEditor) -> MemoryGate {
 pub fn handle_process_next_export(editor: &mut RawEditor) -> Task<Message> {
     // Nothing queued means the batch is over (or was cancelled) — skip the
     // memory check so cancellation can't be held up by low memory.
-    if !editor.export_queue.is_empty() {
+    if !editor.session.export_queue.is_empty() {
         if let MemoryGate::Wait { available_mb, needed_mb } = check_memory_gate(editor) {
             // Log once per transition into the paused state. This runs once
             // per image, and release builds log at info/warn to a daily file —
             // an unguarded warn! here would flood it.
-            if !editor.export_paused_for_memory {
+            if !editor.session.export_paused_for_memory {
                 tracing::warn!(
                     "Export paused: {available_mb} MB available, {needed_mb} MB required"
                 );
             }
-            editor.export_paused_for_memory = true;
-            editor.status = format!(
+            editor.session.export_paused_for_memory = true;
+            editor.session.status = format!(
                 "Export paused — {available_mb} MB free, waiting for {needed_mb} MB"
             );
             return Task::perform(
@@ -257,29 +257,29 @@ pub fn handle_process_next_export(editor: &mut RawEditor) -> Task<Message> {
                 |_| Message::ProcessNextExport,
             );
         }
-        if editor.export_paused_for_memory {
-            editor.export_paused_for_memory = false;
+        if editor.session.export_paused_for_memory {
+            editor.session.export_paused_for_memory = false;
             tracing::warn!("Export resumed: memory headroom recovered");
         }
     }
 
-    if let Some(image_id) = editor.export_queue.pop() {
+    if let Some(image_id) = editor.session.export_queue.pop() {
         let done = editor
-            .export_jobs
+            .session.export_jobs
             .iter()
             .filter(|j| !matches!(j.state, crate::app::state::ExportJobState::Pending))
             .count();
-        editor.status = format!("Exporting {} of {}…", done + 1, editor.export_jobs.len());
+        editor.session.status = format!("Exporting {} of {}…", done + 1, editor.session.export_jobs.len());
         set_job_state(editor, image_id, crate::app::state::ExportJobState::Working);
-        if let Some(img) = editor.images.iter().find(|i| i.id == image_id) {
+        if let Some(img) = editor.session.images.iter().find(|i| i.id == image_id) {
             let path = img.path.clone();
             // Each image's own saved edits. For the image currently open in
             // Develop, prefer the in-memory params: they may hold a gesture
             // that has not been flushed to SQLite yet.
-            let mut params = if Some(image_id) == editor.selected_image_id {
-                editor.current_edit_params
+            let mut params = if Some(image_id) == editor.session.selected_image_id {
+                editor.session.current_edit_params
             } else {
-                match editor.library.as_ref().map(|lib| lib.load_saved_edit(image_id)) {
+                match editor.session.library.as_ref().map(|lib| lib.load_saved_edit(image_id)) {
                     Some(Ok(saved)) => saved.unwrap_or_default(),
                     None => Default::default(),
                     // Exporting defaults would silently produce the unedited frame.
@@ -299,7 +299,7 @@ pub fn handle_process_next_export(editor: &mut RawEditor) -> Task<Message> {
             // "cull, then export the selects" flow, and costs nothing: the
             // cache is already byte-budgeted and the entry is shared, not
             // copied.
-            if let Some(cached) = editor.raw_cache.get(&image_id).cloned() {
+            if let Some(cached) = editor.session.raw_cache.get(&image_id).cloned() {
                 return Task::done(Message::ExportRawLoaded(image_id, Box::new(params), Ok(cached)));
             }
             return Task::perform(raw::loader::load_raw_data(path), move |res| {
@@ -314,14 +314,14 @@ pub fn handle_process_next_export(editor: &mut RawEditor) -> Task<Message> {
         );
         Task::perform(async {}, |_| Message::ProcessNextExport)
     } else {
-        editor.is_exporting = false;
-        editor.export_paused_for_memory = false;
+        editor.session.is_exporting = false;
+        editor.session.export_paused_for_memory = false;
         let failed = editor
-            .export_jobs
+            .session.export_jobs
             .iter()
             .filter(|j| matches!(j.state, crate::app::state::ExportJobState::Failed(_)))
             .count();
-        editor.status = if failed > 0 {
+        editor.session.status = if failed > 0 {
             format!("Export finished — {failed} failed")
         } else {
             "Export Complete!".to_string()
@@ -329,7 +329,7 @@ pub fn handle_process_next_export(editor: &mut RawEditor) -> Task<Message> {
         // Release the LAST image's resources. Every other image is reclaimed by
         // the next one's save; without this the final ~336 MB sat allocated
         // until something else in the app happened to render.
-        if let Some(ctx) = &editor.gpu_context {
+        if let Some(ctx) = &editor.session.gpu_context {
             ctx.reclaim();
         }
         Task::none()
@@ -347,10 +347,10 @@ pub fn handle_export_raw_loaded(
             // Always build fresh full-resolution resources for export.
             // The develop pipeline uses a subsampled preview; export must use the
             // original sensor dimensions so we don't re-use those resources here.
-            let ctx = editor.gpu_context.clone();
-            let gpu_init = editor.gpu_init.clone();
+            let ctx = editor.session.gpu_context.clone();
+            let gpu_init = editor.session.gpu_init.clone();
 
-            let profile_defaults = editor.camera_profile_defaults.clone();
+            let profile_defaults = editor.session.camera_profile_defaults.clone();
 
             Task::perform(
                 async move {
@@ -434,7 +434,7 @@ pub fn handle_export_raw_loaded(
             )
         }
         Err(e) => {
-            editor.status = format!("Failed to load RAW: {}", e);
+            editor.session.status = format!("Failed to load RAW: {}", e);
             // Without this the job stays `Working` forever and the queue view
             // shows an ever-growing pile of "rendering" rows — which is what
             // made a memory failure look like runaway concurrency.
@@ -461,10 +461,10 @@ pub fn handle_export_pipeline_ready(
             // A reset GPU renders nothing; forget it so the next image (or
             // the next Develop load) builds a fresh context.
             tracing::error!("Export of image {image_id}: GPU device lost");
-            editor.gpu_context = None;
-            editor.gpu_init = Arc::new(tokio::sync::OnceCell::new());
+            editor.session.gpu_context = None;
+            editor.session.gpu_init = Arc::new(tokio::sync::OnceCell::new());
             let e = "the GPU was reset; try again".to_string();
-            editor.status = format!("Export failed: {e}");
+            editor.session.status = format!("Export failed: {e}");
             set_job_state(editor, image_id, crate::app::state::ExportJobState::Failed(e));
             Task::perform(async {}, |_| Message::ProcessNextExport)
         }
@@ -477,8 +477,8 @@ pub fn handle_export_pipeline_ready(
             // layouts, 3 render pipelines — for every single image in the
             // batch, then dropped it with no poll. Storing it here means the
             // first export creates one context and the rest reuse it.
-            if editor.gpu_context.is_none() {
-                editor.gpu_context = Some(context.clone());
+            if editor.session.gpu_context.is_none() {
+                editor.session.gpu_context = Some(context.clone());
             }
 
             // This image's own crop, not the one open in Develop — otherwise
@@ -492,7 +492,7 @@ pub fn handle_export_pipeline_ready(
             let cropped_w = ((full_w as f32 * crop_w) as u32).max(1);
             let cropped_h = ((full_h as f32 * crop_h) as u32).max(1);
 
-            let settings = editor.export_settings.clone();
+            let settings = editor.session.export_settings.clone();
             // Honour "Resize Long Edge". This was previously computed but the
             // setting was never read, so the checkbox and the size field did
             // nothing at all.
@@ -505,13 +505,13 @@ pub fn handle_export_pipeline_ready(
             let (render_w, render_h) = (target_width * factor, target_height * factor);
             if let Err(e) = check_export_size(&context, render_w, render_h, settings.format) {
                 tracing::error!("Export of image {image_id} refused: {e}");
-                editor.status = format!("Export failed: {e}");
+                editor.session.status = format!("Export failed: {e}");
                 set_job_state(editor, image_id, crate::app::state::ExportJobState::Failed(e));
                 context.reclaim();
                 return Task::perform(async {}, |_| Message::ProcessNextExport);
             }
             let source = editor
-                .images
+                .session.images
                 .iter()
                 .find(|i| i.id == image_id)
                 .map(|img| PathBuf::from(&img.path));
@@ -555,11 +555,11 @@ pub fn handle_export_pipeline_ready(
             )
         }
         Err(e) => {
-            editor.status = format!("Export failed: {}", e);
+            editor.session.status = format!("Export failed: {}", e);
             // See handle_export_raw_loaded: an unmarked failure leaves a stuck
             // "rendering" row behind.
             set_job_state(editor, image_id, crate::app::state::ExportJobState::Failed(e));
-            if let Some(ctx) = &editor.gpu_context {
+            if let Some(ctx) = &editor.session.gpu_context {
                 ctx.reclaim();
             }
             Task::perform(async {}, |_| Message::ProcessNextExport)
@@ -575,12 +575,12 @@ pub fn handle_export_save_complete(
     match result {
         Ok(path) => {
             tracing::info!("Export saved successfully: {}", path.display());
-            editor.status = format!("Saved: {}", path.display());
+            editor.session.status = format!("Saved: {}", path.display());
             set_job_state(editor, id, crate::app::state::ExportJobState::Done(path));
         }
         Err(e) => {
             tracing::error!("Export save failed: {}", e);
-            editor.status = format!("Save failed: {}", e);
+            editor.session.status = format!("Save failed: {}", e);
             set_job_state(editor, id, crate::app::state::ExportJobState::Failed(e));
         }
     }
@@ -588,7 +588,7 @@ pub fn handle_export_save_complete(
     // its textures are dropped by now — but wgpu will not hand the memory back
     // until it is polled. Without this the batch runs a full image behind on
     // reclamation.
-    if let Some(ctx) = &editor.gpu_context {
+    if let Some(ctx) = &editor.session.gpu_context {
         ctx.reclaim();
     }
     Task::perform(async {}, |_| Message::ProcessNextExport)
@@ -854,9 +854,9 @@ mod tests {
     #[test]
     fn min_free_bytes_converts_mb_and_treats_zero_as_disabled() {
         let mut e = RawEditor::new().0;
-        e.min_free_ram_mb = 2048;
+        e.session.min_free_ram_mb = 2048;
         assert_eq!(e.min_free_bytes(), 2048 * 1024 * 1024);
-        e.min_free_ram_mb = 0;
+        e.session.min_free_ram_mb = 0;
         assert_eq!(e.min_free_bytes(), 0);
     }
 
@@ -865,7 +865,7 @@ mod tests {
     #[test]
     fn gate_proceeds_and_keeps_caches_when_disabled() {
         let mut e = RawEditor::new().0;
-        e.min_free_ram_mb = 0;
+        e.session.min_free_ram_mb = 0;
         assert!(matches!(check_memory_gate(&mut e), MemoryGate::Proceed));
     }
 
@@ -879,12 +879,12 @@ mod tests {
             // Platform has no implementation; the gate is inert by design.
             return;
         }
-        e.min_free_ram_mb = crate::app::state::MIN_FREE_RAM_MB_MAX;
-        e.raw_cache_bytes = 999;
+        e.session.min_free_ram_mb = crate::app::state::MIN_FREE_RAM_MB_MAX;
+        e.session.raw_cache_bytes = 999;
         match check_memory_gate(&mut e) {
             MemoryGate::Wait { needed_mb, .. } => {
                 assert_eq!(needed_mb, crate::app::state::MIN_FREE_RAM_MB_MAX as u64);
-                assert_eq!(e.raw_cache_bytes, 0, "caches should have been released");
+                assert_eq!(e.session.raw_cache_bytes, 0, "caches should have been released");
             }
             MemoryGate::Proceed => panic!("16 GB of headroom should not be satisfiable"),
         }
@@ -894,7 +894,7 @@ mod tests {
     #[test]
     fn gate_proceeds_when_there_is_plenty_of_headroom() {
         let mut e = RawEditor::new().0;
-        e.min_free_ram_mb = 1;
+        e.session.min_free_ram_mb = 1;
         assert!(matches!(check_memory_gate(&mut e), MemoryGate::Proceed));
     }
 

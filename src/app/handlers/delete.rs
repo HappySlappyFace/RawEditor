@@ -47,7 +47,7 @@ pub fn handle_delete_image_requested(editor: &mut RawEditor) -> Task<Message> {
     }
 
     let marked: std::collections::HashSet<i64> = editor
-        .images
+        .session.images
         .iter()
         .filter(|i| is_marked(i.rating))
         .map(|i| i.id)
@@ -55,18 +55,18 @@ pub fn handle_delete_image_requested(editor: &mut RawEditor) -> Task<Message> {
     let all_marked = ids.iter().all(|id| marked.contains(id));
 
     if all_marked {
-        if let Some(lib) = &editor.library {
+        if let Some(lib) = &editor.session.library {
             if let Err(e) = lib.set_marked(&ids, false) {
                 tracing::error!("Failed to unmark {} image(s): {e}", ids.len());
-                editor.status = format!("Could not unmark: {e}");
+                editor.session.status = format!("Could not unmark: {e}");
                 return Task::none();
             }
             editor.apply_to_images(&ids, |img| img.rating = with_mark(img.rating, false));
         }
-        editor.status = format!("Unmarked {} image(s)", ids.len());
+        editor.session.status = format!("Unmarked {} image(s)", ids.len());
         Task::none()
     } else {
-        editor.pending_delete_ids = ids;
+        editor.session.pending_delete_ids = ids;
         editor.active_modal = Modal::Delete;
         Task::none()
     }
@@ -76,30 +76,30 @@ pub fn handle_mark_for_removal_confirmed(editor: &mut RawEditor) -> Task<Message
     if editor.active_modal != Modal::Delete {
         return Task::none();
     }
-    let ids = std::mem::take(&mut editor.pending_delete_ids);
+    let ids = std::mem::take(&mut editor.session.pending_delete_ids);
     editor.active_modal = Modal::None;
     if ids.is_empty() {
         return Task::none();
     }
 
-    if let Some(lib) = &editor.library {
+    if let Some(lib) = &editor.session.library {
         if let Err(e) = lib.set_marked(&ids, true) {
             tracing::error!("Failed to mark {} image(s) for removal: {e}", ids.len());
-            editor.status = format!("Could not mark for removal: {e}");
+            editor.session.status = format!("Could not mark for removal: {e}");
             return Task::none();
         }
         editor.apply_to_images(&ids, |img| img.rating = with_mark(img.rating, true));
     }
-    editor.status = format!("Marked {} image(s) for removal", ids.len());
+    editor.session.status = format!("Marked {} image(s) for removal", ids.len());
 
     navigation::ensure_develop_selection_not_marked(editor)
 }
 
 pub fn handle_delete_from_disk_confirmed(editor: &mut RawEditor) -> Task<Message> {
-    if editor.active_modal != Modal::Delete || editor.is_deleting {
+    if editor.active_modal != Modal::Delete || editor.session.is_deleting {
         return Task::none();
     }
-    let ids = std::mem::take(&mut editor.pending_delete_ids);
+    let ids = std::mem::take(&mut editor.session.pending_delete_ids);
     editor.active_modal = Modal::None;
     if ids.is_empty() {
         return Task::none();
@@ -108,7 +108,7 @@ pub fn handle_delete_from_disk_confirmed(editor: &mut RawEditor) -> Task<Message
     let targets: Vec<DeleteTarget> = ids
         .iter()
         .filter_map(|id| {
-            editor.images.iter().find(|i| i.id == *id).map(|img| DeleteTarget {
+            editor.session.images.iter().find(|i| i.id == *id).map(|img| DeleteTarget {
                 id: img.id,
                 path: img.path.clone(),
                 cache_thumb: img.cache_path_thumb.clone(),
@@ -119,37 +119,37 @@ pub fn handle_delete_from_disk_confirmed(editor: &mut RawEditor) -> Task<Message
         })
         .collect();
 
-    let Some(db_path) = editor.library.as_ref().map(|l| l.path().clone()) else {
+    let Some(db_path) = editor.session.library.as_ref().map(|l| l.path().clone()) else {
         return Task::none();
     };
     if targets.is_empty() {
         return Task::none();
     }
 
-    editor.is_deleting = true;
-    editor.status = format!("Deleting {} image(s)…", targets.len());
+    editor.session.is_deleting = true;
+    editor.session.status = format!("Deleting {} image(s)…", targets.len());
     Task::perform(hard_delete_async(targets, db_path), Message::HardDeleteComplete)
 }
 
 pub fn handle_hard_delete_complete(editor: &mut RawEditor, outcome: HardDeleteOutcome) -> Task<Message> {
-    editor.is_deleting = false;
+    editor.session.is_deleting = false;
     let deleted: std::collections::HashSet<i64> = outcome.deleted_ids.iter().copied().collect();
 
-    // Compute the fallback selection before mutating editor.images: find how
+    // Compute the fallback selection before mutating editor.session.images: find how
     // many deleted images preceded the current selection, so the adjusted
     // index lands roughly where the user was.
     let mut fallback: Option<i64> = None;
-    if let Some(sel) = editor.selected_image_id {
+    if let Some(sel) = editor.session.selected_image_id {
         if deleted.contains(&sel) {
-            if let Some(old_idx) = editor.images.iter().position(|i| i.id == sel) {
+            if let Some(old_idx) = editor.session.images.iter().position(|i| i.id == sel) {
                 let remaining: Vec<i64> = editor
-                    .images
+                    .session.images
                     .iter()
                     .filter(|i| !deleted.contains(&i.id))
                     .map(|i| i.id)
                     .collect();
                 if !remaining.is_empty() {
-                    let deleted_before = editor.images[..old_idx]
+                    let deleted_before = editor.session.images[..old_idx]
                         .iter()
                         .filter(|i| deleted.contains(&i.id))
                         .count();
@@ -160,44 +160,44 @@ pub fn handle_hard_delete_complete(editor: &mut RawEditor, outcome: HardDeleteOu
         }
     }
 
-    editor.images.retain(|img| !deleted.contains(&img.id));
-    editor.multi_selection.retain(|id| !deleted.contains(id));
-    editor.pending_delete_ids.clear();
+    editor.session.images.retain(|img| !deleted.contains(&img.id));
+    editor.session.multi_selection.retain(|id| !deleted.contains(id));
+    editor.session.pending_delete_ids.clear();
 
     for id in &outcome.deleted_ids {
-        editor.preview_cache.pop(id);
-        editor.edited_proxies.pop(id);
+        editor.session.preview_cache.pop(id);
+        editor.session.edited_proxies.pop(id);
         editor.remove_from_raw_cache(*id);
-        editor.history_map.remove(id);
-        editor.pending_loads.remove(id);
-        editor.pending_raw_loads.remove(id);
+        editor.session.history_map.remove(id);
+        editor.session.pending_loads.remove(id);
+        editor.session.pending_raw_loads.remove(id);
     }
-    editor.queued_loads.retain(|(id, _)| !deleted.contains(id));
-    editor.queued_raw_loads.retain(|(id, _)| !deleted.contains(id));
+    editor.session.queued_loads.retain(|(id, _)| !deleted.contains(id));
+    editor.session.queued_raw_loads.retain(|(id, _)| !deleted.contains(id));
 
     let mut nav_task = Task::none();
-    if let Some(sel) = editor.selected_image_id {
+    if let Some(sel) = editor.session.selected_image_id {
         if deleted.contains(&sel) {
             // The open image is gone: whatever it had unsaved has nowhere to
             // go. `handle_image_selected` flushes first, and with the
             // selection already moved it would write these params onto the
             // fallback image.
-            editor.edits_dirty = false;
-            editor.working_preview_bytes = None;
-            editor.rendered_preview_bytes = None;
-            editor.image_resources = None;
-            editor.preview_resources = None;
-            editor.selected_image_id = fallback;
+            editor.session.edits_dirty = false;
+            editor.session.working_preview_bytes = None;
+            editor.session.rendered_preview_bytes = None;
+            editor.session.image_resources = None;
+            editor.session.preview_resources = None;
+            editor.session.selected_image_id = fallback;
             if let Some(next_id) = fallback {
                 nav_task = Task::done(Message::ImageMoved(next_id));
             } else {
-                editor.editor_readiness = EditorReadiness::NoSelection;
+                editor.session.editor_readiness = EditorReadiness::NoSelection;
                 editor.working_preview = None;
             }
         }
     }
 
-    editor.status = if outcome.failed.is_empty() {
+    editor.session.status = if outcome.failed.is_empty() {
         format!("Deleted {} image(s).", outcome.deleted_ids.len())
     } else {
         for (id, err) in &outcome.failed {
@@ -331,20 +331,20 @@ mod tests {
         let a = lib.import_image("/x/a.nef", "a.nef").unwrap();
         let b = lib.import_image("/x/b.nef", "b.nef").unwrap();
         let mut e = RawEditor::new().0;
-        e.images = lib.get_all_images().unwrap();
-        e.library = Some(lib);
-        e.selected_image_id = Some(a);
-        e.current_edit_params.exposure = 2.0;
-        e.edits_dirty = true;
+        e.session.images = lib.get_all_images().unwrap();
+        e.session.library = Some(lib);
+        e.session.selected_image_id = Some(a);
+        e.session.current_edit_params.exposure = 2.0;
+        e.session.edits_dirty = true;
 
         let outcome = HardDeleteOutcome { deleted_ids: vec![a], failed: vec![] };
         let _ = crate::app::update::update(&mut e, Message::HardDeleteComplete(outcome));
-        assert_eq!(e.selected_image_id, Some(b));
+        assert_eq!(e.session.selected_image_id, Some(b));
         let _ = crate::app::update::update(&mut e, Message::ImageMoved(b));
 
-        let saved = e.library.as_ref().unwrap().load_edit_params(b).unwrap_or_default();
+        let saved = e.session.library.as_ref().unwrap().load_edit_params(b).unwrap_or_default();
         assert_eq!(saved.exposure, 0.0, "the deleted image's edits landed on its neighbour");
-        assert_eq!(e.current_edit_params.exposure, 0.0);
+        assert_eq!(e.session.current_edit_params.exposure, 0.0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -14,8 +14,8 @@ use crate::ui::dialog::Kind;
 
 
 pub fn view(editor: &RawEditor) -> Element<'_, Message> {
-    let st = &editor.ai_denoise;
-    let applied = editor.current_edit_params.ai_denoise;
+    let st = &editor.session.ai_denoise;
+    let applied = editor.session.current_edit_params.ai_denoise;
 
     let status: Option<String> = if let Some(e) = &st.error {
         Some(format!("Unavailable: {e}"))

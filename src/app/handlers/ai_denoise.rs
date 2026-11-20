@@ -121,7 +121,7 @@ impl AiDenoiseState {
 }
 
 fn physical_size(editor: &RawEditor) -> u32 {
-    (PREVIEW_SIZE * editor.scale_factor).round().clamp(64.0, 2048.0) as u32
+    (PREVIEW_SIZE * editor.session.scale_factor).round().clamp(64.0, 2048.0) as u32
 }
 
 /// `AI Denoise…`: open the modal on the selected image.
@@ -133,24 +133,24 @@ pub fn handle_open(editor: &mut RawEditor) -> Task<Message> {
         return crate::app::handlers::models::offer(editor, ModelId::Denoise);
     }
     let (Some(image_id), Some(ctx), Some(main)) =
-        (editor.selected_image_id, editor.gpu_context.clone(), editor.image_resources.clone())
+        (editor.session.selected_image_id, editor.session.gpu_context.clone(), editor.session.image_resources.clone())
     else {
         return Task::none();
     };
     if main.image_id != image_id {
         return Task::none();
     }
-    let current = editor.current_edit_params.ai_denoise;
-    editor.ai_denoise = AiDenoiseState {
+    let current = editor.session.current_edit_params.ai_denoise;
+    editor.session.ai_denoise = AiDenoiseState {
         image_id: Some(image_id),
         amount: if current > 0.0 { current } else { 0.75 },
-        center: editor.loupe.center,
+        center: editor.session.loupe.center,
         ..AiDenoiseState::default()
     };
     editor.active_modal = Modal::AiDenoise;
 
     let cached = editor.raw_for(image_id);
-    let path = editor.images.iter().find(|i| i.id == image_id).map(|i| i.path.clone());
+    let path = editor.session.images.iter().find(|i| i.id == image_id).map(|i| i.path.clone());
     Task::perform(
         async move {
             let raw = match (cached, path) {
@@ -172,7 +172,7 @@ pub fn handle_open(editor: &mut RawEditor) -> Task<Message> {
 }
 
 fn open_for(editor: &RawEditor, image_id: i64) -> bool {
-    editor.active_modal == Modal::AiDenoise && editor.ai_denoise.image_id == Some(image_id)
+    editor.active_modal == Modal::AiDenoise && editor.session.ai_denoise.image_id == Some(image_id)
 }
 
 pub fn handle_ready(editor: &mut RawEditor, image_id: i64, result: Result<EngineHandle, String>) -> Task<Message> {
@@ -181,12 +181,12 @@ pub fn handle_ready(editor: &mut RawEditor, image_id: i64, result: Result<Engine
     }
     match result {
         Ok(engine) => {
-            editor.ai_denoise.engine = Some(engine);
+            editor.session.ai_denoise.engine = Some(engine);
             request(editor)
         }
         Err(e) => {
             tracing::error!("AI denoise: {e}");
-            editor.ai_denoise.error = Some(e);
+            editor.session.ai_denoise.error = Some(e);
             Task::none()
         }
     }
@@ -196,8 +196,8 @@ pub fn handle_ready(editor: &mut RawEditor, image_id: i64, result: Result<Engine
 /// current one, else render (one of each in flight; later requests coalesce).
 fn request(editor: &mut RawEditor) -> Task<Message> {
     let size = physical_size(editor);
-    let st = &mut editor.ai_denoise;
-    let (Some(image_id), Some(engine), Some(main)) = (st.image_id, st.engine.clone(), editor.image_resources.clone())
+    let st = &mut editor.session.ai_denoise;
+    let (Some(image_id), Some(engine), Some(main)) = (st.image_id, st.engine.clone(), editor.session.image_resources.clone())
     else {
         return Task::none();
     };
@@ -235,7 +235,7 @@ fn request(editor: &mut RawEditor) -> Task<Message> {
         st.render_pending = true;
         return Task::none();
     }
-    let (Some(ctx), Some(crop)) = (editor.gpu_context.clone(), st.crop.clone()) else {
+    let (Some(ctx), Some(crop)) = (editor.session.gpu_context.clone(), st.crop.clone()) else {
         return Task::none();
     };
     st.render_in_flight = true;
@@ -262,7 +262,7 @@ pub fn handle_crop_ready(editor: &mut RawEditor, image_id: i64, result: Result<C
     if !open_for(editor, image_id) {
         return Task::none();
     }
-    let st = &mut editor.ai_denoise;
+    let st = &mut editor.session.ai_denoise;
     st.crop_running = false;
     match result {
         Ok(c) => st.crop = Some(c.0),
@@ -280,7 +280,7 @@ pub fn handle_rendered(editor: &mut RawEditor, image_id: i64, result: Result<Lou
     if !open_for(editor, image_id) {
         return Task::none();
     }
-    let st = &mut editor.ai_denoise;
+    let st = &mut editor.session.ai_denoise;
     st.render_in_flight = false;
     match result {
         Ok(f) => {
@@ -302,32 +302,32 @@ pub fn handle_rendered(editor: &mut RawEditor, image_id: i64, result: Result<Lou
 }
 
 pub fn handle_amount(editor: &mut RawEditor, amount: f32) -> Task<Message> {
-    editor.ai_denoise.amount = amount.clamp(0.0, 1.0);
+    editor.session.ai_denoise.amount = amount.clamp(0.0, 1.0);
     request(editor)
 }
 
 pub fn handle_before(editor: &mut RawEditor, before: bool) -> Task<Message> {
-    if editor.ai_denoise.before == before {
+    if editor.session.ai_denoise.before == before {
         return Task::none();
     }
-    editor.ai_denoise.before = before;
+    editor.session.ai_denoise.before = before;
     request(editor)
 }
 
 /// A drag in the preview, logical pixels: the content follows the pointer.
 pub fn handle_pan(editor: &mut RawEditor, dx: f32, dy: f32) -> Task<Message> {
-    let Some(f) = &editor.ai_denoise.frame else { return Task::none() };
+    let Some(f) = &editor.session.ai_denoise.frame else { return Task::none() };
     let per_px = [f.window[2] / f.size as f32, f.window[3] / f.size as f32];
     let half = [f.window[2] / 2.0, f.window[3] / 2.0];
-    let c = &mut editor.ai_denoise.center;
-    c[0] = (c[0] - dx * editor.scale_factor * per_px[0]).clamp(half[0], 1.0 - half[0]);
-    c[1] = (c[1] - dy * editor.scale_factor * per_px[1]).clamp(half[1], 1.0 - half[1]);
+    let c = &mut editor.session.ai_denoise.center;
+    c[0] = (c[0] - dx * editor.session.scale_factor * per_px[0]).clamp(half[0], 1.0 - half[0]);
+    c[1] = (c[1] - dy * editor.session.scale_factor * per_px[1]).clamp(half[1], 1.0 - half[1]);
     request(editor)
 }
 
 /// Apply (button or Enter): denoise the whole image, then set the edit.
 pub fn handle_apply(editor: &mut RawEditor) -> Task<Message> {
-    let st = &mut editor.ai_denoise;
+    let st = &mut editor.session.ai_denoise;
     let (Some(image_id), Some(engine)) = (st.image_id, st.engine.clone()) else { return Task::none() };
     if st.job.is_some() {
         return Task::none();
@@ -361,14 +361,14 @@ pub fn handle_apply(editor: &mut RawEditor) -> Task<Message> {
 }
 
 pub fn handle_applied(editor: &mut RawEditor, image_id: i64, amount: f32, result: Result<(), String>) -> Task<Message> {
-    editor.ai_denoise.job = None;
+    editor.session.ai_denoise.job = None;
     match result {
         Ok(()) if open_for(editor, image_id) => finish(editor, image_id, amount),
         Ok(()) => Task::none(),
         Err(e) if e == crate::ml::CANCELLED => Task::none(),
         Err(e) => {
             tracing::error!("AI denoise: {e}");
-            editor.ai_denoise.error = Some(e);
+            editor.session.ai_denoise.error = Some(e);
             Task::none()
         }
     }
@@ -377,13 +377,13 @@ pub fn handle_applied(editor: &mut RawEditor, image_id: i64, amount: f32, result
 /// Set the edit (undoable, saved) and rebuild the image with it.
 fn finish(editor: &mut RawEditor, image_id: i64, amount: f32) -> Task<Message> {
     close(editor);
-    if editor.selected_image_id != Some(image_id) {
+    if editor.session.selected_image_id != Some(image_id) {
         return Task::none();
     }
-    editor.current_edit_params.ai_denoise = amount;
+    editor.session.current_edit_params.ai_denoise = amount;
     editor.mark_edits_dirty();
     editor.commit_current_state();
-    editor.status = if amount > 0.0 {
+    editor.session.status = if amount > 0.0 {
         format!("AI denoise applied ({:.0}%)", amount * 100.0)
     } else {
         "AI denoise removed".to_string()
@@ -392,13 +392,13 @@ fn finish(editor: &mut RawEditor, image_id: i64, amount: f32) -> Task<Message> {
 }
 
 pub fn handle_remove(editor: &mut RawEditor) -> Task<Message> {
-    let Some(image_id) = editor.ai_denoise.image_id else { return Task::none() };
+    let Some(image_id) = editor.session.ai_denoise.image_id else { return Task::none() };
     finish(editor, image_id, 0.0)
 }
 
 /// Cancel: stop a running Apply, or close.
 pub fn handle_cancel(editor: &mut RawEditor) -> Task<Message> {
-    if let Some(p) = &editor.ai_denoise.job {
+    if let Some(p) = &editor.session.ai_denoise.job {
         p.cancel();
         return Task::none();
     }
@@ -408,11 +408,11 @@ pub fn handle_cancel(editor: &mut RawEditor) -> Task<Message> {
 
 /// Close the modal and drop its engine (the loupe's mosaic, ~50 MB).
 pub fn close(editor: &mut RawEditor) {
-    if let Some(p) = &editor.ai_denoise.job {
+    if let Some(p) = &editor.session.ai_denoise.job {
         p.cancel();
     }
-    let regen = editor.ai_denoise.regen.take();
-    editor.ai_denoise = AiDenoiseState { regen, ..AiDenoiseState::default() };
+    let regen = editor.session.ai_denoise.regen.take();
+    editor.session.ai_denoise = AiDenoiseState { regen, ..AiDenoiseState::default() };
     if editor.active_modal == Modal::AiDenoise {
         editor.active_modal = Modal::None;
     }
@@ -421,21 +421,21 @@ pub fn close(editor: &mut RawEditor) {
 /// After new resources land: an edit asks for AI denoise but no result was
 /// cached — compute it in the background, then rebuild.
 pub fn after_resources(editor: &mut RawEditor) -> Task<Message> {
-    let Some(res) = &editor.image_resources else { return Task::none() };
+    let Some(res) = &editor.session.image_resources else { return Task::none() };
     let (requested, applied) = res.ai_denoise;
     let image_id = res.image_id;
-    if requested <= 0.0 || applied > 0.0 || editor.ai_denoise.regen.is_some() {
+    if requested <= 0.0 || applied > 0.0 || editor.session.ai_denoise.regen.is_some() {
         return Task::none();
     }
     if !crate::ml::models::is_installed(ModelId::Denoise) {
-        editor.status = "AI denoise needs its model — Preferences › AI Models".into();
+        editor.session.status = "AI denoise needs its model — Preferences › AI Models".into();
         return Task::none();
     }
     let progress = Arc::new(Progress::default());
-    editor.ai_denoise.regen = Some((image_id, progress.clone()));
-    editor.status = "Re-computing AI denoise…".into();
+    editor.session.ai_denoise.regen = Some((image_id, progress.clone()));
+    editor.session.status = "Re-computing AI denoise…".into();
     let cached = editor.raw_for(image_id);
-    let path = editor.images.iter().find(|i| i.id == image_id).map(|i| i.path.clone());
+    let path = editor.session.images.iter().find(|i| i.id == image_id).map(|i| i.path.clone());
     Task::perform(
         async move {
             let raw = match (cached, path) {
@@ -452,28 +452,28 @@ pub fn after_resources(editor: &mut RawEditor) -> Task<Message> {
 }
 
 pub fn handle_regenerated(editor: &mut RawEditor, image_id: i64, result: Result<(), String>) -> Task<Message> {
-    editor.ai_denoise.regen = None;
+    editor.session.ai_denoise.regen = None;
     match result {
         Ok(()) => {
-            editor.status.clear();
-            if editor.selected_image_id == Some(image_id) && editor.current_edit_params.ai_denoise > 0.0 {
+            editor.session.status.clear();
+            if editor.session.selected_image_id == Some(image_id) && editor.session.current_edit_params.ai_denoise > 0.0 {
                 return crate::app::handlers::navigation::reload_selected_image(editor);
             }
             // The user may have stepped to another image whose own request
             // `after_resources` refused while this job ran. Never for the
             // finished image itself: its resources predate the cache and
             // would ask for it again.
-            if editor.image_resources.as_ref().is_some_and(|r| r.image_id != image_id) {
+            if editor.session.image_resources.as_ref().is_some_and(|r| r.image_id != image_id) {
                 return after_resources(editor);
             }
             Task::none()
         }
         Err(e) => {
             tracing::error!("AI denoise for image {image_id}: {e}");
-            editor.status = format!("AI denoise failed: {e}");
+            editor.session.status = format!("AI denoise failed: {e}");
             // Another image waiting behind this one still gets its turn; the
             // failed image itself is not retried (that would loop).
-            if editor.image_resources.as_ref().is_some_and(|r| r.image_id != image_id) {
+            if editor.session.image_resources.as_ref().is_some_and(|r| r.image_id != image_id) {
                 return after_resources(editor);
             }
             Task::none()
@@ -518,7 +518,7 @@ pub fn export_mosaic(
 /// than its edit now has (Apply, Remove, undo, paste…): rebuild.
 pub fn resources_stale(editor: &RawEditor) -> bool {
     editor
-        .image_resources
+        .session.image_resources
         .as_ref()
-        .is_some_and(|r| r.ai_denoise.0 != editor.current_edit_params.ai_denoise)
+        .is_some_and(|r| r.ai_denoise.0 != editor.session.current_edit_params.ai_denoise)
 }

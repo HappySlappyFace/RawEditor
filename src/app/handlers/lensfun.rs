@@ -29,10 +29,10 @@ fn background<T: Send + 'static>(
 }
 
 pub fn handle_check(editor: &mut RawEditor) -> Task<Message> {
-    if editor.lensfun.busy.is_some() {
+    if editor.session.lensfun.busy.is_some() {
         return Task::none();
     }
-    editor.lensfun.busy = Some(LensfunJob::Checking);
+    editor.session.lensfun.busy = Some(LensfunJob::Checking);
     background(crate::core::lensfun::check, Message::LensfunChecked)
 }
 
@@ -40,17 +40,17 @@ pub fn handle_checked(
     editor: &mut RawEditor,
     result: Result<crate::core::lensfun::Remote, String>,
 ) -> Task<Message> {
-    editor.lensfun.busy = None;
-    editor.lensfun.remote = Some(result);
+    editor.session.lensfun.busy = None;
+    editor.session.lensfun.remote = Some(result);
     Task::none()
 }
 
 pub fn handle_download(editor: &mut RawEditor) -> Task<Message> {
-    if editor.lensfun.busy.is_some() {
+    if editor.session.lensfun.busy.is_some() {
         return Task::none();
     }
-    editor.lensfun.busy = Some(LensfunJob::Downloading);
-    editor.lensfun.installed = None;
+    editor.session.lensfun.busy = Some(LensfunJob::Downloading);
+    editor.session.lensfun.installed = None;
     background(
         || {
             let installed = crate::core::lensfun::download_latest()?;
@@ -66,24 +66,24 @@ pub fn handle_installed(
     editor: &mut RawEditor,
     result: Result<crate::core::lensfun::Installed, String>,
 ) -> Task<Message> {
-    editor.lensfun.busy = None;
+    editor.session.lensfun.busy = None;
     let ok = result.is_ok();
     match &result {
         Ok(i) => {
-            editor.status = format!(
+            editor.session.status = format!(
                 "Lens profiles installed: {} lenses, published {}",
                 i.lenses,
                 crate::core::lensfun::format_date(i.timestamp)
             );
             // What was checked is now what is installed.
-            editor.lensfun.remote = None;
+            editor.session.lensfun.remote = None;
         }
         Err(e) => {
             tracing::error!("Lens profile download failed: {e}");
-            editor.status = format!("Lens profile download failed: {e}");
+            editor.session.status = format!("Lens profile download failed: {e}");
         }
     }
-    editor.lensfun.installed = Some(result);
+    editor.session.lensfun.installed = Some(result);
     if ok {
         database_changed(editor)
     } else {
@@ -92,10 +92,10 @@ pub fn handle_installed(
 }
 
 pub fn handle_rescan(editor: &mut RawEditor) -> Task<Message> {
-    if editor.lensfun.busy.is_some() {
+    if editor.session.lensfun.busy.is_some() {
         return Task::none();
     }
-    editor.lensfun.busy = Some(LensfunJob::Rescanning);
+    editor.session.lensfun.busy = Some(LensfunJob::Rescanning);
     background(
         || {
             LensDb::reload();
@@ -121,8 +121,8 @@ pub fn ensure_loaded() -> Task<Message> {
 }
 
 pub fn handle_db_loaded(editor: &mut RawEditor, changed: bool) -> Task<Message> {
-    if editor.lensfun.busy == Some(LensfunJob::Rescanning) {
-        editor.lensfun.busy = None;
+    if editor.session.lensfun.busy == Some(LensfunJob::Rescanning) {
+        editor.session.lensfun.busy = None;
     }
     if changed {
         database_changed(editor)
@@ -133,9 +133,9 @@ pub fn handle_db_loaded(editor: &mut RawEditor, changed: bool) -> Task<Message> 
 
 /// The database changed: decoded images carry the old lookup.
 fn database_changed(editor: &mut RawEditor) -> Task<Message> {
-    editor.raw_cache.clear();
-    editor.current_raw = None;
-    editor.raw_cache_bytes = 0;
+    editor.session.raw_cache.clear();
+    editor.session.current_raw = None;
+    editor.session.raw_cache_bytes = 0;
     crate::app::handlers::navigation::reload_selected_image(editor)
 }
 
@@ -155,13 +155,13 @@ mod tests {
     fn one_lens_job_at_a_time() {
         let (mut e, _) = RawEditor::new();
         let _ = handle_check(&mut e);
-        assert_eq!(e.lensfun.busy, Some(LensfunJob::Checking));
+        assert_eq!(e.session.lensfun.busy, Some(LensfunJob::Checking));
         let _ = handle_download(&mut e);
         let _ = handle_rescan(&mut e);
-        assert_eq!(e.lensfun.busy, Some(LensfunJob::Checking));
+        assert_eq!(e.session.lensfun.busy, Some(LensfunJob::Checking));
         let _ = handle_checked(&mut e, Err("offline".into()));
-        assert_eq!(e.lensfun.busy, None);
-        assert!(matches!(e.lensfun.remote, Some(Err(_))));
+        assert_eq!(e.session.lensfun.busy, None);
+        assert!(matches!(e.session.lensfun.remote, Some(Err(_))));
     }
 
     /// A new database means the selected image's lens lookup is stale: it is
@@ -169,24 +169,24 @@ mod tests {
     #[test]
     fn an_installed_database_redecodes_the_selected_image() {
         let (mut e, _) = RawEditor::new();
-        e.selected_image_id = Some(3);
-        e.current_tab = AppTab::Library;
-        e.editor_readiness = EditorReadiness::Ready(3);
-        e.lensfun.busy = Some(LensfunJob::Downloading);
+        e.session.selected_image_id = Some(3);
+        e.session.current_tab = AppTab::Library;
+        e.session.editor_readiness = EditorReadiness::Ready(3);
+        e.session.lensfun.busy = Some(LensfunJob::Downloading);
         let _ = handle_installed(&mut e, Ok(installed()));
-        assert_eq!(e.lensfun.busy, None);
-        assert!(matches!(e.lensfun.installed, Some(Ok(_))));
-        assert!(matches!(e.editor_readiness, EditorReadiness::NoSelection), "kept the stale decode");
+        assert_eq!(e.session.lensfun.busy, None);
+        assert!(matches!(e.session.lensfun.installed, Some(Ok(_))));
+        assert!(matches!(e.session.editor_readiness, EditorReadiness::NoSelection), "kept the stale decode");
     }
 
     /// A failed download leaves everything as it was, and says why.
     #[test]
     fn a_failed_download_changes_nothing() {
         let (mut e, _) = RawEditor::new();
-        e.selected_image_id = Some(3);
-        e.editor_readiness = EditorReadiness::Ready(3);
+        e.session.selected_image_id = Some(3);
+        e.session.editor_readiness = EditorReadiness::Ready(3);
         let _ = handle_installed(&mut e, Err("no route to host".into()));
-        assert!(matches!(e.editor_readiness, EditorReadiness::Ready(3)));
-        assert!(e.status.contains("no route to host"));
+        assert!(matches!(e.session.editor_readiness, EditorReadiness::Ready(3)));
+        assert!(e.session.status.contains("no route to host"));
     }
 }

@@ -5,7 +5,7 @@ use crate::app::message::Message;
 use crate::app::testkit::*;
 
 fn exposure(e: &crate::app::state::RawEditor) -> f32 {
-    e.current_edit_params.exposure
+    e.session.current_edit_params.exposure
 }
 
 #[test]
@@ -40,7 +40,7 @@ fn a_lone_reset_is_an_ordinary_undo_step() {
     let mut e = develop_with_images(2);
     send(&mut e, Message::ExposureChanged(1.0));
     send(&mut e, Message::CommitEdit);
-    e.last_commit = None; // the earlier commit was long ago
+    e.session.last_commit = None; // the earlier commit was long ago
     send(&mut e, Message::SliderReset { change: Box::new(Message::ExposureChanged(0.0)) });
     assert_eq!(history(&e, 1), Some((3, 2)));
     send(&mut e, Message::Undo);
