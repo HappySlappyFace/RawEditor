@@ -9,6 +9,7 @@
 
 mod camera_profiles;
 mod delete;
+mod export;
 mod helpers;
 mod lensfun;
 mod library;
@@ -17,6 +18,7 @@ mod updates;
 
 pub use camera_profiles::{CameraProfileState, ProfileJob};
 pub use delete::{AfterDelete, DeleteRequest, HardDeleteOutcome};
+pub use export::{ExportFormat, ExportJob, ExportJobState, ExportSettings};
 pub use lensfun::{LensfunJob, LensfunState};
 pub use library::{collect_raw_files, CacheResult, CacheStep, ImportResult};
 pub use models::ModelsState;
@@ -54,6 +56,33 @@ pub enum SessionEvent {
     CacheProcessed(CacheResult),
     /// A delete from disk finished.
     HardDeleteComplete(HardDeleteOutcome),
+    /// Export the next queued image, or finish the batch.
+    ProcessNextExport,
+    /// Carries the exported image's OWN saved edit params alongside its RAW
+    /// data. They must travel with the job rather than be read from
+    /// `current_edit_params`, which is whatever image happens to be open
+    /// in Develop — a batch export previously applied that one image's edits to
+    /// every image in the queue.
+    /// (Boxed: `EditParams` is ~21 KB and would size every `Message`.)
+    ExportRawLoaded(
+        i64,
+        Box<crate::core::types::EditParams>,
+        Result<std::sync::Arc<crate::raw::loader::RawDataResult>, String>,
+    ),
+    /// An export image's full-resolution resources are built.
+    ExportPipelineReady(
+        i64,
+        Box<crate::core::types::EditParams>,
+        Result<
+            (
+                std::sync::Arc<crate::gpu::shared::SharedContext>,
+                std::sync::Arc<crate::gpu::shared::ImageResources>,
+            ),
+            String,
+        >,
+    ),
+    /// An export image was written (its path), or failed.
+    ExportSaveComplete(i64, Result<std::path::PathBuf, String>),
 }
 
 /// Something the app must do after a session call, while that part of the

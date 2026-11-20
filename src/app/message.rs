@@ -295,7 +295,7 @@ pub enum Message {
     ResetEdits,
 
     // ========== Export Messages (Phase 89) ==========
-    SetExportFormat(crate::app::state::ExportFormat),
+    SetExportFormat(crate::session::ExportFormat),
     SetExportColorSpace(crate::core::output_space::OutputSpace),
     SetExportQuality(u8),
     ToggleExportResize(bool),
@@ -307,30 +307,6 @@ pub enum Message {
     ExportConfirmed,
     /// Stop after the image currently rendering finishes.
     CancelExport,
-    ProcessNextExport,
-    /// Carries the exported image's OWN saved edit params alongside its RAW
-    /// data. They must travel with the job rather than be read from
-    /// `editor.session.current_edit_params`, which is whatever image happens to be open
-    /// in Develop — a batch export previously applied that one image's edits to
-    /// every image in the queue.
-    /// (Boxed: `EditParams` is ~21 KB and would size every `Message`.)
-    ExportRawLoaded(
-        i64,
-        Box<crate::core::types::EditParams>,
-        Result<std::sync::Arc<raw::loader::RawDataResult>, String>,
-    ),
-    ExportPipelineReady(
-        i64,
-        Box<crate::core::types::EditParams>,
-        Result<
-            (
-                std::sync::Arc<crate::gpu::shared::SharedContext>,
-                std::sync::Arc<crate::gpu::shared::ImageResources>,
-            ),
-            String,
-        >,
-    ),
-    ExportSaveComplete(i64, Result<PathBuf, String>),
 
     /// Phase 60: Toggle for HUD overlay (ISO, Shutter, etc.)
     ToggleInfoHud,

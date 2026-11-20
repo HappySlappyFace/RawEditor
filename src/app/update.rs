@@ -184,6 +184,10 @@ fn session_event(editor: &mut RawEditor, event: crate::session::SessionEvent) ->
         SessionEvent::ImportComplete(res) => handlers::library::handle_import_complete(editor, res),
         SessionEvent::CacheProcessed(res) => handlers::library::handle_cache_processed(editor, res),
         SessionEvent::HardDeleteComplete(outcome) => handlers::delete::handle_hard_delete_complete(editor, outcome),
+        SessionEvent::ProcessNextExport => run(editor.session.process_next_export()),
+        SessionEvent::ExportRawLoaded(id, params, res) => run(editor.session.export_raw_loaded(id, *params, res)),
+        SessionEvent::ExportPipelineReady(id, params, res) => run(editor.session.export_pipeline_ready(id, *params, res)),
+        SessionEvent::ExportSaveComplete(id, res) => run(editor.session.export_save_complete(id, res)),
     }
 }
 
@@ -418,16 +422,6 @@ fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::OpenExportModal => handlers::export::handle_open_export_modal(editor),
         Message::CancelExport => handlers::export::handle_cancel_export(editor),
         Message::ExportConfirmed => handlers::export::handle_export_confirmed(editor),
-        Message::ProcessNextExport => handlers::export::handle_process_next_export(editor),
-        Message::ExportRawLoaded(id, params, res) => {
-            handlers::export::handle_export_raw_loaded(editor, id, *params, res)
-        }
-        Message::ExportPipelineReady(id, params, res) => {
-            handlers::export::handle_export_pipeline_ready(editor, id, *params, res)
-        }
-        Message::ExportSaveComplete(id, res) => {
-            handlers::export::handle_export_save_complete(editor, id, res)
-        }
 
         // Window
         Message::MinimizeWindow => handlers::window::handle_minimize_window(),

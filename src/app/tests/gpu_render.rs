@@ -172,3 +172,65 @@ fn bench_slider_ticks() {
         ms(ticks[TICKS * 95 / 100]),
     );
 }
+
+/// A whole export batch, driven through `update` the way the app runs it:
+/// every task's messages are fed back until nothing is left. Covers the
+/// chain (next image → RAW → resources → render → save → next) and both
+/// pixel paths (8-bit JPEG, 16-bit TIFF). The RAW comes from the RAW cache,
+/// so no file needs to exist.
+#[test]
+#[ignore]
+fn an_export_batch_runs_to_completion() {
+    use crate::app::message::Message;
+    use crate::app::update::update;
+    use crate::session::{ExportFormat, ExportJobState};
+    use iced::futures::StreamExt;
+
+    let dir = std::env::temp_dir().join(format!("raw-editor-export-batch-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let rt = runtime();
+
+    for format in [ExportFormat::Jpeg, ExportFormat::Tiff] {
+        let lib = crate::database::library::Library::open_at(&dir.join(format!("{format}.db"))).unwrap();
+        let a = lib.import_image("/x/disc-a.nef", "disc-a.nef").unwrap();
+        let b = lib.import_image("/x/disc-b.nef", "disc-b.nef").unwrap();
+        let mut e = RawEditor::new().0;
+        e.session.images = lib.get_all_images().unwrap();
+        e.session.library = Some(lib);
+        e.session.multi_selection = [a, b].into_iter().collect();
+        for id in [a, b] {
+            e.session.insert_raw_cache(id, Arc::new(crate::ml::segment::test_support::disc_raw(600, 400)));
+        }
+        let s = &mut e.session.export_settings;
+        s.format = format;
+        s.base_path = dir.clone();
+        s.subfolder = String::new();
+        s.resize = true;
+        s.set_max_width_text("300".into());
+
+        let mut pending = vec![update(&mut e, Message::ExportConfirmed)];
+        let mut steps = 0;
+        while let Some(task) = pending.pop() {
+            steps += 1;
+            assert!(steps < 100, "the export chain never ended");
+            let Some(stream) = iced_runtime::task::into_stream(task) else { continue };
+            for action in rt.block_on(stream.collect::<Vec<_>>()) {
+                if let iced_runtime::Action::Output(m) = action {
+                    pending.push(update(&mut e, m));
+                }
+            }
+        }
+
+        assert!(!e.session.is_exporting, "{format}: batch still running");
+        assert_eq!(e.session.status, "Export Complete!", "{format}");
+        assert!(e.session.gpu_context.is_some(), "{format}: the context was not kept for reuse");
+        for job in &e.session.export_jobs {
+            let ExportJobState::Done(path) = &job.state else { panic!("{format}: {job:?}") };
+            let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+            assert!(bytes > 1000, "{format}: {} is {bytes} bytes", path.display());
+        }
+        assert_eq!(e.session.export_jobs.len(), 2);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -14,7 +14,8 @@ use crate::ui::widgets::button;
 use iced::{Alignment, Background, Border, Element, Length, Theme};
 
 use crate::app::message::Message;
-use crate::app::state::{ExportFormat, ExportJobState, RawEditor};
+use crate::app::state::RawEditor;
+use crate::session::{ExportFormat, ExportJobState};
 use crate::ui;
 use crate::ui::icons::ICON_FONT;
 use crate::ui::theme;
@@ -187,7 +188,7 @@ fn view_queue(editor: &RawEditor) -> Element<'_, Message> {
     // Before a run, show what the current selection WOULD export. During and
     // after, show the actual batch with its progress.
     let showing_batch = !editor.session.export_jobs.is_empty();
-    let pending_ids = crate::app::handlers::export::export_target_ids(editor);
+    let pending_ids = editor.session.export_target_ids();
 
     let header = if showing_batch {
         let done = editor
