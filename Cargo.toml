@@ -108,6 +108,10 @@ raw-editor-core = { workspace = true, features = ["test-support"] }
 # Only for the GPU tests that drive the editor (`app::tests::gpu_render`); app
 # code never touches wgpu (CLAUDE.md, constraint 6).
 wgpu.workspace = true
+# Runs `update`'s returned tasks outside iced's event loop, for the render
+# benchmark (`app::tests::gpu_render::bench_slider_ticks`). Already in the
+# tree as iced's runtime; same version.
+iced_runtime = "0.13"
 
 [target.'cfg(windows)'.build-dependencies]
 # Embeds assets/icon.ico so the .exe itself has an icon in Explorer.

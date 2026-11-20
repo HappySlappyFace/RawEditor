@@ -3903,6 +3903,7 @@ dependencies = [
  "dirs 5.0.1",
  "iced",
  "iced_aw",
+ "iced_runtime",
  "image 0.25.8",
  "jpeg-encoder",
  "kamadak-exif",
