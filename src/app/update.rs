@@ -169,6 +169,26 @@ fn session_event(editor: &mut RawEditor, event: crate::session::SessionEvent) ->
     use crate::session::SessionEvent;
     match event {
         SessionEvent::UpdateChecked { result, manual } => handlers::updates::handle_checked(editor, result, manual),
+        SessionEvent::LensfunChecked(r) => handlers::lensfun::handle_checked(editor, r),
+        SessionEvent::LensfunInstalled(r) => handlers::lensfun::handle_installed(editor, r),
+        SessionEvent::LensDbLoaded(changed) => handlers::lensfun::handle_db_loaded(editor, changed),
+        SessionEvent::ModelDownloaded(id, r) => handlers::models::handle_downloaded(editor, id, r),
+        SessionEvent::CameraProfileDownloaded(camera, r) => {
+            handlers::camera_profiles::handle_downloaded(editor, camera, r)
+        }
+        SessionEvent::CameraProfilesImported(ok, failed) => {
+            handlers::camera_profiles::handle_imported(editor, ok, failed)
+        }
+        SessionEvent::CameraProfilesUpdated(r) => handlers::camera_profiles::handle_updated(editor, r),
+        SessionEvent::CameraProfilesScanned(changed) => handlers::camera_profiles::handle_scanned(editor, changed),
+    }
+}
+
+/// Do what a session call asked of the app (`session::FollowUp`).
+pub fn follow_up(editor: &mut RawEditor, next: crate::session::FollowUp) -> Task<Message> {
+    match next {
+        crate::session::FollowUp::Nothing => Task::none(),
+        crate::session::FollowUp::ReloadSelectedImage => handlers::navigation::reload_selected_image(editor),
     }
 }
 
@@ -459,7 +479,6 @@ fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::AiSelectCancel => handlers::ai_mask::handle_cancel(editor),
         Message::AiBitmapsLoaded(id, loaded) => handlers::ai_mask::handle_bitmaps_loaded(editor, id, loaded),
         Message::ModelDownload(id) => handlers::models::handle_download(editor, id),
-        Message::ModelDownloaded(id, r) => handlers::models::handle_downloaded(editor, id, r),
         Message::ModelDownloadCancel => handlers::models::handle_cancel_download(editor),
         Message::ModelRemove(id) => handlers::models::handle_remove(editor, id),
         Message::AiTick => Task::none(),
@@ -482,28 +501,17 @@ fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::LoupeTargetPicked(u, v) => handlers::loupe::handle_target_picked(editor, u, v),
         Message::NoiseSettled(token) => handlers::loupe::handle_noise_settled(editor, token),
         Message::LensfunCheck => handlers::lensfun::handle_check(editor),
-        Message::LensfunChecked(r) => handlers::lensfun::handle_checked(editor, r),
         Message::LensfunDownload => handlers::lensfun::handle_download(editor),
-        Message::LensfunInstalled(r) => handlers::lensfun::handle_installed(editor, r),
         Message::LensfunRescan => handlers::lensfun::handle_rescan(editor),
-        Message::LensDbLoaded(changed) => handlers::lensfun::handle_db_loaded(editor, changed),
         Message::CameraProfileSelected(c) => handlers::camera_profiles::handle_selected(editor, c),
         Message::SetCameraProfileDefault(camera, value) => {
             handlers::camera_profiles::handle_set_default(editor, camera, value)
         }
         Message::DownloadCameraProfile => handlers::camera_profiles::handle_download(editor),
-        Message::CameraProfileDownloaded(camera, r) => handlers::camera_profiles::handle_downloaded(editor, camera, r),
         Message::ImportCameraProfiles => handlers::camera_profiles::handle_import(editor),
         Message::CameraProfilesPicked(files) => handlers::camera_profiles::handle_picked(editor, files),
-        Message::CameraProfilesImported(ok, failed) => {
-            handlers::camera_profiles::handle_imported(editor, ok, failed)
-        }
         Message::UpdateCameraProfiles => handlers::camera_profiles::handle_update(editor),
-        Message::CameraProfilesUpdated(r) => handlers::camera_profiles::handle_updated(editor, r),
         Message::RescanCameraProfiles => handlers::camera_profiles::handle_rescan(editor),
-        Message::CameraProfilesScanned(changed) => {
-            handlers::camera_profiles::handle_scanned(editor, changed)
-        }
         Message::OpenLink(url) => handlers::window::handle_open_link(editor, url),
         Message::SetPreferencesSection(section) => {
             handlers::window::handle_set_preferences_section(editor, section)

@@ -1,142 +1,51 @@
-//! Lens-profile database: download, update check and rescan
-//! (`core::lensfun`), from Preferences › Lens Profiles and from the Lens
-//! Corrections panel when no database is installed.
-//!
-//! An image's lens profile is looked up when its RAW is read, so whenever
-//! the database changes the selected image is decoded again and the raw
-//! cache is dropped — otherwise the panel would keep saying "no profile"
-//! until the app restarted.
+//! Lens-profile database: the app's side. The jobs are the session's
+//! (`session::lensfun`); a changed database reloads the open image, which is
+//! still the app's to do.
 
 use iced::Task;
 
 use crate::app::message::Message;
-use crate::app::state::{LensfunJob, RawEditor};
-use crate::core::lens::LensDb;
-
-/// Run blocking `work` off the UI thread and report it as `done`.
-fn background<T: Send + 'static>(
-    work: impl FnOnce() -> Result<T, String> + Send + 'static,
-    done: impl Fn(Result<T, String>) -> Message + Send + 'static,
-) -> Task<Message> {
-    Task::perform(
-        async move {
-            tokio::task::spawn_blocking(work)
-                .await
-                .unwrap_or_else(|e| Err(format!("background task failed: {e}")))
-        },
-        done,
-    )
-}
+use crate::app::state::RawEditor;
+use crate::app::update::{follow_up, run};
+use crate::session::Session;
 
 pub fn handle_check(editor: &mut RawEditor) -> Task<Message> {
-    if editor.session.lensfun.busy.is_some() {
-        return Task::none();
-    }
-    editor.session.lensfun.busy = Some(LensfunJob::Checking);
-    background(crate::core::lensfun::check, Message::LensfunChecked)
+    run(editor.session.lensfun_check())
 }
 
 pub fn handle_checked(
     editor: &mut RawEditor,
     result: Result<crate::core::lensfun::Remote, String>,
 ) -> Task<Message> {
-    editor.session.lensfun.busy = None;
-    editor.session.lensfun.remote = Some(result);
+    editor.session.lensfun_checked(result);
     Task::none()
 }
 
 pub fn handle_download(editor: &mut RawEditor) -> Task<Message> {
-    if editor.session.lensfun.busy.is_some() {
-        return Task::none();
-    }
-    editor.session.lensfun.busy = Some(LensfunJob::Downloading);
-    editor.session.lensfun.installed = None;
-    background(
-        || {
-            let installed = crate::core::lensfun::download_latest()?;
-            // Swap the new database in here, off the UI thread.
-            LensDb::reload();
-            Ok(installed)
-        },
-        Message::LensfunInstalled,
-    )
+    run(editor.session.lensfun_download())
 }
 
 pub fn handle_installed(
     editor: &mut RawEditor,
     result: Result<crate::core::lensfun::Installed, String>,
 ) -> Task<Message> {
-    editor.session.lensfun.busy = None;
-    let ok = result.is_ok();
-    match &result {
-        Ok(i) => {
-            editor.session.status = format!(
-                "Lens profiles installed: {} lenses, published {}",
-                i.lenses,
-                crate::core::lensfun::format_date(i.timestamp)
-            );
-            // What was checked is now what is installed.
-            editor.session.lensfun.remote = None;
-        }
-        Err(e) => {
-            tracing::error!("Lens profile download failed: {e}");
-            editor.session.status = format!("Lens profile download failed: {e}");
-        }
-    }
-    editor.session.lensfun.installed = Some(result);
-    if ok {
-        database_changed(editor)
-    } else {
-        Task::none()
-    }
+    let next = editor.session.lensfun_installed(result);
+    follow_up(editor, next)
 }
 
 pub fn handle_rescan(editor: &mut RawEditor) -> Task<Message> {
-    if editor.session.lensfun.busy.is_some() {
-        return Task::none();
-    }
-    editor.session.lensfun.busy = Some(LensfunJob::Rescanning);
-    background(
-        || {
-            LensDb::reload();
-            Ok(())
-        },
-        |_| Message::LensDbLoaded(true),
-    )
+    run(editor.session.lensfun_rescan())
 }
 
-/// Load the database for display if nothing has needed it yet (it is read
-/// lazily, by the first RAW decode). The Lens Profiles page asks on opening.
+/// Load the database for display if nothing has needed it yet. The Lens
+/// Profiles page asks on opening.
 pub fn ensure_loaded() -> Task<Message> {
-    if LensDb::loaded().is_some() {
-        return Task::none();
-    }
-    background(
-        || {
-            LensDb::global();
-            Ok(())
-        },
-        |_| Message::LensDbLoaded(false),
-    )
+    run(Session::lens_db_ensure_loaded())
 }
 
 pub fn handle_db_loaded(editor: &mut RawEditor, changed: bool) -> Task<Message> {
-    if editor.session.lensfun.busy == Some(LensfunJob::Rescanning) {
-        editor.session.lensfun.busy = None;
-    }
-    if changed {
-        database_changed(editor)
-    } else {
-        Task::none()
-    }
-}
-
-/// The database changed: decoded images carry the old lookup.
-fn database_changed(editor: &mut RawEditor) -> Task<Message> {
-    editor.session.raw_cache.clear();
-    editor.session.current_raw = None;
-    editor.session.raw_cache_bytes = 0;
-    crate::app::handlers::navigation::reload_selected_image(editor)
+    let next = editor.session.lens_db_loaded(changed);
+    follow_up(editor, next)
 }
 
 #[cfg(test)]
@@ -144,6 +53,7 @@ mod tests {
     use super::*;
     use crate::app::message::AppTab;
     use crate::app::state::EditorReadiness;
+    use crate::session::LensfunJob;
     use crate::core::lensfun::Installed;
 
     fn installed() -> Installed {

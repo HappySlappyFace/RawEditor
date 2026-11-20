@@ -7,8 +7,14 @@
 //! (`Message::Session`). Decisions that need a dialog come back as values for
 //! the app to act on; the session never opens one.
 
+mod camera_profiles;
+mod lensfun;
+mod models;
 mod updates;
 
+pub use camera_profiles::{CameraProfileState, ProfileJob};
+pub use lensfun::{LensfunJob, LensfunState};
+pub use models::ModelsState;
 pub use updates::{UpdatesAtStartup, UpdatesState};
 
 /// Work for the host to run; each item resolves to a [`SessionEvent`].
@@ -19,6 +25,47 @@ pub type Effects = raw_editor_session::Effects<SessionEvent>;
 pub enum SessionEvent {
     /// An update check finished (`manual`: Check for Updates was clicked).
     UpdateChecked { result: Result<Option<crate::core::updates::Available>, String>, manual: bool },
+    /// What lensfun currently publishes.
+    LensfunChecked(Result<crate::core::lensfun::Remote, String>),
+    /// A lens database download finished (and was swapped in).
+    LensfunInstalled(Result<crate::core::lensfun::Installed, String>),
+    /// The lens database was read; `true` when it was a rescan that may have
+    /// changed what is installed.
+    LensDbLoaded(bool),
+    /// An AI model download finished.
+    ModelDownloaded(crate::ml::models::ModelId, Result<(), String>),
+    /// A RawTherapee profile download for this camera finished: the file, or
+    /// `None` when RawTherapee has none.
+    CameraProfileDownloaded(String, Result<Option<String>, String>),
+    /// Imported profiles, and the files that could not be.
+    CameraProfilesImported(Vec<String>, Vec<String>),
+    /// Checked the downloaded profiles for newer versions.
+    CameraProfilesUpdated(Result<crate::core::camera_profiles::UpdateReport, String>),
+    /// The profile folders were read; `true` when it was a rescan.
+    CameraProfilesScanned(bool),
+}
+
+/// Something the app must do after a session call, while that part of the
+/// work still lives in the app. Goes away as the rest moves in.
+#[must_use]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FollowUp {
+    Nothing,
+    /// The open image must be decoded or rebuilt again
+    /// (`handlers::navigation::reload_selected_image`).
+    ReloadSelectedImage,
+}
+
+/// Run blocking `work` on tokio's blocking pool and report its result as an
+/// event. A panic in `work` arrives as `Err("background task failed: …")`.
+fn blocking<T: Send + 'static>(
+    label: &'static str,
+    work: impl FnOnce() -> T + Send + 'static,
+    done: impl FnOnce(Result<T, String>) -> SessionEvent + Send + 'static,
+) -> Effects {
+    Effects::perform(label, async move {
+        done(tokio::task::spawn_blocking(work).await.map_err(|e| format!("background task failed: {e}")))
+    })
 }
 
 // The state below moved here from `RawEditor` as is (comments included); the
@@ -308,7 +355,7 @@ pub struct Session {
     /// The selected image's decoded AI-mask bitmaps.
     pub ai_bitmaps: crate::app::handlers::ai_mask::AiBitmapState,
     /// AI model downloads (`handlers::models`).
-    pub models: crate::app::handlers::models::ModelsState,
+    pub models: ModelsState,
     /// The AI denoise modal (`handlers::ai_denoise`).
     pub ai_denoise: crate::app::handlers::ai_denoise::AiDenoiseState,
     pub camera_profiles: CameraProfileState,

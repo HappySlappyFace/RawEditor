@@ -80,7 +80,7 @@ pub enum Modal {
     /// (`RawEditor::drop_import`).
     ImportDropped,
     /// Confirm downloading an AI model a feature needs
-    /// (`RawEditor::models.offered`).
+    /// (`RawEditor::model_offer`).
     AiModel,
     /// AI denoise: choose the amount on a 1:1 preview, then apply
     /// (`RawEditor::ai_denoise`).
@@ -170,47 +170,6 @@ impl Default for LoupeState {
             targeting: false,
         }
     }
-}
-
-/// A lens-database job in progress (`handlers::lensfun`). One at a time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LensfunJob {
-    /// Asking lensfun what it currently publishes.
-    Checking,
-    Downloading,
-    /// Re-reading the lens folders (files added by hand).
-    Rescanning,
-}
-
-/// Lens-profile database downloads and checks, for Preferences › Lens
-/// Profiles and the Lens Corrections panel.
-#[derive(Debug, Default)]
-pub struct LensfunState {
-    pub busy: Option<LensfunJob>,
-    /// The last check's answer.
-    pub remote: Option<Result<crate::core::lensfun::Remote, String>>,
-    /// The last download's outcome.
-    pub installed: Option<Result<crate::core::lensfun::Installed, String>>,
-}
-
-/// A camera-profile job in progress (`handlers::camera_profiles`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProfileJob {
-    Downloading,
-    Importing,
-    Updating,
-    Rescanning,
-}
-
-/// Camera-profile downloads, imports and updates.
-#[derive(Debug, Default)]
-pub struct CameraProfileState {
-    pub busy: Option<ProfileJob>,
-    /// The last job's outcome, for the panels to report.
-    pub notice: Option<Result<String, String>>,
-    /// A camera RawTherapee was found to have no profile for — the Develop
-    /// prompt says so instead of offering the download again.
-    pub unavailable: Option<String>,
 }
 
 /// The pages of the Preferences side menu, in menu order.
@@ -466,6 +425,8 @@ pub struct RawEditor {
     pub session: crate::session::Session,
     /// The first-run update prompt's checkbox, which starts ticked.
     pub update_prompt_choice: bool,
+    /// The model the AI-model confirm dialog offers (`handlers::models`).
+    pub model_offer: Option<crate::ml::models::ModelId>,
     /// The page Preferences shows. Kept while the app runs, so reopening the
     /// dialog lands where the user left it; not persisted.
     pub preferences_section: PreferencesSection,
@@ -674,6 +635,7 @@ impl RawEditor {
                 appearance,
                 session: crate::session::Session::new(&settings),
                 update_prompt_choice: true,
+                model_offer: None,
                 preferences_section: PreferencesSection::default(),
                 scroll_glide: None,
                 menu_generation: 0,

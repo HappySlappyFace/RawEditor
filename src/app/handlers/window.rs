@@ -203,7 +203,7 @@ pub fn handle_modal_confirm(editor: &mut RawEditor) -> Task<Message> {
         // Help, Preferences and About have nothing to confirm; Enter closes
         // them, which is the least surprising thing a dialog can do.
         Modal::Help | Modal::Preferences | Modal::About => handle_close_modal(editor),
-        Modal::AiModel => match editor.session.models.offered {
+        Modal::AiModel => match editor.model_offer {
             Some(id) if editor.session.models.job.is_none() => crate::app::handlers::models::handle_download(editor, id),
             _ => Task::none(),
         },

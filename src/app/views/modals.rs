@@ -459,7 +459,7 @@ pub fn megabytes(bytes: u64) -> String {
 /// licence — then a download with progress. Closes itself and carries on
 /// with the feature once installed (`handlers::models`).
 pub fn view_ai_model_modal(editor: &RawEditor) -> Element<'_, Message> {
-    let Some(id) = editor.session.models.offered else {
+    let Some(id) = editor.model_offer else {
         return Space::new(Length::Shrink, Length::Shrink).into();
     };
     let model = id.model();

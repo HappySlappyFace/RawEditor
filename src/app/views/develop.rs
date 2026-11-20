@@ -1300,7 +1300,7 @@ fn camera_profile_block(editor: &RawEditor) -> Element<'_, Message> {
 /// No camera profile for this camera: say what is being used instead, and
 /// offer RawTherapee's open-source profile or an import.
 fn missing_profile_prompt(editor: &RawEditor, camera: String) -> Element<'_, Message> {
-    use crate::app::state::ProfileJob;
+    use crate::session::ProfileJob;
     let state = &editor.session.camera_profiles;
     let unavailable = state.unavailable.as_deref() == Some(camera.as_str());
     let warn = theme::colours().warn;
@@ -1352,7 +1352,7 @@ fn missing_profile_prompt(editor: &RawEditor, camera: String) -> Element<'_, Mes
 /// No lensfun database at all: offer the one-click download, and say how to
 /// install it by hand instead (`handlers::lensfun`).
 fn missing_database_prompt(editor: &RawEditor) -> Element<'_, Message> {
-    use crate::app::state::LensfunJob;
+    use crate::session::LensfunJob;
     let downloading = editor.session.lensfun.busy == Some(LensfunJob::Downloading);
     let download = button(
         row![

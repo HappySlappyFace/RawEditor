@@ -1,43 +1,23 @@
-//! Camera profiles (`core::camera_profiles`): the per-image choice from
-//! Develop's dropdown, the per-camera default from Preferences, and getting
-//! more — RawTherapee's open-source profiles, imported files, updates.
+//! Camera profiles: the app's side — the per-image choice (an edit), the
+//! per-camera default (a saved setting) and the file picker. Downloads,
+//! imports, updates and rescans are the session's (`session::camera_profiles`).
 //!
-//! A profile is applied when an image's GPU resources are built, so any
-//! change that could alter which profile the open image resolves to —
-//! choice, default, or the installed set — rebuilds them
-//! ([`resources_stale`], [`rebuild`]). From the cached RAW when there is
-//! one: no new decode.
+//! A profile is applied when an image's GPU resources are built, so a change
+//! that could alter which profile the open image resolves to rebuilds them
+//! ([`resources_stale`], [`rebuild`]).
 
 use iced::Task;
 
 use crate::app::message::Message;
-use crate::app::state::{ProfileJob, RawEditor};
-use crate::core::camera_profiles::{self as profiles, Catalog, ProfileChoice};
-
-/// Run blocking `work` off the UI thread and report it with `done`.
-fn background<T: Send + 'static>(
-    work: impl FnOnce() -> T + Send + 'static,
-    done: impl Fn(Result<T, String>) -> Message + Send + 'static,
-) -> Task<Message> {
-    Task::perform(
-        async move { tokio::task::spawn_blocking(work).await.map_err(|e| format!("background task failed: {e}")) },
-        done,
-    )
-}
-
-/// The open image's camera, as `(make, model)`.
-fn camera(editor: &RawEditor) -> Option<(String, String)> {
-    editor.session.current_metadata.as_ref().map(|m| (m.make.clone(), m.model.clone()))
-}
+use crate::app::state::RawEditor;
+use crate::app::update::{follow_up, run};
+use crate::core::camera_profiles::{ProfileChoice, UpdateReport};
+use crate::session::Session;
 
 /// Were the open image's GPU resources built with a different profile
 /// choice than it now has (its own, or its camera's default)?
 pub fn resources_stale(editor: &RawEditor) -> bool {
-    let (Some(resources), Some((make, model))) = (&editor.session.image_resources, camera(editor)) else {
-        return false;
-    };
-    let Some(used) = &resources.profile_use else { return false };
-    used.is_stale(editor.session.current_edit_params.camera_profile, &editor.session.camera_profile_defaults, &make, &model)
+    editor.session.camera_profile_stale()
 }
 
 /// Rebuild the open image so it picks its profile again.
@@ -57,75 +37,18 @@ pub fn handle_selected(editor: &mut RawEditor, choice: ProfileChoice) -> Task<Me
 }
 
 pub fn handle_set_default(editor: &mut RawEditor, camera: String, value: Option<String>) -> Task<Message> {
-    match value {
-        Some(v) => editor.session.camera_profile_defaults.insert(camera, v),
-        None => editor.session.camera_profile_defaults.remove(&camera),
-    };
+    let next = editor.session.set_camera_profile_default(camera, value);
     editor.save_preferences();
-    if resources_stale(editor) {
-        rebuild(editor)
-    } else {
-        Task::none()
-    }
-}
-
-/// The installed set changed: the open image may now resolve differently.
-fn catalog_changed(editor: &mut RawEditor) -> Task<Message> {
-    if editor.session.image_resources.is_some() {
-        rebuild(editor)
-    } else {
-        Task::none()
-    }
-}
-
-fn start(editor: &mut RawEditor, job: ProfileJob) -> bool {
-    if editor.session.camera_profiles.busy.is_some() {
-        return false;
-    }
-    editor.session.camera_profiles.busy = Some(job);
-    editor.session.camera_profiles.notice = None;
-    true
+    follow_up(editor, next)
 }
 
 pub fn handle_download(editor: &mut RawEditor) -> Task<Message> {
-    let Some((make, model)) = camera(editor) else { return Task::none() };
-    if !start(editor, ProfileJob::Downloading) {
-        return Task::none();
-    }
-    let camera_name = profiles::camera_name(&make, &model);
-    background(
-        move || {
-            let result = profiles::download_for_camera(&make, &model);
-            if matches!(result, Ok(Some(_))) {
-                Catalog::rescan();
-            }
-            result
-        },
-        move |r| Message::CameraProfileDownloaded(camera_name.clone(), r.and_then(|inner| inner)),
-    )
+    run(editor.session.download_camera_profile())
 }
 
 pub fn handle_downloaded(editor: &mut RawEditor, camera_name: String, result: Result<Option<String>, String>) -> Task<Message> {
-    editor.session.camera_profiles.busy = None;
-    match result {
-        Ok(Some(file)) => {
-            editor.session.status = format!("Camera profile downloaded: {file}");
-            editor.session.camera_profiles.notice = Some(Ok(format!("Downloaded {file}")));
-            editor.session.camera_profiles.unavailable = None;
-            catalog_changed(editor)
-        }
-        Ok(None) => {
-            let name = camera_name;
-            editor.session.camera_profiles.notice = Some(Err(format!("RawTherapee has no profile for {name}")));
-            editor.session.camera_profiles.unavailable = Some(name);
-            Task::none()
-        }
-        Err(e) => {
-            tracing::error!("Camera profile download failed: {e}");
-            editor.session.camera_profiles.notice = Some(Err(format!("Download failed: {e}")));
-            Task::none()
-        }
-    }
+    let next = editor.session.camera_profile_downloaded(camera_name, result);
+    follow_up(editor, next)
 }
 
 pub fn handle_import(editor: &mut RawEditor) -> Task<Message> {
@@ -148,122 +71,42 @@ pub fn handle_import(editor: &mut RawEditor) -> Task<Message> {
 }
 
 pub fn handle_picked(editor: &mut RawEditor, files: Option<Vec<std::path::PathBuf>>) -> Task<Message> {
-    let Some(files) = files.filter(|f| !f.is_empty()) else { return Task::none() };
-    if !start(editor, ProfileJob::Importing) {
-        return Task::none();
-    }
-    background(
-        move || {
-            let outcome = profiles::import(&files);
-            if !outcome.0.is_empty() {
-                Catalog::rescan();
-            }
-            outcome
-        },
-        |r| match r {
-            Ok((ok, failed)) => Message::CameraProfilesImported(ok, failed),
-            Err(e) => Message::CameraProfilesImported(Vec::new(), vec![e]),
-        },
-    )
+    run(editor.session.import_camera_profiles(files.unwrap_or_default()))
 }
 
 pub fn handle_imported(editor: &mut RawEditor, ok: Vec<String>, failed: Vec<String>) -> Task<Message> {
-    editor.session.camera_profiles.busy = None;
-    editor.session.camera_profiles.notice = Some(match (ok.len(), failed.is_empty()) {
-        (_, false) => Err(format!(
-            "Imported {} — could not import: {}",
-            ok.len(),
-            failed.join("; ")
-        )),
-        (1, true) => Ok(format!("Imported {}", ok[0])),
-        (n, true) => Ok(format!("Imported {n} profiles")),
-    });
-    if ok.is_empty() {
-        Task::none()
-    } else {
-        catalog_changed(editor)
-    }
+    let next = editor.session.camera_profiles_imported(ok, failed);
+    follow_up(editor, next)
 }
 
 pub fn handle_update(editor: &mut RawEditor) -> Task<Message> {
-    if !start(editor, ProfileJob::Updating) {
-        return Task::none();
-    }
-    background(
-        || {
-            let report = profiles::update_downloaded();
-            if report.as_ref().is_ok_and(|r| !r.updated.is_empty()) {
-                Catalog::rescan();
-            }
-            report
-        },
-        |r| Message::CameraProfilesUpdated(r.and_then(|inner| inner)),
-    )
+    run(editor.session.update_camera_profiles())
 }
 
-pub fn handle_updated(
-    editor: &mut RawEditor,
-    result: Result<profiles::UpdateReport, String>,
-) -> Task<Message> {
-    editor.session.camera_profiles.busy = None;
-    let changed = result.as_ref().is_ok_and(|r| !r.updated.is_empty());
-    editor.session.camera_profiles.notice = Some(match result {
-        Ok(r) if r.checked == 0 => Ok("No downloaded profiles to update".to_string()),
-        Ok(r) if r.updated.is_empty() => Ok(format!(
-            "All {} downloaded profile{} up to date",
-            r.checked,
-            if r.checked == 1 { " is" } else { "s are" }
-        )),
-        Ok(r) => Ok(format!("Updated {}", r.updated.join(", "))),
-        Err(e) => Err(format!("Could not check for updates: {e}")),
-    });
-    if changed {
-        catalog_changed(editor)
-    } else {
-        Task::none()
-    }
+pub fn handle_updated(editor: &mut RawEditor, result: Result<UpdateReport, String>) -> Task<Message> {
+    let next = editor.session.camera_profiles_updated(result);
+    follow_up(editor, next)
 }
 
 pub fn handle_rescan(editor: &mut RawEditor) -> Task<Message> {
-    if !start(editor, ProfileJob::Rescanning) {
-        return Task::none();
-    }
-    background(
-        || {
-            Catalog::rescan();
-        },
-        |_| Message::CameraProfilesScanned(true),
-    )
+    run(editor.session.rescan_camera_profiles())
 }
 
 /// Scan the folders for display if nothing has needed them yet (the
 /// Camera Profiles page asks on opening).
 pub fn ensure_loaded() -> Task<Message> {
-    if Catalog::loaded().is_some() {
-        return Task::none();
-    }
-    background(
-        || {
-            Catalog::global();
-        },
-        |_| Message::CameraProfilesScanned(false),
-    )
+    run(Session::camera_profiles_ensure_loaded())
 }
 
 pub fn handle_scanned(editor: &mut RawEditor, changed: bool) -> Task<Message> {
-    if editor.session.camera_profiles.busy == Some(ProfileJob::Rescanning) {
-        editor.session.camera_profiles.busy = None;
-    }
-    if changed {
-        catalog_changed(editor)
-    } else {
-        Task::none()
-    }
+    let next = editor.session.camera_profiles_scanned(changed);
+    follow_up(editor, next)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::ProfileJob;
 
     /// One job at a time: a second click while one runs does nothing.
     #[test]

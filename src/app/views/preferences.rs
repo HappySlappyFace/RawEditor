@@ -419,7 +419,7 @@ impl std::fmt::Display for DefaultOption {
 /// RawTherapee's open-source ones and keeping them current, and importing
 /// the user's own (`handlers::camera_profiles`).
 fn camera_profiles(editor: &RawEditor) -> Element<'_, Message> {
-    use crate::app::state::ProfileJob;
+    use crate::session::ProfileJob;
     use crate::core::camera_profiles::{camera_name, Catalog, Origin};
 
     let catalog = Catalog::loaded();
@@ -592,7 +592,7 @@ fn card_title_owned(title: String) -> Element<'static, Message> {
 /// The lensfun database: what is installed and where from, downloading and
 /// updating it (`handlers::lensfun`), and the folder for the user's own files.
 fn lens_profiles(editor: &RawEditor) -> Element<'_, Message> {
-    use crate::app::state::LensfunJob;
+    use crate::session::LensfunJob;
     use crate::core::lensfun::format_date;
 
     let db = crate::core::lens::LensDb::loaded();

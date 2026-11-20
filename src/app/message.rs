@@ -523,7 +523,6 @@ pub enum Message {
 
     // ========== AI models (handlers::models) ==========
     ModelDownload(crate::ml::models::ModelId),
-    ModelDownloaded(crate::ml::models::ModelId, Result<(), String>),
     ModelDownloadCancel,
     ModelRemove(crate::ml::models::ModelId),
     /// Redraw while a download or an AI job reports progress.
@@ -559,15 +558,10 @@ pub enum Message {
     NoiseSettled(u64),
     /// Ask lensfun what database it currently publishes.
     LensfunCheck,
-    LensfunChecked(Result<crate::core::lensfun::Remote, String>),
     /// Download (or update) the lensfun database.
     LensfunDownload,
-    LensfunInstalled(Result<crate::core::lensfun::Installed, String>),
     /// Re-read the lens folders — after adding XML files by hand.
     LensfunRescan,
-    /// The lens database was (re)loaded in the background. `true` when it
-    /// may have changed, so the open image's profile lookup is stale.
-    LensDbLoaded(bool),
     /// Develop's profile dropdown: this image's camera profile.
     CameraProfileSelected(crate::core::camera_profiles::ProfileChoice),
     /// Preferences: a camera's default profile — a file name, `"builtin"`,
@@ -575,20 +569,13 @@ pub enum Message {
     SetCameraProfileDefault(String, Option<String>),
     /// Download RawTherapee's profile for the open image's camera.
     DownloadCameraProfile,
-    CameraProfileDownloaded(String, Result<Option<String>, String>),
     /// Pick `.dcp` files to import.
     ImportCameraProfiles,
     CameraProfilesPicked(Option<Vec<std::path::PathBuf>>),
-    /// Imported names, and the failures.
-    CameraProfilesImported(Vec<String>, Vec<String>),
     /// Refresh every downloaded profile from RawTherapee.
     UpdateCameraProfiles,
-    CameraProfilesUpdated(Result<crate::core::camera_profiles::UpdateReport, String>),
     /// Re-read the profile folders — after adding files by hand.
     RescanCameraProfiles,
-    /// The profile folders were (re)scanned; `true` when they may have
-    /// changed, so the open image's profile may resolve differently.
-    CameraProfilesScanned(bool),
     /// Open a URL in the default browser (Preferences › Licenses).
     OpenLink(&'static str),
     /// Preferences side menu: show this page.
