@@ -16,7 +16,7 @@ pub fn view_cull(editor: &RawEditor) -> Element<'_, Message> {
         view_empty_state()
     };
 
-    let filtered_images: Vec<&ImageData> = editor.displayed_images();
+    let filtered_images: Vec<&ImageData> = editor.session.displayed_images();
     let filmstrip = ui::filmstrip::view(&filtered_images, editor);
 
     // Cull was the one tab with no export entry point, despite the export
@@ -106,7 +106,7 @@ fn view_empty_state() -> Element<'static, Message> {
 /// Cached previews within the preload window, behind and ahead — in display
 /// order, the same order the preloader and the arrow keys use.
 fn count_cached_neighbors(editor: &RawEditor, id: i64) -> (usize, usize) {
-    let ids = editor.displayed_ids();
+    let ids = editor.session.displayed_ids();
     let Some(current) = ids.iter().position(|&i| i == id) else {
         return (0, 0);
     };

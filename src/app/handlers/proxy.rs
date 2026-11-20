@@ -17,7 +17,7 @@
 // makes on-disk proxies trustworthy: a saved proxy always matches the saved
 // edits. Anything that changes an image's saved edits without rendering it —
 // paste onto a selection, reset or undo from Library — drops the proxy
-// (`RawEditor::invalidate_proxies`), falling back to the camera thumbnail.
+// (`crate::session::Session::invalidate_proxies`), falling back to the camera thumbnail.
 
 use crate::app::message::{AppTab, Message};
 use crate::app::state::{CachedPreview, EditedProxy, EditorReadiness, RawEditor};
@@ -107,7 +107,7 @@ pub fn persist(editor: &mut RawEditor) -> Task<Message> {
             if latest_in_flight {
                 editor.session.proxy_awaiting.insert(id, edit_key(&editor.session.current_edit_params));
             } else {
-                editor.invalidate_proxies(&[id]);
+                editor.session.invalidate_proxies(&[id]);
             }
             Task::none()
         }
@@ -124,7 +124,7 @@ pub fn resolve_awaiting(editor: &mut RawEditor, id: i64, rendered: Option<EditPa
     if rendered.map(|p| edit_key(&p)) == Some(expected) {
         write(editor, id)
     } else {
-        editor.invalidate_proxies(&[id]);
+        editor.session.invalidate_proxies(&[id]);
         Task::none()
     }
 }
@@ -163,7 +163,7 @@ pub fn persist_now(editor: &mut RawEditor) {
     };
     match plan(editor.session.edited_proxies.peek(&id), &editor.session.current_edit_params, has_camera_thumb(editor, id)) {
         Persist::Nothing => {}
-        Persist::Invalidate => editor.invalidate_proxies(&[id]),
+        Persist::Invalidate => editor.session.invalidate_proxies(&[id]),
         Persist::Clear => {
             let _ = write(editor, id);
         }
@@ -205,7 +205,7 @@ fn set_saved_path(editor: &mut RawEditor, id: i64, path: Option<String>) {
             return;
         }
     }
-    editor.apply_to_images(&[id], |img| img.cache_path_edited = path.clone());
+    editor.session.apply_to_images(&[id], |img| img.cache_path_edited = path.clone());
 }
 
 /// Encode a proxy as a JPEG in the `edited` cache tier. The name is unique
@@ -294,7 +294,7 @@ pub fn handle_loaded(
 pub fn show_as_placeholder(editor: &mut RawEditor, preview: &CachedPreview) {
     editor.session.working_preview_bytes = Some(preview.bytes.clone());
     editor.session.working_preview_dims = (preview.width, preview.height);
-    editor.bump_preview_generation();
+    editor.session.bump_preview_generation();
 }
 
 /// Queue saved proxies of `ids` (Develop's upcoming neighbours, nearest

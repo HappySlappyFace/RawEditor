@@ -30,7 +30,7 @@ pub fn handle_lens_toggled(editor: &mut RawEditor, which: LensToggle, on: bool) 
         LensToggle::Constrain => l.constrain = on,
     }
     let task = update_pipeline(editor);
-    editor.commit_current_state();
+    editor.session.commit_current_state();
     task
 }
 

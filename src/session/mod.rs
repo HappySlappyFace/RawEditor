@@ -8,6 +8,7 @@
 //! the app to act on; the session never opens one.
 
 mod camera_profiles;
+mod helpers;
 mod lensfun;
 mod models;
 mod updates;

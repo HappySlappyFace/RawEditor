@@ -91,7 +91,7 @@ fn build(
     // The previous image's loupe holds its full mosaic: let it go now.
     editor.session.loupe.gpu = None;
     editor.session.loupe.building = Some(image_id);
-    let cached = editor.raw_for(image_id);
+    let cached = editor.session.raw_for(image_id);
     let path = editor.session.images.iter().find(|i| i.id == image_id).map(|i| i.path.clone());
     Task::perform(
         async move {
@@ -227,7 +227,7 @@ pub fn handle_target_picked(editor: &mut RawEditor, u: f32, v: f32) -> Task<Mess
 pub fn handle_noise_changed(editor: &mut RawEditor, apply: impl FnOnce(&mut EditParams)) -> Task<Message> {
     if editor.session.held_noise.is_none() {
         // What the main view shows right now is what it keeps.
-        let shown = editor.view_params();
+        let shown = editor.session.view_params();
         editor.session.held_noise = Some(HeldNoise {
             image_id: editor.session.selected_image_id,
             luma: shown.luma_noise,
@@ -237,8 +237,8 @@ pub fn handle_noise_changed(editor: &mut RawEditor, apply: impl FnOnce(&mut Edit
     }
     apply(&mut editor.session.current_edit_params);
     editor.session.stage_drag = true;
-    editor.mark_edits_dirty();
-    editor.sync_tool_flags();
+    editor.session.mark_edits_dirty();
+    editor.session.sync_tool_flags();
 
     editor.session.noise_settle_token = editor.session.noise_settle_token.wrapping_add(1);
     let token = editor.session.noise_settle_token;
@@ -262,7 +262,7 @@ pub fn release_noise(editor: &mut RawEditor) -> Task<Message> {
     if editor.session.held_noise.take().is_none() {
         return Task::none();
     }
-    let params = editor.view_params();
+    let params = editor.session.view_params();
     crate::app::handlers::develop::push_uniforms_and_render(editor, &params)
 }
 
@@ -286,10 +286,10 @@ mod tests {
         let _ = handle_noise_changed(&mut e, |p| p.luma_noise = 0.7);
         assert_eq!(e.session.current_edit_params.luma_noise, 0.7);
         assert!(e.session.edits_dirty, "the drag would not be saved");
-        assert_eq!(e.view_params().luma_noise, 0.2, "held the value of a later tick");
+        assert_eq!(e.session.view_params().luma_noise, 0.2, "held the value of a later tick");
         // Everything else renders as edited.
         e.session.current_edit_params.exposure = 1.0;
-        assert_eq!(e.view_params().exposure, 1.0);
+        assert_eq!(e.session.view_params().exposure, 1.0);
     }
 
     /// Only the latest tick's timer releases it: a drag that keeps moving
@@ -305,7 +305,7 @@ mod tests {
         let latest = e.session.noise_settle_token;
         let _ = handle_noise_settled(&mut e, latest);
         assert!(e.session.held_noise.is_none());
-        assert_eq!(e.view_params().color_noise, 0.4);
+        assert_eq!(e.session.view_params().color_noise, 0.4);
     }
 
     /// The slider's release applies at once, without waiting for the timer.
@@ -315,7 +315,7 @@ mod tests {
         let _ = handle_noise_changed(&mut e, |p| p.luma_detail = 0.9);
         let _ = crate::app::handlers::develop::handle_commit_edit(&mut e);
         assert!(e.session.held_noise.is_none());
-        assert_eq!(e.view_params().luma_detail, 0.9);
+        assert_eq!(e.session.view_params().luma_detail, 0.9);
     }
 
     /// A hold belongs to its image: one left over can't restyle the next.
@@ -325,7 +325,7 @@ mod tests {
         e.session.current_edit_params.luma_noise = 0.1;
         let _ = handle_noise_changed(&mut e, |p| p.luma_noise = 0.6);
         e.session.selected_image_id = Some(8);
-        assert_eq!(e.view_params().luma_noise, 0.6);
+        assert_eq!(e.session.view_params().luma_noise, 0.6);
     }
 
     /// Dragging the loupe moves its content with the pointer: right shows

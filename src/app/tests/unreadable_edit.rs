@@ -15,8 +15,8 @@ fn selecting_an_image_with_an_unreadable_edit_keeps_the_old_json_after_the_flush
     assert!(e.session.status.contains("could not be read"), "the user is told: {}", e.session.status);
 
     // The flush that follows any selection change or commit.
-    e.mark_edits_dirty();
-    e.flush_edits();
+    e.session.mark_edits_dirty();
+    e.session.flush_edits();
     send(&mut e, Message::ImageSelected(1));
 
     let lib = e.session.library.as_ref().unwrap();

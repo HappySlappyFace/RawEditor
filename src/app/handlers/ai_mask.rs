@@ -192,7 +192,7 @@ fn open(editor: &mut RawEditor, slot: usize, created: bool) -> Task<Message> {
     editor.session.status = "AI Select: analysing the image…".into();
     let draw = crate::app::handlers::develop::update_pipeline(editor);
 
-    let cached = editor.raw_for(image_id);
+    let cached = editor.session.raw_for(image_id);
     let path = editor.session.images.iter().find(|i| i.id == image_id).map(|i| i.path.clone());
     let black_offsets = params.black_offsets;
     let build = Task::perform(
@@ -349,7 +349,7 @@ pub fn handle_done(editor: &mut RawEditor) -> Task<Message> {
         return crate::app::handlers::masks::handle_delete_mask(editor, s.slot);
     }
     let task = crate::app::handlers::develop::update_pipeline(editor);
-    editor.commit_current_state();
+    editor.session.commit_current_state();
     task
 }
 
@@ -364,7 +364,7 @@ pub fn handle_cancel(editor: &mut RawEditor) -> Task<Message> {
         editor.session.current_edit_params.masks[s.slot].ai_id = s.prev_ai_id;
     }
     let task = crate::app::handlers::develop::update_pipeline(editor);
-    editor.commit_current_state();
+    editor.session.commit_current_state();
     task
 }
 

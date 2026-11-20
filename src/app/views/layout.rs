@@ -147,7 +147,7 @@ fn view_main(editor: &RawEditor) -> Element<'_, Message> {
     let profiler = editor.show_profiler.then(|| {
         let stats = (editor.session.current_tab == AppTab::Develop).then(|| {
             crate::ui::widgets::profiler_graph::RenderStats {
-                zoom_percent: editor.zoom_percent(),
+                zoom_percent: editor.session.zoom_percent(),
                 target: editor.session.rendered_preview_dims,
                 view_extent: (editor.session.rendered_view_rect[2], editor.session.rendered_view_rect[3]),
             }

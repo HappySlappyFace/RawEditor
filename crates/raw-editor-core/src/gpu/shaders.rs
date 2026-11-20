@@ -1640,7 +1640,7 @@ fn color_pass(input: VertexOutput) -> vec4<f32> {
     // variable already computed for Step 1.
     // This is the FULL frame's display aspect, with no crop term, and that is
     // correct for both crop mode and normal viewing. The render target is now
-    // sized to the CROPPED aspect (see RawEditor::image_display_dims), so the
+    // sized to the CROPPED aspect (see Session::image_display_dims), so the
     // crop sub-rect is scaled UNIFORMLY onto it: one unit of u spans
     // target_w/crop.z pixels and one unit of v spans target_h/crop.w, and
     // those two ratios reduce to exactly the full frame's aspect.

@@ -41,7 +41,7 @@ pub fn handle_delete_image_requested(editor: &mut RawEditor) -> Task<Message> {
     if editor.active_modal != Modal::None {
         return Task::none();
     }
-    let ids = editor.action_target_ids();
+    let ids = editor.session.action_target_ids();
     if ids.is_empty() {
         return Task::none();
     }
@@ -61,7 +61,7 @@ pub fn handle_delete_image_requested(editor: &mut RawEditor) -> Task<Message> {
                 editor.session.status = format!("Could not unmark: {e}");
                 return Task::none();
             }
-            editor.apply_to_images(&ids, |img| img.rating = with_mark(img.rating, false));
+            editor.session.apply_to_images(&ids, |img| img.rating = with_mark(img.rating, false));
         }
         editor.session.status = format!("Unmarked {} image(s)", ids.len());
         Task::none()
@@ -88,7 +88,7 @@ pub fn handle_mark_for_removal_confirmed(editor: &mut RawEditor) -> Task<Message
             editor.session.status = format!("Could not mark for removal: {e}");
             return Task::none();
         }
-        editor.apply_to_images(&ids, |img| img.rating = with_mark(img.rating, true));
+        editor.session.apply_to_images(&ids, |img| img.rating = with_mark(img.rating, true));
     }
     editor.session.status = format!("Marked {} image(s) for removal", ids.len());
 
@@ -167,7 +167,7 @@ pub fn handle_hard_delete_complete(editor: &mut RawEditor, outcome: HardDeleteOu
     for id in &outcome.deleted_ids {
         editor.session.preview_cache.pop(id);
         editor.session.edited_proxies.pop(id);
-        editor.remove_from_raw_cache(*id);
+        editor.session.remove_from_raw_cache(*id);
         editor.session.history_map.remove(id);
         editor.session.pending_loads.remove(id);
         editor.session.pending_raw_loads.remove(id);

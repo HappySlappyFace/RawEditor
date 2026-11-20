@@ -326,6 +326,6 @@ fn turning_raw_preloads_off_mid_load_keeps_the_awaited_preload() {
     assert_invariants(&e);
     send(&mut e, Message::RawPreloaded(2, Ok(Arc::new(raw("2")))));
     assert_eq!(e.session.current_metadata_id, Some(2));
-    assert!(e.raw_for(2).is_some(), "the open image's RAW is not pinned");
+    assert!(e.session.raw_for(2).is_some(), "the open image's RAW is not pinned");
     assert_invariants(&e);
 }

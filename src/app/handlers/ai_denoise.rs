@@ -149,7 +149,7 @@ pub fn handle_open(editor: &mut RawEditor) -> Task<Message> {
     };
     editor.active_modal = Modal::AiDenoise;
 
-    let cached = editor.raw_for(image_id);
+    let cached = editor.session.raw_for(image_id);
     let path = editor.session.images.iter().find(|i| i.id == image_id).map(|i| i.path.clone());
     Task::perform(
         async move {
@@ -243,7 +243,7 @@ fn request(editor: &mut RawEditor) -> Task<Message> {
     let center = st.center;
     // Preview what Apply will give: with AI denoise at this amount the
     // classic noise reduction stands down; "Before" (0) shows it as it is now.
-    let mut previewed = editor.view_params();
+    let mut previewed = editor.session.view_params();
     previewed.ai_denoise = amount;
     let nr = crate::gpu::denoise::DenoiseSettings::from_params(&previewed);
     Task::perform(
@@ -381,8 +381,8 @@ fn finish(editor: &mut RawEditor, image_id: i64, amount: f32) -> Task<Message> {
         return Task::none();
     }
     editor.session.current_edit_params.ai_denoise = amount;
-    editor.mark_edits_dirty();
-    editor.commit_current_state();
+    editor.session.mark_edits_dirty();
+    editor.session.commit_current_state();
     editor.session.status = if amount > 0.0 {
         format!("AI denoise applied ({:.0}%)", amount * 100.0)
     } else {
@@ -434,7 +434,7 @@ pub fn after_resources(editor: &mut RawEditor) -> Task<Message> {
     let progress = Arc::new(Progress::default());
     editor.session.ai_denoise.regen = Some((image_id, progress.clone()));
     editor.session.status = "Re-computing AI denoise…".into();
-    let cached = editor.raw_for(image_id);
+    let cached = editor.session.raw_for(image_id);
     let path = editor.session.images.iter().find(|i| i.id == image_id).map(|i| i.path.clone());
     Task::perform(
         async move {

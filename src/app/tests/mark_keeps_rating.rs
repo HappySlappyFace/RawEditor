@@ -32,7 +32,7 @@ fn delete_then_delete_again_restores_each_images_stars() {
     }
 
     // Develop and Export hide marked images; Library still shows them.
-    assert_eq!(e.displayed_images().len(), 3);
+    assert_eq!(e.session.displayed_images().len(), 3);
 
     send(&mut e, Message::DeleteImage); // all marked: toggles off
     for (id, stars) in [(1, 5u8), (2, 0), (3, 2)] {

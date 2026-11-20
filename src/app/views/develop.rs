@@ -62,7 +62,7 @@ pub fn view_develop(editor: &RawEditor) -> Element<'_, Message> {
         .height(Length::Fill)]
     .width(Length::Fill)
     .height(Length::Fill);
-    let filtered_images: Vec<&ImageData> = editor.displayed_images();
+    let filtered_images: Vec<&ImageData> = editor.session.displayed_images();
     let filmstrip = ui::filmstrip::view(&filtered_images, editor);
     let content: Element<_> = column![
         editor_content,
@@ -473,7 +473,7 @@ fn aspect_crop_button<'a>(editor: &RawEditor, label: &'a str, ratio: f32) -> Ele
         .width(Length::Fill)
         .on_press_maybe(editor.session.image_resources.as_ref().map(|res| {
             let (w, h) = res.oriented_dims(editor.session.current_edit_params.quarter_turns);
-            Message::SetCrop(RawEditor::calculate_center_crop(ratio, w, h))
+            Message::SetCrop(crate::session::Session::calculate_center_crop(ratio, w, h))
         }))
         .into()
 }
@@ -577,8 +577,8 @@ fn view_main_content<'a>(
         //   image_dims   — the whole image's display shape. Everything that
         //                  positions pixels on screen (letterbox fit, zoom,
         //                  pan, crop/mask handles) must use this.
-        let (buf_w, buf_h) = editor.buffer_dims();
-        let (img_w, img_h) = editor.image_display_dims();
+        let (buf_w, buf_h) = editor.session.buffer_dims();
+        let (img_w, img_h) = editor.session.image_display_dims();
 
         match &editor.session.editor_readiness {
             EditorReadiness::Loading(_) | EditorReadiness::Ready(_) => {
@@ -694,7 +694,7 @@ fn view_main_content<'a>(
         // shared an arm with Metadata and rendered identically, so cycling with
         // `I` appeared to show the same panel twice before hiding.
         crate::app::state::InfoOverlayState::CacheDebug => {
-            let budget = editor.raw_cache_budget_bytes().max(1);
+            let budget = editor.session.raw_cache_budget_bytes().max(1);
             let used_pct = (editor.session.raw_cache_bytes as f64 / budget as f64 * 100.0).min(999.0);
             let selected_cached = editor
                 .session.selected_image_id
@@ -747,7 +747,7 @@ fn view_main_content<'a>(
         crate::app::state::InfoOverlayState::Metadata => {
             let mut lines = column![
                 // 100% = one sensor pixel per screen pixel, not "fitted".
-                text(format!("Zoom {:.0}%", editor.zoom_percent()))
+                text(format!("Zoom {:.0}%", editor.session.zoom_percent()))
                     .size(theme::size::SMALL)
                     .style(|_| text::Style {
                         color: Some(theme::colours().accent)
@@ -1620,7 +1620,7 @@ fn info_panel<'a>(body: Element<'a, Message>) -> Container<'a, Message> {
 /// Placeholders rather than stale values when the held metadata belongs to a
 /// different image than the one on screen.
 pub(crate) fn metadata_lines(editor: &RawEditor) -> [String; 3] {
-    match editor.selected_metadata() {
+    match editor.session.selected_metadata() {
         Some(m) => [
             format!("{} {}", m.make, m.model),
             m.lens.clone(),

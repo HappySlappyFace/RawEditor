@@ -52,7 +52,7 @@ pub fn handle_black_phase_changed(editor: &mut RawEditor, y: bool, v: u32) -> Ta
     }
     let task = update_pipeline(editor);
     // A checkbox has no release: this click is the whole gesture.
-    editor.commit_current_state();
+    editor.session.commit_current_state();
     task
 }
 
@@ -75,7 +75,7 @@ pub fn handle_curve_changed(
     *editor.session.current_edit_params.curves.get_mut(channel) = curve;
     let task = update_pipeline(editor);
     if commit {
-        editor.commit_current_state();
+        editor.session.commit_current_state();
     }
     task
 }
@@ -94,7 +94,7 @@ pub fn handle_tone_mapper_changed(
     }
     editor.session.current_edit_params.tone_mapper = mapper;
     let task = update_pipeline(editor);
-    editor.commit_current_state();
+    editor.session.commit_current_state();
     task
 }
 
@@ -203,7 +203,7 @@ pub fn handle_turn_image(editor: &mut RawEditor, clockwise: bool) -> Task<Messag
     editor.session.zoom = 1.0;
     editor.session.pan_offset = cgmath::Vector2::new(0.0, 0.0);
     let task = update_pipeline(editor);
-    editor.commit_current_state();
+    editor.session.commit_current_state();
     task
 }
 
@@ -257,14 +257,14 @@ pub fn handle_level_line(editor: &mut RawEditor, dx: f32, dy: f32) -> Task<Messa
     editor.session.status = format!("Straightened by {:+.1}°", angle - current);
     editor.session.current_edit_params.rotation = angle;
     let task = update_pipeline(editor);
-    editor.commit_current_state();
+    editor.session.commit_current_state();
     task
 }
 
 pub fn handle_set_crop(editor: &mut RawEditor, crop: [f32; 4]) -> Task<Message> {
     editor.session.current_edit_params.crop = crop;
     let task = update_pipeline(editor);
-    editor.commit_current_state();
+    editor.session.commit_current_state();
     task
 }
 
@@ -313,7 +313,7 @@ pub fn handle_commit_edit(editor: &mut RawEditor) -> Task<Message> {
     // Every slider's on_release maps here, so this is the primary persistence
     // point now that update_pipeline only marks the state dirty.
     // commit_current_state flushes.
-    editor.commit_current_state();
+    editor.session.commit_current_state();
     finish_stage_drag(editor)
 }
 
@@ -335,14 +335,14 @@ pub fn handle_undo(editor: &mut RawEditor) -> Task<Message> {
     if editor.active_modal != crate::app::state::Modal::None {
         return Task::none();
     }
-    if let Some((stack, index)) = editor.get_current_history() {
+    if let Some((stack, index)) = editor.session.get_current_history() {
         if *index > 0 {
             *index -= 1;
             editor.session.current_edit_params = stack[*index];
             // Undo/redo don't commit to history (they move within it), so they
             // don't get commit_current_state's flush — persist explicitly.
             let task = update_pipeline(editor);
-            editor.flush_edits();
+            editor.session.flush_edits();
             task
         } else {
             Task::none()
@@ -356,13 +356,13 @@ pub fn handle_redo(editor: &mut RawEditor) -> Task<Message> {
     if editor.active_modal != crate::app::state::Modal::None {
         return Task::none();
     }
-    if let Some((stack, index)) = editor.get_current_history() {
+    if let Some((stack, index)) = editor.session.get_current_history() {
         if *index < stack.len() - 1 {
             *index += 1;
             editor.session.current_edit_params = stack[*index];
             // See handle_undo.
             let task = update_pipeline(editor);
-            editor.flush_edits();
+            editor.session.flush_edits();
             task
         } else {
             Task::none()
@@ -472,7 +472,7 @@ pub fn handle_reset_section(editor: &mut RawEditor, section: SidebarSection) -> 
         reset_section(section, &mut editor.session.current_edit_params);
     }
     let task = update_pipeline(editor);
-    editor.commit_current_state();
+    editor.session.commit_current_state();
     task
 }
 
@@ -492,7 +492,7 @@ pub fn handle_reset_edits(editor: &mut RawEditor) -> Task<Message> {
     // dirty and `commit_current_state` flushes them, which would write the
     // row straight back.
     let task = update_pipeline(editor);
-    editor.commit_current_state();
+    editor.session.commit_current_state();
     task
 }
 
@@ -633,7 +633,7 @@ pub fn handle_paste_settings(editor: &mut RawEditor) -> Task<Message> {
         if id == clip.source_image { clip.params } else { clip.params.without_ai_masks() }
     };
     // Masks pasted without geometry follow the destination's own turn.
-    let (dw, dh) = editor.image_display_dims();
+    let (dw, dh) = editor.session.image_display_dims();
     let aspect = dw as f32 / dh.max(1) as f32;
     let for_target = |id: Option<i64>, dst_turns: u32| {
         crate::core::types::turned_for_paste(&for_image(id), clip.categories, dst_turns, aspect)
@@ -681,7 +681,7 @@ pub fn handle_paste_settings(editor: &mut RawEditor) -> Task<Message> {
         }
         // Their edits changed unrendered: their edited thumbnails are stale.
         let pasted: Vec<i64> = merged.iter().map(|(id, _)| *id).collect();
-        editor.invalidate_proxies(&pasted);
+        editor.session.invalidate_proxies(&pasted);
         // An image already visited has an undo stack that knows nothing of
         // the paste: put it on, so Undo there steps back to before it.
         // (Unvisited images seed their stack from the saved edits.) A paste
@@ -718,7 +718,7 @@ pub fn handle_paste_settings(editor: &mut RawEditor) -> Task<Message> {
     };
 
     let task = update_pipeline(editor);
-    editor.commit_current_state();
+    editor.session.commit_current_state();
     task
 }
 
@@ -748,7 +748,7 @@ pub fn handle_render_finished(
         // Buffer and window swap in the same frame — see the note in
         // trigger_async_render about why this is not published earlier.
         editor.session.rendered_view_rect = out.view_rect;
-        editor.bump_preview_generation();
+        editor.session.bump_preview_generation();
         *editor.session.histogram_data.borrow_mut() = out.histogram;
         editor.histogram_cache.clear();
         editor.canvas_cache.clear();
@@ -812,7 +812,7 @@ pub(crate) fn handle_gpu_lost(editor: &mut RawEditor) -> Task<Message> {
 /// is the develop texture itself (`image_display_dims`), so a subsampled
 /// preview reports the magnification the full-resolution rebuild would fix.
 pub fn render_target(editor: &RawEditor) -> crate::core::viewport::RenderTarget {
-    let (disp_w, disp_h) = editor.image_display_dims();
+    let (disp_w, disp_h) = editor.session.image_display_dims();
     let (vw, vh) = editor.session.viewport_size;
     crate::core::viewport::render_target(
         disp_w,
@@ -834,7 +834,7 @@ pub fn trigger_async_render(editor: &mut RawEditor) -> Task<Message> {
     // render target takes the CROPPED aspect. Must be the same source the
     // viewport widget and the input math use, or the texture is drawn at a
     // different shape than it was rendered for.
-    let (disp_w, disp_h) = editor.image_display_dims();
+    let (disp_w, disp_h) = editor.session.image_display_dims();
 
     if let (Some(ctx), Some(resources)) = (&editor.session.gpu_context, &editor.session.image_resources) {
         let ctx = ctx.clone();
@@ -1043,7 +1043,7 @@ pub(crate) fn sample_raw_rgb(
     u: f32,
     v: f32,
 ) -> Result<([f32; 3], bool, std::sync::Arc<crate::raw::loader::RawDataResult>), RawSampleError> {
-    let Some(raw) = editor.raw_for(image_id) else {
+    let Some(raw) = editor.session.raw_for(image_id) else {
         return Err(RawSampleError::Missing("raw data not in memory (reopen the image)"));
     };
     // The 16×16 sample window below needs room on both sides; `clamp(8, w-9)`
@@ -1167,7 +1167,7 @@ pub fn handle_wb_picked(editor: &mut RawEditor, u: f32, v: f32) -> Task<Message>
     );
 
     let task = update_pipeline(editor);
-    editor.commit_current_state();
+    editor.session.commit_current_state();
     task
 }
 
@@ -1331,10 +1331,10 @@ pub(crate) fn update_pipeline(editor: &mut RawEditor) -> Task<Message> {
     // slider or mask drag, and a synchronous SQLite write on that path cost
     // an fsync per event on the UI thread. `flush_edits` at the commit points
     // (CommitEdit, drag release, image/tab switch, close) does the write.
-    editor.mark_edits_dirty();
-    editor.sync_tool_flags();
+    editor.session.mark_edits_dirty();
+    editor.session.sync_tool_flags();
     // EditParams is Copy, so this sidesteps the borrow conflict for free.
-    let params = editor.view_params();
+    let params = editor.session.view_params();
     push_uniforms_and_render(editor, &params)
 }
 
@@ -1348,7 +1348,7 @@ pub(crate) fn refresh_for_peek_state(editor: &mut RawEditor) -> Task<Message> {
     let params = if editor.session.before_peek {
         editor.session.current_edit_params.before_reference()
     } else {
-        editor.view_params()
+        editor.session.view_params()
     };
     push_uniforms_and_render(editor, &params)
 }

@@ -183,7 +183,7 @@ pub fn view_rect_contains(outer: [f32; 4], inner: [f32; 4]) -> bool {
 /// spanned by one unit of `v`.
 ///
 /// `image_w`/`image_h` are the ON-SCREEN (crop-aware) dims from
-/// `RawEditor::image_display_dims`, NOT the full frame's. Mask geometry lives
+/// `Session::image_display_dims`, NOT the full frame's. Mask geometry lives
 /// in full-image UV while only the crop sub-rect is displayed, so the crop
 /// term converts between the two: one unit of `u` spans `image_w / crop.w`
 /// pixels and one unit of `v` spans `image_h / crop.h`.
@@ -380,7 +380,7 @@ pub const OVERVIEW_LONG_EDGE: u32 = 384;
 
 /// Target size of the overview for an image displayed at `display_w`×
 /// `display_h` (EXIF-oriented and crop-aware — see
-/// `RawEditor::image_display_dims`), so the overview has the shape of what
+/// `Session::image_display_dims`), so the overview has the shape of what
 /// is actually on screen rather than the uncropped frame's.
 pub fn overview_dims(display_w: u32, display_h: u32) -> (u32, u32) {
     let (w, h) = (display_w.max(1) as f32, display_h.max(1) as f32);

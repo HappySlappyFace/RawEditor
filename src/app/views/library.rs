@@ -150,7 +150,7 @@ fn thumbnail_state(img: &ImageData) -> ThumbnailState {
 /// Delegates to the shared predicate so the grid and the filmstrip can never
 /// disagree about what looks selected.
 fn is_image_selected(editor: &RawEditor, image_id: i64) -> bool {
-    editor.is_selected(image_id)
+    editor.session.is_selected(image_id)
 }
 
 fn metric_pill<'a>(label: &'a str, value: impl ToString, color: Color) -> Element<'a, Message> {
@@ -734,9 +734,9 @@ fn view_status_bar<'a>(
 pub fn view_library(editor: &RawEditor) -> Element<'_, Message> {
     let folder_stats = collect_folder_stats(editor);
     // The shared predicate, not a local copy of it — see
-    // `RawEditor::displayed_images` for why the per-tab filters live in one
+    // `crate::session::Session::displayed_images` for why the per-tab filters live in one
     // place (marked-for-removal images intentionally stay visible here).
-    let filtered_images: Vec<&ImageData> = editor.displayed_images();
+    let filtered_images: Vec<&ImageData> = editor.session.displayed_images();
 
     let cached_count = filtered_images
         .iter()

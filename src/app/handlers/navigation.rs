@@ -29,7 +29,7 @@ fn select_image(editor: &mut RawEditor, image_id: i64, from_click: bool) -> Task
     } else {
         Task::none()
     };
-    editor.flush_edits();
+    editor.session.flush_edits();
     // Leaving an image: bring its edited thumbnail on disk up to date. Also
     // before the selection moves — it checks against the outgoing edits.
     let persist = if editor.session.selected_image_id != Some(image_id) {
@@ -100,7 +100,7 @@ fn select_image(editor: &mut RawEditor, image_id: i64, from_click: bool) -> Task
         };
         // Crop mode survives the switch, so the freshly loaded params (which
         // never carry the flag) must pick it up before anything renders them.
-        editor.sync_tool_flags();
+        editor.session.sync_tool_flags();
         editor.session.history_map.entry(image_id).or_insert_with(|| (vec![editor.session.current_edit_params], 0));
         // A proxy read from disk matches the saved edits just loaded — record
         // which edit it shows, so leaving can tell if it has fallen behind.
@@ -149,7 +149,7 @@ fn reveal(editor: &mut RawEditor, animate: bool) -> Task<Message> {
     let Some(selected) = editor.session.selected_image_id else {
         return Task::none();
     };
-    let Some(index) = editor.displayed_ids().iter().position(|&id| id == selected) else {
+    let Some(index) = editor.session.displayed_ids().iter().position(|&id| id == selected) else {
         return Task::none();
     };
     // "Is it in view?" is asked of where the view is *heading*: mid-glide,
@@ -206,7 +206,7 @@ pub fn handle_open_in_develop(editor: &mut RawEditor, image_id: i64) -> Task<Mes
 
 pub fn handle_tab_changed(editor: &mut RawEditor, tab: AppTab) -> Task<Message> {
     // Leaving Develop mid-gesture must not strand unsaved slider edits.
-    editor.flush_edits();
+    editor.session.flush_edits();
     // Leaving Develop is leaving the image, as far as its thumbnail goes.
     let persist = if editor.session.current_tab == AppTab::Develop && tab != AppTab::Develop {
         crate::app::handlers::proxy::persist(editor)
@@ -270,7 +270,7 @@ fn load_for_tab(editor: &mut RawEditor, tab: AppTab) -> Task<Message> {
 /// would select things the user cannot see.
 fn select_range(editor: &RawEditor, to_id: i64) -> Option<Vec<i64>> {
     let anchor = editor.selection_anchor?;
-    let ids = editor.displayed_ids();
+    let ids = editor.session.displayed_ids();
     let a = ids.iter().position(|id| *id == anchor)?;
     let b = ids.iter().position(|id| *id == to_id)?;
     let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
@@ -282,7 +282,7 @@ pub fn handle_select_all(editor: &mut RawEditor) -> Task<Message> {
     if editor.active_modal != crate::app::state::Modal::None {
         return Task::none();
     }
-    let ids = editor.displayed_ids();
+    let ids = editor.session.displayed_ids();
     if ids.is_empty() {
         return Task::none();
     }
@@ -299,7 +299,7 @@ pub fn find_next_unmarked_image_id(editor: &RawEditor, from_id: i64) -> Option<i
     let len = editor.session.images.len();
     // Prefer an image the active filter shows, so the filmstrip has a
     // selection to draw; fall back to any unmarked one rather than none.
-    let shown: std::collections::HashSet<i64> = editor.displayed_ids().into_iter().collect();
+    let shown: std::collections::HashSet<i64> = editor.session.displayed_ids().into_iter().collect();
     let mut any = None;
     for step in 1..=len {
         let candidate = &editor.session.images[(idx + step) % len];
@@ -360,7 +360,7 @@ pub fn ensure_develop_selection_not_marked(editor: &mut RawEditor) -> Task<Messa
 /// happily navigated to images the active filter was hiding — and in Develop,
 /// to images marked for removal that the tab refuses to show.
 pub(crate) fn step_selection(editor: &RawEditor, forward: bool) -> Option<i64> {
-    let ids = editor.displayed_ids();
+    let ids = editor.session.displayed_ids();
     if ids.is_empty() {
         return None;
     }
@@ -402,7 +402,7 @@ pub fn handle_zoom(editor: &mut RawEditor, d: f32, mut p: Point) -> Task<Message
 
     if editor.session.image_resources.is_some() {
         let old_zoom = editor.session.zoom;
-        let (dw, dh) = editor.image_display_dims();
+        let (dw, dh) = editor.session.image_display_dims();
         let (vw, vh) = editor.session.viewport_size;
         let (fw, fh) = crate::core::viewport::fitted_size(dw, dh, vw, vh);
         let ib = crate::core::viewport::image_rect(dw, dh, vw, vh, old_zoom, editor.session.pan_offset);
@@ -467,7 +467,7 @@ fn needs_render_for_view(editor: &RawEditor) -> bool {
     {
         return false;
     }
-    let (dw, dh) = editor.image_display_dims();
+    let (dw, dh) = editor.session.image_display_dims();
     let (vw, vh) = editor.session.viewport_size;
     // Overscan 1.0: ask only what is strictly visible right now. The rendered
     // window already carries the margin, so this asks "have we run out of
@@ -509,7 +509,7 @@ pub fn handle_mouse_pressed(editor: &mut RawEditor) -> Task<Message> {
     let double = editor.last_click_time.map(|t| now.duration_since(t).as_millis() < 300).unwrap_or(false);
     editor.last_click_time = Some(now);
     if double { return Task::done(Message::ResetView); }
-    if !editor.session.is_cropping && !editor.session.is_wb_picking && !editor.session.is_leveling && !editor.mask_overlay_active() {
+    if !editor.session.is_cropping && !editor.session.is_wb_picking && !editor.session.is_leveling && !editor.session.mask_overlay_active() {
         editor.is_dragging = true;
         editor.drag_mode = DragMode::Pan;
     }
@@ -523,9 +523,9 @@ pub fn handle_mouse_released(editor: &mut RawEditor) -> Task<Message> {
             DragMode::CropHandle(_) | DragMode::MaskHandle(_)
         )
     {
-        editor.commit_current_state();
+        editor.session.commit_current_state();
         if let (Some(ctx), Some(res)) = (&editor.session.gpu_context, &editor.session.image_resources) {
-            let params = editor.view_params();
+            let params = editor.session.view_params();
             let (interpolated, wb_override) =
                 crate::app::handlers::develop::resolve_wb_and_dcp(editor, &params);
             res.update_uniforms(ctx, &params, interpolated.as_deref(), wb_override);
@@ -543,7 +543,7 @@ pub fn handle_mouse_moved(editor: &mut RawEditor, pos: Point) -> Task<Message> {
     
     if editor.session.is_cropping {
         handle_crop_interaction(editor, pos)
-    } else if editor.mask_overlay_active()
+    } else if editor.session.mask_overlay_active()
         || matches!(editor.drag_mode, DragMode::MaskHandle(_))
     {
         handle_mask_interaction(editor, pos)
@@ -575,7 +575,7 @@ pub fn handle_working_preview_ready(
     if Some(id) == editor.session.selected_image_id {
         editor.working_preview = Some(handle);
         editor.session.working_preview_bytes = bytes;
-        editor.bump_preview_generation();
+        editor.session.bump_preview_generation();
         editor.session.working_preview_dims = dims;
     }
     Task::none()
@@ -613,7 +613,7 @@ fn handle_pan_interaction(editor: &mut RawEditor, pos: Point) -> Task<Message> {
             editor.last_cursor_position = Some(pos);
 
             let (vw, vh) = editor.session.viewport_size;
-            let (dw, dh) = editor.image_display_dims();
+            let (dw, dh) = editor.session.image_display_dims();
             let (fw, fh) = crate::core::viewport::fitted_size(dw, dh, vw, vh);
 
             // Pan is in fitted-size fractions with no zoom term (see
@@ -649,7 +649,7 @@ fn apply_crop_drag(editor: &mut RawEditor, pos: Point, last: Point, h: CropHandl
         None => return,
     };
     
-    let (dw, dh) = editor.image_display_dims();
+    let (dw, dh) = editor.session.image_display_dims();
     let (bw, bh) = editor.session.viewport_size;
     let (fw, fh) = crate::core::viewport::fitted_size(dw, dh, bw, bh);
 
@@ -701,7 +701,7 @@ fn apply_crop_drag(editor: &mut RawEditor, pos: Point, last: Point, h: CropHandl
     editor.session.edits_dirty = true;
 
     if let Some(ctx) = &editor.session.gpu_context {
-        let params = editor.view_params();
+        let params = editor.session.view_params();
         let (interpolated, wb_override) =
             crate::app::handlers::develop::resolve_wb_and_dcp(editor, &params);
         resources.update_uniforms(ctx, &params, interpolated.as_deref(), wb_override);
@@ -739,7 +739,7 @@ fn apply_mask_drag(editor: &mut RawEditor, pos: Point, last: Point, h: MaskHandl
 
     // Same letterbox/zoom math as apply_crop_drag, sharing the same dims
     // source as every other on-screen geometry consumer.
-    let (dw, dh) = editor.image_display_dims();
+    let (dw, dh) = editor.session.image_display_dims();
     let (bw, bh) = editor.session.viewport_size;
     let (fw, fh) = crate::core::viewport::fitted_size(dw, dh, bw, bh);
     // Captured before `m` borrows editor.session.current_edit_params below — needed
@@ -755,7 +755,7 @@ fn apply_mask_drag(editor: &mut RawEditor, pos: Point, last: Point, h: MaskHandl
     let crop = editor.session.current_edit_params.crop;
     let du = (pos.x - last.x) / zw.max(1.0) * crop[2];
     let dv = (pos.y - last.y) / zh.max(1.0) * crop[3];
-    // dw/dh are already the oriented display dims (editor.image_display_dims()), so
+    // dw/dh are already the oriented display dims (editor.session.image_display_dims()), so
     // no separate orientation swap is needed here — unlike the shader, which
     // starts from raw sensor dims. The crop term matters: the displayed image
     // is the crop sub-rect stretched to the full target, so under a crop whose
@@ -880,7 +880,7 @@ fn trigger_image_load(editor: &mut RawEditor, image_id: i64) -> Task<Message> {
         editor.session.rendered_view_rect = crate::gpu::params::FULL_VIEW_RECT;
         editor.session.requested_view_rect = crate::gpu::params::FULL_VIEW_RECT;
         editor.session.current_metadata = None;
-        editor.bump_preview_generation();
+        editor.session.bump_preview_generation();
     }
     if let Some((working_cache_path, raw_path, saved_proxy)) = editor
         .session.images
@@ -910,7 +910,7 @@ fn trigger_image_load(editor: &mut RawEditor, image_id: i64) -> Task<Message> {
             if camera_preview_shown {
                 editor.session.working_preview_bytes = Some(cached.bytes.clone());
                 editor.session.working_preview_dims = (cached.width, cached.height);
-                editor.bump_preview_generation();
+                editor.session.bump_preview_generation();
             }
         } else {
             if proxy.is_none() {
@@ -1060,7 +1060,7 @@ fn schedule_proxy_preloads(editor: &mut RawEditor) {
 /// with only the queue's head running, the image you would open NEXT was
 /// among the last to decode.
 fn neighbours(editor: &RawEditor, behind: usize, ahead: usize) -> Vec<&ImageData> {
-    let shown = editor.displayed_images();
+    let shown = editor.session.displayed_images();
     let Some(current) = editor
         .session.selected_image_id
         .and_then(|selected| shown.iter().position(|img| img.id == selected))

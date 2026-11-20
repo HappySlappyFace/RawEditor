@@ -144,7 +144,7 @@ pub fn handle_maximize_window() -> Task<Message> {
 pub fn handle_close_window(editor: &mut RawEditor) -> Task<Message> {
     // Last chance to persist: a slider moved but never released still has its
     // edits only in memory.
-    editor.flush_edits();
+    editor.session.flush_edits();
     // And the open image's edited thumbnail, synchronously: a spawned save
     // would never get to run.
     crate::app::handlers::proxy::persist_now(editor);
@@ -327,7 +327,7 @@ pub fn handle_set_raw_preload_budget(editor: &mut RawEditor, val: f32) -> Task<M
         editor.session.queued_raw_loads.retain(|(id, _)| Some(*id) == awaited);
         editor.session.pending_raw_loads.retain(|id| Some(*id) == awaited);
     } else {
-        editor.evict_raw_cache_to_budget();
+        editor.session.evict_raw_cache_to_budget();
     }
 
     Task::none()
@@ -393,7 +393,7 @@ pub fn handle_reset_preferences(editor: &mut RawEditor) -> Task<Message> {
     editor.appearance = crate::ui::theme::Appearance::default();
     crate::ui::theme::set_appearance(editor.appearance);
 
-    editor.evict_raw_cache_to_budget();
+    editor.session.evict_raw_cache_to_budget();
     editor.save_preferences();
     Task::none()
 }

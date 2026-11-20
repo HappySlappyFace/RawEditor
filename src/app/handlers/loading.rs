@@ -14,7 +14,7 @@ pub fn handle_raw_data_loaded(
     match result {
         Ok(raw) => {
             let raw = Arc::new(raw);
-            editor.insert_raw_cache(image_id, raw.clone());
+            editor.session.insert_raw_cache(image_id, raw.clone());
             apply_raw_preload_cleanup(editor, image_id);
 
             if awaiting_raw(editor, image_id) {
@@ -42,7 +42,7 @@ pub fn handle_raw_preloaded(
 
     match result {
         Ok(raw) => {
-            editor.insert_raw_cache(image_id, raw.clone());
+            editor.session.insert_raw_cache(image_id, raw.clone());
             if awaiting_raw(editor, image_id) {
                 return prepare_image_resources_from_raw(editor, image_id, raw);
             }
@@ -211,9 +211,9 @@ pub fn handle_image_resources_ready(editor: &mut RawEditor, image_id: i64, resul
                 }
             }
 
-            editor.sync_tool_flags();
+            editor.session.sync_tool_flags();
             if let Some(ctx) = &editor.session.gpu_context {
-                let params = editor.view_params();
+                let params = editor.session.view_params();
                 let (interpolated, wb_override) =
                     crate::app::handlers::develop::resolve_wb_and_dcp(editor, &params);
                 resources.update_uniforms(ctx, &params, interpolated.as_deref(), wb_override);
@@ -308,7 +308,7 @@ pub fn trigger_full_res_upgrade(editor: &mut RawEditor) -> Task<Message> {
         return Task::none();
     }
 
-    let cached = editor.raw_for(image_id);
+    let cached = editor.session.raw_for(image_id);
     let path = match &cached {
         Some(_) => None,
         None => match editor.session.images.iter().find(|i| i.id == image_id) {
@@ -445,12 +445,12 @@ mod tests {
         let raw = crate::ml::segment::test_support::disc_raw(60, 40);
         let _ = handle_raw_data_loaded(&mut e, 1, Ok(raw));
         assert!(e.session.raw_cache.is_empty(), "budget 0 caches nothing");
-        assert!(e.raw_for(1).is_some(), "the open image's RAW was dropped");
-        assert!(e.raw_for(2).is_none());
+        assert!(e.session.raw_for(1).is_some(), "the open image's RAW was dropped");
+        assert!(e.session.raw_for(2).is_none());
         assert!(crate::app::handlers::develop::sample_raw_rgb(&e, 1, 0.5, 0.5).is_ok());
         // Deleting the image releases the pin.
-        e.remove_from_raw_cache(1);
-        assert!(e.raw_for(1).is_none());
+        e.session.remove_from_raw_cache(1);
+        assert!(e.session.raw_for(1).is_none());
     }
 
     /// Zoom is kept across images and tabs, so a photo can load straight

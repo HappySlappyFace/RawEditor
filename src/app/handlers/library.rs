@@ -296,7 +296,7 @@ pub fn handle_set_rating(editor: &mut RawEditor, rating: u8) -> Task<Message> {
     if editor.active_modal != crate::app::state::Modal::None {
         return Task::none();
     }
-    let ids = editor.action_target_ids();
+    let ids = editor.session.action_target_ids();
     let Some(lib) = &editor.session.library else {
         return Task::none();
     };
@@ -308,7 +308,7 @@ pub fn handle_set_rating(editor: &mut RawEditor, rating: u8) -> Task<Message> {
         editor.session.status = format!("Could not save rating: {e}");
         return Task::none();
     }
-    editor.apply_to_images(&ids, |img| img.rating = rating);
+    editor.session.apply_to_images(&ids, |img| img.rating = rating);
     editor.session.status = format!("Rated {} image(s)", ids.len());
     if editor.session.auto_advance {
         return Task::done(Message::SelectNextImage);
@@ -320,7 +320,7 @@ pub fn handle_set_flag(editor: &mut RawEditor, flag: i8) -> Task<Message> {
     if editor.active_modal != crate::app::state::Modal::None {
         return Task::none();
     }
-    let ids = editor.action_target_ids();
+    let ids = editor.session.action_target_ids();
     let Some(lib) = &editor.session.library else {
         return Task::none();
     };
@@ -329,7 +329,7 @@ pub fn handle_set_flag(editor: &mut RawEditor, flag: i8) -> Task<Message> {
         editor.session.status = format!("Could not save flag: {e}");
         return Task::none();
     }
-    editor.apply_to_images(&ids, |img| img.flag = flag);
+    editor.session.apply_to_images(&ids, |img| img.flag = flag);
     editor.session.status = format!("Flagged {} image(s)", ids.len());
     if editor.session.auto_advance {
         return Task::done(Message::SelectNextImage);
@@ -351,7 +351,7 @@ pub fn handle_set_library_folder_filter(
     // Drop anything the new filter hides. Otherwise a selection made under a
     // previous filter stays live but invisible, and Export or a bulk rating
     // would silently act on images the user can no longer see.
-    let visible: std::collections::HashSet<i64> = editor.displayed_ids().into_iter().collect();
+    let visible: std::collections::HashSet<i64> = editor.session.displayed_ids().into_iter().collect();
     editor.session.multi_selection.retain(|id| visible.contains(id));
     if editor.selection_anchor.is_some_and(|a| !visible.contains(&a)) {
         editor.selection_anchor = None;
@@ -464,7 +464,7 @@ pub fn handle_remove_folder_confirmed(editor: &mut RawEditor) -> Task<Message> {
     for id in &ids {
         editor.session.preview_cache.pop(id);
         editor.session.edited_proxies.pop(id);
-        editor.remove_from_raw_cache(*id);
+        editor.session.remove_from_raw_cache(*id);
     }
     if editor.selection_anchor.is_some_and(|a| gone.contains(&a)) {
         editor.selection_anchor = None;

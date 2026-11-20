@@ -33,7 +33,7 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
     let modal_before = editor.active_modal;
     let task = dispatch(editor, message);
     let task = if slider_reset {
-        editor.commit_current_state();
+        editor.session.commit_current_state();
         Task::batch([task, handlers::develop::finish_stage_drag(editor)])
     } else {
         task
@@ -369,7 +369,7 @@ fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::SliderReset { change } => {
             editor.slider_entry = None;
             let task = dispatch(editor, *change);
-            editor.commit_amending_last();
+            editor.session.commit_amending_last();
             Task::batch([task, handlers::develop::finish_stage_drag(editor)])
         }
         Message::Undo => handlers::develop::handle_undo(editor),
@@ -620,7 +620,7 @@ mod tests {
     }
 
     fn history_len(e: &mut RawEditor) -> usize {
-        e.get_current_history().map(|(stack, _)| stack.len()).unwrap_or(0)
+        e.session.get_current_history().map(|(stack, _)| stack.len()).unwrap_or(0)
     }
 
     fn type_into(e: &mut RawEditor, key: &str) {

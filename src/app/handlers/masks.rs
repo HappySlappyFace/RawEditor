@@ -73,7 +73,7 @@ fn add_mask_now(editor: &mut RawEditor, mask_type: u32) -> Task<Message> {
         "Range mask: narrow it with the luminance and colour ranges".to_string()
     };
     let task = update_pipeline(editor);
-    editor.commit_current_state();
+    editor.session.commit_current_state();
     task
 }
 
@@ -172,7 +172,7 @@ pub fn handle_delete_mask(editor: &mut RawEditor, index: usize) -> Task<Message>
     };
 
     let task = update_pipeline(editor);
-    editor.commit_current_state();
+    editor.session.commit_current_state();
     task
 }
 
@@ -186,7 +186,7 @@ pub fn handle_toggle_mask_enabled(
     }
     editor.session.current_edit_params.masks[index].enabled = u32::from(enabled);
     let task = update_pipeline(editor);
-    editor.commit_current_state();
+    editor.session.commit_current_state();
     task
 }
 
@@ -199,7 +199,7 @@ pub fn handle_toggle_mask_invert(editor: &mut RawEditor, inverted: bool) -> Task
     }
     editor.session.current_edit_params.masks[index].invert = u32::from(inverted);
     let task = update_pipeline(editor);
-    editor.commit_current_state();
+    editor.session.commit_current_state();
     task
 }
 
@@ -349,7 +349,7 @@ fn end_stroke(editor: &mut RawEditor) -> Task<Message> {
     editor.session.is_painting = false;
     editor.session.current_edit_params.brush.finish(aspect);
     let task = update_pipeline(editor);
-    editor.commit_current_state();
+    editor.session.commit_current_state();
     task
 }
 
@@ -359,7 +359,7 @@ pub fn handle_clear_mask_brush(editor: &mut RawEditor) -> Task<Message> {
     };
     editor.session.current_edit_params.brush.clear_mask(index);
     let task = update_pipeline(editor);
-    editor.commit_current_state();
+    editor.session.commit_current_state();
     task
 }
 
@@ -379,7 +379,7 @@ pub fn handle_toggle_luma_range(editor: &mut RawEditor, on: bool) -> Task<Messag
         m.luma_range = 0;
     }
     let task = update_pipeline(editor);
-    editor.commit_current_state();
+    editor.session.commit_current_state();
     task
 }
 
@@ -392,7 +392,7 @@ pub fn handle_toggle_color_range(editor: &mut RawEditor, on: bool) -> Task<Messa
         m.color_range = 0;
         editor.session.color_picking_mask = None;
         let task = update_pipeline(editor);
-        editor.commit_current_state();
+        editor.session.commit_current_state();
         return task;
     }
     // Nothing to compare against yet: arm the eyedropper; the range turns on
@@ -436,7 +436,7 @@ pub fn handle_mask_color_picked(editor: &mut RawEditor, u: f32, v: f32) -> Task<
     }
     editor.session.status.clear();
     let task = update_pipeline(editor);
-    editor.commit_current_state();
+    editor.session.commit_current_state();
     task
 }
 
@@ -466,7 +466,7 @@ mod tests {
     fn editor() -> RawEditor {
         let mut e = RawEditor::new().0;
         e.session.selected_image_id = Some(1);
-        e.get_current_history();
+        e.session.get_current_history();
         e
     }
 

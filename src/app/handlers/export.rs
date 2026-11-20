@@ -96,7 +96,7 @@ pub fn export_target_ids(editor: &RawEditor) -> Vec<i64> {
         return editor.session.selected_image_id.into_iter().collect();
     }
     let mut ids: Vec<i64> = editor
-        .displayed_ids()
+        .session.displayed_ids()
         .into_iter()
         .filter(|id| editor.session.multi_selection.contains(id))
         .collect();
@@ -201,7 +201,7 @@ enum MemoryGate {
 /// sequential, one image chained to the next. The lever that actually exists is
 /// releasing the app's own regenerable caches, and failing that, waiting.
 fn check_memory_gate(editor: &mut RawEditor) -> MemoryGate {
-    let needed = editor.min_free_bytes();
+    let needed = editor.session.min_free_bytes();
     if needed == 0 {
         return MemoryGate::Proceed;
     }
@@ -216,7 +216,7 @@ fn check_memory_gate(editor: &mut RawEditor) -> MemoryGate {
 
     // Give back what we can before asking the user to wait: the preview and
     // RAW caches are hundreds of MB of pure convenience.
-    editor.release_discretionary_memory();
+    editor.session.release_discretionary_memory();
 
     let after = crate::core::memory::available_bytes().unwrap_or(available);
     if after >= needed {
@@ -855,9 +855,9 @@ mod tests {
     fn min_free_bytes_converts_mb_and_treats_zero_as_disabled() {
         let mut e = RawEditor::new().0;
         e.session.min_free_ram_mb = 2048;
-        assert_eq!(e.min_free_bytes(), 2048 * 1024 * 1024);
+        assert_eq!(e.session.min_free_bytes(), 2048 * 1024 * 1024);
         e.session.min_free_ram_mb = 0;
-        assert_eq!(e.min_free_bytes(), 0);
+        assert_eq!(e.session.min_free_bytes(), 0);
     }
 
     /// With the check disabled the gate must not even consult the system, and

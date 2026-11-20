@@ -31,8 +31,8 @@ pub fn handle_selected(editor: &mut RawEditor, choice: ProfileChoice) -> Task<Me
     }
     editor.session.current_edit_params.camera_profile = choice;
     // An edit like any other: undoable, saved now.
-    editor.mark_edits_dirty();
-    editor.commit_current_state();
+    editor.session.mark_edits_dirty();
+    editor.session.commit_current_state();
     rebuild(editor)
 }
 

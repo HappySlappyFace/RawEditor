@@ -66,7 +66,7 @@ pub fn scroll_to_reveal(index: usize, scroll_x: f32, view_width: f32, how: Revea
 /// Render the filmstrip timeline at the bottom of the Develop and Cull tabs.
 ///
 /// Takes the whole editor rather than a selection set so it can use
-/// `RawEditor::is_selected` — the same predicate the library grid uses. It
+/// `crate::session::Session::is_selected` — the same predicate the library grid uses. It
 /// previously read `multi_selection` alone, which disagreed with the grid
 /// whenever `selected_image_id` was not also in the set.
 ///
@@ -89,7 +89,7 @@ pub fn view<'a>(
 
     for img in &images[first..last] {
         let img = *img;
-        let is_selected = editor.is_selected(img.id);
+        let is_selected = editor.session.is_selected(img.id);
 
         // The edited proxy when the image has edits, so the strip shows the
         // photos as edited. Images still waiting on their cache tiers get a
