@@ -644,10 +644,14 @@ mod tests {
         ifd.extend_from_slice(&0u32.to_le_bytes());
         out.extend_from_slice(&ifd);
         out.extend_from_slice(&data);
+        // Unique per call: tests run in parallel, and two of them write a
+        // profile with the same tags (keying on the tag sum let one delete or
+        // overwrite the other's file mid-test).
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let path = std::env::temp_dir().join(format!(
             "raw-editor-synthetic-{}-{}.dcp",
             std::process::id(),
-            entries.iter().map(|e| e.0 as u64).sum::<u64>()
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         std::fs::write(&path, out).unwrap();
         path
