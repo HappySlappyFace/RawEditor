@@ -1205,6 +1205,10 @@ mod tests {
                 "crates/raw-editor-core/Cargo.toml",
                 include_str!("../../../crates/raw-editor-core/Cargo.toml"),
             ),
+            (
+                "crates/raw-editor-session/Cargo.toml",
+                include_str!("../../../crates/raw-editor-session/Cargo.toml"),
+            ),
         ];
         let credited: Vec<&str> =
             LIBRARIES.iter().flat_map(|c| c.crates.iter().copied()).collect();

@@ -5,8 +5,8 @@
 use std::sync::Arc;
 
 use super::{load_proxy, CachedPreview, Effects, Session, SessionEvent, MAX_CONCURRENT_PREVIEW_LOADS, MAX_CONCURRENT_RAW_LOADS};
-use crate::app::message::AppTab;
-use crate::app::state::EditorReadiness;
+use crate::session::AppTab;
+use crate::session::EditorReadiness;
 use crate::database::models::Image as ImageData;
 use crate::raw;
 use super::edit_key;
@@ -69,7 +69,7 @@ fn load_working_preview(image_id: i64, path: String) -> Effects {
     Effects::perform("working preview", async move {
         match load_preview_pixels(path.clone()).await {
             Ok((w, h, pixels)) => SessionEvent::WorkingPreviewReady(image_id, Some(Arc::from(pixels)), (w, h), path),
-            Err(_) => SessionEvent::WorkingPreviewReady(image_id, None, crate::app::state::PLACEHOLDER_DIMS, path),
+            Err(_) => SessionEvent::WorkingPreviewReady(image_id, None, crate::session::PLACEHOLDER_DIMS, path),
         }
     })
 }
@@ -203,7 +203,7 @@ impl Session {
         // Mask selection is an index into the previous image's mask list — clear
         // both it and any pending placement mode when the image changes.
         self.selected_mask = None;
-        self.mask_tool = crate::app::state::MaskTool::Inactive;
+        self.mask_tool = crate::session::MaskTool::Inactive;
         // The overlay was drawn for the previous image.
         self.changed.insert(super::Changed::OVERLAY);
 

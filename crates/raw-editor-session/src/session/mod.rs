@@ -1,11 +1,9 @@
 //! The editing session: the app's logic, with no UI toolkit in it.
 //!
-//! Built here, inside the app, area by area, and moved into
-//! `crates/raw-editor-session` once nothing in it refers to iced. Its methods
-//! change state and return [`Effects`]; the app runs them
-//! (`app::update::run`) and hands each result back as a [`SessionEvent`]
-//! (`Message::Session`). Decisions that need a dialog come back as values for
-//! the app to act on; the session never opens one.
+//! Its methods change state and return [`Effects`]; a front end runs them
+//! and hands each result back to [`Session::handle`] as a [`SessionEvent`].
+//! Decisions that need a dialog come back as values for the front end to act
+//! on; the session never opens one.
 
 mod ai_denoise;
 mod ai_mask;
@@ -25,12 +23,14 @@ mod navigation;
 mod proxy;
 mod models;
 mod updates;
-#[cfg(test)]
+mod state;
+#[cfg(any(test, feature = "test-support"))]
 pub mod testkit;
 #[cfg(test)]
 mod tests;
 
 pub use camera_profiles::{CameraProfileState, ProfileJob};
+pub use state::*;
 pub use delete::{DeleteRequest, HardDeleteOutcome};
 pub use export::{ExportFormat, ExportJob, ExportJobState, ExportSettings};
 pub use lensfun::{LensfunJob, LensfunState};
@@ -249,11 +249,7 @@ fn blocking<T: Send + 'static>(
     })
 }
 
-// The state below moved here from `RawEditor` as is (comments included); the
-// functions that use it follow area by area. Its types still live in the app
-// (`app::state` and the handlers) until the session leaves the app.
-use crate::app::message::AppTab;
-use crate::app::state::*;
+// The state below moved here from `RawEditor` as is (comments included).
 pub use raw_editor_session::Changed;
 use crate::{database, gpu, raw};
 use lru::LruCache;

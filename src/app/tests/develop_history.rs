@@ -3,7 +3,8 @@
 //! checked against both the editor and what the catalogue saved.
 
 use crate::app::message::{AppTab, CopyCategory, Message};
-use crate::app::state::{EditorReadiness, HISTORY_LIMIT};
+use crate::app::state::EditorReadiness;
+use crate::session::HISTORY_LIMIT;
 use crate::app::testkit::*;
 
 /// A slider gesture: one change, then the release.

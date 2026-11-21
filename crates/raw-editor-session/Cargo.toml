@@ -7,6 +7,37 @@ description = "RawEditor's editing session: the app's logic, independent of any 
 license.workspace = true
 publish = false
 
-# No dependencies yet: the plumbing (effects) is plain std. The session itself
-# moves in from the app area by area (see CLAUDE.md, Workspace).
 [dependencies]
+# The engine: GPU pipeline, RAW decoding, colour science, catalogue, AI.
+raw-editor-core.workspace = true
+
+tokio.workspace = true
+tracing.workspace = true
+rusqlite.workspace = true
+dirs.workspace = true
+cgmath.workspace = true
+image.workspace = true
+kamadak-exif.workspace = true
+# The RAM cache of decoded RAWs.
+lru = "0.12"
+# Recursive directory traversal (import).
+walkdir = "2.4"
+# Direct encoders for export (avoiding image crate high-level APIs).
+png.workspace = true
+jpeg-encoder = "0.6"
+tiff.workspace = true
+# Delete moves files to the system trash.
+trash = "5.2.6"
+
+zune-jpeg = { workspace = true, optional = true }
+zune-core = { workspace = true, optional = true }
+
+[features]
+default = []
+# 3-5x faster JPEG decoding via zune-jpeg (see the app's manifest).
+fast-jpeg = ["dep:zune-jpeg", "dep:zune-core", "raw-editor-core/fast-jpeg"]
+# Fixtures for front ends' tests (`session::testkit`, `AiSelect::for_test`).
+test-support = ["raw-editor-core/test-support"]
+
+[dev-dependencies]
+raw-editor-core = { workspace = true, features = ["test-support"] }

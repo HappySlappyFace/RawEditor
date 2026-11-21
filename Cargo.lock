@@ -3905,24 +3905,14 @@ dependencies = [
  "iced_aw",
  "iced_runtime",
  "image 0.25.8",
- "jpeg-encoder",
- "kamadak-exif",
- "lru",
- "png 0.17.16",
  "raw-editor-core",
  "raw-editor-session",
  "rfd",
- "rusqlite",
  "thiserror 1.0.69",
- "tiff 0.9.1",
  "tokio",
  "tracing",
- "trash",
- "walkdir",
  "wgpu",
  "winresource",
- "zune-core",
- "zune-jpeg",
 ]
 
 [[package]]
@@ -3961,6 +3951,24 @@ dependencies = [
 [[package]]
 name = "raw-editor-session"
 version = "0.9.26"
+dependencies = [
+ "cgmath",
+ "dirs 5.0.1",
+ "image 0.25.8",
+ "jpeg-encoder",
+ "kamadak-exif",
+ "lru",
+ "png 0.17.16",
+ "raw-editor-core",
+ "rusqlite",
+ "tiff 0.9.1",
+ "tokio",
+ "tracing",
+ "trash",
+ "walkdir",
+ "zune-core",
+ "zune-jpeg",
+]
 
 [[package]]
 name = "raw-window-handle"

@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use walkdir::WalkDir;
 
 use super::{Effects, Session, SessionEvent};
-use crate::app::state::EditorReadiness;
+use crate::session::EditorReadiness;
 use crate::database;
 use crate::raw;
 

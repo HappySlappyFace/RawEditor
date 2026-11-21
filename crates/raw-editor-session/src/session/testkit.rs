@@ -9,12 +9,11 @@
 //!
 //! The app's message-level harness (`app::testkit`) shares these fixtures.
 
-use crate::app::message::AppTab;
 use crate::database::library::Library;
 use crate::database::models::Image as ImageData;
 use crate::raw::loader::RawDataResult;
 
-use super::{Effects, Handled, SelectionChange, Session, SessionEvent, TabLoad};
+use super::{AppTab, Effects, Handled, SelectionChange, Session, SessionEvent, TabLoad};
 
 /// An empty catalogue in memory (the real schema, nothing on disk).
 pub fn library() -> Library {
@@ -50,10 +49,7 @@ pub fn image_rows(lib: &Library, n: usize) -> Vec<ImageData> {
 /// selected.
 pub fn session_with_images(n: usize) -> Session {
     let lib = library();
-    let mut s = Session::default();
-    s.images = image_rows(&lib, n);
-    s.library = Some(lib);
-    s
+    Session { images: image_rows(&lib, n), library: Some(lib), ..Session::default() }
 }
 
 /// What a front end does when the user opens `image_id` in Develop: switch

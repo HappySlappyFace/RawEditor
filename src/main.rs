@@ -9,13 +9,16 @@ mod app;
 mod debug;
 #[cfg(target_os = "linux")]
 mod desktop;
-mod session;
 mod ui;
 
 // The engine (GPU pipeline, RAW decoding, colour science, catalogue, AI) is
 // the `raw-editor-core` crate. Importing its modules at the root keeps every
 // `crate::core::…`/`crate::gpu::…` path in the app working unchanged.
-use raw_editor_core::{color, core, database, gpu, ml, raw};
+use raw_editor_core::{core, database, gpu, ml, raw};
+#[cfg(test)]
+use raw_editor_core::color;
+// The editing session (`raw-editor-session`), at the same path it had in the app.
+use raw_editor_session::session;
 
 use iced::Font;
 

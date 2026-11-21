@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use super::{Effects, Session, SessionEvent};
-use crate::app::state::EditorReadiness;
+use crate::session::EditorReadiness;
 use crate::gpu;
 use crate::raw;
 
@@ -313,7 +313,7 @@ impl Session {
     /// Start the full-resolution rebuild if the current view shows the
     /// subsampled develop texture magnified (`develop::render_target`).
     fn upgrade_if_soft(&mut self) -> Effects {
-        if self.current_tab != crate::app::message::AppTab::Develop
+        if self.current_tab != crate::session::AppTab::Develop
             || !matches!(self.editor_readiness, EditorReadiness::Ready(_))
             || self.render_target().magnification
                 <= crate::core::viewport::FULL_RES_MAGNIFICATION

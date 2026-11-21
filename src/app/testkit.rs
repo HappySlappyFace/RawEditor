@@ -26,7 +26,8 @@ use std::sync::Arc;
 
 use crate::session::{SessionEvent, MAX_CONCURRENT_PREVIEW_LOADS, MAX_CONCURRENT_RAW_LOADS};
 use crate::app::message::{AppTab, Message};
-use crate::app::state::{EditorReadiness, RawEditor, HISTORY_LIMIT};
+use crate::app::state::{EditorReadiness, RawEditor};
+use crate::session::HISTORY_LIMIT;
 use crate::core::types::EditParams;
 
 pub use crate::session::testkit::{library, raw};

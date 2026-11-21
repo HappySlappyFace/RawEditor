@@ -74,14 +74,7 @@ impl SidebarSection {
     }
 }
 
-/// Application tabs/modules
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AppTab {
-    Library, // Browse, import, organize images
-    Cull,
-    Develop, // Edit selected image with full preview
-    Export,  // Batch export queue and settings
-}
+pub use crate::session::AppTab;
 
 /// Application messages (events)
 #[derive(Debug, Clone)]

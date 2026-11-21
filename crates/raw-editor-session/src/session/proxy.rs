@@ -20,8 +20,8 @@
 //! (`crate::session::Session::invalidate_proxies`), falling back to the camera thumbnail.
 
 use super::{Effects, Session, SessionEvent};
-use crate::app::message::AppTab;
-use crate::app::state::EditorReadiness;
+use crate::session::AppTab;
+use crate::session::EditorReadiness;
 use crate::core::types::EditParams;
 use std::path::PathBuf;
 use std::sync::Arc;

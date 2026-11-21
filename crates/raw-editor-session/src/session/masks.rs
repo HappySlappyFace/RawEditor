@@ -4,7 +4,7 @@
 //! rectangle); the colour shader evaluates the masks analytically in Step 10.5.
 
 use super::{Changed, Effects, MaskHandle, RawSampleError, Session, StrokeEvent};
-use crate::app::state::MaskTool;
+use crate::session::MaskTool;
 use crate::core::types::{MaskParams, MASK_BRUSH, MASK_RANGE, MAX_MASKS};
 
 /// Which per-mask adjustment a slider targets (see MaskAdjustmentChanged)

@@ -32,19 +32,34 @@ There is no separate frontend build — this is a single native Rust binary (no 
 ## Architecture
 
 ### Workspace
-Three crates. The **engine**, `crates/raw-editor-core` (`gpu`, `raw`, `ml`, `database`, `core`, `color`), has no UI toolkit: it must never depend on iced. The **app**, the root package `raw-editor` (`src/`: `app`, `ui`, `desktop`), drives it. `src/main.rs` imports the engine's modules at the crate root, so app code keeps writing `crate::core::…`, `crate::gpu::…`.
-- Test fixtures the app's tests need from the engine are `#[cfg(any(test, feature = "test-support"))]`; the app's dev-dependency turns the feature on. `#[cfg(test)]` alone doesn't reach another crate.
-- Shared dependency versions live in the root's `[workspace.dependencies]`. Every direct dependency of either crate needs a Preferences › Licenses credit (`every_direct_dependency_is_credited` checks both manifests).
+Three crates, layered: **engine** ← **session** ← **app**.
+- The **engine**, `crates/raw-editor-core` (`gpu`, `raw`, `ml`, `database`, `core`, `color`), holds the primitives.
+- The **session**, `crates/raw-editor-session` (`session`, plus `Effects`/`Changed` at its root), holds the application logic: the catalogue workflow, loading and the load queues, edits and history, render scheduling, proxies, export, and the AI/lensfun/profile/update jobs.
+- The **app**, the root package `raw-editor` (`src/`: `app`, `ui`, `desktop`), is the iced front end over both.
+
+Neither the engine nor the session may depend on iced or any other UI toolkit. `no_ui_toolkit_in_the_session` greps the session's sources for iced, winit and rfd. Each crate imports what it builds on at its root (`src/main.rs`: the engine's modules and `session`; the session's `lib.rs`: the engine's modules). So code on every side keeps writing `crate::core::…`, `crate::gpu::…` and `crate::session::…`.
+- Test fixtures another crate's tests need are `#[cfg(any(test, feature = "test-support"))]`, for example `session::testkit` and `AiSelect::for_test`. The app's dev-dependencies turn the feature on for both crates. `#[cfg(test)]` alone doesn't reach another crate.
+- Shared dependency versions live in the root's `[workspace.dependencies]`. Every direct dependency of any crate needs a Preferences › Licenses credit; `every_direct_dependency_is_credited` checks all three manifests. A crate only the session uses (`lru`, `walkdir`, `trash`, the export encoders) belongs in the session's manifest, not the app's. `fast-jpeg` is forwarded app → session → engine.
 - `default-members` covers every crate, so plain `cargo test`/`clippy` check everything.
-- **Session (in progress).** The app's logic is moving, area by area, into a toolkit-free session: `src/session/` (in the app for now) holds `Session`, its methods, and `SessionEvent`. Its methods change state and return `Effects` (`crates/raw-editor-session`: labelled boxed futures, like `Task::perform`/`batch` without iced); `app::update::run` turns them into tasks, and their results come back as `Message::Session(event)`, which `update::session_event` hands to `Session::handle`; the few events the app has a part in (`Handled::FrontEnd`) come back to it. `session::testkit` drives a `Session` with no front end: effects are read by label (`labels`), never run, and results are delivered by hand (`deliver`). A decision that needs a dialog is returned as a value for the app to act on (`UpdatesAtStartup::Ask`); the session never touches modals, caches or widgets. Every area has moved (the app keeps pointer, modal, scroll and widget state); next, `src/session/` joins `crates/raw-editor-session`.
+
+**The session (`session::Session`).** Its methods change state and return `Effects`: labelled boxed futures, like `Task::perform`/`batch` without iced. The app's side works like this:
+- `app::update::run` turns `Effects` into tasks.
+- Their results come back as `Message::Session(event)`, and `update::session_event` hands them to `Session::handle`.
+- The few events the app has a part in come back to it as `Handled::FrontEnd`: a dialog to close, or the selection to move.
+
+The rules:
+- **Decisions come back as values.** A decision that needs a dialog is returned for the app to act on (`UpdatesAtStartup::Ask`, `ModelMissing`, `DeleteRequest`). The session never touches modals, caches or widgets.
+- **Drawn things are signalled, not drawn.** Anything the front end caches a drawing of is signalled through `session.changed` (`Changed::{OVERLAY, HISTOGRAM, PROFILER}`) and `session.camera_preview`. `RawEditor::sync_from_session` drains them after every update.
+- **The app keeps its own state.** Pointer, modal, scroll and widget state stay in the app. Its handlers read session state freely but change it only through session methods.
+- **Testing without a front end.** `session::testkit` drives a `Session` on its own. Effects are read by label (`labels`), never run, and results are delivered by hand (`deliver`). `app::testkit` builds on the same fixtures and drives `update`.
 
 ### Module layout
 - `src/main.rs` — entry point / iced application bootstrap
 - `src/app/` — application state and update loop, split Elm-style:
   - `state.rs` / `message.rs` — `RawEditor` state struct and `Message` enum
-  - `update.rs` + `handlers/{ai_denoise,ai_mask,camera_profiles,delete,develop,export,lens,lensfun,library,loading,loupe,masks,models,navigation,proxy,scroll,updates,window}.rs` — message handlers grouped by feature area
+  - `update.rs` + `handlers/{ai_denoise,ai_mask,camera_profiles,delete,develop,export,lens,lensfun,library,loading,loupe,masks,models,navigation,proxy,scroll,updates,window}.rs` — message handlers grouped by feature area: glue from input to the session methods of the same area (`crates/raw-editor-session/src/session/`)
   - `views/{develop,library,cull,export,layout,modals,preferences}.rs` — iced view builders per tab/screen
-  - `loader.rs` — async multi-tier image loading orchestration
+  - `loader.rs` — the background-load subscriptions over the session's queues (the decodes themselves are `session::loader`)
 - `crates/raw-editor-core/src/gpu/` — the wgpu rendering pipeline (see dual-pass system below):
   `demosaic.rs` (Pass 1, RCD), `denoise.rs` (cached NR pre-pass), `loupe.rs` (1:1 detail loupe, §G), `local_contrast.rs`
   (cached Texture/Clarity band pre-pass), `brush.rs` (mask stroke rasteriser), `shaders.rs` (Pass 2 WGSL), `shared.rs` (`SharedContext` + `ImageResources`:

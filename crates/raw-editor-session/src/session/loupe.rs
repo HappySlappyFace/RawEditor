@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::{Effects, Session, SessionEvent};
-use crate::app::message::AppTab;
+use crate::session::AppTab;
 use crate::core::types::EditParams;
 use crate::gpu::denoise::DenoiseSettings;
 
@@ -266,7 +266,7 @@ impl Session {
             // Tools are mutually exclusive: a click can only mean one thing.
             self.is_wb_picking = false;
             self.is_leveling = false;
-            self.mask_tool = crate::app::state::MaskTool::Inactive;
+            self.mask_tool = crate::session::MaskTool::Inactive;
             self.brush_armed = false;
             self.color_picking_mask = None;
             self.status = "Click the image to place the detail loupe".to_string();

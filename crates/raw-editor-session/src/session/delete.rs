@@ -17,7 +17,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use super::{Effects, Moved, Session, SessionEvent};
-use crate::app::state::EditorReadiness;
+use crate::session::EditorReadiness;
 use crate::database::models::{is_marked, with_mark};
 
 #[derive(Debug, Clone)]

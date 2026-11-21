@@ -19,8 +19,8 @@
 use std::sync::{Arc, Mutex};
 
 use super::{Effects, Session, SessionEvent};
-use crate::app::message::AppTab;
-use crate::app::state::MaskTool;
+use crate::session::AppTab;
+use crate::session::MaskTool;
 use crate::core::types::{MaskParams, MASK_AI, MAX_MASKS};
 use crate::gpu::ai_mask::AiBitmaps;
 use crate::ml::masks::{self, Bitmap, Point, Prompts};
@@ -107,7 +107,7 @@ pub struct AiBitmapState {
     failed: Vec<u64>,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl AiSelect {
     /// A session without an engine or a GPU, for message-level tests.
     pub fn for_test(image_id: i64, slot: usize, created: bool) -> Self {
@@ -132,7 +132,7 @@ impl AiSelect {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl Selection {
     /// A decoder answer that never ran the decoder.
     pub fn for_test(ai_id: u64, bitmap: Bitmap) -> Self {

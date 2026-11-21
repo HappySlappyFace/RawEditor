@@ -6,8 +6,8 @@
 use std::sync::Arc;
 
 use super::{Changed, Effects, Session, SessionEvent};
-use crate::app::message::AppTab;
-use crate::app::state::{EditorReadiness, MaskTool};
+use crate::session::AppTab;
+use crate::session::{EditorReadiness, MaskTool};
 use crate::core::tonemap::ToneSettings;
 use crate::core::types::{CopyCategories, EditParams};
 
@@ -646,8 +646,8 @@ impl Session {
                     stack.truncate(*index + 1);
                     stack.push(*params);
                     *index += 1;
-                    if stack.len() > crate::app::state::HISTORY_LIMIT {
-                        let excess = stack.len() - crate::app::state::HISTORY_LIMIT;
+                    if stack.len() > crate::session::HISTORY_LIMIT {
+                        let excess = stack.len() - crate::session::HISTORY_LIMIT;
                         stack.drain(..excess);
                         *index -= excess;
                     }

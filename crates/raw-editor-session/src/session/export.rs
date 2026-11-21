@@ -899,11 +899,11 @@ mod tests {
             // Platform has no implementation; the gate is inert by design.
             return;
         }
-        e.min_free_ram_mb = crate::app::state::MIN_FREE_RAM_MB_MAX;
+        e.min_free_ram_mb = crate::session::MIN_FREE_RAM_MB_MAX;
         e.raw_cache_bytes = 999;
         match e.check_memory_gate() {
             MemoryGate::Wait { needed_mb, .. } => {
-                assert_eq!(needed_mb, crate::app::state::MIN_FREE_RAM_MB_MAX as u64);
+                assert_eq!(needed_mb, crate::session::MIN_FREE_RAM_MB_MAX as u64);
                 assert_eq!(e.raw_cache_bytes, 0, "caches should have been released");
             }
             MemoryGate::Proceed => panic!("16 GB of headroom should not be satisfiable"),
