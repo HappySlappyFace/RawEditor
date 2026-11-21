@@ -28,42 +28,16 @@ use crate::session::{SessionEvent, MAX_CONCURRENT_PREVIEW_LOADS, MAX_CONCURRENT_
 use crate::app::message::{AppTab, Message};
 use crate::app::state::{EditorReadiness, RawEditor, HISTORY_LIMIT};
 use crate::core::types::EditParams;
-use crate::database::library::Library;
-use crate::database::models::Image as ImageData;
-use crate::raw::loader::RawDataResult;
 
-/// An empty catalogue in memory (the real schema, nothing on disk).
-pub fn library() -> Library {
-    Library::open_at(std::path::Path::new(":memory:")).expect("in-memory catalogue")
-}
+pub use crate::session::testkit::{library, raw};
 
 /// An editor with `n` images in its catalogue (ids 1..=n, in display order),
-/// in the Library tab, nothing selected. Each image has a (nonexistent) RAW
-/// path and working-preview path, so loads and preloads are queued exactly as
-/// for a real catalogue.
+/// in the Library tab, nothing selected (`session::testkit::image_rows`).
 pub fn editor_with_images(n: usize) -> RawEditor {
     let lib = library();
-    let mut images = Vec::with_capacity(n);
-    for i in 1..=n {
-        let filename = format!("IMG_{i:04}.NEF");
-        let path = format!("/nonexistent/testkit/{filename}");
-        let id = lib.import_image(&path, &filename).expect("import");
-        images.push(ImageData {
-            id,
-            filename,
-            path,
-            cache_path_thumb: None,
-            cache_path_instant: None,
-            cache_path_working: Some(format!("/nonexistent/testkit/working/{id}.jpg")),
-            cache_path_edited: None,
-            file_status: "exists".into(),
-            rating: 0,
-            flag: 0,
-        });
-    }
     let mut e = RawEditor::new().0;
+    e.session.images = crate::session::testkit::image_rows(&lib, n);
     e.session.library = Some(lib);
-    e.session.images = images;
     e
 }
 
@@ -94,34 +68,6 @@ pub fn press_arrow(e: &mut RawEditor, forward: bool) {
     send(e, if forward { Message::SelectNextImage } else { Message::SelectPreviousImage });
     if let Some(id) = target {
         send(e, Message::ImageSelected(id));
-    }
-}
-
-/// A tiny but valid decoded RAW: 8×8 RGGB, a flat grey. `tag` lands in
-/// `model`, so tests can tell which delivery the editor is holding.
-pub fn raw(tag: impl std::fmt::Display) -> RawDataResult {
-    RawDataResult {
-        data: vec![1000; 64],
-        width: 8,
-        height: 8,
-        wb_multipliers: [2.0, 1.0, 1.5, 1.0],
-        color_matrix: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
-        cfa_pattern: 0,
-        black_levels: [0; 4],
-        white_level: 4095,
-        color_matrix_is_d65: true,
-        crops: [0; 4],
-        cfa_name: "RGGB".into(),
-        measured_black_levels: [0.0; 4],
-        make: "Testkit".into(),
-        model: format!("synthetic {tag}"),
-        iso: String::new(),
-        shutter_speed: String::new(),
-        aperture: String::new(),
-        lens: String::new(),
-        dcp_profile: None,
-        lens_context: Default::default(),
-        orientation: 1,
     }
 }
 

@@ -10,8 +10,8 @@ use iced::Task;
 
 use crate::app::message::Message;
 use crate::app::state::RawEditor;
-use crate::app::update::{follow_up, run};
-use crate::core::camera_profiles::{ProfileChoice, UpdateReport};
+use crate::app::update::run;
+use crate::core::camera_profiles::ProfileChoice;
 use crate::session::Session;
 
 /// Rebuild the open image so it picks its profile again.
@@ -33,16 +33,11 @@ pub fn handle_selected(editor: &mut RawEditor, choice: ProfileChoice) -> Task<Me
 pub fn handle_set_default(editor: &mut RawEditor, camera: String, value: Option<String>) -> Task<Message> {
     let next = editor.session.set_camera_profile_default(camera, value);
     editor.save_preferences();
-    follow_up(editor, next)
+    run(next)
 }
 
 pub fn handle_download(editor: &mut RawEditor) -> Task<Message> {
     run(editor.session.download_camera_profile())
-}
-
-pub fn handle_downloaded(editor: &mut RawEditor, camera_name: String, result: Result<Option<String>, String>) -> Task<Message> {
-    let next = editor.session.camera_profile_downloaded(camera_name, result);
-    follow_up(editor, next)
 }
 
 pub fn handle_import(editor: &mut RawEditor) -> Task<Message> {
@@ -68,18 +63,8 @@ pub fn handle_picked(editor: &mut RawEditor, files: Option<Vec<std::path::PathBu
     run(editor.session.import_camera_profiles(files.unwrap_or_default()))
 }
 
-pub fn handle_imported(editor: &mut RawEditor, ok: Vec<String>, failed: Vec<String>) -> Task<Message> {
-    let next = editor.session.camera_profiles_imported(ok, failed);
-    follow_up(editor, next)
-}
-
 pub fn handle_update(editor: &mut RawEditor) -> Task<Message> {
     run(editor.session.update_camera_profiles())
-}
-
-pub fn handle_updated(editor: &mut RawEditor, result: Result<UpdateReport, String>) -> Task<Message> {
-    let next = editor.session.camera_profiles_updated(result);
-    follow_up(editor, next)
 }
 
 pub fn handle_rescan(editor: &mut RawEditor) -> Task<Message> {
@@ -90,11 +75,6 @@ pub fn handle_rescan(editor: &mut RawEditor) -> Task<Message> {
 /// Camera Profiles page asks on opening).
 pub fn ensure_loaded() -> Task<Message> {
     run(Session::camera_profiles_ensure_loaded())
-}
-
-pub fn handle_scanned(editor: &mut RawEditor, changed: bool) -> Task<Message> {
-    let next = editor.session.camera_profiles_scanned(changed);
-    follow_up(editor, next)
 }
 
 #[cfg(test)]
@@ -110,7 +90,7 @@ mod tests {
         assert_eq!(e.session.camera_profiles.busy, Some(ProfileJob::Rescanning));
         let _ = handle_update(&mut e);
         assert_eq!(e.session.camera_profiles.busy, Some(ProfileJob::Rescanning));
-        let _ = handle_scanned(&mut e, false);
+        let _ = crate::app::update::update(&mut e, Message::Session(crate::session::SessionEvent::CameraProfilesScanned(false)));
         assert_eq!(e.session.camera_profiles.busy, None);
     }
 
@@ -134,7 +114,7 @@ mod tests {
         e.session.camera_profiles.busy = Some(ProfileJob::Downloading);
         // The name comes from the request, not from whichever image is open
         // when the download finishes.
-        let _ = handle_downloaded(&mut e, "Nikon D3300".into(), Ok(None));
+        let _ = crate::app::update::update(&mut e, Message::Session(crate::session::SessionEvent::CameraProfileDownloaded("Nikon D3300".into(), Ok(None))));
         assert_eq!(e.session.camera_profiles.busy, None);
         assert_eq!(e.session.camera_profiles.unavailable.as_deref(), Some("Nikon D3300"));
         assert!(matches!(e.session.camera_profiles.notice, Some(Err(_))));

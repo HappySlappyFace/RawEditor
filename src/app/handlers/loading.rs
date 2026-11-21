@@ -1,68 +1,18 @@
-//! Loading, the app's side: a build's resources landing means the
-//! placeholder goes and the image renders. The loading itself is the
-//! session's (`session::loading`).
-
-use iced::Task;
-use std::sync::Arc;
-use crate::app::state::RawEditor;
-use crate::app::message::Message;
-use crate::app::update::run;
-use crate::raw;
-use crate::session::{BuiltResources, FullRes, Installed};
-
-pub fn handle_raw_data_loaded(
-    editor: &mut RawEditor,
-    image_id: i64,
-    result: Result<raw::loader::RawDataResult, String>,
-) -> Task<Message> {
-    run(editor.session.raw_data_loaded(image_id, result))
-}
-
-pub fn handle_raw_preloaded(
-    editor: &mut RawEditor,
-    image_id: i64,
-    result: Result<Arc<raw::loader::RawDataResult>, String>,
-) -> Task<Message> {
-    run(editor.session.raw_preloaded(image_id, result))
-}
-
-pub fn handle_image_resources_ready(editor: &mut RawEditor, image_id: i64, result: BuiltResources) -> Task<Message> {
-    let installed = editor.session.image_resources_ready(image_id, result);
-    after_build(editor, installed)
-}
-
-/// New resources are on screen (the session dropped the placeholder and
-/// marked the overlays stale): render.
-fn after_build(editor: &mut RawEditor, installed: Installed) -> Task<Message> {
-    if installed == Installed::No {
-        return Task::none();
-    }
-    // Throttled, not forced: a render can still be in flight here
-    // (the previous image, or the subsampled pass before a full-res
-    // upgrade). Starting a second one alongside it raced the two, and
-    // whichever landed last won the screen.
-    let render = crate::app::handlers::navigation::throttled_render(editor);
-    Task::batch([render, run(editor.session.regenerate_missing_ai_denoise())])
-}
-
-/// The full-resolution rebuild finished (`Session::full_res_ready`).
-pub fn handle_full_res_ready(editor: &mut RawEditor, image_id: i64, result: BuiltResources) -> Task<Message> {
-    match editor.session.full_res_ready(image_id, result) {
-        FullRes::Installed(installed) => after_build(editor, installed),
-        FullRes::Effects(next) => run(next),
-    }
-}
+//! Loading is the session's (`session::loading`): its events go straight
+//! to `Session::handle`. What is left here are the tests that need the app.
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::sync::Arc;
+    use crate::app::state::RawEditor;
+    use crate::raw;
     use crate::app::state::EditorReadiness;
     use crate::gpu;
     use crate::app::message::AppTab;
 
     /// With the preload budget at 0 nothing enters `raw_cache`, yet the open
     /// image's RAW must stay reachable (eyedroppers, loupe, AI tools). Runs
-    /// the real `RawDataLoaded` handler; `apply_raw_preload_cleanup` runs in it.
+    /// the real `RawDataLoaded` handling; `apply_raw_preload_cleanup` runs in it.
     #[test]
     fn the_open_images_raw_is_pinned_with_a_zero_preload_budget() {
         let mut e = RawEditor::new().0;
@@ -70,7 +20,7 @@ mod tests {
         e.session.selected_image_id = Some(1);
         e.session.editor_readiness = EditorReadiness::Loading(1);
         let raw = crate::ml::segment::test_support::disc_raw(60, 40);
-        let _ = handle_raw_data_loaded(&mut e, 1, Ok(raw));
+        let _ = e.session.raw_data_loaded(1, Ok(raw));
         assert!(e.session.raw_cache.is_empty(), "budget 0 caches nothing");
         assert!(e.session.raw_for(1).is_some(), "the open image's RAW was dropped");
         assert!(e.session.raw_for(2).is_none());
@@ -132,7 +82,7 @@ mod tests {
 
         // At fit on a standard display the preview is sharp: no upgrade.
         e.session.zoom = 1.0;
-        let _ = handle_image_resources_ready(&mut e, 1, Ok((ctx.clone(), preview.clone())));
+        let _ = e.session.image_resources_ready(1, Ok((ctx.clone(), preview.clone())));
         assert!(!e.session.full_res_upgrading, "upgraded at fit");
 
         // The same image arriving in a view zoomed in on the previous one —
@@ -141,7 +91,7 @@ mod tests {
         e.session.zoom = 3.0;
         e.session.editor_readiness = EditorReadiness::Loading(1);
         assert!(e.session.raw_cache.get(&1).is_none());
-        let _ = handle_image_resources_ready(&mut e, 1, Ok((ctx.clone(), preview.clone())));
+        let _ = e.session.image_resources_ready(1, Ok((ctx.clone(), preview.clone())));
         assert!(e.session.full_res_upgrading, "a zoomed-in view stayed on the subsampled preview");
 
         // One upgrade at a time: a second request waits for the first.
@@ -151,7 +101,7 @@ mod tests {
 
         // A failed upgrade keeps the preview to edit on, and is not retried
         // on every render.
-        let _ = handle_full_res_ready(&mut e, 1, Err("out of memory".into()));
+        let _ = e.session.full_res_ready(1, Err("out of memory".into()));
         assert!(!e.session.full_res_upgrading);
         assert!(matches!(e.session.editor_readiness, EditorReadiness::Ready(1)), "editor failed");
         assert!(e.session.image_resources.is_some());
@@ -174,7 +124,7 @@ mod tests {
         });
         e.session.full_res_upgrading = true;
         e.session.is_rendering = false;
-        let _ = handle_full_res_ready(&mut e, 1, Ok((ctx.clone(), full.clone())));
+        let _ = e.session.full_res_ready(1, Ok((ctx.clone(), full.clone())));
         assert!(e.session.image_resources.as_ref().is_some_and(|r| Arc::ptr_eq(r, &full)));
         assert!(e.session.preview_resources.as_ref().is_some_and(|p| Arc::ptr_eq(p, &preview)), "preview dropped");
 
@@ -197,7 +147,7 @@ mod tests {
 
         // Any load that is not a full-resolution upgrade drops it.
         e.session.is_rendering = true;
-        let _ = handle_image_resources_ready(&mut e, 1, Ok((ctx.clone(), preview.clone())));
+        let _ = e.session.image_resources_ready(1, Ok((ctx.clone(), preview.clone())));
         assert!(e.session.preview_resources.is_none());
     }
 }

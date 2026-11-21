@@ -7,7 +7,7 @@
 //! cache is dropped — otherwise the panel would keep saying "no profile"
 //! until the app restarted.
 
-use super::{blocking, Effects, FollowUp, Session, SessionEvent};
+use super::{blocking, Effects, Session, SessionEvent};
 use crate::core::lens::LensDb;
 
 /// A lens-database job in progress (`session::lensfun`). One at a time.
@@ -65,7 +65,7 @@ impl Session {
         )
     }
 
-    pub fn lensfun_installed(&mut self, result: Result<crate::core::lensfun::Installed, String>) -> FollowUp {
+    pub fn lensfun_installed(&mut self, result: Result<crate::core::lensfun::Installed, String>) -> Effects {
         self.lensfun.busy = None;
         let ok = result.is_ok();
         match &result {
@@ -87,7 +87,7 @@ impl Session {
         if ok {
             self.lens_database_changed()
         } else {
-            FollowUp::Nothing
+            Effects::none()
         }
     }
 
@@ -115,42 +115,29 @@ impl Session {
         )
     }
 
-    pub fn lens_db_loaded(&mut self, changed: bool) -> FollowUp {
+    pub fn lens_db_loaded(&mut self, changed: bool) -> Effects {
         if self.lensfun.busy == Some(LensfunJob::Rescanning) {
             self.lensfun.busy = None;
         }
         if changed {
             self.lens_database_changed()
         } else {
-            FollowUp::Nothing
+            Effects::none()
         }
     }
 
     /// The database changed: decoded images carry the old lookup.
-    fn lens_database_changed(&mut self) -> FollowUp {
+    fn lens_database_changed(&mut self) -> Effects {
         self.raw_cache.clear();
         self.current_raw = None;
         self.raw_cache_bytes = 0;
-        FollowUp::ReloadSelectedImage
+        self.reload_selected_image()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A new database drops every decode (they carry the old lookup) and
-    /// asks for the open image again; a failed one changes nothing.
-    #[test]
-    fn only_a_changed_database_drops_the_decodes() {
-        let mut s = Session::default();
-        s.raw_cache_bytes = 123;
-        assert_eq!(s.lensfun_installed(Err("offline".into())), FollowUp::Nothing);
-        assert_eq!(s.raw_cache_bytes, 123);
-        assert_eq!(s.lens_db_loaded(false), FollowUp::Nothing, "a first read changes nothing");
-        assert_eq!(s.lens_db_loaded(true), FollowUp::ReloadSelectedImage);
-        assert_eq!(s.raw_cache_bytes, 0);
-    }
 
     #[test]
     fn a_running_job_blocks_the_next() {

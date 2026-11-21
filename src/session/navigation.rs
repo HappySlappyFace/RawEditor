@@ -148,6 +148,22 @@ impl Session {
         persist
     }
 
+    /// Select `image_id` (`change` says how it joins the selection) and open
+    /// it: the outgoing image is saved first, and an AI-select session on it
+    /// is ended while the params are still its own.
+    pub fn select_image(&mut self, image_id: i64, change: SelectionChange) -> Effects {
+        let ai_done = if self.selected_image_id != Some(image_id) {
+            self.ai_select_done()
+        } else {
+            Effects::none()
+        };
+        // Saves the outgoing image's edits and thumbnail: before anything moves.
+        let persist = self.leave_image(image_id);
+        self.change_selection(image_id, change);
+        let load = self.open_image(image_id);
+        Effects::batch([ai_done, persist, load])
+    }
+
     pub fn change_selection(&mut self, image_id: i64, change: SelectionChange) {
         match change {
             SelectionChange::Only => {
@@ -444,7 +460,7 @@ impl Session {
         // `full_res_upgrading` is deliberately NOT reset: an upgrade of the
         // previous image may still be building, and starting this one's
         // alongside it would hold two full-size working sets. Its result
-        // releases the guard and re-checks this image (`handle_full_res_ready`).
+        // releases the guard and re-checks this image (`Session::full_res_ready`).
         // The pin belongs to the image being left.
         if self.current_raw.as_ref().is_some_and(|(id, _)| *id != image_id) {
             self.current_raw = None;

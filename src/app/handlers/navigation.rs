@@ -17,15 +17,6 @@ pub fn handle_image_moved(editor: &mut RawEditor, image_id: i64) -> Task<Message
 }
 
 fn select_image(editor: &mut RawEditor, image_id: i64, from_click: bool) -> Task<Message> {
-    // End an AI-select session where the image is left, while the params are
-    // still this image's (the clean-up edits masks by slot index).
-    let ai_done = if editor.session.selected_image_id != Some(image_id) {
-        crate::app::handlers::ai_mask::handle_done(editor)
-    } else {
-        Task::none()
-    };
-    // Saves the outgoing image's edits and thumbnail: before anything moves.
-    let persist = run(editor.session.leave_image(image_id));
     let shift = from_click && editor.last_modifiers.shift();
     let command = from_click && editor.last_modifiers.command();
 
@@ -46,10 +37,9 @@ fn select_image(editor: &mut RawEditor, image_id: i64, from_click: bool) -> Task
         editor.selection_anchor = Some(image_id);
         SelectionChange::Only
     };
-    editor.session.change_selection(image_id, change);
-    let load = run(editor.session.open_image(image_id));
+    let select = run(editor.session.select_image(image_id, change));
     let reveal = reveal_selection(editor);
-    Task::batch([ai_done, persist, load, reveal])
+    Task::batch([select, reveal])
 }
 
 /// Follow the session's move of the selection.
@@ -275,26 +265,6 @@ pub fn handle_mouse_moved(editor: &mut RawEditor, pos: Point) -> Task<Message> {
     } else {
         handle_pan_interaction(editor, pos)
     }
-}
-
-pub fn handle_working_preview_ready(
-    editor: &mut RawEditor,
-    id: i64,
-    bytes: Option<std::sync::Arc<[u8]>>,
-    dims: (u32, u32),
-    path: String,
-) -> Task<Message> {
-    editor.session.working_preview_ready(id, bytes, dims, path);
-    Task::none()
-}
-
-pub fn handle_preview_cached(
-    editor: &mut RawEditor,
-    id: i64,
-    result: Result<(u32, u32, std::sync::Arc<[u8]>), String>,
-) -> Task<Message> {
-    editor.session.preview_cached(id, result);
-    Task::none()
 }
 
 // Helpers

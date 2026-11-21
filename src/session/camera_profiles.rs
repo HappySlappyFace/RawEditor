@@ -8,7 +8,7 @@
 //! ([`Session::camera_profile_stale`]). From the cached RAW when there is
 //! one: no new decode.
 
-use super::{blocking, Effects, FollowUp, Session, SessionEvent};
+use super::{blocking, Effects, Session, SessionEvent};
 use crate::core::camera_profiles::{self as profiles, Catalog};
 
 /// A camera-profile job in progress (`session::camera_profiles`).
@@ -49,24 +49,24 @@ impl Session {
 
     /// Preferences' per-camera default; `None` clears it back to automatic.
     /// The caller saves the setting.
-    pub fn set_camera_profile_default(&mut self, camera: String, value: Option<String>) -> FollowUp {
+    pub fn set_camera_profile_default(&mut self, camera: String, value: Option<String>) -> Effects {
         match value {
             Some(v) => self.camera_profile_defaults.insert(camera, v),
             None => self.camera_profile_defaults.remove(&camera),
         };
         if self.camera_profile_stale() {
-            FollowUp::ReloadSelectedImage
+            self.reload_selected_image()
         } else {
-            FollowUp::Nothing
+            Effects::none()
         }
     }
 
     /// The installed set changed: the open image may now resolve differently.
-    fn camera_profiles_changed(&self) -> FollowUp {
+    fn camera_profiles_changed(&mut self) -> Effects {
         if self.image_resources.is_some() {
-            FollowUp::ReloadSelectedImage
+            self.reload_selected_image()
         } else {
-            FollowUp::Nothing
+            Effects::none()
         }
     }
 
@@ -99,7 +99,7 @@ impl Session {
         )
     }
 
-    pub fn camera_profile_downloaded(&mut self, camera_name: String, result: Result<Option<String>, String>) -> FollowUp {
+    pub fn camera_profile_downloaded(&mut self, camera_name: String, result: Result<Option<String>, String>) -> Effects {
         self.camera_profiles.busy = None;
         match result {
             Ok(Some(file)) => {
@@ -112,12 +112,12 @@ impl Session {
                 let name = camera_name;
                 self.camera_profiles.notice = Some(Err(format!("RawTherapee has no profile for {name}")));
                 self.camera_profiles.unavailable = Some(name);
-                FollowUp::Nothing
+                Effects::none()
             }
             Err(e) => {
                 tracing::error!("Camera profile download failed: {e}");
                 self.camera_profiles.notice = Some(Err(format!("Download failed: {e}")));
-                FollowUp::Nothing
+                Effects::none()
             }
         }
     }
@@ -143,7 +143,7 @@ impl Session {
         )
     }
 
-    pub fn camera_profiles_imported(&mut self, ok: Vec<String>, failed: Vec<String>) -> FollowUp {
+    pub fn camera_profiles_imported(&mut self, ok: Vec<String>, failed: Vec<String>) -> Effects {
         self.camera_profiles.busy = None;
         self.camera_profiles.notice = Some(match (ok.len(), failed.is_empty()) {
             (_, false) => Err(format!(
@@ -155,7 +155,7 @@ impl Session {
             (n, true) => Ok(format!("Imported {n} profiles")),
         });
         if ok.is_empty() {
-            FollowUp::Nothing
+            Effects::none()
         } else {
             self.camera_profiles_changed()
         }
@@ -179,7 +179,7 @@ impl Session {
         )
     }
 
-    pub fn camera_profiles_updated(&mut self, result: Result<profiles::UpdateReport, String>) -> FollowUp {
+    pub fn camera_profiles_updated(&mut self, result: Result<profiles::UpdateReport, String>) -> Effects {
         self.camera_profiles.busy = None;
         let changed = result.as_ref().is_ok_and(|r| !r.updated.is_empty());
         self.camera_profiles.notice = Some(match result {
@@ -195,7 +195,7 @@ impl Session {
         if changed {
             self.camera_profiles_changed()
         } else {
-            FollowUp::Nothing
+            Effects::none()
         }
     }
 
@@ -221,14 +221,14 @@ impl Session {
         )
     }
 
-    pub fn camera_profiles_scanned(&mut self, changed: bool) -> FollowUp {
+    pub fn camera_profiles_scanned(&mut self, changed: bool) -> Effects {
         if self.camera_profiles.busy == Some(ProfileJob::Rescanning) {
             self.camera_profiles.busy = None;
         }
         if changed {
             self.camera_profiles_changed()
         } else {
-            FollowUp::Nothing
+            Effects::none()
         }
     }
 }
@@ -241,9 +241,9 @@ mod tests {
     #[test]
     fn with_no_image_open_nothing_is_rebuilt() {
         let mut s = Session::default();
-        assert_eq!(s.set_camera_profile_default("NIKON D3300".into(), Some("builtin".into())), FollowUp::Nothing);
+        assert!(s.set_camera_profile_default("NIKON D3300".into(), Some("builtin".into())).is_empty());
         s.camera_profiles.busy = Some(ProfileJob::Importing);
-        assert_eq!(s.camera_profiles_imported(vec!["a.dcp".into()], vec![]), FollowUp::Nothing);
+        assert!(s.camera_profiles_imported(vec!["a.dcp".into()], vec![]).is_empty());
         assert_eq!(s.camera_profiles.busy, None);
         assert!(s.download_camera_profile().is_empty(), "no open image, no camera to download for");
     }

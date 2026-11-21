@@ -9,7 +9,7 @@ use crate::app::message::Message;
 use crate::app::state::RawEditor;
 use crate::app::update::run;
 use crate::raw;
-use crate::session::{CacheResult, CacheStep, ImportResult};
+use crate::session::{CacheResult, CacheStep};
 use crate::ui;
 
 pub fn handle_database_loaded(editor: &mut RawEditor, result: Result<Vec<crate::database::models::Image>, String>) -> Task<Message> {
@@ -162,10 +162,6 @@ pub fn handle_drop_import_confirmed(editor: &mut RawEditor) -> Task<Message> {
 pub fn handle_import_from_camera(editor: &mut RawEditor) -> Task<Message> {
     editor.session.status = "Camera import is not implemented yet.".to_string();
     Task::none()
-}
-
-pub fn handle_import_complete(editor: &mut RawEditor, result: Result<ImportResult, String>) -> Task<Message> {
-    run(editor.session.import_complete(result))
 }
 
 pub fn handle_cache_processed(editor: &mut RawEditor, result: CacheResult) -> Task<Message> {

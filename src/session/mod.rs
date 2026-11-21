@@ -25,6 +25,10 @@ mod navigation;
 mod proxy;
 mod models;
 mod updates;
+#[cfg(test)]
+pub mod testkit;
+#[cfg(test)]
+mod tests;
 
 pub use camera_profiles::{CameraProfileState, ProfileJob};
 pub use delete::{DeleteRequest, HardDeleteOutcome};
@@ -32,7 +36,7 @@ pub use export::{ExportFormat, ExportJob, ExportJobState, ExportSettings};
 pub use lensfun::{LensfunJob, LensfunState};
 pub use library::{collect_raw_files, CacheResult, CacheStep, ImportResult};
 pub use loader::{MAX_CONCURRENT_PREVIEW_LOADS, MAX_CONCURRENT_RAW_LOADS};
-pub use loading::{shared_context, BuiltResources, FullRes, Installed};
+pub use loading::{shared_context, BuiltResources};
 pub use loupe::{HeldNoise, LoupeState, LoupeView, LOUPE_SIZE};
 pub use ai_mask::{load_ai_bitmaps, AiBitmapState, AiSelect, ModelMissing, SelectEngine, Selection};
 pub use ai_denoise::{export_mosaic, AiDenoiseState, DenoiseCrop, DenoiseEngine, PREVIEW_SIZE as AI_DENOISE_PREVIEW_SIZE};
@@ -156,15 +160,81 @@ pub enum SessionEvent {
     EditedProxyLoaded(i64, Result<(u32, u32, std::sync::Arc<[u8]>), String>),
 }
 
-/// Something the app must do after a session call, while that part of the
-/// work still lives in the app. Goes away as the rest moves in.
+/// What [`Session::handle`] made of an event.
 #[must_use]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FollowUp {
-    Nothing,
-    /// The open image must be decoded or rebuilt again
-    /// (`Session::reload_selected_image`).
-    ReloadSelectedImage,
+pub enum Handled {
+    /// The session dealt with it; run these next.
+    Done(Effects),
+    /// The front end has a part in this one (a dialog to close, a
+    /// selection to move): it calls the session's method for it itself.
+    FrontEnd(Box<SessionEvent>),
+}
+
+impl Session {
+    /// Hand back the result of an effect. Every event is the session's alone
+    /// except the few that need the front end ([`Handled::FrontEnd`]):
+    /// `ModelDownloaded` (the download offer closes and its feature
+    /// starts), `CacheProcessed` (what finishing is announced as) and
+    /// `HardDeleteComplete` (the selection moves to another image).
+    pub fn handle(&mut self, event: SessionEvent) -> Handled {
+        use SessionEvent as E;
+        Handled::Done(match event {
+            E::UpdateChecked { result, manual } => {
+                self.update_checked(result, manual);
+                Effects::none()
+            }
+            E::LensfunChecked(r) => {
+                self.lensfun_checked(r);
+                Effects::none()
+            }
+            E::LensfunInstalled(r) => self.lensfun_installed(r),
+            E::LensDbLoaded(changed) => self.lens_db_loaded(changed),
+            E::CameraProfileDownloaded(camera, r) => self.camera_profile_downloaded(camera, r),
+            E::CameraProfilesImported(ok, failed) => self.camera_profiles_imported(ok, failed),
+            E::CameraProfilesUpdated(r) => self.camera_profiles_updated(r),
+            E::CameraProfilesScanned(changed) => self.camera_profiles_scanned(changed),
+            E::ImportComplete(res) => self.import_complete(res),
+            E::ProcessNextExport => self.process_next_export(),
+            E::ExportRawLoaded(id, params, res) => self.export_raw_loaded(id, *params, res),
+            E::ExportPipelineReady(id, params, res) => self.export_pipeline_ready(id, *params, res),
+            E::ExportSaveComplete(id, res) => self.export_save_complete(id, res),
+            E::PreviewCached(id, res) => {
+                self.preview_cached(id, res);
+                Effects::none()
+            }
+            E::WorkingPreviewReady(id, bytes, dims, path) => {
+                self.working_preview_ready(id, bytes, dims, path);
+                Effects::none()
+            }
+            E::RawDataLoaded(id, res) => self.raw_data_loaded(id, res),
+            E::RawPreloaded(id, res) => self.raw_preloaded(id, res),
+            E::ImageResourcesReady(id, res) => self.image_resources_ready(id, res),
+            E::FullResReady(id, res) => self.full_res_ready(id, res),
+            E::RenderFinished(out) => self.render_finished(*out),
+            E::LoupeReady(id, r) => self.loupe_ready(id, r),
+            E::LoupeRendered(id, r) => self.loupe_rendered(id, r),
+            E::NoiseSettled(token) => self.noise_settled(token),
+            E::AiEngineReady(token, r) => self.ai_engine_ready(token, r),
+            E::AiMaskReady(token, r) => self.ai_mask_ready(token, r),
+            E::AiBitmapsLoaded(id, loaded) => self.ai_bitmaps_loaded(id, loaded),
+            E::AiDenoiseReady(id, r) => self.ai_denoise_ready(id, r),
+            E::AiDenoiseCropReady(id, r) => self.ai_denoise_crop_ready(id, r),
+            E::AiDenoiseRendered(id, r) => self.ai_denoise_rendered(id, r),
+            E::AiDenoiseApplied(id, a, r) => self.ai_denoise_applied(id, a, r),
+            E::AiDenoiseRegenerated(id, r) => self.ai_denoise_regenerated(id, r),
+            E::EditedProxySaved(id, generation, result) => {
+                self.proxy_saved(id, generation, result);
+                Effects::none()
+            }
+            E::EditedProxyLoaded(id, result) => {
+                self.proxy_loaded(id, result);
+                Effects::none()
+            }
+            front @ (E::ModelDownloaded(..) | E::CacheProcessed(_) | E::HardDeleteComplete(_)) => {
+                return Handled::FrontEnd(Box::new(front))
+            }
+        })
+    }
 }
 
 /// Run blocking `work` on tokio's blocking pool and report its result as an
@@ -310,7 +380,7 @@ pub struct Session {
     /// Shared GPU context (created once, reused for all images)
     pub gpu_context: Option<Arc<gpu::shared::SharedContext>>,
     /// Where the context is created, exactly once (see
-    /// `handlers::loading::shared_context`): tasks started before the first
+    /// `session::shared_context`): tasks started before the first
     /// finishes would otherwise each build their own device.
     pub gpu_init: Arc<tokio::sync::OnceCell<Arc<gpu::shared::SharedContext>>>,
     /// Current image resources (created per image, wrapped in Arc)

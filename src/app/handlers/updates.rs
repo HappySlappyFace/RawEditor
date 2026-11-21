@@ -6,7 +6,6 @@ use iced::Task;
 use crate::app::message::Message;
 use crate::app::state::{Modal, RawEditor};
 use crate::app::update::run;
-use crate::core::updates::Available;
 use crate::session::UpdatesAtStartup;
 
 /// Once the catalogue is open: ask the first-run question, or run the
@@ -31,15 +30,6 @@ pub fn handle_check(editor: &mut RawEditor) -> Task<Message> {
         editor.active_modal = Modal::Update;
     }
     run(editor.session.request_update_check())
-}
-
-pub fn handle_checked(
-    editor: &mut RawEditor,
-    result: Result<Option<Available>, String>,
-    manual: bool,
-) -> Task<Message> {
-    editor.session.update_checked(result, manual);
-    Task::none()
 }
 
 pub fn handle_prompt_toggled(editor: &mut RawEditor, on: bool) -> Task<Message> {
@@ -84,7 +74,8 @@ mod tests {
         e
     }
 
-    fn available() -> Available {
+    fn available() -> crate::core::updates::Available {
+        use crate::core::updates::Available;
         Available { version: "9.9.9".into(), url: "https://github.com/HappySlappyFace/RawEditor/releases/tag/v9.9.9".into(), published: String::new() }
     }
 
@@ -109,12 +100,12 @@ mod tests {
     #[test]
     fn an_automatic_result_lights_the_badge_without_a_dialog() {
         let mut e = editor();
-        let _ = handle_checked(&mut e, Ok(Some(available())), false);
+        let _ = crate::app::update::update(&mut e, Message::Session(crate::session::SessionEvent::UpdateChecked { result: Ok(Some(available())), manual: false }));
         assert_eq!(e.session.updates.available, Some(available()));
         assert_eq!(e.active_modal, Modal::None);
         assert!(e.session.updates.shown.is_none());
         // A later up-to-date answer clears it.
-        let _ = handle_checked(&mut e, Ok(None), false);
+        let _ = crate::app::update::update(&mut e, Message::Session(crate::session::SessionEvent::UpdateChecked { result: Ok(None), manual: false }));
         assert!(e.session.updates.available.is_none());
     }
 
@@ -123,7 +114,7 @@ mod tests {
         let mut e = editor();
         let _ = handle_check(&mut e);
         assert_eq!(e.active_modal, Modal::Update);
-        let _ = handle_checked(&mut e, Err("offline".into()), true);
+        let _ = crate::app::update::update(&mut e, Message::Session(crate::session::SessionEvent::UpdateChecked { result: Err("offline".into()), manual: true }));
         assert_eq!(e.session.updates.shown, Some(Err("offline".into())));
         assert!(!e.session.updates.checking);
 
@@ -156,7 +147,7 @@ mod manual_click_tests {
         let (mut e, _) = RawEditor::new();
         e.session.updates.checking = true; // the startup check, in flight
         let _ = handle_check(&mut e);
-        let _ = handle_checked(&mut e, Ok(None), false);
+        let _ = crate::app::update::update(&mut e, Message::Session(crate::session::SessionEvent::UpdateChecked { result: Ok(None), manual: false }));
         assert!(matches!(e.session.updates.shown, Some(Ok(None))));
         assert!(!e.session.updates.manual_pending);
     }

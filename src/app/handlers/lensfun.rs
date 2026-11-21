@@ -6,31 +6,15 @@ use iced::Task;
 
 use crate::app::message::Message;
 use crate::app::state::RawEditor;
-use crate::app::update::{follow_up, run};
+use crate::app::update::run;
 use crate::session::Session;
 
 pub fn handle_check(editor: &mut RawEditor) -> Task<Message> {
     run(editor.session.lensfun_check())
 }
 
-pub fn handle_checked(
-    editor: &mut RawEditor,
-    result: Result<crate::core::lensfun::Remote, String>,
-) -> Task<Message> {
-    editor.session.lensfun_checked(result);
-    Task::none()
-}
-
 pub fn handle_download(editor: &mut RawEditor) -> Task<Message> {
     run(editor.session.lensfun_download())
-}
-
-pub fn handle_installed(
-    editor: &mut RawEditor,
-    result: Result<crate::core::lensfun::Installed, String>,
-) -> Task<Message> {
-    let next = editor.session.lensfun_installed(result);
-    follow_up(editor, next)
 }
 
 pub fn handle_rescan(editor: &mut RawEditor) -> Task<Message> {
@@ -41,11 +25,6 @@ pub fn handle_rescan(editor: &mut RawEditor) -> Task<Message> {
 /// Profiles page asks on opening.
 pub fn ensure_loaded() -> Task<Message> {
     run(Session::lens_db_ensure_loaded())
-}
-
-pub fn handle_db_loaded(editor: &mut RawEditor, changed: bool) -> Task<Message> {
-    let next = editor.session.lens_db_loaded(changed);
-    follow_up(editor, next)
 }
 
 #[cfg(test)]
@@ -69,7 +48,7 @@ mod tests {
         let _ = handle_download(&mut e);
         let _ = handle_rescan(&mut e);
         assert_eq!(e.session.lensfun.busy, Some(LensfunJob::Checking));
-        let _ = handle_checked(&mut e, Err("offline".into()));
+        let _ = crate::app::update::update(&mut e, Message::Session(crate::session::SessionEvent::LensfunChecked(Err("offline".into()))));
         assert_eq!(e.session.lensfun.busy, None);
         assert!(matches!(e.session.lensfun.remote, Some(Err(_))));
     }
@@ -83,7 +62,7 @@ mod tests {
         e.session.current_tab = AppTab::Library;
         e.session.editor_readiness = EditorReadiness::Ready(3);
         e.session.lensfun.busy = Some(LensfunJob::Downloading);
-        let _ = handle_installed(&mut e, Ok(installed()));
+        let _ = crate::app::update::update(&mut e, Message::Session(crate::session::SessionEvent::LensfunInstalled(Ok(installed()))));
         assert_eq!(e.session.lensfun.busy, None);
         assert!(matches!(e.session.lensfun.installed, Some(Ok(_))));
         assert!(matches!(e.session.editor_readiness, EditorReadiness::NoSelection), "kept the stale decode");
@@ -95,7 +74,7 @@ mod tests {
         let (mut e, _) = RawEditor::new();
         e.session.selected_image_id = Some(3);
         e.session.editor_readiness = EditorReadiness::Ready(3);
-        let _ = handle_installed(&mut e, Err("no route to host".into()));
+        let _ = crate::app::update::update(&mut e, Message::Session(crate::session::SessionEvent::LensfunInstalled(Err("no route to host".into()))));
         assert!(matches!(e.session.editor_readiness, EditorReadiness::Ready(3)));
         assert!(e.session.status.contains("no route to host"));
     }

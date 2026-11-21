@@ -168,67 +168,22 @@ pub fn run(effects: crate::session::Effects) -> Task<Message> {
     Task::batch(effects.into_iter().map(|e| Task::perform(e.future, Message::Session)))
 }
 
-/// A result of the session's work, handed back to it (through the app's
-/// handler where the app has its own part to play).
+/// A result of the session's work, handed back to it (`Session::handle`);
+/// the few the app has a part in come back to it.
 fn session_event(editor: &mut RawEditor, event: crate::session::SessionEvent) -> Task<Message> {
-    use crate::session::SessionEvent;
+    use crate::session::{Handled, SessionEvent};
+    let event = match editor.session.handle(event) {
+        Handled::Done(effects) => return run(effects),
+        Handled::FrontEnd(event) => *event,
+    };
     match event {
-        SessionEvent::UpdateChecked { result, manual } => handlers::updates::handle_checked(editor, result, manual),
-        SessionEvent::LensfunChecked(r) => handlers::lensfun::handle_checked(editor, r),
-        SessionEvent::LensfunInstalled(r) => handlers::lensfun::handle_installed(editor, r),
-        SessionEvent::LensDbLoaded(changed) => handlers::lensfun::handle_db_loaded(editor, changed),
         SessionEvent::ModelDownloaded(id, r) => handlers::models::handle_downloaded(editor, id, r),
-        SessionEvent::CameraProfileDownloaded(camera, r) => {
-            handlers::camera_profiles::handle_downloaded(editor, camera, r)
-        }
-        SessionEvent::CameraProfilesImported(ok, failed) => {
-            handlers::camera_profiles::handle_imported(editor, ok, failed)
-        }
-        SessionEvent::CameraProfilesUpdated(r) => handlers::camera_profiles::handle_updated(editor, r),
-        SessionEvent::CameraProfilesScanned(changed) => handlers::camera_profiles::handle_scanned(editor, changed),
-        SessionEvent::ImportComplete(res) => handlers::library::handle_import_complete(editor, res),
         SessionEvent::CacheProcessed(res) => handlers::library::handle_cache_processed(editor, res),
         SessionEvent::HardDeleteComplete(outcome) => handlers::delete::handle_hard_delete_complete(editor, outcome),
-        SessionEvent::ProcessNextExport => run(editor.session.process_next_export()),
-        SessionEvent::ExportRawLoaded(id, params, res) => run(editor.session.export_raw_loaded(id, *params, res)),
-        SessionEvent::ExportPipelineReady(id, params, res) => run(editor.session.export_pipeline_ready(id, *params, res)),
-        SessionEvent::ExportSaveComplete(id, res) => run(editor.session.export_save_complete(id, res)),
-        SessionEvent::PreviewCached(id, res) => handlers::navigation::handle_preview_cached(editor, id, res),
-        SessionEvent::WorkingPreviewReady(id, bytes, dims, path) => {
-            handlers::navigation::handle_working_preview_ready(editor, id, bytes, dims, path)
-        }
-        SessionEvent::RawDataLoaded(id, res) => handlers::loading::handle_raw_data_loaded(editor, id, res),
-        SessionEvent::RawPreloaded(id, res) => handlers::loading::handle_raw_preloaded(editor, id, res),
-        SessionEvent::ImageResourcesReady(id, res) => handlers::loading::handle_image_resources_ready(editor, id, res),
-        SessionEvent::FullResReady(id, res) => handlers::loading::handle_full_res_ready(editor, id, res),
-        SessionEvent::EditedProxySaved(id, generation, result) => {
-            editor.session.proxy_saved(id, generation, result);
+        other => {
+            tracing::error!("Session event the app does not handle: {other:?}");
             Task::none()
         }
-        SessionEvent::RenderFinished(out) => run(editor.session.render_finished(*out)),
-        SessionEvent::AiEngineReady(token, r) => run(editor.session.ai_engine_ready(token, r)),
-        SessionEvent::AiMaskReady(token, r) => run(editor.session.ai_mask_ready(token, r)),
-        SessionEvent::AiBitmapsLoaded(id, loaded) => run(editor.session.ai_bitmaps_loaded(id, loaded)),
-        SessionEvent::AiDenoiseReady(id, r) => run(editor.session.ai_denoise_ready(id, r)),
-        SessionEvent::AiDenoiseCropReady(id, r) => run(editor.session.ai_denoise_crop_ready(id, r)),
-        SessionEvent::AiDenoiseRendered(id, r) => run(editor.session.ai_denoise_rendered(id, r)),
-        SessionEvent::AiDenoiseApplied(id, a, r) => run(editor.session.ai_denoise_applied(id, a, r)),
-        SessionEvent::AiDenoiseRegenerated(id, r) => run(editor.session.ai_denoise_regenerated(id, r)),
-        SessionEvent::LoupeReady(id, r) => run(editor.session.loupe_ready(id, r)),
-        SessionEvent::LoupeRendered(id, r) => run(editor.session.loupe_rendered(id, r)),
-        SessionEvent::NoiseSettled(token) => run(editor.session.noise_settled(token)),
-        SessionEvent::EditedProxyLoaded(id, result) => {
-            editor.session.proxy_loaded(id, result);
-            Task::none()
-        }
-    }
-}
-
-/// Do what a session call asked of the app (`session::FollowUp`).
-pub fn follow_up(editor: &mut RawEditor, next: crate::session::FollowUp) -> Task<Message> {
-    match next {
-        crate::session::FollowUp::Nothing => Task::none(),
-        crate::session::FollowUp::ReloadSelectedImage => handlers::navigation::reload_selected_image(editor),
     }
 }
 

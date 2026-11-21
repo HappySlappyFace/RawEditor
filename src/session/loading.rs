@@ -11,27 +11,6 @@ use crate::raw;
 /// A finished resources build: the shared context and the image's resources.
 pub type BuiltResources = Result<(Arc<gpu::shared::SharedContext>, Arc<gpu::shared::ImageResources>), String>;
 
-/// Whether a build's resources were installed as the open image's.
-#[must_use]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Installed {
-    /// Stale or failed (the status says why): nothing changed on screen.
-    No,
-    /// New resources are in place: the open image wants rendering (and the
-    /// placeholder can go).
-    Yes,
-}
-
-/// What a finished full-resolution rebuild means.
-#[must_use]
-pub enum FullRes {
-    /// It was this image's: as for any build.
-    Installed(Installed),
-    /// Not installed; this is what follows (perhaps an upgrade of the image
-    /// now open).
-    Effects(Effects),
-}
-
 /// Run a resources build and report it as an event.
 fn perform_build(
     label: &'static str,
@@ -187,7 +166,7 @@ impl Session {
 
                 // Anchored kelvin for the DCP interpolation. ImageResources::new
                 // receives the AS-SHOT multipliers (the "None → as-shot" baseline
-                // for update_uniforms); handle_image_resources_ready immediately
+                // for update_uniforms); image_resources_ready immediately
                 // applies any saved Temp/Tint edits via the WB override.
                 let as_shot = profile_use.as_shot;
                 let kelvin = params.kelvin_from_anchor(as_shot.0);
@@ -235,10 +214,26 @@ impl Session {
         )
     }
 
-    pub fn image_resources_ready(&mut self, image_id: i64, result: BuiltResources) -> Installed {
+    /// A resources build finished: install it as the open image's, and
+    /// render it.
+    pub fn image_resources_ready(&mut self, image_id: i64, result: BuiltResources) -> Effects {
+        if !self.install_resources(image_id, result) {
+            return Effects::none();
+        }
+        // Throttled, not forced: a render can still be in flight here
+        // (the previous image, or the subsampled pass before a full-res
+        // upgrade). Starting a second one alongside it raced the two, and
+        // whichever landed last won the screen.
+        let render = self.throttled_render();
+        Effects::batch([render, self.regenerate_missing_ai_denoise()])
+    }
+
+    /// Install a build's resources as the open image's. False when stale or
+    /// failed (the status says why): nothing changed on screen.
+    fn install_resources(&mut self, image_id: i64, result: BuiltResources) -> bool {
         // Ignore stale results from a previous image selection
         if self.selected_image_id != Some(image_id) {
-            return Installed::No;
+            return false;
         }
 
         match result {
@@ -285,12 +280,12 @@ impl Session {
                 // were drawn for the old resources.
                 self.camera_preview = Some(super::PreviewHandle::Clear);
                 self.changed.insert(super::Changed::OVERLAY | super::Changed::HISTOGRAM);
-                Installed::Yes
+                true
             }
             Err(e) => {
                 self.status = format!("GPU Init Failed: {}", e);
                 self.editor_readiness = EditorReadiness::Failed(image_id, e);
-                Installed::No
+                false
             }
         }
     }
@@ -299,18 +294,18 @@ impl Session {
     /// then install it — or, if the user has moved on, see whether the image
     /// they are on now wants one (its own render may have asked while this was
     /// building and been turned away by the guard).
-    pub fn full_res_ready(&mut self, image_id: i64, result: BuiltResources) -> FullRes {
+    pub fn full_res_ready(&mut self, image_id: i64, result: BuiltResources) -> Effects {
         self.full_res_upgrading = false;
         if self.selected_image_id != Some(image_id) {
-            return FullRes::Effects(self.upgrade_if_soft());
+            return self.upgrade_if_soft();
         }
         match result {
-            Ok(_) => FullRes::Installed(self.image_resources_ready(image_id, result)),
+            Ok(_) => self.image_resources_ready(image_id, result),
             Err(e) => {
                 // The preview resources still work: keep editing on them.
                 tracing::warn!("Full-resolution rebuild of image {image_id} failed, keeping the preview: {e}");
                 self.full_res_failed = Some(image_id);
-                FullRes::Effects(Effects::none())
+                Effects::none()
             }
         }
     }
