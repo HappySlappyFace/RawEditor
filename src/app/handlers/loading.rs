@@ -42,7 +42,7 @@ fn after_build(editor: &mut RawEditor, installed: Installed) -> Task<Message> {
     // upgrade). Starting a second one alongside it raced the two, and
     // whichever landed last won the screen.
     let render = crate::app::handlers::navigation::throttled_render(editor);
-    Task::batch([render, crate::app::handlers::ai_denoise::after_resources(editor)])
+    Task::batch([render, run(editor.session.regenerate_missing_ai_denoise())])
 }
 
 /// The full-resolution rebuild finished (`Session::full_res_ready`).

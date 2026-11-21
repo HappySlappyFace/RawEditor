@@ -1,7 +1,7 @@
 //! Deleting a mask while an AI-select session is open must not leave the
 //! session pointing at another mask.
 
-use crate::app::handlers::ai_mask::AiSelect;
+use crate::session::AiSelect;
 use crate::app::message::Message;
 use crate::app::state::RawEditor;
 use crate::app::testkit::*;

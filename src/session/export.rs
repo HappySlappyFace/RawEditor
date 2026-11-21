@@ -413,7 +413,7 @@ impl Session {
 
                         // AI denoise: the cached result, regenerated if missing
                         // (an export must not silently drop an edit).
-                        let mosaic = crate::app::handlers::ai_denoise::export_mosaic(&raw_data, image_id, params.ai_denoise);
+                        let mosaic = super::export_mosaic(&raw_data, image_id, params.ai_denoise);
                         gpu::shared::ImageResources::new(
                             &context,
                             image_id,
@@ -439,7 +439,7 @@ impl Session {
                             // Export's resources are its own: give them the AI
                             // masks' bitmaps, or those masks would export empty.
                             if params.ai_masks().next().is_some() {
-                                let bitmaps = crate::app::handlers::ai_mask::load_all(image_id, &params);
+                                let bitmaps = super::load_ai_bitmaps(image_id, &params);
                                 res.set_ai_bitmaps(Arc::new(bitmaps));
                             }
                             (context, Arc::new(res))

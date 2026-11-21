@@ -363,18 +363,12 @@ pub enum Message {
     AiSelectStart,
     /// Reopen an AI mask's selection.
     AiSelectRefine(usize),
-    /// The session's engine (embeddings + decoder) is ready, by session token.
-    AiEngineReady(u64, Result<crate::app::handlers::ai_mask::EngineHandle, String>),
     /// A click while AI select is open, full-image display UV.
     AiPrompt { u: f32, v: f32, positive: bool },
     /// A box dragged while AI select is open, full-image display UV corners.
     AiRect(f32, f32, f32, f32),
-    /// A selection came back from the model (saved under a new id).
-    AiMaskReady(u64, Result<crate::app::handlers::ai_mask::Selection, String>),
     AiSelectDone,
     AiSelectCancel,
-    /// AI-mask bitmaps read from disk for an image.
-    AiBitmapsLoaded(i64, Vec<(u64, Result<std::sync::Arc<crate::ml::masks::Bitmap>, String>)>),
 
     // ========== AI models (handlers::models) ==========
     ModelDownload(crate::ml::models::ModelId),
@@ -385,18 +379,13 @@ pub enum Message {
 
     // ========== AI denoise (handlers::ai_denoise) ==========
     OpenAiDenoise,
-    AiDenoiseReady(i64, Result<crate::app::handlers::ai_denoise::EngineHandle, String>),
-    AiDenoiseCropReady(i64, Result<crate::app::handlers::ai_denoise::CropHandle, String>),
-    AiDenoiseRendered(i64, Result<crate::gpu::loupe::LoupeFrame, String>),
     AiDenoiseAmount(f32),
     /// Holding "Before" (true) or letting go.
     AiDenoiseBefore(bool),
     AiDenoisePan(f32, f32),
     AiDenoiseApply,
-    AiDenoiseApplied(i64, f32, Result<(), String>),
     AiDenoiseRemove,
     AiDenoiseCancel,
-    AiDenoiseRegenerated(i64, Result<(), String>),
 
     /// Dragging inside the loupe, by this many logical pixels.
     LoupePan(f32, f32),

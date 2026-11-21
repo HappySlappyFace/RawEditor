@@ -271,6 +271,8 @@ pub struct RawEditor {
     /// The iced handle for the loupe's frame, with the frame's pixels it was
     /// built from (`sync_from_session`).
     pub loupe_handle: Option<(std::sync::Arc<[u8]>, Handle)>,
+    /// The same for the AI denoise dialog's preview.
+    pub ai_denoise_handle: Option<(std::sync::Arc<[u8]>, Handle)>,
     /// The page Preferences shows. Kept while the app runs, so reopening the
     /// dialog lands where the user left it; not persisted.
     pub preferences_section: PreferencesSection,
@@ -409,6 +411,21 @@ pub const MIN_FREE_RAM_MB_MAX: u32 = 16384;
 /// Shortest time the startup splash stays on screen.
 pub const SPLASH_MIN: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// Keep `cached` the handle for `frame`'s pixels, building a new one only
+/// when the frame changed.
+fn sync_frame_handle(cached: &mut Option<(std::sync::Arc<[u8]>, Handle)>, frame: Option<&crate::session::LoupeView>) {
+    *cached = match frame {
+        None => None,
+        Some(frame) => match cached.take() {
+            Some((rgba, handle)) if std::sync::Arc::ptr_eq(&rgba, &frame.rgba) => Some((rgba, handle)),
+            _ => Some((
+                frame.rgba.clone(),
+                Handle::from_rgba(frame.size, frame.size, iced::advanced::image::Bytes::from_owner(frame.rgba.clone())),
+            )),
+        },
+    };
+}
+
 impl RawEditor {
     pub fn title(&self) -> String {
         String::from("RawEditor")
@@ -480,6 +497,7 @@ impl RawEditor {
             proxy_handles: Default::default(),
             proxy_handles_seen: 0,
             loupe_handle: None,
+            ai_denoise_handle: None,
             preferences_section: PreferencesSection::default(),
             scroll_glide: None,
             menu_generation: 0,
@@ -572,20 +590,8 @@ impl RawEditor {
             };
         }
         self.sync_proxy_handles();
-        self.loupe_handle = match &self.session.loupe.frame {
-            None => None,
-            Some(frame) => match self.loupe_handle.take() {
-                Some((rgba, handle)) if std::sync::Arc::ptr_eq(&rgba, &frame.rgba) => Some((rgba, handle)),
-                _ => Some((
-                    frame.rgba.clone(),
-                    Handle::from_rgba(
-                        frame.size,
-                        frame.size,
-                        iced::advanced::image::Bytes::from_owner(frame.rgba.clone()),
-                    ),
-                )),
-            },
-        };
+        sync_frame_handle(&mut self.loupe_handle, self.session.loupe.frame.as_ref());
+        sync_frame_handle(&mut self.ai_denoise_handle, self.session.ai_denoise.frame.as_ref());
     }
 
     /// Build handles for proxies captured or read since the last sync, and

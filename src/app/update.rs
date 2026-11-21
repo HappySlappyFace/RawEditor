@@ -38,16 +38,19 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
     } else {
         task
     };
-    let task = match handlers::ai_mask::track(editor) {
-        Some(ai) => Task::batch([task, ai]),
-        None => task,
-    };
+    let ai = editor.session.track_ai_masks();
+    let task = if ai.is_empty() { task } else { Task::batch([task, run(ai)]) };
     if modal_before == Modal::AiModel && editor.active_modal != Modal::AiModel {
         handlers::models::dismissed(editor);
     }
-    // However the AI denoise modal closed, its engine (a full mosaic) goes.
+    // The AI denoise dialog is open while the session has it open: the
+    // session closed it (Apply, Remove, Cancel)…
+    if editor.active_modal == Modal::AiDenoise && editor.session.ai_denoise.image_id.is_none() {
+        editor.active_modal = Modal::None;
+    }
+    // …or the dialog closed some other way, and its engine (a full mosaic) goes.
     if modal_before == Modal::AiDenoise && editor.active_modal != Modal::AiDenoise {
-        handlers::ai_denoise::close(editor);
+        editor.session.close_ai_denoise();
     }
     // Caches, the camera preview and image handles follow the session.
     editor.sync_from_session();
@@ -203,6 +206,14 @@ fn session_event(editor: &mut RawEditor, event: crate::session::SessionEvent) ->
             Task::none()
         }
         SessionEvent::RenderFinished(out) => run(editor.session.render_finished(*out)),
+        SessionEvent::AiEngineReady(token, r) => run(editor.session.ai_engine_ready(token, r)),
+        SessionEvent::AiMaskReady(token, r) => run(editor.session.ai_mask_ready(token, r)),
+        SessionEvent::AiBitmapsLoaded(id, loaded) => run(editor.session.ai_bitmaps_loaded(id, loaded)),
+        SessionEvent::AiDenoiseReady(id, r) => run(editor.session.ai_denoise_ready(id, r)),
+        SessionEvent::AiDenoiseCropReady(id, r) => run(editor.session.ai_denoise_crop_ready(id, r)),
+        SessionEvent::AiDenoiseRendered(id, r) => run(editor.session.ai_denoise_rendered(id, r)),
+        SessionEvent::AiDenoiseApplied(id, a, r) => run(editor.session.ai_denoise_applied(id, a, r)),
+        SessionEvent::AiDenoiseRegenerated(id, r) => run(editor.session.ai_denoise_regenerated(id, r)),
         SessionEvent::LoupeReady(id, r) => run(editor.session.loupe_ready(id, r)),
         SessionEvent::LoupeRendered(id, r) => run(editor.session.loupe_rendered(id, r)),
         SessionEvent::NoiseSettled(token) => run(editor.session.noise_settled(token)),
@@ -481,29 +492,21 @@ fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::OpenRepository => handlers::window::handle_open_repository(editor),
         Message::AiSelectStart => handlers::ai_mask::handle_start(editor),
         Message::AiSelectRefine(slot) => handlers::ai_mask::handle_refine(editor, slot),
-        Message::AiEngineReady(token, r) => handlers::ai_mask::handle_engine_ready(editor, token, r),
-        Message::AiPrompt { u, v, positive } => handlers::ai_mask::handle_prompt(editor, u, v, positive),
-        Message::AiRect(u0, v0, u1, v1) => handlers::ai_mask::handle_rect(editor, u0, v0, u1, v1),
-        Message::AiMaskReady(token, r) => handlers::ai_mask::handle_mask_ready(editor, token, r),
+        Message::AiPrompt { u, v, positive } => run(editor.session.ai_prompt(u, v, positive)),
+        Message::AiRect(u0, v0, u1, v1) => run(editor.session.ai_rect(u0, v0, u1, v1)),
         Message::AiSelectDone => handlers::ai_mask::handle_done(editor),
         Message::AiSelectCancel => handlers::ai_mask::handle_cancel(editor),
-        Message::AiBitmapsLoaded(id, loaded) => handlers::ai_mask::handle_bitmaps_loaded(editor, id, loaded),
         Message::ModelDownload(id) => handlers::models::handle_download(editor, id),
         Message::ModelDownloadCancel => handlers::models::handle_cancel_download(editor),
         Message::ModelRemove(id) => handlers::models::handle_remove(editor, id),
         Message::AiTick => Task::none(),
         Message::OpenAiDenoise => handlers::ai_denoise::handle_open(editor),
-        Message::AiDenoiseReady(id, r) => handlers::ai_denoise::handle_ready(editor, id, r),
-        Message::AiDenoiseCropReady(id, r) => handlers::ai_denoise::handle_crop_ready(editor, id, r),
-        Message::AiDenoiseRendered(id, r) => handlers::ai_denoise::handle_rendered(editor, id, r),
-        Message::AiDenoiseAmount(a) => handlers::ai_denoise::handle_amount(editor, a),
-        Message::AiDenoiseBefore(b) => handlers::ai_denoise::handle_before(editor, b),
-        Message::AiDenoisePan(dx, dy) => handlers::ai_denoise::handle_pan(editor, dx, dy),
+        Message::AiDenoiseAmount(a) => run(editor.session.set_ai_denoise_amount(a)),
+        Message::AiDenoiseBefore(b) => run(editor.session.set_ai_denoise_before(b)),
+        Message::AiDenoisePan(dx, dy) => run(editor.session.pan_ai_denoise(dx, dy)),
         Message::AiDenoiseApply => handlers::ai_denoise::handle_apply(editor),
-        Message::AiDenoiseApplied(id, a, r) => handlers::ai_denoise::handle_applied(editor, id, a, r),
-        Message::AiDenoiseRemove => handlers::ai_denoise::handle_remove(editor),
+        Message::AiDenoiseRemove => run(editor.session.remove_ai_denoise()),
         Message::AiDenoiseCancel => handlers::ai_denoise::handle_cancel(editor),
-        Message::AiDenoiseRegenerated(id, r) => handlers::ai_denoise::handle_regenerated(editor, id, r),
         Message::LoupePan(dx, dy) => handlers::loupe::handle_pan(editor, dx, dy),
         Message::ToggleLoupeTarget => handlers::loupe::handle_toggle_target(editor),
         Message::LoupeTargetPicked(u, v) => handlers::loupe::handle_target_picked(editor, u, v),

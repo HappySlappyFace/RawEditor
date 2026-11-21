@@ -7,6 +7,8 @@
 //! (`Message::Session`). Decisions that need a dialog come back as values for
 //! the app to act on; the session never opens one.
 
+mod ai_denoise;
+mod ai_mask;
 mod camera_profiles;
 mod delete;
 mod develop;
@@ -31,7 +33,9 @@ pub use lensfun::{LensfunJob, LensfunState};
 pub use library::{collect_raw_files, CacheResult, CacheStep, ImportResult};
 pub use loader::{MAX_CONCURRENT_PREVIEW_LOADS, MAX_CONCURRENT_RAW_LOADS};
 pub use loading::{shared_context, BuiltResources, FullRes, Installed};
-pub use loupe::{HeldNoise, LoupeState, LOUPE_SIZE};
+pub use loupe::{HeldNoise, LoupeState, LoupeView, LOUPE_SIZE};
+pub use ai_mask::{load_ai_bitmaps, AiBitmapState, AiSelect, ModelMissing, SelectEngine, Selection};
+pub use ai_denoise::{export_mosaic, AiDenoiseState, DenoiseCrop, DenoiseEngine, PREVIEW_SIZE as AI_DENOISE_PREVIEW_SIZE};
 pub use masks::MaskAdjustment;
 pub use lens::{DefringeParam, LensParam, LensToggle};
 pub use develop::{
@@ -126,6 +130,22 @@ pub enum SessionEvent {
     LoupeReady(i64, Result<std::sync::Arc<crate::gpu::loupe::Loupe>, String>),
     /// A detail-loupe render finished.
     LoupeRendered(i64, Result<crate::gpu::loupe::LoupeFrame, String>),
+    /// The AI-select engine for the session with this token was built.
+    AiEngineReady(u64, Result<SelectEngine, String>),
+    /// A decoder answer for the AI-select session with this token.
+    AiMaskReady(u64, Result<Selection, String>),
+    /// An image's AI-mask bitmaps were read from disk.
+    AiBitmapsLoaded(i64, Vec<(u64, Result<std::sync::Arc<crate::ml::masks::Bitmap>, String>)>),
+    /// The AI denoise dialog's engine for an image was prepared.
+    AiDenoiseReady(i64, Result<DenoiseEngine, String>),
+    /// PMRID finished the dialog's preview crop.
+    AiDenoiseCropReady(i64, Result<DenoiseCrop, String>),
+    /// The dialog's preview rendered.
+    AiDenoiseRendered(i64, Result<crate::gpu::loupe::LoupeFrame, String>),
+    /// Apply's whole-image run finished (amount it was applied at).
+    AiDenoiseApplied(i64, f32, Result<(), String>),
+    /// A missing AI denoise cache was regenerated.
+    AiDenoiseRegenerated(i64, Result<(), String>),
     /// A noise-reduction drag paused: let the main view catch up, if this is
     /// still the latest tick's timer.
     NoiseSettled(u64),
@@ -453,13 +473,13 @@ pub struct Session {
     pub loupe: LoupeState,
     pub lensfun: LensfunState,
     /// The open AI-select session, if any (`handlers::ai_mask`).
-    pub ai_select: Option<crate::app::handlers::ai_mask::AiSelect>,
+    pub ai_select: Option<AiSelect>,
     /// The selected image's decoded AI-mask bitmaps.
-    pub ai_bitmaps: crate::app::handlers::ai_mask::AiBitmapState,
+    pub ai_bitmaps: AiBitmapState,
     /// AI model downloads (`handlers::models`).
     pub models: ModelsState,
     /// The AI denoise modal (`handlers::ai_denoise`).
-    pub ai_denoise: crate::app::handlers::ai_denoise::AiDenoiseState,
+    pub ai_denoise: AiDenoiseState,
     pub camera_profiles: CameraProfileState,
 }
 

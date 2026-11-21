@@ -631,7 +631,7 @@ fn view_main_content<'a>(
                     is_loupe_targeting: !peeking && editor.session.loupe.targeting,
                     is_leveling: !peeking && editor.session.is_leveling,
                     ai_select: (!peeking && editor.session.ai_select.as_ref().is_some_and(|s| s.engine.is_some()))
-                        .then(|| crate::app::handlers::ai_mask::display_points(editor)),
+                        .then(|| editor.session.ai_display_points()),
                 })
                 .width(Length::Fill)
                 .height(Length::Fill)
