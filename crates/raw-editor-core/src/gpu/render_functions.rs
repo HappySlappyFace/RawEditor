@@ -1539,6 +1539,98 @@ mod tests {
         });
     }
 
+    /// A minimal dual-illuminant profile with no table, and `curve` as its
+    /// ProfileToneCurve (`None`: none, like "Adobe Standard").
+    fn synthetic_profile(curve: Option<Vec<(f32, f32)>>) -> std::sync::Arc<crate::raw::dcp::DcpProfile> {
+        let identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        // Camera white → D50 white, so a neutral stays neutral.
+        let forward = [0.9642, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.8249];
+        std::sync::Arc::new(crate::raw::dcp::DcpProfile {
+            illuminant1: 17,
+            illuminant2: 21,
+            color_matrix_1: identity,
+            color_matrix_2: identity,
+            forward_matrix_1: Some(forward),
+            forward_matrix_2: Some(forward),
+            hue_sat_dims: (0, 0, 0),
+            hue_sat_data_1: None,
+            hue_sat_data_2: None,
+            tone_curve: curve,
+            baseline_exposure_offset: 0.0,
+            camera_model: None,
+            profile_name: Some("Synthetic".into()),
+        })
+    }
+
+    /// A flat frame clipped at the sensor's white level. Its as-shot WB is a
+    /// camera's (red ×2, blue ×1.5), so clipped white lands above 1.0
+    /// scene-linear, as it does in a real frame.
+    fn clipped_frame(profile: Option<std::sync::Arc<crate::raw::dcp::DcpProfile>>) -> crate::raw::loader::RawDataResult {
+        let mut raw = crate::ml::segment::test_support::disc_raw(64, 64);
+        raw.data = vec![raw.white_level as u16; 64 * 64];
+        raw.dcp_profile = profile;
+        raw
+    }
+
+    fn centre_luma(img: &[u8], w: u32, h: u32) -> f64 {
+        luma(&img[(((h / 2) * w + w / 2) * 4) as usize..])
+    }
+
+    /// Sensor-clipped white must render as (near) white on the default
+    /// Camera tone, with or without a profile curve. With a curve-less
+    /// profile the Camera path once kneed the highlights before the built-in
+    /// filmic did the same, and clipped white came out 233/255 grey.
+    /// Synthetic, so it runs wherever a GPU (lavapipe) does.
+    #[test]
+    #[ignore]
+    fn clipped_white_renders_white_on_every_profile_kind() {
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).build().unwrap();
+        rt.block_on(async {
+            let ctx = SharedContext::new().await.unwrap();
+            let gentle_s = vec![(0.0, 0.0), (0.25, 0.2), (0.75, 0.8), (1.0, 1.0)];
+            for (kind, profile) in [
+                ("no profile", None),
+                ("a profile without a curve", Some(synthetic_profile(None))),
+                ("a profile with a curve", Some(synthetic_profile(Some(gentle_s)))),
+            ] {
+                let raw = clipped_frame(profile);
+                let (img, w, h) = render_params(&ctx, &raw, &EditParams::default()).await;
+                let l = centre_luma(&img, w, h);
+                eprintln!("{kind}: clipped white renders at {l:.1}");
+                assert!(l >= 244.0, "{kind}: clipped white renders grey ({l:.1}/255)");
+            }
+        });
+    }
+
+    /// On a profile without a curve, Camera IS the built-in filmic: choosing
+    /// Filmic must not change a neutral frame at any level. (Colours may
+    /// differ slightly: the operator is applied hue-preservingly in ProPhoto
+    /// at the profile-curve slot, the built-in one at Step 15.)
+    #[test]
+    #[ignore]
+    fn camera_on_a_curve_less_profile_renders_as_filmic() {
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).build().unwrap();
+        rt.block_on(async {
+            let ctx = SharedContext::new().await.unwrap();
+            let filmic = EditParams { tone_mapper: crate::core::tonemap::ToneMapper::Filmic, ..EditParams::default() };
+            for fraction in [0.05f32, 0.2, 0.5, 0.8, 1.0] {
+                let mut raw = clipped_frame(Some(synthetic_profile(None)));
+                // Neutral after white balance: each site at level / its WB.
+                let colours = crate::gpu::demosaic::tile_colors(raw.cfa_pattern);
+                let level = raw.white_level as f32 * fraction;
+                for (i, v) in raw.data.iter_mut().enumerate() {
+                    let (x, y) = (i % 64, i / 64);
+                    let c = colours[(y % 2) * 2 + x % 2] as usize;
+                    *v = (level / raw.wb_multipliers[c]) as u16;
+                }
+                let (a, w, h) = render_params(&ctx, &raw, &EditParams::default()).await;
+                let (b, _, _) = render_params(&ctx, &raw, &filmic).await;
+                let (la, lb) = (centre_luma(&a, w, h), centre_luma(&b, w, h));
+                assert!((la - lb).abs() <= 1.5, "at {fraction} of white: Camera {la:.1}, Filmic {lb:.1}");
+            }
+        });
+    }
+
     /// Denoising must cut noise without moving tone: averaging is done on
     /// linear values exactly so that it cannot darken the shadows.
     ///
