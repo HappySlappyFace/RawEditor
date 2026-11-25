@@ -14,7 +14,10 @@ cargo build-compat             # explicit alias for the default-features release
 cargo test                     # run unit tests in both crates (inline #[cfg(test)] modules, src/app/tests/)
 cargo test <name>              # run a single test by name/substring
 cargo clippy --all-targets -- -D warnings   # lint; CI enforces this exactly, so keep it at zero
+tools/coverage.sh [--gpu]      # line coverage (cargo-llvm-cov): target/llvm-cov/html; --gpu adds the ignored GPU suite
 ```
+
+Coverage is a map of what no test reaches, not a target: the views and widgets are excluded, shaders never show, and CI doesn't gate on it. Session logic (`crates/raw-editor-session`) is where gaps matter most; test it through `session::testkit`.
 
 **Releasing:** the root `Cargo.toml`'s `[workspace.package] version` is the one source of truth (both crates inherit it). Bump it, commit, and push the tag `v<that version>` (e.g. `v1.0.0`, or `v1.0.0-rc.1` for a pre-release). The release workflow fails any tag that isn't exactly that, so no letter suffixes: a hotfix is the next patch number, because semver puts `0.9.8-E` *before* `0.9.8` and the update check (`core::updates`) would offer it backwards. Pre-release tags (with a `-`) are published as pre-releases, which are never "latest", so the update check never offers them.
 

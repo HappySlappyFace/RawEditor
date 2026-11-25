@@ -77,3 +77,35 @@ fn a_new_lens_database_redecodes_the_open_image() {
     assert!(s.raw_cache.is_empty());
     assert!(labels(&reloaded).contains(&"raw decode"), "asked for {:?}", labels(&reloaded));
 }
+
+/// The full-resolution rebuild is one at a time across images, and only its
+/// result releases the guard. A result for an image the user has left must
+/// still release it, and must not mark the image they are on as failed, or
+/// no image would ever upgrade again.
+#[test]
+fn a_full_res_result_for_an_image_left_behind_releases_the_guard() {
+    let mut s = session_with_images(3);
+    let _ = open_in_develop(&mut s, 1);
+    s.full_res_upgrading = true;
+    let _ = s.select_image(2, super::SelectionChange::Only);
+
+    let late = deliver(&mut s, SessionEvent::FullResReady(1, Err("out of memory".into())));
+    assert!(late.is_empty(), "image 2 has no resources yet, so nothing to upgrade: {late:?}");
+    assert!(!s.full_res_upgrading, "the guard stayed held");
+    assert_eq!(s.full_res_failed, None, "a left image's failure was recorded");
+    assert!(matches!(s.editor_readiness, EditorReadiness::Loading(2)));
+}
+
+/// A failed rebuild for the open image keeps it editable on its preview and
+/// remembers the failure, so renders don't retry it every frame.
+#[test]
+fn a_failed_full_res_rebuild_is_remembered_and_the_image_stays_open() {
+    let mut s = session_with_images(2);
+    let _ = open_in_develop(&mut s, 1);
+    s.full_res_upgrading = true;
+    let e = deliver(&mut s, SessionEvent::FullResReady(1, Err("out of memory".into())));
+    assert!(e.is_empty());
+    assert!(!s.full_res_upgrading);
+    assert_eq!(s.full_res_failed, Some(1));
+    assert!(matches!(s.editor_readiness, EditorReadiness::Loading(1)), "the load itself was failed");
+}

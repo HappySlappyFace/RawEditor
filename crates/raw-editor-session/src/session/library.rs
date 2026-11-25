@@ -632,4 +632,62 @@ mod tests {
         assert!(import_folder_blocking(&dir, &db).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    // ── remove folder ─────────────────────────────────────────────────────────
+
+    /// Forgetting a folder drops its rows and edits and its generated cache
+    /// files, and nothing else: its RAW files stay, and so does every image in
+    /// any other folder. The open image goes with it, and so does a filter
+    /// pointing at it.
+    #[test]
+    fn removing_a_folder_forgets_it_and_keeps_its_raw_files() {
+        let dir = scratch_dir("remove-folder");
+        let (gone, kept) = (dir.join("gone"), dir.join("kept"));
+        std::fs::create_dir_all(&gone).unwrap();
+        std::fs::create_dir_all(&kept).unwrap();
+        let lib = crate::database::library::Library::open_at(&dir.join("catalogue.db")).unwrap();
+        let mut ids = Vec::new();
+        for folder in [&gone, &gone, &kept] {
+            let raw = folder.join(format!("{}.NEF", ids.len()));
+            std::fs::write(&raw, b"raw").unwrap();
+            let id = lib.import_image(&raw.to_string_lossy(), "x.NEF").unwrap();
+            let cache = |tier: &str| {
+                let p = dir.join(format!("{tier}-{id}.jpg"));
+                std::fs::write(&p, b"jpeg").unwrap();
+                p.to_string_lossy().into_owned()
+            };
+            lib.set_image_cache_paths(id, &cache("thumb"), &cache("instant"), &cache("working")).unwrap();
+            lib.save_edit_params(id, &Default::default()).unwrap();
+            ids.push(id);
+        }
+        let mut e = Session { images: lib.get_all_images().unwrap(), library: Some(lib), ..Session::default() };
+        let folder = gone.to_string_lossy().into_owned();
+        e.selected_image_id = Some(ids[0]);
+        e.multi_selection = [ids[1], ids[2]].into();
+        e.library_folder_filter = Some(folder.clone());
+
+        let forgotten = e.remove_folder(&folder);
+        assert_eq!(forgotten, [ids[0], ids[1]].into());
+        assert_eq!(e.images.iter().map(|i| i.id).collect::<Vec<_>>(), [ids[2]]);
+        assert_eq!(e.multi_selection, [ids[2]].into());
+        assert_eq!(e.selected_image_id, None);
+        assert!(matches!(e.editor_readiness, EditorReadiness::NoSelection));
+        assert_eq!(e.library_folder_filter, None);
+        assert_eq!(e.status, "Removed 2 images from the catalogue (files kept)");
+
+        let lib = e.library.as_ref().unwrap();
+        assert_eq!(lib.get_all_images().unwrap().len(), 1);
+        assert_eq!(lib.load_saved_edit(ids[0]).unwrap(), None, "an edit row was orphaned");
+        assert!(lib.load_saved_edit(ids[2]).unwrap().is_some());
+        for id in &ids[..2] {
+            assert!(!dir.join(format!("thumb-{id}.jpg")).exists(), "cache kept for {id}");
+        }
+        assert!(dir.join(format!("thumb-{}.jpg", ids[2])).exists());
+        for name in ["gone/0.NEF", "gone/1.NEF", "kept/2.NEF"] {
+            assert!(dir.join(name).exists(), "{name} was touched");
+        }
+
+        assert!(e.remove_folder(&folder).is_empty(), "a second removal found something");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -334,4 +334,138 @@ mod tests {
         assert_eq!(s.request_delete(), DeleteRequest::Confirm);
         assert_eq!(s.pending_delete_ids, vec![1]);
     }
+
+    use crate::session::testkit::session_with_images;
+    use crate::session::Moved;
+
+    fn outcome(deleted: &[i64], failed: &[i64]) -> HardDeleteOutcome {
+        HardDeleteOutcome {
+            deleted_ids: deleted.to_vec(),
+            failed: failed.iter().map(|id| (*id, "Trash failed: busy".to_string())).collect(),
+        }
+    }
+
+    fn ids(s: &Session) -> Vec<i64> {
+        s.images.iter().map(|i| i.id).collect()
+    }
+
+    /// Deleting the open image moves to the one that took its place, counting
+    /// only the deleted images before it, and forgets everything held for the
+    /// deleted ones.
+    #[test]
+    fn deleting_the_open_image_moves_to_the_one_in_its_place() {
+        let mut s = session_with_images(5);
+        s.selected_image_id = Some(3);
+        s.multi_selection = [2, 3, 5].into();
+        s.edits_dirty = true;
+        s.queued_raw_loads.push((2, "/x/2".into()));
+        s.queued_raw_loads.push((4, "/x/4".into()));
+        s.history_map.insert(3, Default::default());
+
+        let moved = s.hard_delete_complete(outcome(&[2, 3], &[]));
+        assert!(matches!(moved, Moved::To(4)), "{moved:?}");
+        assert_eq!(s.selected_image_id, Some(4));
+        assert_eq!(ids(&s), [1, 4, 5]);
+        assert_eq!(s.multi_selection, [5].into());
+        assert_eq!(s.queued_raw_loads.iter().map(|(id, _)| *id).collect::<Vec<_>>(), [4]);
+        assert!(!s.history_map.contains_key(&3));
+        // The deleted image's unsaved gesture must not be flushed onto image 4.
+        assert!(!s.edits_dirty);
+        assert!(!s.is_deleting);
+        assert_eq!(s.status, "Deleted 2 image(s).");
+    }
+
+    #[test]
+    fn deleting_the_last_image_in_the_list_moves_back_one() {
+        let mut s = session_with_images(3);
+        s.selected_image_id = Some(3);
+        assert!(matches!(s.hard_delete_complete(outcome(&[3], &[])), Moved::To(2)));
+    }
+
+    #[test]
+    fn deleting_everything_clears_the_selection() {
+        let mut s = session_with_images(2);
+        s.selected_image_id = Some(1);
+        assert!(matches!(s.hard_delete_complete(outcome(&[1, 2], &[])), Moved::Cleared));
+        assert_eq!(s.selected_image_id, None);
+        assert!(matches!(s.editor_readiness, EditorReadiness::NoSelection));
+    }
+
+    /// A failed image stays, open if it was open, and the status says so.
+    #[test]
+    fn a_partial_failure_keeps_the_failed_images() {
+        let mut s = session_with_images(3);
+        s.selected_image_id = Some(2);
+        s.edits_dirty = true;
+        assert!(matches!(s.hard_delete_complete(outcome(&[1], &[2])), Moved::Stay));
+        assert_eq!(ids(&s), [2, 3]);
+        assert_eq!(s.selected_image_id, Some(2));
+        assert!(s.edits_dirty, "a surviving image's unsaved edit was dropped");
+        assert_eq!(s.status, "Deleted 1 image(s), 1 failed — see log.");
+    }
+
+    #[test]
+    fn a_delete_already_running_or_with_nothing_pending_starts_nothing() {
+        let mut s = session_with_images(2);
+        assert!(s.delete_pending_from_disk().is_empty());
+        assert!(!s.is_deleting);
+
+        s.pending_delete_ids = vec![1];
+        s.is_deleting = true;
+        assert!(s.delete_pending_from_disk().is_empty());
+        assert_eq!(s.pending_delete_ids, [1], "a refused request dropped the targets");
+    }
+
+    #[test]
+    fn marking_for_removal_is_saved_and_hides_nothing_from_the_catalogue() {
+        let mut s = session_with_images(3);
+        s.pending_delete_ids = vec![1, 3];
+        assert!(s.mark_pending_for_removal());
+        let saved = s.library.as_ref().unwrap().get_all_images().unwrap();
+        let mut marked: Vec<i64> = saved.iter().filter(|i| is_marked(i.rating)).map(|i| i.id).collect();
+        marked.sort_unstable();
+        assert_eq!(marked, [1, 3]);
+        assert_eq!(ids(&s), [1, 2, 3]);
+        assert_eq!(s.images.iter().filter(|i| is_marked(i.rating)).count(), 2);
+        assert!(!s.mark_pending_for_removal(), "the targets were consumed");
+    }
+
+    /// The disk half on a real catalogue file: the rows go, edits included
+    /// (foreign keys are off, so nothing cascades), and a file that is
+    /// already gone counts as deleted. Never touches the desktop trash: every
+    /// path here is missing.
+    #[test]
+    fn hard_delete_removes_the_rows_and_their_edits() {
+        let dir = std::env::temp_dir().join(format!("raw-editor-hard-delete-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let lib = crate::database::library::Library::open_at(&dir.join("cat.db")).unwrap();
+        let rows = crate::session::testkit::image_rows(&lib, 3);
+        lib.save_edit_params(2, &crate::core::types::EditParams { exposure: 1.0, ..Default::default() })
+            .unwrap();
+        let mut s = Session { images: rows, library: Some(lib), ..Session::default() };
+        s.pending_delete_ids = vec![2, 3];
+
+        let effects = s.delete_pending_from_disk();
+        assert!(s.is_deleting);
+        assert!(s.pending_delete_ids.is_empty());
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let [event] = &rt.block_on(async {
+            let mut out = Vec::new();
+            for effect in effects {
+                out.push(effect.future.await);
+            }
+            out
+        })[..] else {
+            panic!("one effect expected")
+        };
+        let SessionEvent::HardDeleteComplete(outcome) = event else { panic!("{event:?}") };
+        assert_eq!(outcome.deleted_ids, [2, 3]);
+        assert!(outcome.failed.is_empty());
+
+        let lib = s.library.as_ref().unwrap();
+        assert_eq!(lib.get_all_images().unwrap().iter().map(|i| i.id).collect::<Vec<_>>(), [1]);
+        assert_eq!(lib.load_saved_edit(2).unwrap(), None, "the edit row was orphaned");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -78,6 +78,20 @@ pub fn labels(effects: &Effects) -> Vec<&'static str> {
     effects.labels().collect()
 }
 
+/// Run effects that need no executor (their futures finish on the first
+/// poll: an event handed on from memory) and return their events, in order.
+/// Panics on one that would wait, which a test must deliver by hand instead.
+pub fn run_ready(effects: Effects) -> Vec<SessionEvent> {
+    use std::task::{Context, Poll, Waker};
+    effects
+        .into_iter()
+        .map(|mut effect| match effect.future.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
+            Poll::Ready(event) => event,
+            Poll::Pending => panic!("{} waits on real work; deliver its result instead", effect.label),
+        })
+        .collect()
+}
+
 /// A tiny but valid decoded RAW: 8×8 RGGB, a flat grey. `tag` lands in
 /// `model`, so tests can tell which delivery the session is holding.
 pub fn raw(tag: impl std::fmt::Display) -> RawDataResult {

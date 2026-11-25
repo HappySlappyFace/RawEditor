@@ -36,19 +36,23 @@ mod tests {
     /// until the user zoomed again; and a RAW gone from the cache skipped
     /// the upgrade outright. The render now asks.
     ///
-    /// Needs a GPU (lavapipe is enough) and a RAW:
-    /// `RAWEDITOR_TEST_RAW=x.NEF cargo test --release loads_into_a_zoomed -- --ignored`.
+    /// Needs a GPU (lavapipe is enough). Runs on a synthetic 4000×2600 RAW,
+    /// or on a real one: `RAWEDITOR_TEST_RAW=x.NEF cargo test --release
+    /// loads_into_a_zoomed -- --ignored`. Its path never needs to exist: the
+    /// upgrade from disk is only asked for, never run.
     #[test]
     #[ignore]
     fn loads_into_a_zoomed_in_view_at_full_resolution() {
-        let Ok(path) = std::env::var("RAWEDITOR_TEST_RAW") else {
-            eprintln!("RAWEDITOR_TEST_RAW not set, skipping");
-            return;
-        };
         let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).build().expect("runtime");
+        let (path, raw) = match std::env::var("RAWEDITOR_TEST_RAW") {
+            Ok(path) => {
+                let raw = rt.block_on(raw::loader::load_raw_data(path.clone())).expect("decode");
+                (path, raw)
+            }
+            Err(_) => ("/nonexistent/synthetic.NEF".to_string(), crate::ml::segment::test_support::disc_raw(4000, 2600)),
+        };
         let (ctx, preview) = rt.block_on(async {
             let ctx = Arc::new(gpu::shared::SharedContext::new().await.expect("gpu"));
-            let raw = raw::loader::load_raw_data(path.clone()).await.expect("decode");
             let fm = crate::color::calculate_cam_to_srgb(raw.color_matrix, raw.wb_multipliers, raw.color_matrix_is_d65);
             let res = gpu::shared::ImageResources::new(
                 &ctx, 1, &raw.data, raw.width, raw.height, &Default::default(), raw.wb_multipliers, fm,
@@ -111,8 +115,7 @@ mod tests {
         // A successful upgrade keeps the preview beside it: renders that full
         // resolution would not sharpen — and a noise-reduction drag, whose
         // stage costs per source pixel — come from the preview instead.
-        let full = rt.block_on(async {
-            let raw = raw::loader::load_raw_data(e.session.images[0].path.clone()).await.expect("decode");
+        let full = {
             let fm = crate::color::calculate_cam_to_srgb(raw.color_matrix, raw.wb_multipliers, raw.color_matrix_is_d65);
             let res = gpu::shared::ImageResources::new(
                 &ctx, 1, &raw.data, raw.width, raw.height, &Default::default(), raw.wb_multipliers, fm,
@@ -121,7 +124,7 @@ mod tests {
             )
             .expect("resources");
             Arc::new(res)
-        });
+        };
         e.session.full_res_upgrading = true;
         e.session.is_rendering = false;
         let _ = e.session.full_res_ready(1, Ok((ctx.clone(), full.clone())));
