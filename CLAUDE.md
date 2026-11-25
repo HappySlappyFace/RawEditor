@@ -19,7 +19,7 @@ tools/coverage.sh [--gpu]      # line coverage (cargo-llvm-cov): target/llvm-cov
 
 Coverage is a map of what no test reaches, not a target: the views and widgets are excluded, shaders never show, and CI doesn't gate on it. Session logic (`crates/raw-editor-session`) is where gaps matter most; test it through `session::testkit`.
 
-CI runs the ignored GPU tests too, on lavapipe, for pull requests (the `gpu` job in `.github/workflows/ci.yml`). A new GPU test must pass there: build its input synthetically, or skip when its photo/model/variable is missing, or join that job's skip list.
+CI runs the ignored GPU tests too, on lavapipe, for pull requests (the `gpu` job in `.github/workflows/ci.yml`), with the AI models (downloaded from `models-v1`, checked against `ml::models`' hashes, cached). A new GPU test must pass there: build its input synthetically, or skip when its photo/variable is missing, or join that job's skip list.
 
 **Releasing:** the root `Cargo.toml`'s `[workspace.package] version` is the one source of truth (both crates inherit it). Bump it, commit, and push the tag `v<that version>` (e.g. `v1.0.0`, or `v1.0.0-rc.1` for a pre-release). The release workflow fails any tag that isn't exactly that, so no letter suffixes: a hotfix is the next patch number, because semver puts `0.9.8-E` *before* `0.9.8` and the update check (`core::updates`) would offer it backwards. Pre-release tags (with a `-`) are published as pre-releases, which are never "latest", so the update check never offers them.
 
@@ -57,7 +57,7 @@ The rules:
 - **Decisions come back as values.** A decision that needs a dialog is returned for the app to act on (`UpdatesAtStartup::Ask`, `ModelMissing`, `DeleteRequest`). The session never touches modals, caches or widgets.
 - **Drawn things are signalled, not drawn.** Anything the front end caches a drawing of is signalled through `session.changed` (`Changed::{OVERLAY, HISTOGRAM, PROFILER}`) and `session.camera_preview`. `RawEditor::sync_from_session` drains them after every update.
 - **The app keeps its own state.** Pointer, modal, scroll and widget state stay in the app. Its handlers read session state freely but change it only through session methods.
-- **Testing without a front end.** `session::testkit` drives a `Session` on its own. Effects are read by label (`labels`), never run, and results are delivered by hand (`deliver`). `app::testkit` builds on the same fixtures and drives `update`.
+- **Testing without a front end.** `session::testkit` drives a `Session` on its own. Effects are read by label (`labels`), never run, and results are delivered by hand (`deliver`). The ignored end-to-end tests (`session::ai_flows`) run them for real instead, with `drive`, after pointing the data and cache folders at a temp folder (`core::paths::redirect_for_tests`). `app::testkit` builds on the same fixtures and drives `update`.
 
 ### Module layout
 - `src/main.rs` — entry point / iced application bootstrap
