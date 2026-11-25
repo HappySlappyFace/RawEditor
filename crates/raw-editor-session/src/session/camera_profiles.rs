@@ -254,4 +254,89 @@ mod tests {
         assert!(s.import_camera_profiles(Vec::new()).is_empty());
         assert_eq!(s.camera_profiles.busy, None);
     }
+
+    use crate::session::testkit::{deliver, labels, open_in_develop, raw, session_with_images};
+
+    fn notice(s: &Session) -> Result<&str, &str> {
+        match s.camera_profiles.notice.as_ref().expect("a notice") {
+            Ok(m) => Ok(m.as_str()),
+            Err(m) => Err(m.as_str()),
+        }
+    }
+
+    /// One job at a time: a second request while one runs starts nothing and
+    /// keeps the first one's state.
+    #[test]
+    fn one_job_at_a_time() {
+        let mut s = Session::default();
+        assert_eq!(labels(&s.update_camera_profiles()), ["camera profile update"]);
+        assert_eq!(s.camera_profiles.busy, Some(ProfileJob::Updating));
+        assert!(s.rescan_camera_profiles().is_empty());
+        assert!(s.import_camera_profiles(vec!["a.dcp".into()]).is_empty());
+        assert_eq!(s.camera_profiles.busy, Some(ProfileJob::Updating));
+
+        // A scan that isn't the rescan job must not end the running job.
+        let _ = s.camera_profiles_scanned(false);
+        assert_eq!(s.camera_profiles.busy, Some(ProfileJob::Updating));
+    }
+
+    #[test]
+    fn a_download_reports_each_outcome_and_remembers_a_missing_camera() {
+        let mut s = Session::default();
+        s.camera_profiles.busy = Some(ProfileJob::Downloading);
+        let _ = s.camera_profile_downloaded("Testkit X".into(), Ok(None));
+        assert_eq!(s.camera_profiles.busy, None);
+        assert_eq!(notice(&s), Err("RawTherapee has no profile for Testkit X"));
+        assert_eq!(s.camera_profiles.unavailable.as_deref(), Some("Testkit X"));
+
+        let _ = s.camera_profile_downloaded("Testkit X".into(), Err("offline".into()));
+        assert_eq!(notice(&s), Err("Download failed: offline"));
+
+        let _ = s.camera_profile_downloaded("Testkit X".into(), Ok(Some("Testkit X.dcp".into())));
+        assert_eq!(notice(&s), Ok("Downloaded Testkit X.dcp"));
+        assert_eq!(s.camera_profiles.unavailable, None, "the prompt still says there is none");
+    }
+
+    /// A new profile can change what the open image resolves to: it is
+    /// rebuilt, from its cached RAW.
+    #[test]
+    fn a_downloaded_profile_rebuilds_the_open_image() {
+        let mut s = session_with_images(1);
+        let _ = open_in_develop(&mut s, 1);
+        let _ = deliver(&mut s, SessionEvent::RawDataLoaded(1, Ok(raw(1))));
+        assert_eq!(s.camera(), Some(("Testkit".into(), "synthetic 1".into())));
+        assert_eq!(labels(&s.download_camera_profile()), ["camera profile download"]);
+        // Without GPU resources there is nothing built to rebuild.
+        assert!(s.camera_profile_downloaded("x".into(), Ok(Some("x.dcp".into()))).is_empty());
+    }
+
+    #[test]
+    fn imports_report_what_went_in_and_what_did_not() {
+        let mut s = Session::default();
+        let _ = s.camera_profiles_imported(vec!["a.dcp".into()], vec![]);
+        assert_eq!(notice(&s), Ok("Imported a.dcp"));
+        let _ = s.camera_profiles_imported(vec!["a.dcp".into(), "b.dcp".into()], vec![]);
+        assert_eq!(notice(&s), Ok("Imported 2 profiles"));
+        let _ = s.camera_profiles_imported(vec!["a.dcp".into()], vec!["b.txt: not a DCP".into()]);
+        assert_eq!(notice(&s), Err("Imported 1 — could not import: b.txt: not a DCP"));
+    }
+
+    #[test]
+    fn update_reports_read_naturally() {
+        let report = |checked: usize, updated: &[&str]| {
+            Ok(profiles::UpdateReport { checked, updated: updated.iter().map(|s| s.to_string()).collect(), ..Default::default() })
+        };
+        let mut s = Session::default();
+        let _ = s.camera_profiles_updated(report(0, &[]));
+        assert_eq!(notice(&s), Ok("No downloaded profiles to update"));
+        let _ = s.camera_profiles_updated(report(1, &[]));
+        assert_eq!(notice(&s), Ok("All 1 downloaded profile is up to date"));
+        let _ = s.camera_profiles_updated(report(3, &[]));
+        assert_eq!(notice(&s), Ok("All 3 downloaded profiles are up to date"));
+        let _ = s.camera_profiles_updated(report(3, &["A.dcp", "B.dcp"]));
+        assert_eq!(notice(&s), Ok("Updated A.dcp, B.dcp"));
+        let _ = s.camera_profiles_updated(Err("rate limited".into()));
+        assert_eq!(notice(&s), Err("Could not check for updates: rate limited"));
+        assert_eq!(s.camera_profiles.busy, None);
+    }
 }

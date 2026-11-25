@@ -393,3 +393,103 @@ impl Session {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::testkit::{deliver, open_in_develop, session_with_images};
+    use crate::session::SessionEvent;
+
+    /// Image 1 open with its RAW decoded (big enough for the eyedropper's
+    /// 16×16 sample), one radial mask selected.
+    fn session() -> Session {
+        let mut s = session_with_images(1);
+        let _ = open_in_develop(&mut s, 1);
+        let disc = crate::ml::segment::test_support::disc_raw(60, 40);
+        let _ = deliver(&mut s, SessionEvent::RawDataLoaded(1, Ok(disc)));
+        s.current_edit_params.masks[0] = MaskParams { mask_type: 1, enabled: 1, ..MaskParams::default() };
+        s.current_edit_params.mask_count = 1;
+        s.commit_current_state();
+        let _ = s.select_mask(Some(0));
+        s
+    }
+
+    /// Turning colour range on arms the eyedropper; the pick, sampled from
+    /// the RAW, turns it on with a usable tolerance, as one undo step.
+    #[test]
+    fn colour_range_turns_on_with_the_pick() {
+        let mut s = session();
+        assert!(s.set_color_range(true).is_empty());
+        assert_eq!(s.color_picking_mask, Some(0));
+        assert_eq!(s.current_edit_params.masks[0].color_range, 0, "on before anything was picked");
+
+        let _ = s.mask_color_picked(0.5, 0.5);
+        let m = s.current_edit_params.masks[0];
+        assert_eq!((m.color_range, m.color_tolerance), (1, 0.3), "status: {}", s.status);
+        assert!(m.color_target.iter().all(|c| c.is_finite()), "{:?}", m.color_target);
+        assert_eq!(s.color_picking_mask, None);
+        assert!(s.mask_color_picked(0.5, 0.5).is_empty(), "a second click picked again");
+
+        let _ = s.undo();
+        assert_eq!(s.current_edit_params.masks[0].color_range, 0, "the pick was not an undo step");
+        let _ = s.redo();
+        let _ = s.set_color_range(false);
+        assert_eq!(s.current_edit_params.masks[0].color_range, 0);
+    }
+
+    #[test]
+    fn a_pick_without_the_raw_says_why_and_changes_nothing() {
+        let mut s = session_with_images(1);
+        let _ = open_in_develop(&mut s, 1);
+        s.current_edit_params.masks[0] = MaskParams { mask_type: 1, ..MaskParams::default() };
+        s.current_edit_params.mask_count = 1;
+        let _ = s.select_mask(Some(0));
+        let _ = s.set_color_range(true);
+        let _ = s.mask_color_picked(0.5, 0.5);
+        assert!(s.status.starts_with("Color range: "), "{}", s.status);
+        assert_eq!(s.current_edit_params.masks[0].color_range, 0);
+        assert_eq!(s.color_picking_mask, None, "the eyedropper stayed armed");
+    }
+
+    /// The luminance range's ends push against each other instead of crossing.
+    #[test]
+    fn the_luminance_range_never_inverts() {
+        let mut s = session();
+        let _ = s.set_mask_adjustment(MaskAdjustment::LumaHi, 0.4);
+        let _ = s.set_mask_adjustment(MaskAdjustment::LumaLo, 0.9);
+        let m = s.current_edit_params.masks[0];
+        assert_eq!((m.luma_lo, m.luma_hi), (0.4, 0.4));
+        let _ = s.set_mask_adjustment(MaskAdjustment::LumaHi, -1.0);
+        assert_eq!(s.current_edit_params.masks[0].luma_hi, 0.4);
+        let _ = s.set_mask_adjustment(MaskAdjustment::Rotation, 270.0);
+        assert_eq!(s.current_edit_params.masks[0].rotation, 180.0);
+    }
+
+    #[test]
+    fn selecting_a_brush_mask_arms_painting_and_others_do_not() {
+        let mut s = session();
+        s.current_edit_params.masks[1] = MaskParams { mask_type: MASK_BRUSH, ..MaskParams::default() };
+        s.current_edit_params.mask_count = 2;
+        s.is_leveling = true;
+        let _ = s.select_mask(Some(1));
+        assert!(s.brush_armed);
+        assert!(!s.is_leveling, "the level tool kept the clicks");
+        let _ = s.select_mask(Some(0));
+        assert!(!s.brush_armed);
+        let _ = s.select_mask(Some(5));
+        assert_eq!(s.selected_mask, None, "selected a mask that doesn't exist");
+    }
+
+    /// Edits to a slot past the live masks are ignored, not written into a
+    /// cleared slot that a new mask would inherit.
+    #[test]
+    fn a_slot_past_the_masks_is_left_alone() {
+        let mut s = session();
+        let before = s.current_edit_params;
+        assert!(s.set_mask_enabled(3, false).is_empty());
+        s.selected_mask = Some(3);
+        assert!(s.set_mask_adjustment(MaskAdjustment::Exposure, 1.0).is_empty());
+        assert!(s.set_color_range(true).is_empty());
+        assert_eq!(s.current_edit_params, before);
+    }
+}

@@ -525,4 +525,206 @@ mod tests {
         assert!(state.image_id.is_none());
         assert!(state.regen.is_some(), "closing dropped the regeneration");
     }
+
+    use crate::session::testkit::{deliver, labels, open_in_develop, raw, session_with_images};
+
+    /// Image 1 open in Develop with its RAW decoded. Rebuilding it is then a
+    /// "develop resources" build from the cached RAW.
+    fn developing(n: usize) -> Session {
+        let mut s = session_with_images(n);
+        let _ = open_in_develop(&mut s, 1);
+        let _ = deliver(&mut s, SessionEvent::RawDataLoaded(1, Ok(raw(1))));
+        s
+    }
+
+    /// Image 1 open in Develop, the dialog open on it. No engine: the GPU half
+    /// (the preview loupe) is never built here, so these tests drive the
+    /// dialog's bookkeeping by delivering results by hand.
+    fn with_dialog() -> Session {
+        let mut s = developing(3);
+        s.ai_denoise.reset_to(AiDenoiseState { image_id: Some(1), amount: 0.6, ..AiDenoiseState::default() });
+        s
+    }
+
+    fn saved_amount(s: &Session, id: i64) -> f32 {
+        s.library.as_ref().unwrap().load_saved_edit(id).unwrap().map_or(0.0, |p| p.ai_denoise)
+    }
+
+    /// Apply's result sets the edit: saved, an undo step, the dialog closed,
+    /// and the image rebuilt with the denoised mosaic.
+    #[test]
+    fn a_finished_apply_sets_a_saved_undoable_edit_and_reloads() {
+        let mut s = with_dialog();
+        s.ai_denoise.job = Some(Arc::new(Progress::default()));
+        let e = deliver(&mut s, SessionEvent::AiDenoiseApplied(1, 0.6, Ok(())));
+        assert!(s.ai_denoise.image_id.is_none(), "the dialog stayed open");
+        assert!(s.ai_denoise.job.is_none());
+        assert_eq!(s.current_edit_params.ai_denoise, 0.6);
+        assert_eq!(saved_amount(&s, 1), 0.6, "not saved");
+        assert_eq!(s.status, "AI denoise applied (60%)");
+        assert!(labels(&e).contains(&"develop resources"), "the image was not rebuilt: {:?}", labels(&e));
+
+        let _ = s.undo();
+        assert_eq!(s.current_edit_params.ai_denoise, 0.0, "not an undo step");
+        assert_eq!(saved_amount(&s, 1), 0.0);
+    }
+
+    /// The user closed the dialog (or moved on) while Apply ran: the cache is
+    /// written, but no edit is set behind their back.
+    #[test]
+    fn an_apply_finishing_after_the_dialog_closed_sets_nothing() {
+        let mut s = with_dialog();
+        s.close_ai_denoise();
+        let e = deliver(&mut s, SessionEvent::AiDenoiseApplied(1, 0.6, Ok(())));
+        assert!(e.is_empty());
+        assert_eq!(s.current_edit_params.ai_denoise, 0.0);
+        assert_eq!(saved_amount(&s, 1), 0.0);
+    }
+
+    #[test]
+    fn a_cancelled_apply_is_not_an_error_and_a_failed_one_says_why() {
+        let mut s = with_dialog();
+        s.ai_denoise.job = Some(Arc::new(Progress::default()));
+        let _ = deliver(&mut s, SessionEvent::AiDenoiseApplied(1, 0.6, Err(crate::ml::CANCELLED.into())));
+        assert!(s.ai_denoise.job.is_none());
+        assert_eq!(s.ai_denoise.error, None);
+        assert_eq!(s.ai_denoise.image_id, Some(1), "a cancel closed the dialog");
+
+        let _ = deliver(&mut s, SessionEvent::AiDenoiseApplied(1, 0.6, Err("out of memory".into())));
+        assert_eq!(s.ai_denoise.error.as_deref(), Some("out of memory"));
+        assert_eq!(s.current_edit_params.ai_denoise, 0.0);
+    }
+
+    /// Cancel stops a running Apply and keeps the dialog; with nothing
+    /// running it closes. Closing mid-Apply stops the job too.
+    #[test]
+    fn cancel_stops_a_running_apply_before_it_closes_anything() {
+        let mut s = with_dialog();
+        let job = Arc::new(Progress::default());
+        s.ai_denoise.job = Some(job.clone());
+        s.cancel_ai_denoise();
+        assert!(job.cancelled());
+        assert_eq!(s.ai_denoise.image_id, Some(1));
+
+        s.ai_denoise.job = None;
+        s.cancel_ai_denoise();
+        assert!(s.ai_denoise.image_id.is_none());
+
+        let mut s = with_dialog();
+        let job = Arc::new(Progress::default());
+        s.ai_denoise.job = Some(job.clone());
+        s.close_ai_denoise();
+        assert!(job.cancelled(), "closing left the whole-image run going");
+    }
+
+    #[test]
+    fn remove_clears_the_edit() {
+        let mut s = with_dialog();
+        s.current_edit_params.ai_denoise = 0.5;
+        s.commit_current_state();
+        let _ = s.remove_ai_denoise();
+        assert_eq!(s.current_edit_params.ai_denoise, 0.0);
+        assert_eq!(saved_amount(&s, 1), 0.0);
+        assert_eq!(s.status, "AI denoise removed");
+        assert!(s.ai_denoise.image_id.is_none());
+    }
+
+    /// Results for a dialog that has been closed, or reopened on another
+    /// image, are dropped without touching the new dialog's state.
+    #[test]
+    fn results_for_a_closed_or_other_dialog_are_dropped() {
+        let mut s = with_dialog();
+        s.ai_denoise.reset_to(AiDenoiseState { image_id: Some(2), ..AiDenoiseState::default() });
+        s.ai_denoise.crop_running = true;
+        s.ai_denoise.render_in_flight = true;
+        for event in [
+            SessionEvent::AiDenoiseReady(1, Err("x".into())),
+            SessionEvent::AiDenoiseCropReady(1, Err("x".into())),
+            SessionEvent::AiDenoiseRendered(1, Err("x".into())),
+        ] {
+            assert!(deliver(&mut s, event).is_empty());
+        }
+        assert_eq!(s.ai_denoise.error, None);
+        assert!(s.ai_denoise.crop_running && s.ai_denoise.render_in_flight);
+    }
+
+    /// A failure while preparing shows in the dialog instead of a spinner
+    /// that never ends; a failed crop also frees the slot for the next one.
+    #[test]
+    fn a_failed_engine_or_crop_shows_its_error() {
+        let mut s = with_dialog();
+        assert!(s.ai_denoise.preparing());
+        let _ = deliver(&mut s, SessionEvent::AiDenoiseReady(1, Err("no RAW".into())));
+        assert!(!s.ai_denoise.preparing());
+        assert_eq!(s.ai_denoise.error.as_deref(), Some("no RAW"));
+
+        let mut s = with_dialog();
+        s.ai_denoise.crop_running = true;
+        let _ = deliver(&mut s, SessionEvent::AiDenoiseCropReady(1, Err("model".into())));
+        assert!(!s.ai_denoise.thinking());
+        assert_eq!(s.ai_denoise.error.as_deref(), Some("model"));
+    }
+
+    /// A rendered frame is shown, and a request that arrived meanwhile is
+    /// taken up (here it finds no engine, so asks for nothing).
+    #[test]
+    fn a_rendered_frame_is_shown_and_frees_the_render_slot() {
+        let mut s = with_dialog();
+        s.ai_denoise.render_in_flight = true;
+        s.ai_denoise.render_pending = true;
+        let frame = LoupeFrame { rgba: vec![0; 4 * 4 * 4], size: 4, window: [0.4, 0.4, 0.2, 0.2] };
+        let _ = deliver(&mut s, SessionEvent::AiDenoiseRendered(1, Ok(frame)));
+        assert!(!s.ai_denoise.render_in_flight);
+        assert!(!s.ai_denoise.render_pending);
+        let f = s.ai_denoise.frame.as_ref().expect("frame");
+        assert_eq!((f.image_id, f.size, f.window), (1, 4, [0.4, 0.4, 0.2, 0.2]));
+    }
+
+    /// Dragging the preview moves its centre against the drag, and never so
+    /// far that the window leaves the image.
+    #[test]
+    fn panning_the_preview_follows_the_pointer_and_stays_on_the_image() {
+        let mut s = with_dialog();
+        s.scale_factor = 1.0;
+        assert!(s.pan_ai_denoise(10.0, 0.0).is_empty(), "no frame yet: nothing to pan");
+        s.ai_denoise.center = [0.5, 0.5];
+        s.ai_denoise.frame = Some(LoupeView { image_id: 1, rgba: Arc::from(vec![]), window: [0.4, 0.4, 0.2, 0.2], size: 100 });
+        let _ = s.pan_ai_denoise(10.0, -5.0);
+        let [x, y] = s.ai_denoise.center;
+        assert!((x - 0.48).abs() < 1e-6 && (y - 0.51).abs() < 1e-6, "{x} {y}");
+        let _ = s.pan_ai_denoise(-1e6, 1e6);
+        assert_eq!(s.ai_denoise.center, [0.9, 0.1]);
+    }
+
+    #[test]
+    fn amount_is_clamped_and_before_only_changes_on_a_change() {
+        let mut s = with_dialog();
+        let _ = s.set_ai_denoise_amount(1.7);
+        assert_eq!(s.ai_denoise.amount, 1.0);
+        let _ = s.set_ai_denoise_amount(-1.0);
+        assert_eq!(s.ai_denoise.amount, 0.0);
+        let _ = s.set_ai_denoise_before(true);
+        assert!(s.ai_denoise.before);
+        assert!(s.set_ai_denoise_before(true).is_empty());
+    }
+
+    /// A background regeneration's result: the open image asking for it is
+    /// rebuilt; a failure says so; either way the guard is released.
+    #[test]
+    fn a_regeneration_releases_its_guard_and_reloads_the_image_that_wants_it() {
+        let mut s = developing(2);
+        s.current_edit_params.ai_denoise = 0.5;
+        s.ai_denoise.regen = Some((1, Arc::new(Progress::default())));
+        s.status = "Re-computing AI denoise…".into();
+        let e = deliver(&mut s, SessionEvent::AiDenoiseRegenerated(1, Ok(())));
+        assert!(!s.ai_denoise.busy());
+        assert!(s.status.is_empty());
+        assert!(labels(&e).contains(&"develop resources"), "{:?}", labels(&e));
+
+        s.ai_denoise.regen = Some((1, Arc::new(Progress::default())));
+        let e = deliver(&mut s, SessionEvent::AiDenoiseRegenerated(1, Err("disk full".into())));
+        assert!(!s.ai_denoise.busy());
+        assert_eq!(s.status, "AI denoise failed: disk full");
+        assert!(e.is_empty(), "a failed image was retried");
+    }
 }

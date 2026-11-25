@@ -524,3 +524,171 @@ impl Session {
             .collect()
     }
 }
+
+/// The AI-select session's bookkeeping, without SAM or a GPU: results are
+/// delivered by hand, as `testkit` does for every effect.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::testkit::{deliver, labels, open_in_develop, session_with_images};
+
+    fn bitmap() -> Bitmap {
+        Bitmap { width: 2, height: 2, data: vec![255; 4] }
+    }
+
+    /// Image 1 in Develop with two AI masks; slot 1 already holds bitmap 7.
+    fn developing() -> Session {
+        let mut s = session_with_images(2);
+        let _ = open_in_develop(&mut s, 1);
+        let p = &mut s.current_edit_params;
+        p.masks[0] = MaskParams::new_ai();
+        p.masks[1] = MaskParams { ai_id: 7, ..MaskParams::new_ai() };
+        p.mask_count = 2;
+        s
+    }
+
+    fn open(s: &mut Session, slot: usize, created: bool) -> u64 {
+        let mut select = AiSelect::for_test(1, slot, created);
+        select.prev_ai_id = s.current_edit_params.masks[slot].ai_id;
+        let token = select.token();
+        s.ai_select = Some(select);
+        token
+    }
+
+    fn selection(s: &mut Session, token: u64, ai_id: u64) -> Effects {
+        deliver(s, SessionEvent::AiMaskReady(token, Ok(Selection::for_test(ai_id, bitmap()))))
+    }
+
+    #[test]
+    fn a_selection_points_the_slot_at_its_bitmap() {
+        let mut s = developing();
+        let token = open(&mut s, 0, false);
+        let _ = selection(&mut s, token, 11);
+        assert_eq!(s.current_edit_params.masks[0].ai_id, 11);
+        assert_eq!(s.ai_bitmaps.image_id, Some(1));
+        assert!(s.ai_bitmaps.bitmaps.contains_key(&11), "the renderer can't see it");
+    }
+
+    /// A result from a session that has ended (or been replaced) must not
+    /// write into whatever mask now sits in that slot.
+    #[test]
+    fn a_result_from_an_ended_session_is_dropped() {
+        let mut s = developing();
+        let old = open(&mut s, 0, false);
+        let _ = open(&mut s, 0, false);
+        assert!(selection(&mut s, old, 11).is_empty());
+        assert_eq!(s.current_edit_params.masks[0].ai_id, 0);
+        assert!(deliver(&mut s, SessionEvent::AiEngineReady(old, Err("x".into()))).is_empty());
+        assert!(s.ai_select.as_ref().unwrap().error.is_none());
+    }
+
+    #[test]
+    fn a_failed_engine_or_decode_says_why_and_frees_the_decoder() {
+        let mut s = developing();
+        let token = open(&mut s, 0, false);
+        let _ = deliver(&mut s, SessionEvent::AiEngineReady(token, Err("no memory".into())));
+        let select = s.ai_select.as_ref().unwrap();
+        assert!(!select.analysing());
+        assert_eq!(s.status, "AI Select unavailable: no memory");
+
+        s.ai_select.as_mut().unwrap().decoding = true;
+        let _ = deliver(&mut s, SessionEvent::AiMaskReady(token, Err("bad prompt".into())));
+        assert!(!s.ai_select.as_ref().unwrap().decoding, "the next click could never decode");
+        assert_eq!(s.status, "AI Select: bad prompt");
+    }
+
+    /// Done keeps the selection as one undo step; a new mask that never got
+    /// a selection is removed rather than left empty.
+    #[test]
+    fn done_keeps_the_selection_and_drops_an_empty_new_mask() {
+        let mut s = developing();
+        let token = open(&mut s, 0, true);
+        let _ = selection(&mut s, token, 11);
+        let _ = s.ai_select_done();
+        assert!(s.ai_select.is_none());
+        assert_eq!(s.current_edit_params.masks[0].ai_id, 11);
+        let _ = s.undo();
+        assert_eq!(s.current_edit_params.masks[0].ai_id, 0, "not an undo step");
+
+        let mut s = developing();
+        s.current_edit_params.masks[2] = MaskParams::new_ai();
+        s.current_edit_params.mask_count = 3;
+        let _ = open(&mut s, 2, true);
+        let _ = s.ai_select_done();
+        assert_eq!(s.current_edit_params.mask_count, 2, "an empty mask was kept");
+    }
+
+    /// Cancel puts a refined mask back to the bitmap it had, and removes a
+    /// mask the session created.
+    #[test]
+    fn cancel_restores_a_refined_mask_and_removes_a_new_one() {
+        let mut s = developing();
+        let token = open(&mut s, 1, false);
+        let _ = selection(&mut s, token, 12);
+        assert_eq!(s.current_edit_params.masks[1].ai_id, 12);
+        let _ = s.ai_select_cancel();
+        assert_eq!(s.current_edit_params.masks[1].ai_id, 7);
+        assert_eq!(s.current_edit_params.mask_count, 2);
+
+        let mut s = developing();
+        let token = open(&mut s, 0, true);
+        let _ = selection(&mut s, token, 11);
+        let _ = s.ai_select_cancel();
+        assert_eq!(s.current_edit_params.mask_count, 1);
+        assert_eq!(s.current_edit_params.masks[0].ai_id, 7, "the masks below did not move up");
+    }
+
+    #[test]
+    fn clicks_and_boxes_are_recorded_with_the_box_normalised() {
+        let mut s = developing();
+        assert!(s.ai_prompt(0.5, 0.5, true).is_empty(), "no session: nothing");
+        let _ = open(&mut s, 0, false);
+        let _ = s.ai_prompt(0.25, 0.75, false);
+        let _ = s.ai_rect(0.8, 0.9, 0.2, 0.1);
+        let p = &s.ai_select.as_ref().unwrap().prompts;
+        assert_eq!(p.points.len(), 1);
+        assert!(!p.points[0].positive);
+        let [u0, v0, u1, v1] = p.rect.unwrap();
+        assert!(u0 < u1 && v0 < v1, "an upward drag gave an inverted box: {:?}", p.rect);
+    }
+
+    /// Leaving Develop ends the session but keeps what was selected;
+    /// selecting another image drops it without touching that image's masks.
+    #[test]
+    fn leaving_ends_the_session_and_keeps_the_selection() {
+        let mut s = developing();
+        let token = open(&mut s, 0, false);
+        let _ = selection(&mut s, token, 11);
+        s.current_tab = AppTab::Library;
+        let _ = s.track_ai_masks();
+        assert!(s.ai_select.is_none());
+        assert_eq!(s.current_edit_params.masks[0].ai_id, 11);
+
+        let mut s = developing();
+        let _ = open(&mut s, 0, false);
+        s.selected_image_id = Some(2);
+        let _ = s.track_ai_masks();
+        assert!(s.ai_select.is_none());
+        assert!(s.status.is_empty());
+    }
+
+    /// The open image's bitmaps are read once each: not again while a read
+    /// is in flight, and not again after one failed.
+    #[test]
+    fn missing_bitmaps_are_read_once() {
+        let mut s = developing();
+        assert_eq!(labels(&s.track_ai_masks()), ["AI mask bitmaps"]);
+        assert!(s.track_ai_masks().is_empty(), "read again while loading");
+
+        let loaded = vec![(7, Err("gone".to_string()))];
+        assert!(deliver(&mut s, SessionEvent::AiBitmapsLoaded(2, loaded.clone())).is_empty(), "another image's");
+        let _ = deliver(&mut s, SessionEvent::AiBitmapsLoaded(1, loaded));
+        assert!(s.track_ai_masks().is_empty(), "a failed read was retried");
+
+        s.current_edit_params.masks[0].ai_id = 9;
+        assert_eq!(labels(&s.track_ai_masks()), ["AI mask bitmaps"]);
+        let _ = deliver(&mut s, SessionEvent::AiBitmapsLoaded(1, vec![(9, Ok(Arc::new(bitmap())))]));
+        assert!(s.ai_bitmaps.bitmaps.contains_key(&9));
+        assert!(s.track_ai_masks().is_empty());
+    }
+}
