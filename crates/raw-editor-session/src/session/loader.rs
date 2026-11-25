@@ -79,7 +79,7 @@ async fn process_load_request(id: i64, path: String) -> SessionEvent {
                 let expected = (width as usize) * (height as usize) * 3;
                 if pixels.len() == expected {
                     let mut rgba = Vec::with_capacity((width * height * 4) as usize);
-                    for chunk in pixels.chunks_exact(3) {
+                    for chunk in pixels.as_chunks::<3>().0 {
                         rgba.extend_from_slice(chunk);
                         rgba.push(255);
                     }

@@ -24,6 +24,7 @@ fn late_render(id: i64, edit: EditParams) -> crate::session::RenderOutput {
         upload_ms: 0.0,
         render_ms: 0.0,
         update_ms: 0.0,
+        detail: Default::default(),
     }
 }
 

@@ -25,6 +25,8 @@ run-fast     = "run --release --features fast-jpeg"
 build-compat = "build --release"
 run-quick    = "run --profile quick --features fast-jpeg"
 build-quick  = "build --profile quick --features fast-jpeg"
+run-profile   = "run --profile quick --features fast-jpeg,profiling"
+build-profile = "build --profile quick --features fast-jpeg,profiling"
 
 # ── OPTIONAL: target-cpu=native ──────────────────────────────────────────────
 # Uncommenting this makes the compiler use every instruction your specific CPU

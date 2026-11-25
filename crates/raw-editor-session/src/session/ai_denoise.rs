@@ -114,6 +114,14 @@ impl AiDenoiseState {
     pub fn thinking(&self) -> bool {
         self.crop_running
     }
+
+    /// Become `next`, keeping a background regeneration. It runs whether the
+    /// dialog is open or not; dropping its entry would lose its progress, and
+    /// `regenerate_missing_ai_denoise` would start a second one meanwhile.
+    fn reset_to(&mut self, next: AiDenoiseState) {
+        let regen = self.regen.take();
+        *self = AiDenoiseState { regen, ..next };
+    }
 }
 
 /// Compute and cache an image's result. Blocking (seconds).
@@ -169,12 +177,12 @@ impl Session {
             return Ok(Effects::none());
         }
         let current = self.current_edit_params.ai_denoise;
-        self.ai_denoise = AiDenoiseState {
+        self.ai_denoise.reset_to(AiDenoiseState {
             image_id: Some(image_id),
             amount: if current > 0.0 { current } else { 0.75 },
             center: self.loupe.center,
             ..AiDenoiseState::default()
-        };
+        });
 
         let cached = self.raw_for(image_id);
         let path = self.images.iter().find(|i| i.id == image_id).map(|i| i.path.clone());
@@ -431,8 +439,7 @@ impl Session {
         if let Some(p) = &self.ai_denoise.job {
             p.cancel();
         }
-        let regen = self.ai_denoise.regen.take();
-        self.ai_denoise = AiDenoiseState { regen, ..AiDenoiseState::default() };
+        self.ai_denoise.reset_to(AiDenoiseState::default());
     }
 
     /// After new resources land: an edit asks for AI denoise but no result was
@@ -497,5 +504,25 @@ impl Session {
                 Effects::none()
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Opening or closing the dialog keeps a background regeneration's
+    /// entry: it used to be dropped on open, losing the job's progress and
+    /// the guard against starting a second one.
+    #[test]
+    fn the_dialog_keeps_a_background_regeneration() {
+        let mut state = AiDenoiseState { regen: Some((7, Arc::new(Progress::default()))), ..AiDenoiseState::default() };
+        state.reset_to(AiDenoiseState { image_id: Some(7), amount: 0.75, ..AiDenoiseState::default() });
+        assert_eq!(state.image_id, Some(7));
+        assert!(state.regen.as_ref().is_some_and(|(id, _)| *id == 7), "opening dropped the regeneration");
+        assert!(state.busy());
+        state.reset_to(AiDenoiseState::default());
+        assert!(state.image_id.is_none());
+        assert!(state.regen.is_some(), "closing dropped the regeneration");
     }
 }

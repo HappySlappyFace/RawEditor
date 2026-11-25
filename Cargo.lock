@@ -3908,7 +3908,6 @@ dependencies = [
  "raw-editor-core",
  "raw-editor-session",
  "rfd",
- "thiserror 1.0.69",
  "tokio",
  "tracing",
  "wgpu",

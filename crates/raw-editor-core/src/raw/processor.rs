@@ -6,7 +6,7 @@
 /// Cascading means each small tier is resized from the previous tier, not from
 /// full resolution. This makes thumbnail and instant preview generation ~10× faster.
 use super::jpeg::largest_embedded_jpeg;
-use image::{imageops::FilterType, ImageFormat};
+use image::imageops::FilterType;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -17,7 +17,7 @@ fn decode_jpeg(data: &[u8]) -> Result<image::DynamicImage, String> {
     }
     #[cfg(not(feature = "fast-jpeg"))]
     {
-        image::load_from_memory_with_format(data, ImageFormat::Jpeg)
+        image::load_from_memory_with_format(data, image::ImageFormat::Jpeg)
             .map_err(|e| format!("JPEG decode: {e}"))
     }
 }

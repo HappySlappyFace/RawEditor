@@ -74,3 +74,6 @@ fast-jpeg = ["dep:zune-jpeg", "dep:zune-core"]
 # and the like): `#[cfg(test)]` only reaches this crate's own tests. Enabled by
 # the app's dev-dependency, so it never reaches a shipped binary.
 test-support = []
+# The performance overlay's detailed breakdown and GPU pass timings
+# (`core::profiler::Detail`, `gpu::timing`). Off, they compile to nothing.
+profiling = []

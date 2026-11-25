@@ -1,6 +1,8 @@
 /// Phase 95: Standalone rendering functions that work with SharedContext + ImageResources
 /// These replace the old RenderPipeline methods
 use super::shared::{ImageResources, SharedContext};
+use super::timing::FrameTimer;
+use crate::core::profiler::{Count, Detail, Span, Timer};
 use crate::core::output_space::OutputSpace;
 
 /// Patch just the `view_rect` field of the already-uploaded uniform block.
@@ -120,16 +122,18 @@ impl Drop for Readback<'_> {
 /// being more than twice the size, else a new one. New ones are rounded up to
 /// a whole MiB, so the small changes in target size while zooming or resizing
 /// still reuse them.
-fn take_readback(context: &SharedContext, len: u64) -> wgpu::Buffer {
+fn take_readback(context: &SharedContext, len: u64, detail: &mut Detail) -> wgpu::Buffer {
     {
         let mut pool = context.readbacks.lock().unwrap_or_else(|e| e.into_inner());
         let best = (0..pool.len())
             .filter(|&i| (len..=len.saturating_mul(2).max(1 << 20)).contains(&pool[i].size()))
             .min_by_key(|&i| pool[i].size());
         if let Some(i) = best {
+            detail.bump(Count::ReadbackReused);
             return pool.remove(i);
         }
     }
+    detail.bump(Count::ReadbackAllocated);
     context.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("Readback Buffer"),
         size: len.next_multiple_of(1 << 20),
@@ -143,14 +147,20 @@ fn take_readback(context: &SharedContext, len: u64) -> wgpu::Buffer {
 /// Returns the finished command buffer rather than submitting, so callers can
 /// interleave uniform writes between passes: `write/submit/write/submit` gives
 /// each pass a different `view_rect` off one uniform buffer.
+///
+/// `detail` takes the profiler's breakdown (`profiling` builds), and `marks`,
+/// when given, the GPU timestamp marks written before the pass and after its
+/// copy (`gpu::timing`).
 fn encode_color_pass<'c>(
     context: &'c SharedContext,
     resources: &ImageResources,
     width: u32,
     height: u32,
+    detail: &mut Detail,
+    marks: Option<(&FrameTimer, u32)>,
 ) -> (wgpu::CommandBuffer, Readback<'c>) {
-    let bindings = resources.prepare_stages(context);
-    encode_color_pass_with(context, &bindings, width, height)
+    let bindings = resources.prepare_stages(context, detail);
+    encode_color_pass_with(context, &bindings, width, height, detail, marks)
 }
 
 /// [`encode_color_pass`] with the bind groups supplied — the detail loupe's
@@ -160,7 +170,10 @@ fn encode_color_pass_with<'c>(
     bindings: &super::shared::ColorBindings,
     width: u32,
     height: u32,
+    detail: &mut Detail,
+    marks: Option<(&FrameTimer, u32)>,
 ) -> (wgpu::CommandBuffer, Readback<'c>) {
+    let t = Timer::start();
     let output_texture = context.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("Output Texture"),
         size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
@@ -172,12 +185,17 @@ fn encode_color_pass_with<'c>(
         view_formats: &[],
     });
     let output_view = output_texture.create_view(&wgpu::TextureViewDescriptor::default());
+    detail.stop(Span::Allocate, t);
 
+    let t = Timer::start();
     let mut encoder = context
         .device
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Render Encoder"),
         });
+    if let Some((gpu, first)) = marks {
+        gpu.mark(&mut encoder, first);
+    }
     {
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Render Pass"),
@@ -200,10 +218,15 @@ fn encode_color_pass_with<'c>(
         render_pass.draw(0..3, 0..1);
     }
 
+    detail.stop(Span::Record, t);
+
+    let t = Timer::start();
     let bytes_per_row = (width * 4 + 255) & !255;
     let len = bytes_per_row as u64 * height as u64;
-    let readback_buffer = take_readback(context, len);
+    let readback_buffer = take_readback(context, len, detail);
+    detail.stop(Span::Allocate, t);
 
+    let t = Timer::start();
     encoder.copy_texture_to_buffer(
         wgpu::ImageCopyTexture {
             texture: &output_texture,
@@ -221,9 +244,14 @@ fn encode_color_pass_with<'c>(
         },
         wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
     );
+    if let Some((gpu, first)) = marks {
+        gpu.mark(&mut encoder, first + 1);
+    }
+    let commands = encoder.finish();
+    detail.stop(Span::Record, t);
 
     (
-        encoder.finish(),
+        commands,
         Readback { pool: &context.readbacks, buffer: Some(readback_buffer), len, done: false, bytes_per_row, width, height },
     )
 }
@@ -236,7 +264,7 @@ pub(crate) async fn render_with_bindings(
     width: u32,
     height: u32,
 ) -> Option<Vec<u8>> {
-    let (cb, readback) = encode_color_pass_with(context, bindings, width, height);
+    let (cb, readback) = encode_color_pass_with(context, bindings, width, height, &mut Detail::default(), None);
     context.queue.submit(Some(cb));
     let (tx, rx) = tokio::sync::oneshot::channel();
     readback.slice().map_async(wgpu::MapMode::Read, move |res| {
@@ -264,7 +292,7 @@ pub async fn render_to_vec(
 ) -> Result<(Vec<u8>, f32, f32), String> {
     let t_upload_start = std::time::Instant::now();
     write_view_rect(context, resources, view_rect);
-    let (cb, readback) = encode_color_pass(context, resources, width, height);
+    let (cb, readback) = encode_color_pass(context, resources, width, height, &mut Detail::default(), None);
     let upload_ms = t_upload_start.elapsed().as_secs_f32() * 1000.0;
 
     let t_render_start = std::time::Instant::now();
@@ -300,7 +328,7 @@ pub async fn render_to_bytes(
 ) -> (std::sync::Arc<[u8]>, f32, f32) {
     let t_upload_start = std::time::Instant::now();
     write_view_rect(context, resources, view_rect);
-    let (cb, readback) = encode_color_pass(context, resources, width, height);
+    let (cb, readback) = encode_color_pass(context, resources, width, height, &mut Detail::default(), None);
     let upload_ms = t_upload_start.elapsed().as_secs_f32() * 1000.0;
 
     let t_render_start = std::time::Instant::now();
@@ -341,6 +369,8 @@ pub struct DisplayRender {
     pub histogram: crate::core::histogram::HistogramData,
     pub encode_ms: f32,
     pub gpu_ms: f32,
+    /// The profiler's breakdown (`profiling` builds; empty otherwise).
+    pub detail: Detail,
 }
 
 /// Render the display window AND a small whole-image "overview" pass, under
@@ -361,6 +391,9 @@ pub struct DisplayRender {
 /// on every slider tick. When both are the same set they share one uniform
 /// buffer, so their differing `view_rect` values are sequenced by
 /// `queue.write_buffer`'s ordering against submits.
+///
+/// `detail` comes back filled in `DisplayRender::detail` (`profiling` builds).
+#[allow(clippy::too_many_arguments)]
 pub async fn render_display_and_overview(
     context: &SharedContext,
     resources: &ImageResources,
@@ -369,6 +402,7 @@ pub async fn render_display_and_overview(
     height: u32,
     view_rect: [f32; 4],
     overview_dims: (u32, u32),
+    mut detail: Detail,
 ) -> DisplayRender {
     // Timing is split so the profiler's buckets mean what they say:
     //   `encode_ms` — CPU-side resource creation and command recording
@@ -376,57 +410,82 @@ pub async fn render_display_and_overview(
     // The two passes have to interleave (each uniform write applies to the
     // submit that follows it), so the submits can't simply be hoisted out of
     // the encode window — the elapsed time is accumulated instead.
-    let t_encode = std::time::Instant::now();
-    write_view_rect(context, overview_resources, super::params::FULL_VIEW_RECT);
-    let (overview_cb, overview_rb) =
-        encode_color_pass(context, overview_resources, overview_dims.0, overview_dims.1);
-    let mut encode_ms = t_encode.elapsed().as_secs_f32() * 1000.0;
+    //
+    // Everything up to the wait is in this block: the GPU timer holds a lock
+    // in `profiling` builds, which must not be held across an await.
+    let (overview_rb, orx, main_rb, mrx, encode_ms, mut gpu_ms, t_render_start) = {
+        let gpu = context.timer.frame();
+        gpu.mark_now(context, 0);
+        let t_encode = std::time::Instant::now();
+        write_view_rect(context, overview_resources, super::params::FULL_VIEW_RECT);
+        let (overview_cb, overview_rb) = encode_color_pass(
+            context, overview_resources, overview_dims.0, overview_dims.1, &mut detail, Some((&gpu, 1)),
+        );
+        let mut encode_ms = t_encode.elapsed().as_secs_f32() * 1000.0;
 
-    // Counted as GPU time: `submit` can block on queue backpressure, and
-    // attributing that stall to "upload" made the HUD read as though texture
-    // allocation had suddenly become expensive after a zoom-in.
-    let t_submit_a = std::time::Instant::now();
-    context.queue.submit(Some(overview_cb));
-    write_view_rect(context, resources, view_rect);
-    let mut gpu_ms = t_submit_a.elapsed().as_secs_f32() * 1000.0;
+        // Counted as GPU time: `submit` can block on queue backpressure, and
+        // attributing that stall to "upload" made the HUD read as though texture
+        // allocation had suddenly become expensive after a zoom-in.
+        let t_submit_a = std::time::Instant::now();
+        let t = Timer::start();
+        context.queue.submit(Some(overview_cb));
+        detail.stop(Span::Submit, t);
+        write_view_rect(context, resources, view_rect);
+        gpu.mark_now(context, 3);
+        let gpu_ms = t_submit_a.elapsed().as_secs_f32() * 1000.0;
 
-    let t_encode_b = std::time::Instant::now();
-    let (main_cb, main_rb) = encode_color_pass(context, resources, width, height);
-    encode_ms += t_encode_b.elapsed().as_secs_f32() * 1000.0;
+        let t_encode_b = std::time::Instant::now();
+        let (main_cb, main_rb) = encode_color_pass(context, resources, width, height, &mut detail, Some((&gpu, 4)));
+        encode_ms += t_encode_b.elapsed().as_secs_f32() * 1000.0;
 
-    let t_render_start = std::time::Instant::now();
-    context.queue.submit(Some(main_cb));
+        let t_render_start = std::time::Instant::now();
+        let t = Timer::start();
+        context.queue.submit(Some(main_cb));
+        detail.stop(Span::Submit, t);
+        gpu.resolve(context);
 
-    let (otx, orx) = tokio::sync::oneshot::channel();
-    overview_rb.slice().map_async(wgpu::MapMode::Read, move |r| {
-        let _ = otx.send(r);
-    });
-    let (mtx, mrx) = tokio::sync::oneshot::channel();
-    main_rb.slice().map_async(wgpu::MapMode::Read, move |r| {
-        let _ = mtx.send(r);
-    });
+        let (otx, orx) = tokio::sync::oneshot::channel();
+        overview_rb.slice().map_async(wgpu::MapMode::Read, move |r| {
+            let _ = otx.send(r);
+        });
+        let (mtx, mrx) = tokio::sync::oneshot::channel();
+        main_rb.slice().map_async(wgpu::MapMode::Read, move |r| {
+            let _ = mtx.send(r);
+        });
 
-    // One wait covers both submissions.
-    tokio::task::block_in_place(|| {
-        context.device.poll(wgpu::Maintain::Wait);
-    });
+        // One wait covers both submissions.
+        let t = Timer::start();
+        tokio::task::block_in_place(|| {
+            context.device.poll(wgpu::Maintain::Wait);
+        });
+        detail.stop(Span::Wait, t);
+        gpu.read(&mut detail);
+        (overview_rb, orx, main_rb, mrx, encode_ms, gpu_ms, t_render_start)
+    };
 
     let (overview, histogram) = if let Ok(Ok(())) = orx.await {
+        let t = Timer::start();
         let pixels = overview_rb.unpad();
+        detail.stop(Span::Unpad, t);
+        let t = Timer::start();
         let histogram = crate::core::histogram::calculate(&pixels);
+        detail.stop(Span::Histogram, t);
         (std::sync::Arc::from(pixels), histogram)
     } else {
         (std::sync::Arc::from(Vec::new()), [[0u32; 256]; 3])
     };
 
     let display = if let Ok(Ok(())) = mrx.await {
-        std::sync::Arc::from(main_rb.unpad())
+        let t = Timer::start();
+        let pixels = main_rb.unpad();
+        detail.stop(Span::Unpad, t);
+        std::sync::Arc::from(pixels)
     } else {
         std::sync::Arc::from(Vec::new())
     };
     gpu_ms += t_render_start.elapsed().as_secs_f32() * 1000.0;
 
-    DisplayRender { display, overview, histogram, encode_ms, gpu_ms }
+    DisplayRender { display, overview, histogram, encode_ms, gpu_ms, detail }
 }
 
 /// Render to opaque RGB `u16` samples, for 16-bit TIFF export. Mirrors
@@ -454,7 +513,7 @@ pub async fn render_to_bytes_16bit(
     // windowed `view_rect` behind that would otherwise silently export only
     // the region that happened to be on screen.
     write_view_rect(context, resources, super::params::FULL_VIEW_RECT);
-    let bindings = resources.prepare_stages(context);
+    let bindings = resources.prepare_stages(context, &mut Detail::default());
 
     let output_texture = context.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("Output Texture 16-bit"),
@@ -1091,7 +1150,7 @@ mod tests {
             for exposure in [0.0, -2.0] {
                 let params = EditParams { exposure, ..base };
                 res.update_uniforms(&ctx, &params, dcp.as_ref(), None);
-                let out = render_display_and_overview(&ctx, &res, &res, w, h, FULL_VIEW_RECT, dims).await;
+                let out = render_display_and_overview(&ctx, &res, &res, w, h, FULL_VIEW_RECT, dims, Detail::default()).await;
                 assert_eq!(out.overview.len(), (dims.0 * dims.1 * 4) as usize, "overview size");
                 let (display, overview) = (mean(&out.display), mean(&out.overview));
                 eprintln!("exposure {exposure:+}: display mean {display:.1}, overview mean {overview:.1} ({}x{})", dims.0, dims.1);

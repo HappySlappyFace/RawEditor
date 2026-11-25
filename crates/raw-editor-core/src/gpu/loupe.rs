@@ -394,7 +394,7 @@ impl Loupe {
 
         // The main image's bind groups 1 and 2 (masks, Texture/Clarity, haze),
         // brought up to date exactly as for its own render.
-        let main_bindings = main.prepare_stages(context);
+        let main_bindings = main.prepare_stages(context, &mut crate::core::profiler::Detail::default());
 
         let bindings = {
             let mut slot = self.crop.lock().unwrap_or_else(|e| e.into_inner());

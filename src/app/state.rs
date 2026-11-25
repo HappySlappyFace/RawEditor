@@ -272,6 +272,9 @@ pub struct RawEditor {
     /// Phase 67: Drag mode for interaction
     pub drag_mode: DragMode,
     pub show_profiler: bool,
+    /// iced's `update` and `view` times, for the detailed overlay
+    /// (`profiling` builds; empty otherwise).
+    pub ui_times: crate::core::profiler::UiTimes,
     /// Phase 105: Cache for profiler canvas (cleared on each new frame push)
     pub profiler_cache: iced::widget::canvas::Cache,
 
@@ -399,6 +402,7 @@ impl RawEditor {
             // Phase 88
             thumbnail_size,
             show_profiler: false,
+            ui_times: Default::default(),
             profiler_cache: iced::widget::canvas::Cache::default(),
             cursor_over_grid: false,
             grid_scroll_y: 0.0,

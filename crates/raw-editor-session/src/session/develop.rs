@@ -104,6 +104,8 @@ pub struct RenderOutput {
     pub upload_ms: f32,
     pub render_ms: f32,
     pub update_ms: f32,
+    /// The profiler's breakdown (`profiling` builds; empty otherwise).
+    pub detail: crate::core::profiler::Detail,
 }
 
 /// The groups of edits the Develop sidebar's sections own (its reset buttons).
@@ -989,6 +991,10 @@ impl Session {
     /// scroll or drag events spawns a GPU task each, piling up readback buffers.
     pub fn throttled_render(&mut self) -> Effects {
         if self.is_rendering {
+            if self.pending_render {
+                // Folded into the render already waiting.
+                self.profiler.next.bump(crate::core::profiler::Count::Merged);
+            }
             self.pending_render = true;
             Effects::none()
         } else {
@@ -1002,6 +1008,8 @@ impl Session {
     /// [`Session::throttled_render`] is the way in.
     pub fn render(&mut self) -> Effects {
         let t_update_start = std::time::Instant::now();
+        let mut detail = std::mem::take(&mut self.profiler.next);
+        detail.start();
         self.apply_deferred_push();
 
         // Oriented display dims of what is actually on screen — crop-aware, so the
@@ -1044,6 +1052,7 @@ impl Session {
             target_h,
         );
         let update_ms = t_update_start.elapsed().as_secs_f32() * 1000.0;
+        detail.add_ms(crate::core::profiler::Span::Update, update_ms);
 
         let overview_dims = crate::core::viewport::overview_dims(disp_w, disp_h);
         let image_id = resources.image_id;
@@ -1092,6 +1101,9 @@ impl Session {
                 let fits = preview_magnification <= crate::core::viewport::FULL_RES_MAGNIFICATION;
                 self.display_from_drag_preview = !fits && self.stage_drag;
                 let display = if fits || self.stage_drag { preview.clone() } else { resources };
+                if !(fits || self.stage_drag) {
+                    detail.bump(crate::core::profiler::Count::FullRes);
+                }
                 (display, preview)
             }
             None => {
@@ -1112,6 +1124,7 @@ impl Session {
                 target_h,
                 view_rect,
                 overview_dims,
+                detail,
             )
             .await;
             SessionEvent::RenderFinished(Box::new(RenderOutput {
@@ -1126,6 +1139,7 @@ impl Session {
                 upload_ms: render.encode_ms,
                 render_ms: render.gpu_ms,
                 update_ms,
+                detail: render.detail,
             }))
         });
         Effects::batch([render, upgrade])
@@ -1166,11 +1180,14 @@ impl Session {
         }
         let save = self.resolve_awaiting_proxy(out.image_id, out.edit);
 
+        let mut detail = out.detail;
+        detail.finish();
         self.profiler.push_frame(crate::core::profiler::ProfilerFrame {
             update_ms: out.update_ms,
             upload_ms: out.upload_ms,
             render_ms: out.render_ms,
             total_ms: out.update_ms + out.upload_ms + out.render_ms,
+            detail,
         });
         self.changed.insert(Changed::PROFILER);
 

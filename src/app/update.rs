@@ -4,6 +4,13 @@ use crate::app::state::{Modal, ModalExit, RawEditor};
 use iced::Task;
 
 pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
+    let t = crate::core::profiler::Timer::start();
+    let task = update_message(editor, message);
+    editor.ui_times.update_done(t);
+    task
+}
+
+fn update_message(editor: &mut RawEditor, message: Message) -> Task<Message> {
     // Once-per-hold shortcuts: judge the press here, and everything below
     // sees the plain message.
     let message = match message {

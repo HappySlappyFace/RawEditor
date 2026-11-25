@@ -18,5 +18,6 @@ pub mod params;
 pub mod render_functions;
 pub mod shaders;
 pub mod shared;
+pub mod timing;
 #[cfg(test)]
 mod eval_tests;
