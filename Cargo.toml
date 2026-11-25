@@ -81,9 +81,6 @@ dirs.workspace = true
 # Native file/folder picker dialogs
 rfd = "0.18"
 
-# Better error handling with derive macros
-thiserror = "1.0"
-
 bytemuck.workspace = true
 cgmath.workspace = true
 image.workspace = true

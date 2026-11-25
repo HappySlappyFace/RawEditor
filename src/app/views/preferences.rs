@@ -993,7 +993,6 @@ const LIBRARIES: &[Credit] = &[
     credit("serde · serde_json", &["serde", "serde_json"], "MIT OR Apache-2.0", "Settings and edit storage", "https://github.com/serde-rs/serde"),
     credit("sha2", &["sha2"], "MIT OR Apache-2.0", "Checking downloaded AI models", "https://github.com/RustCrypto/hashes"),
     credit("tar", &["tar"], "MIT OR Apache-2.0", "Unpacking the lens-profile download", "https://github.com/composefs/tar-rs"),
-    credit("thiserror", &["thiserror"], "MIT OR Apache-2.0", "Error types", "https://github.com/dtolnay/thiserror"),
     credit("tiff", &["tiff"], "MIT", "TIFF export, DCP parsing", "https://github.com/image-rs/image-tiff"),
     credit("tokio", &["tokio"], "MIT", "Background work", "https://github.com/tokio-rs/tokio"),
     credit("tracing", &["tracing", "tracing-subscriber", "tracing-appender"], "MIT", "Logging", "https://github.com/tokio-rs/tracing"),
