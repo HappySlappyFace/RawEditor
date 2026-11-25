@@ -1274,6 +1274,30 @@ mod tests {
         render_params_with(ctx, raw, params, None).await
     }
 
+    /// [`render_params`] through the 16-bit pipeline: RGB, no dither.
+    async fn render_params_16(
+        ctx: &SharedContext,
+        raw: &crate::raw::loader::RawDataResult,
+        params: &EditParams,
+    ) -> (Vec<u16>, u32, u32) {
+        let as_shot = crate::color::as_shot_kelvin_tint(raw);
+        let (kelvin, _t, wb) =
+            crate::color::solve_wb(params, as_shot, raw.dcp_profile.as_deref(), raw.color_matrix);
+        let dcp = raw.dcp_profile.as_ref().map(|d| {
+            crate::raw::dcp::interpolate_at_temperature(d, kelvin, crate::core::tonemap::ToneSettings::from_params(params))
+        });
+        let fm = dcp.as_ref().map(|i| i.camera_to_prophoto).unwrap_or_else(|| {
+            crate::color::calculate_cam_to_srgb(raw.color_matrix, raw.wb_multipliers, raw.color_matrix_is_d65)
+        });
+        let res = ImageResources::new(ctx, 1, &raw.data, raw.width, raw.height, params,
+            raw.wb_multipliers, fm, raw.cfa_pattern, raw.black_levels, raw.white_level,
+            dcp.as_ref(), Some(1280), raw.orientation, raw.lens_context.clone()).expect("image resources");
+        res.update_uniforms(ctx, params, dcp.as_ref(), wb);
+        let (w, h) = res.oriented_dims(params.quarter_turns);
+        let (samples, _, _) = render_to_bytes_16bit(ctx, &res, w, h).await.expect("16-bit render");
+        (samples, w, h)
+    }
+
     async fn render_params_with(
         ctx: &SharedContext,
         raw: &crate::raw::loader::RawDataResult,
@@ -1518,6 +1542,9 @@ mod tests {
     /// Denoising must cut noise without moving tone: averaging is done on
     /// linear values exactly so that it cannot darken the shadows.
     ///
+    /// Measured on the 16-bit render: the 8-bit one is dithered (±1 LSB), and
+    /// that noise is the output's, not the image's.
+    ///
     /// Run with `cargo test --release denoise_reduces -- --ignored --nocapture`.
     #[test]
     #[ignore]
@@ -1534,24 +1561,34 @@ mod tests {
             let raw = crate::raw::loader::load_raw_data(test_raw.clone()).await.unwrap();
             let off = EditParams { color_noise: 0.0, ..EditParams::default() };
             let on = EditParams { luma_noise: 0.6, color_noise: 0.6, ..EditParams::default() };
-            let (a, w, h) = render_params(&ctx, &raw, &off).await;
-            let (b, _, _) = render_params(&ctx, &raw, &on).await;
+            let (a, w, h) = render_params_16(&ctx, &raw, &off).await;
+            let (b, _, _) = render_params_16(&ctx, &raw, &on).await;
+            // Luma in 8-bit units, from 16-bit RGB.
+            let luma16 = |p: &[u16]| (0.2126 * p[0] as f64 + 0.7152 * p[1] as f64 + 0.0722 * p[2] as f64) / 257.0;
             // Pixel-to-pixel luma differences: dominated by noise in flat areas.
-            let roughness = |img: &[u8]| {
+            let roughness = |img: &[u16]| {
                 let mut s = 0.0;
                 for y in 0..h {
                     for x in 0..w - 1 {
-                        let i = ((y * w + x) * 4) as usize;
-                        s += (luma(&img[i..]) - luma(&img[i + 4..])).abs();
+                        let i = ((y * w + x) * 3) as usize;
+                        s += (luma16(&img[i..]) - luma16(&img[i + 3..])).abs();
                     }
                 }
                 s / (h * (w - 1)) as f64
             };
-            let mean = |img: &[u8]| img.as_chunks::<4>().0.iter().map(|p| luma(p)).sum::<f64>() / (w * h) as f64;
+            let mean = |img: &[u16]| img.as_chunks::<3>().0.iter().map(|p| luma16(p)).sum::<f64>() / (w * h) as f64;
             let (ra, rb) = (roughness(&a), roughness(&b));
             let (ma, mb) = (mean(&a), mean(&b));
-            eprintln!("roughness {ra:.3} → {rb:.3}, mean luma {ma:.2} → {mb:.2}");
-            assert!(rb < ra * 0.8, "denoise did not reduce pixel-level noise");
+            eprintln!("roughness {ra:.3} → {rb:.3} ({:.0}% less), mean luma {ma:.2} → {mb:.2}", (1.0 - rb / ra) * 100.0);
+            // The roughness counts the whole frame, texture and edges included,
+            // which NR deliberately keeps: since the October overhaul the noise
+            // model believes only the quietest blocks, so a detailed frame is
+            // no longer over-smoothed. This frame measures ~14% at 0.6 (it was
+            // ~29% before the overhaul, when this asked for 20%). The quality
+            // of the NR itself is judged against ground truth by
+            // `eval_tests::denoise_moves_towards_ground_truth`; this guards
+            // that it still clearly acts on a real frame.
+            assert!(rb < ra * 0.9, "denoise did not reduce pixel-level noise");
             assert!((mb - ma).abs() < 0.5, "denoise shifted overall tone");
         });
     }
