@@ -183,13 +183,7 @@ impl Session {
         self.camera_profiles.busy = None;
         let changed = result.as_ref().is_ok_and(|r| !r.updated.is_empty());
         self.camera_profiles.notice = Some(match result {
-            Ok(r) if r.checked == 0 => Ok("No downloaded profiles to update".to_string()),
-            Ok(r) if r.updated.is_empty() => Ok(format!(
-                "All {} downloaded profile{} up to date",
-                r.checked,
-                if r.checked == 1 { " is" } else { "s are" }
-            )),
-            Ok(r) => Ok(format!("Updated {}", r.updated.join(", "))),
+            Ok(r) => update_notice(&r),
             Err(e) => Err(format!("Could not check for updates: {e}")),
         });
         if changed {
@@ -230,6 +224,41 @@ impl Session {
         } else {
             Effects::none()
         }
+    }
+}
+
+/// What an update did, in one line: every profile it replaced, couldn't
+/// fetch or found withdrawn, else that all are current. A warning when any
+/// download failed, so a failure never reads as "up to date".
+fn update_notice(r: &profiles::UpdateReport) -> Result<String, String> {
+    if r.checked == 0 {
+        return Ok("No downloaded profiles to update".to_string());
+    }
+    let mut parts = Vec::new();
+    if !r.updated.is_empty() {
+        parts.push(format!("Updated {}", r.updated.join(", ")));
+    }
+    if !r.failed.is_empty() {
+        parts.push(format!("could not update {}", r.failed.join(", ")));
+    }
+    if !r.withdrawn.is_empty() {
+        parts.push(format!("RawTherapee no longer publishes {} (kept)", r.withdrawn.join(", ")));
+    }
+    let Some(first) = parts.first_mut() else {
+        return Ok(format!(
+            "All {} downloaded profile{} up to date",
+            r.checked,
+            if r.checked == 1 { " is" } else { "s are" }
+        ));
+    };
+    if let Some(c) = first.get(..1) {
+        *first = c.to_uppercase() + &first[1..];
+    }
+    let line = parts.join(" — ");
+    if r.failed.is_empty() {
+        Ok(line)
+    } else {
+        Err(line)
     }
 }
 
@@ -335,6 +364,20 @@ mod tests {
         assert_eq!(notice(&s), Ok("All 3 downloaded profiles are up to date"));
         let _ = s.camera_profiles_updated(report(3, &["A.dcp", "B.dcp"]));
         assert_eq!(notice(&s), Ok("Updated A.dcp, B.dcp"));
+        // A failed download is never "up to date", and a withdrawn profile
+        // is named.
+        let full = |updated: &[&str], failed: &[&str], withdrawn: &[&str]| {
+            let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect();
+            Ok(profiles::UpdateReport { checked: 3, updated: names(updated), failed: names(failed), withdrawn: names(withdrawn) })
+        };
+        let _ = s.camera_profiles_updated(full(&[], &["A.dcp"], &[]));
+        assert_eq!(notice(&s), Err("Could not update A.dcp"));
+        let _ = s.camera_profiles_updated(full(&["A.dcp"], &["B.dcp", "C.dcp"], &[]));
+        assert_eq!(notice(&s), Err("Updated A.dcp — could not update B.dcp, C.dcp"));
+        let _ = s.camera_profiles_updated(full(&[], &[], &["A.dcp"]));
+        assert_eq!(notice(&s), Ok("RawTherapee no longer publishes A.dcp (kept)"));
+        let _ = s.camera_profiles_updated(full(&["A.dcp"], &["B.dcp"], &["C.dcp"]));
+        assert_eq!(notice(&s), Err("Updated A.dcp — could not update B.dcp — RawTherapee no longer publishes C.dcp (kept)"));
         let _ = s.camera_profiles_updated(Err("rate limited".into()));
         assert_eq!(notice(&s), Err("Could not check for updates: rate limited"));
         assert_eq!(s.camera_profiles.busy, None);
