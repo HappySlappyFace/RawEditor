@@ -1369,7 +1369,7 @@ fn color_pass(input: VertexOutput) -> vec4<f32> {
         let hs_level = max(pp.r, max(pp.g, pp.b)) * to_surround;
         pp = apply_highlights_shadows(pp, params.highlights, params.shadows, hs_level);
 
-        // Highlight shoulder — CAMERA OPERATOR ONLY.
+        // Highlight shoulder — CAMERA OPERATOR, WITH A PROFILE CURVE, ONLY.
         //
         // WB amplification pushes bright pixels above 1.0 linear (a bright blue
         // puck: raw 0.75 × wb_b 1.45 ≈ 1.09). The DCP ProfileToneCurve is
@@ -1388,7 +1388,13 @@ fn color_pass(input: VertexOutput) -> vec4<f32> {
         // of texture. So the knee is skipped and the operator sees the real
         // scene-linear range. (The HueSatMap's value axis still clamps at 1.0
         // for its LOOKUP, which is correct: it only selects a value slice.)
-        if (params.tone_mapper == TONE_CAMERA) {
+        //
+        // The same holds for Camera on a profile WITHOUT a curve ("Adobe
+        // Standard" DCPs carry none): its rendering is the built-in filmic at
+        // Step 15, a scene-linear → display mapping like any operator. Kneeing
+        // first compressed every highlight twice, and clipped white rendered
+        // as 233/255 grey instead of Filmic's 246.
+        if (params.tone_mapper == TONE_CAMERA && params.dcp_has_curve != 0u) {
             let sh_knee: f32 = 0.7;
             let sh_head: f32 = 1.0 - sh_knee;
             if (pp.r > sh_knee) { let o = pp.r - sh_knee; pp.r = sh_knee + sh_head * o / (o + sh_head); }
@@ -1611,8 +1617,8 @@ fn color_pass(input: VertexOutput) -> vec4<f32> {
     // `color` here is linear sRGB that still exceeds 1.0, so this position is
     // already scene-linear for that path — it needs no move.
     //
-    // Gated on has_dcp, NOT dcp_has_curve: the knee runs for any DCP, curve or
-    // not, so any DCP means the work was already done upstream.
+    // Gated on has_dcp, NOT dcp_has_curve: the DCP block above applies it for
+    // any DCP, curve or not, so any DCP means the work was already done.
     if (params.has_dcp == 0u) {
         let luma_hl = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722)) * to_surround;
         color = apply_highlights_shadows(color, params.highlights, params.shadows, luma_hl);

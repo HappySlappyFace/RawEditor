@@ -19,6 +19,8 @@ tools/coverage.sh [--gpu]      # line coverage (cargo-llvm-cov): target/llvm-cov
 
 Coverage is a map of what no test reaches, not a target: the views and widgets are excluded, shaders never show, and CI doesn't gate on it. Session logic (`crates/raw-editor-session`) is where gaps matter most; test it through `session::testkit`.
 
+CI runs the ignored GPU tests too, on lavapipe, for pull requests (the `gpu` job in `.github/workflows/ci.yml`). A new GPU test must pass there: build its input synthetically, or skip when its photo/model/variable is missing, or join that job's skip list.
+
 **Releasing:** the root `Cargo.toml`'s `[workspace.package] version` is the one source of truth (both crates inherit it). Bump it, commit, and push the tag `v<that version>` (e.g. `v1.0.0`, or `v1.0.0-rc.1` for a pre-release). The release workflow fails any tag that isn't exactly that, so no letter suffixes: a hotfix is the next patch number, because semver puts `0.9.8-E` *before* `0.9.8` and the update check (`core::updates`) would offer it backwards. Pre-release tags (with a `-`) are published as pre-releases, which are never "latest", so the update check never offers them.
 
 There is no separate frontend build — this is a single native Rust binary (no web tech, no Electron/Tauri).
@@ -124,11 +126,14 @@ an opinion about contrast). Only the second is swappable, and
   `tone_lut_encode` on both sides, mirrored constants guarded by
   `shader_tone_lut_constants_match_rust`. Operators are *defined* as the
   scene-linear→display mapping, so they must receive uncompressed values.
-- **The 0.7 Reinhard knee runs for `Camera` only.** It exists because the
+- **The 0.7 Reinhard knee runs for `Camera` with a profile curve only.** It exists because the
   ProfileToneCurve is defined on [0,1], and being per-channel is deliberate
   (it samples the profile's top value slices). Kneeing before any other
   operator would tone-map a tone-mapped signal — the same failure that made
-  Highlights return grey instead of texture.
+  Highlights return grey instead of texture. `Camera` on a curve-less profile
+  ("Adobe Standard") IS the built-in filmic, an operator like the others: no
+  knee, and it renders identically to `Filmic` (kneeing it once made clipped
+  white 233/255 grey).
 - **Output space:** everything in `core::tonemap` returns display-**linear**.
   The ProfileToneCurve is the sole exception (linear in → gamma-encoded out),
   which `bake_tone_curve` linearises back; getting this wrong is a ~1.3 EV

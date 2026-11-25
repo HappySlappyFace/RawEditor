@@ -159,7 +159,7 @@ pub struct GpuEditParams {
     /// Selected tone mapping operator (`ToneMapper::shader_id`).
     ///
     /// The shader only distinguishes `Camera` (0) from everything else — it
-    /// decides whether the pre-HueSatMap knee runs, and which stage of the
+    /// decides (with `dcp_has_curve`) whether the pre-HueSatMap knee runs, and which stage of the
     /// fallback path curves the image. The operator's actual SHAPE never
     /// reaches the GPU as parameters; it is baked into the tone curve LUT on
     /// the CPU (`core::tonemap::bake`), which is why adding five operators

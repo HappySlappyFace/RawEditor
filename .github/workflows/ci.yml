@@ -48,3 +48,34 @@ jobs:
 
     - name: Test (profiling)
       run: cargo test -p raw-editor-core --features profiling core::profiler
+
+  # The ignored tests that need a GPU, on lavapipe (Mesa's software Vulkan).
+  # One at a time: wgpu's GL backend fails in parallel, and they share one
+  # device's worth of memory. Tests on the developer's own photos skip
+  # themselves here; the ones that need the network, the AI models or the
+  # desktop trash, and the tuning tools, are skipped explicitly.
+  gpu:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Rust Cache
+      uses: Swatinem/rust-cache@v2
+
+    - name: Install dependencies (Linux)
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libxkbcommon-dev mesa-vulkan-drivers
+
+    - name: GPU tests
+      run: >
+        cargo test --workspace -- --ignored --test-threads=1
+        --skip nr_sweep --skip presence_dump --skip bench_slider_ticks
+        --skip trash_crate_moves_file
+        --skip camera_profile_download --skip lensfun_download
+        --skip clicking_a_disc_selects_it --skip ai_denoise_vs_classical_nr

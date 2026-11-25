@@ -979,6 +979,8 @@ mod tests {
 
             let camera = render_with(ToneMapper::Camera).await;
             assert!(!camera.is_empty(), "camera render produced nothing");
+            let curve_less = dcp.as_ref().is_some_and(|d| !d.has_tone_curve);
+            eprintln!("profile has its own tone curve: {}", !curve_less);
 
             for mapper in [
                 ToneMapper::Filmic,
@@ -1011,18 +1013,29 @@ mod tests {
                 );
 
                 // It must actually be a DIFFERENT rendering, or the selection
-                // silently did nothing.
+                // silently did nothing — except Filmic on a profile with no
+                // curve of its own ("Adobe Standard"), where Camera IS the
+                // built-in filmic: the two must then agree (apart from
+                // rounding where they are applied at different steps).
                 let differing = out
                     .iter()
                     .zip(camera.iter())
                     .filter(|(a, b)| a != b)
                     .count();
                 let frac = differing as f64 / out.len() as f64;
-                assert!(
-                    frac > 0.05,
-                    "{mapper} changed only {:.2}% of channels — selection had no effect",
-                    frac * 100.0
-                );
+                if mapper == ToneMapper::Filmic && curve_less {
+                    assert!(
+                        frac < 0.05,
+                        "Camera on a curve-less profile should render as Filmic, but {:.2}% of channels differ",
+                        frac * 100.0
+                    );
+                } else {
+                    assert!(
+                        frac > 0.05,
+                        "{mapper} changed only {:.2}% of channels — selection had no effect",
+                        frac * 100.0
+                    );
+                }
 
                 eprintln!("{mapper:>9}: mean luma {mean:6.1}   {:.1}% of channels differ from Camera",
                     frac * 100.0);
@@ -1261,6 +1274,30 @@ mod tests {
         render_params_with(ctx, raw, params, None).await
     }
 
+    /// [`render_params`] through the 16-bit pipeline: RGB, no dither.
+    async fn render_params_16(
+        ctx: &SharedContext,
+        raw: &crate::raw::loader::RawDataResult,
+        params: &EditParams,
+    ) -> (Vec<u16>, u32, u32) {
+        let as_shot = crate::color::as_shot_kelvin_tint(raw);
+        let (kelvin, _t, wb) =
+            crate::color::solve_wb(params, as_shot, raw.dcp_profile.as_deref(), raw.color_matrix);
+        let dcp = raw.dcp_profile.as_ref().map(|d| {
+            crate::raw::dcp::interpolate_at_temperature(d, kelvin, crate::core::tonemap::ToneSettings::from_params(params))
+        });
+        let fm = dcp.as_ref().map(|i| i.camera_to_prophoto).unwrap_or_else(|| {
+            crate::color::calculate_cam_to_srgb(raw.color_matrix, raw.wb_multipliers, raw.color_matrix_is_d65)
+        });
+        let res = ImageResources::new(ctx, 1, &raw.data, raw.width, raw.height, params,
+            raw.wb_multipliers, fm, raw.cfa_pattern, raw.black_levels, raw.white_level,
+            dcp.as_ref(), Some(1280), raw.orientation, raw.lens_context.clone()).expect("image resources");
+        res.update_uniforms(ctx, params, dcp.as_ref(), wb);
+        let (w, h) = res.oriented_dims(params.quarter_turns);
+        let (samples, _, _) = render_to_bytes_16bit(ctx, &res, w, h).await.expect("16-bit render");
+        (samples, w, h)
+    }
+
     async fn render_params_with(
         ctx: &SharedContext,
         raw: &crate::raw::loader::RawDataResult,
@@ -1354,7 +1391,14 @@ mod tests {
         let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).build().unwrap();
         rt.block_on(async {
             let ctx = SharedContext::new().await.unwrap();
-            let raw = crate::raw::loader::load_raw_data(test_raw_path()).await.unwrap();
+            // The test photo if it is here, else a frame of gentle colours
+            // (so CI, which has no photos, still checks the maths).
+            let path = test_raw_path();
+            let raw = if std::path::Path::new(&path).exists() {
+                crate::raw::loader::load_raw_data(path).await.unwrap()
+            } else {
+                gentle_colours_raw(512, 384)
+            };
             let params = EditParams { saturation: 30.0, ..EditParams::default() };
             let as_shot = crate::color::as_shot_kelvin_tint(&raw);
             let (kelvin, _t, wb) =
@@ -1393,25 +1437,56 @@ mod tests {
 
             let srgb = &renders[0].1;
             // Colours well inside sRGB: no gamut map touched them anywhere.
+            // Judged on the sRGB render, so a channel it pinned at 0 or 1 marks
+            // a colour it had to bring in (a dark cyan past sRGB's red edge
+            // reads as low chroma once mapped), which a wider space keeps.
             let inside: Vec<usize> = (0..srgb.len())
                 .filter(|&i| {
                     let lab = crate::core::perceptual::linear_srgb_to_oklab(srgb[i]);
-                    lab[0] > 0.05 && lab[0] < 0.97 && lab[1].hypot(lab[2]) < 0.06
+                    let unpinned = srgb[i].iter().all(|&v| v > 1e-3 && v < 0.999);
+                    unpinned && lab[0] > 0.05 && lab[0] < 0.97 && lab[1].hypot(lab[2]) < 0.06
                 })
                 .collect();
             assert!(inside.len() > srgb.len() / 4, "test image has too few ordinary colours");
             for (space, lin) in &renders[1..] {
+                // Relative to the pixel's level: the 16-bit target is half
+                // float, whose step grows with the value, so an absolute
+                // error would depend on how bright the test image is.
                 let mut errs: Vec<f32> = inside
                     .iter()
-                    .map(|&i| (0..3).map(|c| (lin[i][c] - srgb[i][c]).abs()).fold(0.0, f32::max))
+                    .map(|&i| {
+                        let level = srgb[i].iter().cloned().fold(0.0, f32::max).max(0.02);
+                        (0..3).map(|c| (lin[i][c] - srgb[i][c]).abs()).fold(0.0, f32::max) / level
+                    })
                     .collect();
                 errs.sort_by(f32::total_cmp);
                 let p99 = errs[errs.len() * 99 / 100];
                 let mean = errs.iter().sum::<f32>() / errs.len() as f32;
                 eprintln!("{space}: mean {mean:.2e}, p99 {p99:.2e} over {} px", errs.len());
-                assert!(mean < 3e-4 && p99 < 2e-3, "{space} disagrees with sRGB: mean {mean}, p99 {p99}");
+                // Half-float rounding gives ~7e-4 mean, 1.6e-3 p99; one matrix
+                // coefficient 1% off gives 2–3e-3 mean, ~7e-3 p99.
+                assert!(mean < 1.2e-3 && p99 < 3.5e-3, "{space} disagrees with sRGB: mean {mean}, p99 {p99}");
             }
         });
+    }
+
+    /// A synthetic frame of ordinary colours: brightness ramps left to right,
+    /// and a gentle tint turns through every hue top to bottom. Neutral after
+    /// the as-shot WB, apart from the tint.
+    fn gentle_colours_raw(w: u32, h: u32) -> crate::raw::loader::RawDataResult {
+        let mut raw = crate::ml::segment::test_support::disc_raw(w, h);
+        let colours = crate::gpu::demosaic::tile_colors(raw.cfa_pattern);
+        let span = raw.white_level as f32;
+        for y in 0..h {
+            let hue = y as f32 / h as f32 * std::f32::consts::TAU;
+            for x in 0..w {
+                let c = colours[((y % 2) * 2 + x % 2) as usize] as usize;
+                let tint = 1.0 + 0.06 * (hue + c as f32 * std::f32::consts::TAU / 3.0).sin();
+                let level = span * (0.02 + 0.6 * x as f32 / w as f32);
+                raw.data[(y * w + x) as usize] = (level * tint / raw.wb_multipliers[c]) as u16;
+            }
+        }
+        raw
     }
 
     fn luma(p: &[u8]) -> f64 {
@@ -1502,8 +1577,103 @@ mod tests {
         });
     }
 
+    /// A minimal dual-illuminant profile with no table, and `curve` as its
+    /// ProfileToneCurve (`None`: none, like "Adobe Standard").
+    fn synthetic_profile(curve: Option<Vec<(f32, f32)>>) -> std::sync::Arc<crate::raw::dcp::DcpProfile> {
+        let identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        // Camera white → D50 white, so a neutral stays neutral.
+        let forward = [0.9642, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.8249];
+        std::sync::Arc::new(crate::raw::dcp::DcpProfile {
+            illuminant1: 17,
+            illuminant2: 21,
+            color_matrix_1: identity,
+            color_matrix_2: identity,
+            forward_matrix_1: Some(forward),
+            forward_matrix_2: Some(forward),
+            hue_sat_dims: (0, 0, 0),
+            hue_sat_data_1: None,
+            hue_sat_data_2: None,
+            tone_curve: curve,
+            baseline_exposure_offset: 0.0,
+            camera_model: None,
+            profile_name: Some("Synthetic".into()),
+        })
+    }
+
+    /// A flat frame clipped at the sensor's white level. Its as-shot WB is a
+    /// camera's (red ×2, blue ×1.5), so clipped white lands above 1.0
+    /// scene-linear, as it does in a real frame.
+    fn clipped_frame(profile: Option<std::sync::Arc<crate::raw::dcp::DcpProfile>>) -> crate::raw::loader::RawDataResult {
+        let mut raw = crate::ml::segment::test_support::disc_raw(64, 64);
+        raw.data = vec![raw.white_level as u16; 64 * 64];
+        raw.dcp_profile = profile;
+        raw
+    }
+
+    fn centre_luma(img: &[u8], w: u32, h: u32) -> f64 {
+        luma(&img[(((h / 2) * w + w / 2) * 4) as usize..])
+    }
+
+    /// Sensor-clipped white must render as (near) white on the default
+    /// Camera tone, with or without a profile curve. With a curve-less
+    /// profile the Camera path once kneed the highlights before the built-in
+    /// filmic did the same, and clipped white came out 233/255 grey.
+    /// Synthetic, so it runs wherever a GPU (lavapipe) does.
+    #[test]
+    #[ignore]
+    fn clipped_white_renders_white_on_every_profile_kind() {
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).build().unwrap();
+        rt.block_on(async {
+            let ctx = SharedContext::new().await.unwrap();
+            let gentle_s = vec![(0.0, 0.0), (0.25, 0.2), (0.75, 0.8), (1.0, 1.0)];
+            for (kind, profile) in [
+                ("no profile", None),
+                ("a profile without a curve", Some(synthetic_profile(None))),
+                ("a profile with a curve", Some(synthetic_profile(Some(gentle_s)))),
+            ] {
+                let raw = clipped_frame(profile);
+                let (img, w, h) = render_params(&ctx, &raw, &EditParams::default()).await;
+                let l = centre_luma(&img, w, h);
+                eprintln!("{kind}: clipped white renders at {l:.1}");
+                assert!(l >= 244.0, "{kind}: clipped white renders grey ({l:.1}/255)");
+            }
+        });
+    }
+
+    /// On a profile without a curve, Camera IS the built-in filmic: choosing
+    /// Filmic must not change a neutral frame at any level. (Colours may
+    /// differ slightly: the operator is applied hue-preservingly in ProPhoto
+    /// at the profile-curve slot, the built-in one at Step 15.)
+    #[test]
+    #[ignore]
+    fn camera_on_a_curve_less_profile_renders_as_filmic() {
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).build().unwrap();
+        rt.block_on(async {
+            let ctx = SharedContext::new().await.unwrap();
+            let filmic = EditParams { tone_mapper: crate::core::tonemap::ToneMapper::Filmic, ..EditParams::default() };
+            for fraction in [0.05f32, 0.2, 0.5, 0.8, 1.0] {
+                let mut raw = clipped_frame(Some(synthetic_profile(None)));
+                // Neutral after white balance: each site at level / its WB.
+                let colours = crate::gpu::demosaic::tile_colors(raw.cfa_pattern);
+                let level = raw.white_level as f32 * fraction;
+                for (i, v) in raw.data.iter_mut().enumerate() {
+                    let (x, y) = (i % 64, i / 64);
+                    let c = colours[(y % 2) * 2 + x % 2] as usize;
+                    *v = (level / raw.wb_multipliers[c]) as u16;
+                }
+                let (a, w, h) = render_params(&ctx, &raw, &EditParams::default()).await;
+                let (b, _, _) = render_params(&ctx, &raw, &filmic).await;
+                let (la, lb) = (centre_luma(&a, w, h), centre_luma(&b, w, h));
+                assert!((la - lb).abs() <= 1.5, "at {fraction} of white: Camera {la:.1}, Filmic {lb:.1}");
+            }
+        });
+    }
+
     /// Denoising must cut noise without moving tone: averaging is done on
     /// linear values exactly so that it cannot darken the shadows.
+    ///
+    /// Measured on the 16-bit render: the 8-bit one is dithered (±1 LSB), and
+    /// that noise is the output's, not the image's.
     ///
     /// Run with `cargo test --release denoise_reduces -- --ignored --nocapture`.
     #[test]
@@ -1521,24 +1691,34 @@ mod tests {
             let raw = crate::raw::loader::load_raw_data(test_raw.clone()).await.unwrap();
             let off = EditParams { color_noise: 0.0, ..EditParams::default() };
             let on = EditParams { luma_noise: 0.6, color_noise: 0.6, ..EditParams::default() };
-            let (a, w, h) = render_params(&ctx, &raw, &off).await;
-            let (b, _, _) = render_params(&ctx, &raw, &on).await;
+            let (a, w, h) = render_params_16(&ctx, &raw, &off).await;
+            let (b, _, _) = render_params_16(&ctx, &raw, &on).await;
+            // Luma in 8-bit units, from 16-bit RGB.
+            let luma16 = |p: &[u16]| (0.2126 * p[0] as f64 + 0.7152 * p[1] as f64 + 0.0722 * p[2] as f64) / 257.0;
             // Pixel-to-pixel luma differences: dominated by noise in flat areas.
-            let roughness = |img: &[u8]| {
+            let roughness = |img: &[u16]| {
                 let mut s = 0.0;
                 for y in 0..h {
                     for x in 0..w - 1 {
-                        let i = ((y * w + x) * 4) as usize;
-                        s += (luma(&img[i..]) - luma(&img[i + 4..])).abs();
+                        let i = ((y * w + x) * 3) as usize;
+                        s += (luma16(&img[i..]) - luma16(&img[i + 3..])).abs();
                     }
                 }
                 s / (h * (w - 1)) as f64
             };
-            let mean = |img: &[u8]| img.as_chunks::<4>().0.iter().map(|p| luma(p)).sum::<f64>() / (w * h) as f64;
+            let mean = |img: &[u16]| img.as_chunks::<3>().0.iter().map(|p| luma16(p)).sum::<f64>() / (w * h) as f64;
             let (ra, rb) = (roughness(&a), roughness(&b));
             let (ma, mb) = (mean(&a), mean(&b));
-            eprintln!("roughness {ra:.3} → {rb:.3}, mean luma {ma:.2} → {mb:.2}");
-            assert!(rb < ra * 0.8, "denoise did not reduce pixel-level noise");
+            eprintln!("roughness {ra:.3} → {rb:.3} ({:.0}% less), mean luma {ma:.2} → {mb:.2}", (1.0 - rb / ra) * 100.0);
+            // The roughness counts the whole frame, texture and edges included,
+            // which NR deliberately keeps: since the October overhaul the noise
+            // model believes only the quietest blocks, so a detailed frame is
+            // no longer over-smoothed. This frame measures ~14% at 0.6 (it was
+            // ~29% before the overhaul, when this asked for 20%). The quality
+            // of the NR itself is judged against ground truth by
+            // `eval_tests::denoise_moves_towards_ground_truth`; this guards
+            // that it still clearly acts on a real frame.
+            assert!(rb < ra * 0.9, "denoise did not reduce pixel-level noise");
             assert!((mb - ma).abs() < 0.5, "denoise shifted overall tone");
         });
     }
