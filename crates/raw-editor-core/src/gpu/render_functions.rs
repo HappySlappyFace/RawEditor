@@ -47,19 +47,33 @@ pub fn write_output_space(context: &SharedContext, resources: &ImageResources, s
 /// buffer that can reach tens of megabytes at zoom.
 /// A pending GPU→CPU transfer: the staging buffer plus what it takes to
 /// un-pad it back into tightly-packed RGBA.
-struct Readback {
-    buffer: wgpu::Buffer,
+///
+/// The buffer comes from the context's pool and goes back to it when this is
+/// dropped (`take_readback`).
+struct Readback<'c> {
+    pool: &'c std::sync::Mutex<Vec<wgpu::Buffer>>,
+    /// `Some` until dropped. May be larger than `len` (a pooled buffer).
+    buffer: Option<wgpu::Buffer>,
+    /// The bytes this readback uses: `bytes_per_row * height`.
+    len: u64,
+    /// Read and unmapped, so the buffer can be reused. A readback whose map
+    /// failed or was never awaited is not: its buffer may still be mapping.
+    done: bool,
     bytes_per_row: u32,
     width: u32,
     height: u32,
 }
 
-impl Readback {
+impl Readback<'_> {
+    /// The part of the buffer the copy writes, to map and read.
+    fn slice(&self) -> wgpu::BufferSlice<'_> {
+        self.buffer.as_ref().expect("a live readback has its buffer").slice(..self.len)
+    }
+
     /// Copy out of the mapped range, dropping wgpu's 256-byte row padding.
     /// Only valid after the buffer has actually mapped.
-    fn unpad(&self) -> Vec<u8> {
-        let slice = self.buffer.slice(..);
-        let data = slice.get_mapped_range();
+    fn unpad(mut self) -> Vec<u8> {
+        let data = self.slice().get_mapped_range();
         let mut out = Vec::with_capacity((self.width * self.height * 4) as usize);
         for y in 0..self.height {
             let start = (y * self.bytes_per_row) as usize;
@@ -67,9 +81,61 @@ impl Readback {
             out.extend_from_slice(&data[start..end]);
         }
         drop(data);
-        self.buffer.unmap();
+        if let Some(buffer) = &self.buffer {
+            buffer.unmap();
+        }
+        self.done = true;
         out
     }
+}
+
+/// Readback buffers kept for reuse, and the largest kept.
+///
+/// A `MAP_READ` buffer lives in host-visible memory, and allocating one costs
+/// milliseconds of CPU once it is a few MB: 7.8 ms for a 1349×900 display
+/// render and 12 ms for 1950×1125 on a GTX 1650, against 0.02 ms for the 384px
+/// overview. The display used to allocate one per slider tick, which was most
+/// of the frame at any zoom whose render target is large (from fit up to about
+/// 100%, where the target shrinks to the source pixels on screen). Pooling
+/// makes it a one-off. Export frames (96 MB at 24 MP) are over the cap, so
+/// they are freed as before rather than held.
+const READBACK_POOL: usize = 3;
+const READBACK_POOL_MAX_BYTES: u64 = 64 << 20;
+
+impl Drop for Readback<'_> {
+    fn drop(&mut self) {
+        let Some(buffer) = self.buffer.take() else { return };
+        if !self.done || buffer.size() > READBACK_POOL_MAX_BYTES {
+            return;
+        }
+        let mut pool = self.pool.lock().unwrap_or_else(|e| e.into_inner());
+        pool.push(buffer);
+        if pool.len() > READBACK_POOL {
+            pool.remove(0);
+        }
+    }
+}
+
+/// A readback buffer of at least `len` bytes: a pooled one that fits without
+/// being more than twice the size, else a new one. New ones are rounded up to
+/// a whole MiB, so the small changes in target size while zooming or resizing
+/// still reuse them.
+fn take_readback(context: &SharedContext, len: u64) -> wgpu::Buffer {
+    {
+        let mut pool = context.readbacks.lock().unwrap_or_else(|e| e.into_inner());
+        let best = (0..pool.len())
+            .filter(|&i| (len..=len.saturating_mul(2).max(1 << 20)).contains(&pool[i].size()))
+            .min_by_key(|&i| pool[i].size());
+        if let Some(i) = best {
+            return pool.remove(i);
+        }
+    }
+    context.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Readback Buffer"),
+        size: len.next_multiple_of(1 << 20),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    })
 }
 
 /// Record one color pass into its own texture and copy it to a staging buffer.
@@ -77,24 +143,24 @@ impl Readback {
 /// Returns the finished command buffer rather than submitting, so callers can
 /// interleave uniform writes between passes: `write/submit/write/submit` gives
 /// each pass a different `view_rect` off one uniform buffer.
-fn encode_color_pass(
-    context: &SharedContext,
+fn encode_color_pass<'c>(
+    context: &'c SharedContext,
     resources: &ImageResources,
     width: u32,
     height: u32,
-) -> (wgpu::CommandBuffer, Readback) {
+) -> (wgpu::CommandBuffer, Readback<'c>) {
     let bindings = resources.prepare_stages(context);
     encode_color_pass_with(context, &bindings, width, height)
 }
 
 /// [`encode_color_pass`] with the bind groups supplied — the detail loupe's
 /// group 0 reads its own crop.
-fn encode_color_pass_with(
-    context: &SharedContext,
+fn encode_color_pass_with<'c>(
+    context: &'c SharedContext,
     bindings: &super::shared::ColorBindings,
     width: u32,
     height: u32,
-) -> (wgpu::CommandBuffer, Readback) {
+) -> (wgpu::CommandBuffer, Readback<'c>) {
     let output_texture = context.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("Output Texture"),
         size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
@@ -135,12 +201,8 @@ fn encode_color_pass_with(
     }
 
     let bytes_per_row = (width * 4 + 255) & !255;
-    let readback_buffer = context.device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("Readback Buffer"),
-        size: (bytes_per_row * height) as u64,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
+    let len = bytes_per_row as u64 * height as u64;
+    let readback_buffer = take_readback(context, len);
 
     encoder.copy_texture_to_buffer(
         wgpu::ImageCopyTexture {
@@ -162,7 +224,7 @@ fn encode_color_pass_with(
 
     (
         encoder.finish(),
-        Readback { buffer: readback_buffer, bytes_per_row, width, height },
+        Readback { pool: &context.readbacks, buffer: Some(readback_buffer), len, done: false, bytes_per_row, width, height },
     )
 }
 
@@ -177,7 +239,7 @@ pub(crate) async fn render_with_bindings(
     let (cb, readback) = encode_color_pass_with(context, bindings, width, height);
     context.queue.submit(Some(cb));
     let (tx, rx) = tokio::sync::oneshot::channel();
-    readback.buffer.slice(..).map_async(wgpu::MapMode::Read, move |res| {
+    readback.slice().map_async(wgpu::MapMode::Read, move |res| {
         let _ = tx.send(res);
     });
     tokio::task::block_in_place(|| {
@@ -209,7 +271,7 @@ pub async fn render_to_vec(
     context.queue.submit(Some(cb));
 
     let (tx, rx) = tokio::sync::oneshot::channel();
-    readback.buffer.slice(..).map_async(wgpu::MapMode::Read, move |res| {
+    readback.slice().map_async(wgpu::MapMode::Read, move |res| {
         let _ = tx.send(res);
     });
 
@@ -245,7 +307,7 @@ pub async fn render_to_bytes(
     context.queue.submit(Some(cb));
 
     let (tx, rx) = tokio::sync::oneshot::channel();
-    readback.buffer.slice(..).map_async(wgpu::MapMode::Read, move |res| {
+    readback.slice().map_async(wgpu::MapMode::Read, move |res| {
         let _ = tx.send(res);
     });
 
@@ -336,11 +398,11 @@ pub async fn render_display_and_overview(
     context.queue.submit(Some(main_cb));
 
     let (otx, orx) = tokio::sync::oneshot::channel();
-    overview_rb.buffer.slice(..).map_async(wgpu::MapMode::Read, move |r| {
+    overview_rb.slice().map_async(wgpu::MapMode::Read, move |r| {
         let _ = otx.send(r);
     });
     let (mtx, mrx) = tokio::sync::oneshot::channel();
-    main_rb.buffer.slice(..).map_async(wgpu::MapMode::Read, move |r| {
+    main_rb.slice().map_async(wgpu::MapMode::Read, move |r| {
         let _ = mtx.send(r);
     });
 
@@ -731,6 +793,46 @@ mod tests {
             let b = render_at(&ctx, &res, &raw, 0.0, w, h).await;
             assert_eq!(a.as_ref(), b.as_ref(), "neutral render is not deterministic");
             eprintln!("neutral render stable over {} bytes", a.len());
+        });
+    }
+
+    /// Readback buffers are pooled (`take_readback`). A render that lands in a
+    /// buffer a different, larger render filled before it must read back its
+    /// own pixels: the same bytes as through a buffer of its own.
+    #[test]
+    #[ignore]
+    fn a_reused_readback_buffer_returns_this_renders_pixels() {
+        let test_raw = test_raw_path();
+        if !std::path::Path::new(&test_raw).exists() {
+            eprintln!("test RAW missing, skipping");
+            return;
+        }
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).build().expect("runtime");
+        rt.block_on(async {
+            let ctx = SharedContext::new().await.expect("gpu context");
+            let raw = crate::raw::loader::load_raw_data(test_raw.clone()).await.expect("decode raw");
+            let fm = crate::color::calculate_cam_to_srgb(raw.color_matrix, raw.wb_multipliers, raw.color_matrix_is_d65);
+            let res = ImageResources::new(
+                &ctx, 1, &raw.data, raw.width, raw.height, &EditParams::default(),
+                raw.wb_multipliers, fm, raw.cfa_pattern, raw.black_levels, raw.white_level, None,
+                Some(1280), raw.orientation, raw.lens_context.clone()).expect("image resources");
+            let (w, h) = res.oriented_dims(0);
+            let (sw, sh) = (w - 8, h - 8);
+
+            // Through a buffer of its own.
+            ctx.readbacks.lock().unwrap().clear();
+            let own = render_at(&ctx, &res, &raw, 0.0, sw, sh).await;
+            ctx.readbacks.lock().unwrap().clear();
+
+            // A larger, different render fills a buffer and returns it…
+            let other = render_at(&ctx, &res, &raw, -1.0, w, h).await;
+            assert_eq!(ctx.readbacks.lock().unwrap().len(), 1, "the readback buffer was not pooled");
+            // …and the smaller render reads back through that same buffer.
+            let reused = render_at(&ctx, &res, &raw, 0.0, sw, sh).await;
+            assert_eq!(ctx.readbacks.lock().unwrap().len(), 1, "the pooled buffer was not reused");
+
+            assert_ne!(other.len(), reused.len());
+            assert_eq!(own.as_ref(), reused.as_ref(), "a reused readback buffer returned other pixels");
         });
     }
 

@@ -46,6 +46,8 @@ pub struct SharedContext {
     /// unplug). Every readback fails after that, so the app checks it and
     /// builds a fresh context instead of showing blank frames until restart.
     lost: Arc<std::sync::atomic::AtomicBool>,
+    /// Readback buffers kept for reuse (`render_functions::take_readback`).
+    pub(crate) readbacks: std::sync::Mutex<Vec<wgpu::Buffer>>,
 }
 
 impl SharedContext {
@@ -368,6 +370,7 @@ impl SharedContext {
             brush_placeholder,
             ai_placeholder,
             lost,
+            readbacks: std::sync::Mutex::new(Vec::new()),
         })
     }
 
