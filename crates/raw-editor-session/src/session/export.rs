@@ -1072,3 +1072,197 @@ mod downscale_tests {
         assert_eq!(out.len(), 3);
     }
 }
+
+/// The batch as a state machine: what each step asks for and how the job list
+/// moves. Nothing here renders: results are delivered by hand (`testkit`).
+#[cfg(test)]
+mod queue_tests {
+    use super::super::testkit::{deliver, labels, raw, run_ready, session_with_images};
+    use super::*;
+
+    /// Four images; the memory gate off, so a test never depends on the
+    /// machine's free RAM.
+    fn session() -> Session {
+        let mut s = session_with_images(4);
+        s.min_free_ram_mb = 0;
+        s
+    }
+
+    fn states(s: &Session) -> Vec<(i64, ExportJobState)> {
+        s.export_jobs.iter().map(|j| (j.id, j.state.clone())).collect()
+    }
+
+    fn start(s: &mut Session, ids: &[i64]) -> Effects {
+        s.multi_selection = ids.iter().copied().collect();
+        s.start_export().expect("settings are usable")
+    }
+
+    #[test]
+    fn a_batch_runs_in_display_order_whatever_the_selection_order() {
+        let mut s = session();
+        let e = start(&mut s, &[4, 2, 3]);
+        assert_eq!(labels(&e), ["export next"]);
+        assert!(s.is_exporting);
+        assert_eq!(
+            states(&s),
+            [(2, ExportJobState::Pending), (3, ExportJobState::Pending), (4, ExportJobState::Pending)]
+        );
+        assert_eq!(s.export_jobs[0].filename, "IMG_0002.NEF");
+
+        let e = deliver(&mut s, SessionEvent::ProcessNextExport);
+        assert_eq!(labels(&e), ["export raw"]);
+        assert_eq!(s.export_jobs[0].state, ExportJobState::Working);
+        assert_eq!(s.status, "Exporting 1 of 3…");
+        assert_eq!(s.export_queue, [4, 3], "the rest, drained from the back");
+    }
+
+    #[test]
+    fn nothing_selected_exports_the_open_image_and_nothing_open_exports_nothing() {
+        let mut s = session();
+        assert!(labels(&s.start_export().unwrap()).is_empty());
+        assert!(!s.is_exporting);
+        assert_eq!(s.status, "Nothing to export.");
+
+        s.selected_image_id = Some(3);
+        let _ = start(&mut s, &[]);
+        assert_eq!(states(&s), [(3, ExportJobState::Pending)]);
+    }
+
+    #[test]
+    fn an_unusable_size_keeps_the_dialog_open_and_starts_nothing() {
+        let mut s = session();
+        s.export_settings.resize = true;
+        s.export_settings.set_max_width_text("12a".into());
+        s.multi_selection = [1].into();
+        assert!(s.start_export().is_none());
+        assert!(!s.is_exporting);
+        assert!(s.export_jobs.is_empty());
+    }
+
+    #[test]
+    fn confirming_again_mid_run_does_not_start_a_second_chain() {
+        let mut s = session();
+        let _ = start(&mut s, &[1, 2]);
+        let _ = deliver(&mut s, SessionEvent::ProcessNextExport);
+        let before = (states(&s), s.export_queue.clone());
+
+        s.multi_selection = [3, 4].into();
+        let e = s.start_export().unwrap();
+        assert!(labels(&e).is_empty());
+        assert_eq!(s.status, "An export is already running.");
+        assert_eq!((states(&s), s.export_queue.clone()), before);
+    }
+
+    /// Every way an image can fail marks its row and moves on: a row left
+    /// `Working` reads as a render that never ends.
+    #[test]
+    fn each_failure_marks_its_job_and_the_batch_carries_on() {
+        let mut s = session();
+        let _ = start(&mut s, &[1, 2, 3]);
+
+        let _ = deliver(&mut s, SessionEvent::ProcessNextExport);
+        let e = deliver(&mut s, SessionEvent::ExportRawLoaded(1, Box::default(), Err("bad file".into())));
+        assert_eq!(labels(&e), ["export next"]);
+
+        let _ = deliver(&mut s, SessionEvent::ProcessNextExport);
+        let e = deliver(&mut s, SessionEvent::ExportPipelineReady(2, Box::default(), Err("no GPU".into())));
+        assert_eq!(labels(&e), ["export next"]);
+
+        let _ = deliver(&mut s, SessionEvent::ProcessNextExport);
+        let e = deliver(&mut s, SessionEvent::ExportSaveComplete(3, Err("disk full".into())));
+        assert_eq!(labels(&e), ["export next"]);
+
+        assert_eq!(
+            states(&s),
+            [
+                (1, ExportJobState::Failed("bad file".into())),
+                (2, ExportJobState::Failed("no GPU".into())),
+                (3, ExportJobState::Failed("disk full".into())),
+            ]
+        );
+        assert!(labels(&deliver(&mut s, SessionEvent::ProcessNextExport)).is_empty());
+        assert!(!s.is_exporting);
+        assert_eq!(s.status, "Export finished — 3 failed");
+    }
+
+    #[test]
+    fn a_clean_batch_finishes_complete_with_each_saved_path() {
+        let mut s = session();
+        let _ = start(&mut s, &[1, 2]);
+        for id in [1, 2] {
+            let _ = deliver(&mut s, SessionEvent::ProcessNextExport);
+            let _ = deliver(&mut s, SessionEvent::ExportSaveComplete(id, Ok(format!("/out/{id}.jpg").into())));
+        }
+        let _ = deliver(&mut s, SessionEvent::ProcessNextExport);
+        assert!(!s.is_exporting);
+        assert_eq!(s.status, "Export Complete!");
+        assert_eq!(s.export_jobs[1].state, ExportJobState::Done("/out/2.jpg".into()));
+    }
+
+    #[test]
+    fn a_decoded_raw_in_the_cache_is_reused_not_read_again() {
+        let mut s = session();
+        s.raw_cache.put(2, Arc::new(raw(2)));
+        let _ = start(&mut s, &[2]);
+        // Same label either way; the cached path is the one that does not
+        // touch the (nonexistent) file, so the batch would otherwise fail.
+        let e = deliver(&mut s, SessionEvent::ProcessNextExport);
+        assert_eq!(labels(&e), ["export raw"]);
+        assert!(
+            matches!(run_ready(e)[..], [SessionEvent::ExportRawLoaded(2, _, Ok(_))]),
+            "the cached RAW was handed on"
+        );
+    }
+
+    #[test]
+    fn cancelling_skips_the_pending_jobs_and_lets_the_running_one_finish() {
+        let mut s = session();
+        let _ = start(&mut s, &[1, 2, 3]);
+        let _ = deliver(&mut s, SessionEvent::ProcessNextExport);
+
+        s.cancel_export();
+        assert!(s.export_queue.is_empty());
+        assert_eq!(s.status, "Export cancelled — 2 images skipped");
+        assert_eq!(
+            states(&s),
+            [
+                (1, ExportJobState::Working),
+                (2, ExportJobState::Failed("cancelled".into())),
+                (3, ExportJobState::Failed("cancelled".into())),
+            ]
+        );
+        assert!(s.is_exporting, "still running until the in-flight image lands");
+
+        let _ = deliver(&mut s, SessionEvent::ExportSaveComplete(1, Ok("/out/1.jpg".into())));
+        let _ = deliver(&mut s, SessionEvent::ProcessNextExport);
+        assert!(!s.is_exporting);
+        assert_eq!(s.export_jobs[0].state, ExportJobState::Done("/out/1.jpg".into()));
+    }
+
+    #[test]
+    fn cancelling_with_nothing_running_does_nothing() {
+        let mut s = session();
+        s.cancel_export();
+        assert_eq!(s.status, Session::default().status);
+    }
+
+    #[test]
+    fn an_image_removed_mid_batch_fails_its_job_instead_of_stalling() {
+        let mut s = session();
+        let _ = start(&mut s, &[1, 2]);
+        s.images.retain(|i| i.id != 1);
+        let e = deliver(&mut s, SessionEvent::ProcessNextExport);
+        assert_eq!(labels(&e), ["export next"]);
+        assert_eq!(s.export_jobs[0].state, ExportJobState::Failed("image no longer in catalogue".into()));
+    }
+
+    /// A late result from a batch that has since been replaced names an id
+    /// the new job list doesn't hold: it must not panic or touch a row.
+    #[test]
+    fn a_stale_result_for_an_unknown_image_is_ignored() {
+        let mut s = session();
+        let _ = start(&mut s, &[1]);
+        let _ = deliver(&mut s, SessionEvent::ExportSaveComplete(99, Ok("/out/99.jpg".into())));
+        assert_eq!(states(&s), [(1, ExportJobState::Pending)]);
+    }
+}
