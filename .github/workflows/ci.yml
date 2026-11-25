@@ -38,9 +38,13 @@ jobs:
     - name: Clippy
       run: cargo clippy --all-targets -- -D warnings
 
-    # fast-jpeg swaps in its own decode paths, so the default lint never sees them.
-    - name: Clippy (fast-jpeg)
-      run: cargo clippy --all-targets --features fast-jpeg -- -D warnings
+    # fast-jpeg swaps in its own decode paths, and profiling its measuring
+    # code, so the default lint never sees them.
+    - name: Clippy (fast-jpeg, profiling)
+      run: cargo clippy --all-targets --features fast-jpeg,profiling -- -D warnings
 
     - name: Test
       run: cargo test --verbose
+
+    - name: Test (profiling)
+      run: cargo test -p raw-editor-core --features profiling core::profiler

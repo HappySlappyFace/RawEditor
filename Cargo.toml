@@ -110,6 +110,10 @@ winresource = "0.1"
 # scalar fallback elsewhere). See .cargo/config.toml for one-line aliases.
 default = []
 fast-jpeg = ["raw-editor-session/fast-jpeg"]
+# The detailed performance overlay: per-stage CPU timings, GPU pass timings,
+# counters. Off by default; without it the measuring code compiles to nothing.
+#   cargo run-profile
+profiling = ["raw-editor-session/profiling"]
 
 [profile.release]
 # Maximum performance optimizations

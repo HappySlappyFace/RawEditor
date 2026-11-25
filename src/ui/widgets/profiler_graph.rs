@@ -1,5 +1,5 @@
 use crate::app::message::Message;
-use crate::core::profiler::Profiler;
+use crate::core::profiler::{Count, Profiler, Span};
 use iced::widget::canvas::{self, Canvas, Frame, Geometry, Path, Stroke};
 use iced::widget::{column, container, text};
 use iced::{Color, Element, Length, Point, Rectangle, Renderer, Size, Theme};
@@ -21,10 +21,24 @@ pub struct RenderStats {
 /// the last develop frame's numbers while the user is looking at the Library
 /// would be worse than reporting nothing. The timing graph itself is
 /// tab-agnostic and always shown.
+/// What the detailed view shows beside the frame breakdown (`profiling`
+/// builds): the front end's own times and what is held in memory.
+pub struct Extra {
+    /// `(last, average)` ms: iced's `update` for one message, and `view`.
+    pub ui_update: (f32, f32),
+    pub ui_view: (f32, f32),
+    /// RAW cache: images held, bytes, budget in MB.
+    pub raw_cache: (usize, usize, u32),
+    /// Background loads waiting: previews, RAWs.
+    pub queued: (usize, usize),
+    pub readback_pool_bytes: u64,
+}
+
 pub fn view_profiler_overlay<'a>(
     profiler: &'a Profiler,
     cache: &'a iced::widget::canvas::Cache,
     stats: Option<RenderStats>,
+    extra: Option<Extra>,
 ) -> Element<'a, Message> {
     let avg_total = if profiler.history.is_empty() {
         0.0
@@ -96,8 +110,12 @@ pub fn view_profiler_overlay<'a>(
         .width(Length::Fill)
         .height(Length::Fixed(100.0));
 
+    let detail = extra.map(|extra| detail_view(profiler, extra));
+    let width = if detail.is_some() { 400.0 } else { 340.0 };
+
     container(
         column![avg_header, frame_detail, render_stats, graph, legend]
+            .push_maybe(detail)
             .spacing(4)
             .padding(10),
     )
@@ -112,8 +130,90 @@ pub fn view_profiler_overlay<'a>(
         },
         ..Default::default()
     })
-    .width(Length::Fixed(340.0))
+    .width(Length::Fixed(width))
     .into()
+}
+
+/// The `profiling` build's breakdown: every span as last / average / max over
+/// the history, the counts, the front end's times and memory.
+fn detail_view<'a>(profiler: &Profiler, extra: Extra) -> Element<'a, Message> {
+    let line = |s: String, alpha: f32| {
+        text(s).size(10).style(move |_| iced::widget::text::Style { color: Some(Color::from_rgba(1.0, 1.0, 1.0, alpha)) })
+    };
+    let heading = |s: &str| {
+        text(s.to_string()).size(10).style(|_| iced::widget::text::Style {
+            color: Some(Color::from_rgba(0.98, 0.45, 0.09, 0.95)),
+        })
+    };
+    let groups: [(&str, &[Span]); 5] = [
+        ("SESSION", &[Span::Update]),
+        (
+            "ENCODE (CPU)",
+            &[
+                Span::StageCurves,
+                Span::StageBrush,
+                Span::StageAi,
+                Span::StageDenoise,
+                Span::StageLocalContrast,
+                Span::Allocate,
+                Span::Record,
+            ],
+        ),
+        ("WAIT (CPU)", &[Span::Submit, Span::Wait, Span::Unpad, Span::Histogram]),
+        ("GPU (timestamps)", &[Span::GpuStages, Span::GpuOverview, Span::GpuDisplay]),
+        ("END TO END", &[Span::Latency]),
+    ];
+
+    let mut col = column![line(format!("{:<20}{:>8}{:>8}{:>8}", "ms", "last", "avg", "max"), 0.6)].spacing(1);
+    for (name, spans) in groups {
+        col = col.push(heading(name));
+        let mut shown = 0;
+        for &span in spans {
+            let (last, avg, max) = profiler.span_stats(span);
+            // A stage that never ran in the window says nothing.
+            if max == 0.0 && span != Span::Update {
+                continue;
+            }
+            shown += 1;
+            col = col.push(line(format!("  {:<18}{:>8.2}{:>8.2}{:>8.2}", span.label(), last, avg, max), 0.85));
+        }
+        if shown == 0 {
+            let none = if name.starts_with("GPU") { "  (this GPU cannot time passes)" } else { "  —" };
+            col = col.push(line(none.to_string(), 0.5));
+        }
+    }
+
+    col = col.push(heading(&format!("COUNTS (last {} frames)", profiler.history.len())));
+    let counts: Vec<String> =
+        Count::ALL.iter().map(|&c| (c, profiler.count_total(c))).filter(|&(_, n)| n > 0).map(|(c, n)| format!("{} {n}", c.label())).collect();
+    for pair in counts.chunks(2) {
+        col = col.push(line(format!("  {}", pair.join("  ·  ")), 0.85));
+    }
+
+    col = col.push(heading("FRONT END"));
+    col = col.push(line(
+        format!(
+            "  update {:.2} ms (avg {:.2})  ·  view {:.2} ms (avg {:.2})",
+            extra.ui_update.0, extra.ui_update.1, extra.ui_view.0, extra.ui_view.1
+        ),
+        0.85,
+    ));
+    let (images, bytes, budget) = extra.raw_cache;
+    col = col.push(heading("MEMORY"));
+    col = col.push(line(
+        format!("  RAW cache {images} images, {:.0} / {budget} MB", bytes as f64 / 1048576.0),
+        0.85,
+    ));
+    col = col.push(line(
+        format!(
+            "  Readback pool {:.1} MB  ·  queued {} previews, {} RAWs",
+            extra.readback_pool_bytes as f64 / 1048576.0,
+            extra.queued.0,
+            extra.queued.1
+        ),
+        0.85,
+    ));
+    col.into()
 }
 
 struct ProfilerGraph<'a> {

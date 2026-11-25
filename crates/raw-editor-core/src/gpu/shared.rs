@@ -8,6 +8,7 @@ use wgpu::util::DeviceExt;
 
 use super::params::GpuEditParams;
 use crate::core::tonemap::{ToneSettings, TONE_LUT_SIZE};
+use crate::core::profiler::{Count, Detail, Span, Timer};
 use crate::core::types::EditParams;
 use crate::gpu::shaders;
 
@@ -48,6 +49,8 @@ pub struct SharedContext {
     lost: Arc<std::sync::atomic::AtomicBool>,
     /// Readback buffers kept for reuse (`render_functions::take_readback`).
     pub(crate) readbacks: std::sync::Mutex<Vec<wgpu::Buffer>>,
+    /// GPU pass timing for the performance overlay (`profiling` builds).
+    pub(crate) timer: super::timing::GpuTimer,
 }
 
 impl SharedContext {
@@ -87,7 +90,8 @@ impl SharedContext {
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: Some("RAW Editor Device"),
-                    required_features: wgpu::Features::empty(),
+                    // Timestamp queries in `profiling` builds, where the GPU has them.
+                    required_features: super::timing::features(&adapter),
                     required_limits,
                 },
                 None,
@@ -353,6 +357,7 @@ impl SharedContext {
         });
 
         tracing::info!("SharedContext initialized successfully");
+        let timer = super::timing::GpuTimer::new(&device, &queue);
 
         Ok(Self {
             device,
@@ -371,6 +376,7 @@ impl SharedContext {
             ai_placeholder,
             lost,
             readbacks: std::sync::Mutex::new(Vec::new()),
+            timer,
         })
     }
 
@@ -423,6 +429,11 @@ impl SharedContext {
     /// on the GPU.
     pub fn reclaim(&self) {
         self.device.poll(wgpu::Maintain::Poll);
+    }
+
+    /// Bytes held by the readback pool (`render_functions::take_readback`).
+    pub fn readback_pool_bytes(&self) -> u64 {
+        self.readbacks.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|b| b.size()).sum()
     }
 }
 
@@ -1216,13 +1227,15 @@ impl ImageResources {
     /// stage can never be stale for the frame that reads it. Re-runs a stage
     /// only when its own settings changed: a drag on any other slider costs
     /// one mutex lock and a comparison here.
-    pub fn prepare_stages(&self, context: &SharedContext) -> ColorBindings {
+    pub fn prepare_stages(&self, context: &SharedContext, detail: &mut Detail) -> ColorBindings {
         let params = *self.stage_params.lock().unwrap_or_else(|e| e.into_inner());
         let mut st = self.stages.lock().unwrap_or_else(|e| e.into_inner());
 
         // Point curves: re-bake only when they changed (the shader skips the
         // lookup entirely while they are identity — `curve_active`).
+        let t = Timer::start();
         if st.curves != Some(params.curves) {
+            detail.bump(Count::CurveBakes);
             let lut: Vec<half::f16> = params
                 .curves
                 .bake()
@@ -1245,12 +1258,15 @@ impl ImageResources {
             );
             st.curves = Some(params.curves);
         }
+        detail.stop(Span::StageCurves, t);
 
         // Brush layers: re-rasterise only when the strokes changed. No
         // strokes → nothing to draw (the shader skips masks without any), and
         // the layers keep what `brush_key` describes: the before/after peek
         // has no strokes, and releasing it must not re-rasterise them.
+        let t = Timer::start();
         if !params.brush.is_empty() && st.brush_key != Some(params.brush) {
+            detail.bump(Count::BrushRuns);
             // Layers are display-space and the rasteriser takes its aspect
             // from their size, so a quarter turn (which re-keys the strokes)
             // needs layers of the turned shape, or every dab draws as an
@@ -1270,10 +1286,17 @@ impl ImageResources {
             }
             st.brush_key = Some(params.brush);
         }
-        self.prepare_ai_masks(context, &mut st, &params);
+        detail.stop(Span::StageBrush, t);
+        let t = Timer::start();
+        self.prepare_ai_masks(context, &mut st, &params, detail);
+        detail.stop(Span::StageAi, t);
         let st = &mut *st;
-        self.prepare_denoise(context, st, &params);
-        self.prepare_local_contrast(context, st, &params);
+        let t = Timer::start();
+        self.prepare_denoise(context, st, &params, detail);
+        detail.stop(Span::StageDenoise, t);
+        let t = Timer::start();
+        self.prepare_local_contrast(context, st, &params, detail);
+        detail.stop(Span::StageLocalContrast, t);
         ColorBindings { main: st.active.clone(), masks: st.masks.clone(), presence: st.presence.clone() }
     }
 
@@ -1295,7 +1318,7 @@ impl ImageResources {
     /// AI mask layers: upload when the slots' ids, the orientation or the
     /// decoded bitmaps changed. An edit with no AI mask (or the before/after
     /// peek, which has no masks) leaves the layers as they are, like brush.
-    fn prepare_ai_masks(&self, context: &SharedContext, st: &mut StageState, params: &EditParams) {
+    fn prepare_ai_masks(&self, context: &SharedContext, st: &mut StageState, params: &EditParams, detail: &mut Detail) {
         let mut ids = [0u64; crate::core::types::MAX_MASKS];
         for (slot, id) in params.ai_masks() {
             ids[slot] = id;
@@ -1311,6 +1334,7 @@ impl ImageResources {
         if st.ai_key == Some(key) {
             return;
         }
+        detail.bump(Count::AiUploads);
         // Same frame and cap as the brush layers.
         let (dw, dh) = self.oriented_dims(params.quarter_turns);
         let (lw, lh) = super::brush::layer_size(dw, dh);
@@ -1344,7 +1368,7 @@ impl ImageResources {
 
     /// Noise reduction: re-run when its settings changed, and point the
     /// colour pass at the result (or at the demosaic when it is off).
-    fn prepare_denoise(&self, context: &SharedContext, st: &mut StageState, params: &EditParams) {
+    fn prepare_denoise(&self, context: &SharedContext, st: &mut StageState, params: &EditParams, detail: &mut Detail) {
         let settings = super::denoise::DenoiseSettings::from_params(params);
         st.denoise_on = settings.is_active();
         if !st.denoise_on {
@@ -1357,6 +1381,7 @@ impl ImageResources {
             }
             return;
         }
+        detail.bump(Count::DenoiseRuns);
 
         if st.denoise.is_none() {
             let targets = context.denoise.targets(
@@ -1393,7 +1418,7 @@ impl ImageResources {
     /// `prepare_denoise`), and rebuilt only when that changes — never for
     /// those sliders themselves. Left stale while none is set: the shader
     /// does not sample it then.
-    fn prepare_local_contrast(&self, context: &SharedContext, st: &mut StageState, params: &EditParams) {
+    fn prepare_local_contrast(&self, context: &SharedContext, st: &mut StageState, params: &EditParams, detail: &mut Detail) {
         if params.texture == 0.0 && params.clarity == 0.0 && !super::params::wants_surround(params) {
             return;
         }
@@ -1401,6 +1426,7 @@ impl ImageResources {
         if st.local_key == Some(source_key) {
             return;
         }
+        detail.bump(Count::LocalContrastRuns);
         let size = super::local_contrast::analysis_size(self.width, self.height);
         if st.local.is_none() {
             st.local = Some(context.local_contrast.targets(&context.device, &context.sampler_linear, size.0, size.1));

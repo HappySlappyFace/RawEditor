@@ -71,6 +71,13 @@ pub(super) fn splash() -> Handle {
 
 /// Build the user interface
 pub fn view(editor: &RawEditor) -> Element<'_, Message> {
+    let t = crate::core::profiler::Timer::start();
+    let element = view_all(editor);
+    editor.ui_times.view_done(t);
+    element
+}
+
+fn view_all(editor: &RawEditor) -> Element<'_, Message> {
     // Phase 23: Show splash screen if database is still loading
     let content = match &editor.session.library {
         None => super::splash::view(editor),
@@ -152,10 +159,22 @@ fn view_main(editor: &RawEditor) -> Element<'_, Message> {
                 view_extent: (editor.session.rendered_view_rect[2], editor.session.rendered_view_rect[3]),
             }
         });
+        // The breakdown exists only in `profiling` builds (`cargo run-profile`).
+        let extra = crate::core::profiler::ENABLED.then(|| {
+            let s = &editor.session;
+            crate::ui::widgets::profiler_graph::Extra {
+                ui_update: editor.ui_times.update(),
+                ui_view: editor.ui_times.view(),
+                raw_cache: (s.raw_cache.len(), s.raw_cache_bytes, s.raw_preload_budget_mb),
+                queued: (s.queued_loads.len(), s.queued_raw_loads.len()),
+                readback_pool_bytes: s.gpu_context.as_ref().map_or(0, |c| c.readback_pool_bytes()),
+            }
+        });
         container(crate::ui::widgets::profiler_graph::view_profiler_overlay(
             &editor.session.profiler,
             &editor.profiler_cache,
             stats,
+            extra,
         ))
         .width(Length::Fill)
         .height(Length::Fill)

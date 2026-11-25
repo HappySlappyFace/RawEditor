@@ -38,6 +38,8 @@ default = []
 fast-jpeg = ["dep:zune-jpeg", "dep:zune-core", "raw-editor-core/fast-jpeg"]
 # Fixtures for front ends' tests (`session::testkit`, `AiSelect::for_test`).
 test-support = ["raw-editor-core/test-support"]
+# The detailed performance overlay (see the engine's manifest).
+profiling = ["raw-editor-core/profiling"]
 
 [dev-dependencies]
 raw-editor-core = { workspace = true, features = ["test-support"] }
