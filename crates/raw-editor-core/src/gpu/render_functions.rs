@@ -979,6 +979,8 @@ mod tests {
 
             let camera = render_with(ToneMapper::Camera).await;
             assert!(!camera.is_empty(), "camera render produced nothing");
+            let curve_less = dcp.as_ref().is_some_and(|d| !d.has_tone_curve);
+            eprintln!("profile has its own tone curve: {}", !curve_less);
 
             for mapper in [
                 ToneMapper::Filmic,
@@ -1011,18 +1013,29 @@ mod tests {
                 );
 
                 // It must actually be a DIFFERENT rendering, or the selection
-                // silently did nothing.
+                // silently did nothing — except Filmic on a profile with no
+                // curve of its own ("Adobe Standard"), where Camera IS the
+                // built-in filmic: the two must then agree (apart from
+                // rounding where they are applied at different steps).
                 let differing = out
                     .iter()
                     .zip(camera.iter())
                     .filter(|(a, b)| a != b)
                     .count();
                 let frac = differing as f64 / out.len() as f64;
-                assert!(
-                    frac > 0.05,
-                    "{mapper} changed only {:.2}% of channels — selection had no effect",
-                    frac * 100.0
-                );
+                if mapper == ToneMapper::Filmic && curve_less {
+                    assert!(
+                        frac < 0.05,
+                        "Camera on a curve-less profile should render as Filmic, but {:.2}% of channels differ",
+                        frac * 100.0
+                    );
+                } else {
+                    assert!(
+                        frac > 0.05,
+                        "{mapper} changed only {:.2}% of channels — selection had no effect",
+                        frac * 100.0
+                    );
+                }
 
                 eprintln!("{mapper:>9}: mean luma {mean:6.1}   {:.1}% of channels differ from Camera",
                     frac * 100.0);

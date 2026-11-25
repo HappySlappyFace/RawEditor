@@ -124,11 +124,14 @@ an opinion about contrast). Only the second is swappable, and
   `tone_lut_encode` on both sides, mirrored constants guarded by
   `shader_tone_lut_constants_match_rust`. Operators are *defined* as the
   scene-linear→display mapping, so they must receive uncompressed values.
-- **The 0.7 Reinhard knee runs for `Camera` only.** It exists because the
+- **The 0.7 Reinhard knee runs for `Camera` with a profile curve only.** It exists because the
   ProfileToneCurve is defined on [0,1], and being per-channel is deliberate
   (it samples the profile's top value slices). Kneeing before any other
   operator would tone-map a tone-mapped signal — the same failure that made
-  Highlights return grey instead of texture.
+  Highlights return grey instead of texture. `Camera` on a curve-less profile
+  ("Adobe Standard") IS the built-in filmic, an operator like the others: no
+  knee, and it renders identically to `Filmic` (kneeing it once made clipped
+  white 233/255 grey).
 - **Output space:** everything in `core::tonemap` returns display-**linear**.
   The ProfileToneCurve is the sole exception (linear in → gamma-encoded out),
   which `bake_tone_curve` linearises back; getting this wrong is a ~1.3 EV
