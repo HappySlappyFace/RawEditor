@@ -86,8 +86,10 @@ impl AppSettings {
     pub fn load_or_default() -> Self {
         // Unit tests build editors (`RawEditor::new`) in parallel: they must
         // neither depend on the developer's real settings file nor write to
-        // it (`save` below). Every test starts from the defaults.
-        if cfg!(test) {
+        // it (`save` below). Every test starts from the defaults. The other
+        // crates' tests build this one without `cfg(test)`, so the
+        // `test-support` feature their dev-dependencies turn on counts too.
+        if cfg!(any(test, feature = "test-support")) {
             return Self::default();
         }
         match Self::load() {
@@ -115,7 +117,7 @@ impl AppSettings {
 
     pub fn save(&self) -> Result<(), String> {
         // See `load_or_default`: tests never touch the real settings file.
-        if cfg!(test) {
+        if cfg!(any(test, feature = "test-support")) {
             return Ok(());
         }
         let path = Self::settings_path();
