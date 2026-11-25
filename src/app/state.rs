@@ -1,26 +1,16 @@
-use crate::app::message::{AppTab, Message};
+use crate::app::message::Message;
 use crate::database;
 use crate::database::models::Image as ImageData;
-use crate::gpu;
-use crate::raw;
 use crate::ui::preview_renderer::{CropHandle, MaskHandle};
 use iced::widget::image::Handle;
 use iced::{Point, Task};
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::collections::HashSet;
 
-/// Phase 95: Simplified editor status (pipeline is now in separate fields)
-#[derive(Clone, Debug, PartialEq)]
-pub enum EditorReadiness {
-    /// No image selected
-    NoSelection,
-    /// Loading RAW data
-    Loading(i64),
-    /// Image loaded and ready
-    Ready(i64),
-    /// Failed to load
-    Failed(i64, String),
-}
+// The session's types, where the app has always named them.
+pub use crate::session::{
+    EditorReadiness, MaskTool, MIN_FREE_RAM_MB_MAX, PREVIEW_PRELOAD_AHEAD_MAX, PREVIEW_PRELOAD_BEHIND_MAX,
+    RAW_PRELOAD_AHEAD_MAX, RAW_PRELOAD_BEHIND_MAX,
+};
 
 /// Phase 67: Drag mode for mouse interaction
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -32,36 +22,6 @@ pub enum DragMode {
     /// Dragging a handle of the selected local adjustment mask
     MaskHandle(MaskHandle),
 }
-
-/// Brush tool settings (UI state, remembered across masks).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct BrushSettings {
-    /// Radius as a fraction of the image height.
-    pub size: f32,
-    pub feather: f32,
-    pub flow: f32,
-    /// Erase instead of paint (Alt inverts it while held).
-    pub erase: bool,
-}
-
-impl Default for BrushSettings {
-    fn default() -> Self {
-        Self { size: 0.05, feather: 0.6, flow: 1.0, erase: false }
-    }
-}
-
-/// Local adjustment mask tool mode
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MaskTool {
-    Inactive,
-    /// Next click on the preview places a linear gradient
-    PlacingLinear,
-    /// Next click on the preview places a radial gradient
-    PlacingRadial,
-}
-
-use lru::LruCache;
-use std::num::NonZeroUsize;
 
 /// Phase 84: Modal system
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,7 +44,7 @@ pub enum Modal {
     /// (`RawEditor::drop_import`).
     ImportDropped,
     /// Confirm downloading an AI model a feature needs
-    /// (`RawEditor::models.offered`).
+    /// (`RawEditor::model_offer`).
     AiModel,
     /// AI denoise: choose the amount on a 1:1 preview, then apply
     /// (`RawEditor::ai_denoise`).
@@ -110,29 +70,6 @@ pub struct DropImport {
     pub files: HashSet<std::path::PathBuf>,
 }
 
-/// Noise-reduction settings the main view keeps showing while a drag on one
-/// of its sliders is in progress — the stage is too slow to re-run per tick
-/// (`handlers::loupe`). Tagged with its image so it can never leak onto
-/// another one.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct HeldNoise {
-    pub image_id: Option<i64>,
-    pub luma: f32,
-    pub detail: f32,
-    pub color: f32,
-}
-
-/// The last frame the detail loupe rendered.
-#[derive(Debug, Clone)]
-pub struct LoupeView {
-    pub image_id: i64,
-    pub handle: iced::widget::image::Handle,
-    /// Its view-UV window — what a drag in loupe pixels moves.
-    pub window: [f32; 4],
-    /// Physical pixels per side.
-    pub size: u32,
-}
-
 /// A Develop slider's value being typed: a click on the number swaps it for
 /// a text field (`views::develop::slider_field`).
 #[derive(Debug, Clone, PartialEq)]
@@ -140,81 +77,6 @@ pub struct SliderEntry {
     /// Which slider — `views::develop::slider_key` of its change message.
     pub key: String,
     pub text: String,
-}
-
-/// The Develop sidebar's 1:1 detail loupe (`handlers::loupe`, `gpu::loupe`).
-#[derive(Debug)]
-pub struct LoupeState {
-    /// Where it looks, in view UV (the post-crop display image). Kept across
-    /// images, like the zoom.
-    pub center: [f32; 2],
-    pub gpu: Option<std::sync::Arc<crate::gpu::loupe::Loupe>>,
-    /// The image whose loupe is being prepared (RAW read, noise model).
-    pub building: Option<i64>,
-    /// An image whose loupe could not be prepared, and why — not retried.
-    pub failed: Option<(i64, String)>,
-    pub frame: Option<LoupeView>,
-    /// One render at a time; `pending` asks for another when it lands.
-    pub in_flight: bool,
-    pub pending: bool,
-    /// The next click on the image places it.
-    pub targeting: bool,
-}
-
-impl Default for LoupeState {
-    fn default() -> Self {
-        Self {
-            center: [0.5, 0.5],
-            gpu: None,
-            building: None,
-            failed: None,
-            frame: None,
-            in_flight: false,
-            pending: false,
-            targeting: false,
-        }
-    }
-}
-
-/// A lens-database job in progress (`handlers::lensfun`). One at a time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LensfunJob {
-    /// Asking lensfun what it currently publishes.
-    Checking,
-    Downloading,
-    /// Re-reading the lens folders (files added by hand).
-    Rescanning,
-}
-
-/// Lens-profile database downloads and checks, for Preferences › Lens
-/// Profiles and the Lens Corrections panel.
-#[derive(Debug, Default)]
-pub struct LensfunState {
-    pub busy: Option<LensfunJob>,
-    /// The last check's answer.
-    pub remote: Option<Result<crate::core::lensfun::Remote, String>>,
-    /// The last download's outcome.
-    pub installed: Option<Result<crate::core::lensfun::Installed, String>>,
-}
-
-/// A camera-profile job in progress (`handlers::camera_profiles`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProfileJob {
-    Downloading,
-    Importing,
-    Updating,
-    Rescanning,
-}
-
-/// Camera-profile downloads, imports and updates.
-#[derive(Debug, Default)]
-pub struct CameraProfileState {
-    pub busy: Option<ProfileJob>,
-    /// The last job's outcome, for the panels to report.
-    pub notice: Option<Result<String, String>>,
-    /// A camera RawTherapee was found to have no profile for — the Develop
-    /// prompt says so instead of offering the download again.
-    pub unavailable: Option<String>,
 }
 
 /// The pages of the Preferences side menu, in menu order.
@@ -300,103 +162,19 @@ impl ScrollGlide {
     }
 }
 
-/// Phase 89: Export Format
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExportFormat {
-    Jpeg,
-    Png,
-    Tiff,
-}
-
-impl std::fmt::Display for ExportFormat {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ExportFormat::Jpeg => write!(f, "JPEG"),
-            ExportFormat::Png => write!(f, "PNG"),
-            ExportFormat::Tiff => write!(f, "TIFF"),
-        }
-    }
-}
-
-/// Per-image progress within a batch, for the Export tab's queue list.
-#[derive(Debug, Clone, PartialEq)]
-pub enum ExportJobState {
-    Pending,
-    Working,
-    Done(std::path::PathBuf),
-    Failed(String),
-}
-
-/// One entry in the export batch. Held in DISPLAY order, separately from
-/// `export_queue` (which is the remaining work and is consumed from the back),
-/// so the UI can show a stable list while the queue drains.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ExportJob {
-    pub id: i64,
-    pub filename: String,
-    pub state: ExportJobState,
-}
-
-/// Phase 89: Export Settings
-#[derive(Debug, Clone, PartialEq)]
-pub struct ExportSettings {
-    pub format: ExportFormat,
-    /// Colour space the pixels are encoded in and tagged with (ICC profile).
-    pub color_space: crate::core::output_space::OutputSpace,
-    pub quality: u8,
-    pub resize: bool,
-    pub max_width: u32,
-    /// The "Max long edge" field as typed. `max_width` is its value when it is
-    /// a positive whole number, else 0 (see [`ExportSettings::size_invalid`]).
-    pub max_width_text: String,
-    pub subfolder: String,
-    pub base_path: std::path::PathBuf,
-}
-
-impl ExportSettings {
-    /// Resize is on but the long edge is not a positive number: exporting
-    /// would silently write full-size files.
-    pub fn size_invalid(&self) -> bool {
-        self.resize && self.max_width == 0
-    }
-}
-
-impl Default for ExportSettings {
-    fn default() -> Self {
-        Self {
-            format: ExportFormat::Jpeg,
-            color_space: crate::core::output_space::OutputSpace::Srgb,
-            quality: 80,
-            resize: false,
-            max_width: 2048,
-            max_width_text: "2048".to_string(),
-            subfolder: "Export".to_string(),
-            base_path: dirs::picture_dir().unwrap_or_else(|| std::path::PathBuf::from(".")),
-        }
-    }
-}
-
-/// A preloaded 1280px working preview, held in the RAM look-ahead cache.
-///
-/// Stores the decoded pixels, not an `iced` `Handle`. The Develop viewport is a
-/// wgpu shader that needs the raw bytes; caching only a `Handle` meant the
-/// preloader's decode was thrown away and the JPEG was re-read from disk the
-/// moment the user navigated to the image it had just preloaded.
-#[derive(Debug, Clone)]
-pub struct CachedPreview {
-    pub width: u32,
-    pub height: u32,
-    pub bytes: Arc<[u8]>,
-}
-
-impl CachedPreview {
-    /// Build an `iced` image handle sharing this entry's allocation.
+/// An iced handle for a preview's pixels.
+pub trait PreviewHandle {
+    /// Build an `iced` image handle sharing the preview's allocation.
     ///
     /// `Bytes::from_owner` adopts the `Arc` instead of copying, so the Cull
     /// tab's `Image` widget and the Develop viewport reference the same pixels.
     /// Note `Handle::from_rgba` mints a fresh id each call, so callers should
     /// build this once per cache hit rather than per frame.
-    pub fn to_handle(&self) -> Handle {
+    fn to_handle(&self) -> Handle;
+}
+
+impl PreviewHandle for crate::session::CachedPreview {
+    fn to_handle(&self) -> Handle {
         Handle::from_rgba(
             self.width,
             self.height,
@@ -405,49 +183,6 @@ impl CachedPreview {
     }
 }
 
-/// A small render of an image as edited — see `handlers::proxy`.
-#[derive(Debug, Clone)]
-pub struct EditedProxy {
-    pub preview: CachedPreview,
-    /// Built once per capture: `Handle::from_rgba` mints a new id per call,
-    /// and iced re-uploads per id, so a handle built in `view` would upload
-    /// on every frame.
-    pub handle: Handle,
-    /// The render had edits applied. Only edited proxies replace the
-    /// camera's thumbnail — but an unedited one is still the best placeholder
-    /// while the image reloads, being exactly what Develop is about to show.
-    pub edited: bool,
-    /// The edit rendered (`proxy::edit_key`), to tell when it has fallen
-    /// behind. `None` for a proxy read from disk until its image is selected.
-    pub params: Option<crate::core::types::EditParams>,
-    /// Orders captures, so a save that completes after a newer render cannot
-    /// mark that newer render as saved.
-    pub generation: u64,
-    /// The file on disk holds this capture.
-    pub persisted: bool,
-}
-
-/// Edited proxies kept in memory. ~400 KB each (384px RGBA).
-pub const EDITED_PROXY_CAPACITY: usize = 128;
-
-/// `(kelvin, tone, interpolation, the profile it came from)`: the memo is
-/// valid only for the same profile (pointer-compared; kept alive here).
-pub type DcpMemo = (
-    f32,
-    crate::core::tonemap::ToneSettings,
-    Arc<crate::raw::dcp::InterpolatedProfile>,
-    Arc<crate::raw::dcp::DcpProfile>,
-);
-
-/// Shape assumed for the viewport before any preview or render exists.
-pub const PLACEHOLDER_DIMS: (u32, u32) = (1280, 853);
-
-/// How soon after a slider's commit a double-click reset still counts as
-/// the second half of the same gesture.
-pub const SLIDER_AMEND_WINDOW: std::time::Duration = std::time::Duration::from_millis(700);
-
-/// Undo steps kept per image.
-pub const HISTORY_LIMIT: usize = 100;
 
 /// Main application state
 #[derive(Debug)]
@@ -466,12 +201,25 @@ pub struct RawEditor {
     pub reduce_motion: bool,
     /// Dark or light UI (`ui::theme::set_appearance` holds the live value).
     pub appearance: crate::ui::theme::Appearance,
-    /// Per-camera default profile (`AppSettings::camera_profile_defaults`).
-    pub camera_profile_defaults: std::collections::HashMap<String, String>,
-    /// `AppSettings::update_check`: `None` until the first-run prompt is answered.
-    pub update_check: Option<bool>,
-    /// The update check's progress and result (`handlers::updates`).
-    pub updates: crate::app::handlers::updates::UpdatesState,
+    /// The editing session: the app's logic, toolkit-free (`crate::session`).
+    pub session: crate::session::Session,
+    /// The first-run update prompt's checkbox, which starts ticked.
+    pub update_prompt_choice: bool,
+    /// The model the AI-model confirm dialog offers (`handlers::models`).
+    pub model_offer: Option<crate::ml::models::ModelId>,
+    /// iced handles for the session's edited proxies, with the proxy
+    /// generation each was built from. Built once per capture, after the
+    /// message that made it (`sync_proxy_handles`): `Handle::from_rgba` mints a
+    /// new id per call, and iced re-uploads per id, so a handle built in `view`
+    /// would upload on every frame.
+    pub proxy_handles: std::collections::HashMap<i64, (u64, Handle)>,
+    /// `Session::proxy_generation` when the handles were last synced.
+    proxy_handles_seen: u64,
+    /// The iced handle for the loupe's frame, with the frame's pixels it was
+    /// built from (`sync_from_session`).
+    pub loupe_handle: Option<(std::sync::Arc<[u8]>, Handle)>,
+    /// The same for the AI denoise dialog's preview.
+    pub ai_denoise_handle: Option<(std::sync::Arc<[u8]>, Handle)>,
     /// The page Preferences shows. Kept while the app runs, so reopening the
     /// dialog lands where the user left it; not persisted.
     pub preferences_section: PreferencesSection,
@@ -481,170 +229,12 @@ pub struct RawEditor {
     /// (and so closes) the menu bar — see `views::layout::view_title_bar`.
     pub menu_generation: u64,
 
-    /// Image IDs the open Delete modal acts on — a stable snapshot taken
-    /// when the modal opens, not re-read live from multi_selection.
-    pub pending_delete_ids: Vec<i64>,
-    /// Guards against a double Enter-press firing two overlapping delete
-    /// batches while a hard-delete is already in flight.
-    pub is_deleting: bool,
-
-    // Phase 85: User-configurable cache capacity
-    pub cache_capacity: usize,
-
     // Phase 88: Responsive Grid
     pub thumbnail_size: f32,
-
-    // Phase 89: Export Studio
-    pub export_settings: ExportSettings,
-    /// Remaining work, consumed with `pop()`. Stored REVERSED relative to
-    /// display order so popping yields images front-to-back.
-    pub export_queue: Vec<i64>,
-    /// The whole batch in display order, with per-image progress. Survives the
-    /// run so the Export tab can show results afterwards.
-    pub export_jobs: Vec<ExportJob>,
-    pub is_exporting: bool,
-
-    /// The catalog database (Phase 23: Optional during startup)
-    pub library: Option<database::library::Library>,
-    /// Status message to display to the user
-    pub status: String,
-    /// All images loaded from the database
-    pub images: Vec<ImageData>,
-    /// Images still awaiting cache-tier generation. Seeded from SQLite once
-    /// when the workers start, then decremented in memory as each completes —
-    /// re-querying (and reloading the whole catalog) per completed image made
-    /// import O(N^2) and froze the UI.
-    pub pending_cache_count: i64,
-    /// Currently selected image ID
-    pub selected_image_id: Option<i64>,
-    /// Phase 73: RAM cache for 1280px previews (Look-Ahead)
-    pub preview_cache: LruCache<i64, CachedPreview>,
-    /// Small renders of images as edited, newest per image.
-    pub edited_proxies: LruCache<i64, EditedProxy>,
-    /// Last `EditedProxy::generation` handed out.
-    pub proxy_generation: u64,
-    /// Images the user left while the render of their final edit was still in
-    /// flight, with that edit: `proxy::resolve_awaiting` saves the proxy when
-    /// the render lands.
-    pub proxy_awaiting: HashMap<i64, crate::core::types::EditParams>,
-    /// Saved proxies being read back for Develop's neighbours — same queue
-    /// discipline as `queued_loads`.
-    pub pending_proxy_loads: HashSet<i64>,
-    pub queued_proxy_loads: Vec<(i64, String)>,
-    /// RAW preload RAM budget in MB (0 = disabled)
-    pub raw_preload_budget_mb: u32,
-    /// Physical RAM to keep free during batch export, in MB (0 = disabled).
-    /// Unlike `raw_preload_budget_mb`, which caps the app's OWN cache, this is
-    /// a check against the whole system — see `core::memory`.
-    pub min_free_ram_mb: u32,
-    /// True while a batch is paused waiting for memory, so the UI can say so
-    /// and the log can fire once per transition instead of once per check.
-    pub export_paused_for_memory: bool,
-    /// Decoded RAW cache for fast develop navigation
-    pub raw_cache: LruCache<i64, Arc<raw::loader::RawDataResult>>,
-    /// Approximate memory usage of raw_cache in bytes
-    pub raw_cache_bytes: usize,
-    /// Cache workers currently running (`library::spawn_cache_workers` tops
-    /// this up to `CACHE_WORKERS`; a retiring worker gives its slot back).
-    pub cache_workers_live: usize,
-    /// The open image's RAW, held outside the preload budget (which can be 0,
-    /// or evict the open image first). Read through `raw_for`.
-    pub current_raw: Option<(i64, Arc<raw::loader::RawDataResult>)>,
-    /// Number of previews to keep preloaded behind current image
-    pub preview_preload_behind: usize,
-    /// Number of previews to keep preloaded ahead of current image
-    pub preview_preload_ahead: usize,
-    /// Number of RAW files to preload behind current image
-    pub raw_preload_behind: usize,
-    /// Number of RAW files to preload ahead of current image
-    pub raw_preload_ahead: usize,
-    /// Currently active tab
-    pub current_tab: AppTab,
-    /// Current edit parameters for the selected image
-    pub current_edit_params: crate::core::types::EditParams,
-    // Phase 140: Currently loaded DCP profile
-    pub current_dcp_profile: Option<Arc<crate::raw::dcp::DcpProfile>>,
-    /// Memo for `resolve_wb_and_dcp`, keyed on the only two inputs the
-    /// interpolation depends on: `(kelvin, ToneSettings)`.
-    ///
-    /// Without it, every slider tick — exposure, contrast, a mask drag —
-    /// rebuilt the full HueSatMap LUT and re-baked the 1024-entry tone curve,
-    /// then handed the result to `update_uniforms`, which discarded it via its
-    /// own dirty-check on the same two values.
-    ///
-    /// `RefCell` rather than a plain field so `resolve_wb_and_dcp` can keep its
-    /// `&RawEditor` signature: the crop and mask drag paths call it while
-    /// holding an immutable borrow of `gpu_context`/`image_resources`.
-    /// Cleared on image load, where `current_dcp_profile` changes.
-    pub dcp_memo: std::cell::RefCell<Option<DcpMemo>>,
-    /// As-shot white balance of the current image as (Kelvin, Adobe tint),
-    /// solved from the camera's WB multipliers via the color matrix (Robertson
-    /// CCT). Anchor for the Temp/Tint sliders; None until a raw is loaded.
-    pub as_shot_wb: Option<(f32, f32)>,
-
-    // Phase 95: Unified GPU Pipeline Architecture
-    /// Shared GPU context (created once, reused for all images)
-    pub gpu_context: Option<Arc<gpu::shared::SharedContext>>,
-    /// Where the context is created, exactly once (see
-    /// `handlers::loading::shared_context`): tasks started before the first
-    /// finishes would otherwise each build their own device.
-    pub gpu_init: Arc<tokio::sync::OnceCell<Arc<gpu::shared::SharedContext>>>,
-    /// Current image resources (created per image, wrapped in Arc)
-    pub image_resources: Option<Arc<gpu::shared::ImageResources>>,
-    /// The subsampled develop preview of the same image, kept once
-    /// `image_resources` has been upgraded to full resolution. Renders use it
-    /// whenever full resolution would add nothing — a view that does not
-    /// magnify it, the whole-image overview, a noise-reduction drag — because
-    /// the cached stages (denoise) cost per SOURCE pixel: at 24 MP every NR
-    /// tick re-ran them over the whole sensor, a few fps on an iGPU. Always
-    /// None or the same image as `image_resources`; cleared with it.
-    pub preview_resources: Option<Arc<gpu::shared::ImageResources>>,
-    /// Editor readiness status
-    pub editor_readiness: EditorReadiness,
-
-    /// Phase 21: Histogram data [R[256], G[256], B[256]]
-    pub histogram_data: std::cell::RefCell<[[u32; 256]; 3]>,
     /// Phase 21: Histogram canvas cache
     pub histogram_cache: iced::widget::canvas::Cache,
     /// Phase 22: Histogram toggle (keep for user control)
     pub histogram_enabled: bool,
-    /// True while Space is held to peek at the unedited original.
-    ///
-    /// Actually read, unlike the `show_before` flag this replaces: it selects
-    /// which params `handlers::develop::refresh_for_peek_state` uploads, and
-    /// drives the BEFORE badge in the develop view. Never persisted, and the
-    /// peek's params are never written to `current_edit_params` — doing so
-    /// would let a flush point save them over the user's real edits.
-    pub before_peek: bool,
-    /// Phase 25: Zoom level (1.0 = 100%, 2.0 = 200%, etc.)
-    pub zoom: f32,
-    /// Phase 115: Native GPU Shader Viewport raw pixel buffers
-    pub working_preview_bytes: Option<std::sync::Arc<[u8]>>,
-    pub rendered_preview_bytes: Option<std::sync::Arc<[u8]>>,
-    /// Monotonic id of the preview pixel contents, handed to the viewport
-    /// shader so it can skip re-uploading an unchanged texture every redraw.
-    /// Bump via `bump_preview_generation` whenever either bytes field is
-    /// replaced. Starts at 1; 0 is the shader's placeholder sentinel.
-    pub preview_generation: u64,
-    /// Region of the image the preview buffer ACTUALLY on screen covers,
-    /// `(u0, v0, du, dv)` in view UV.
-    ///
-    /// Published only when new bytes land, never when a render is merely
-    /// requested — the two must move together or the still-current texture
-    /// gets drawn at the incoming window's placement, which reads as the whole
-    /// image jumping for a frame.
-    pub rendered_view_rect: [f32; 4],
-    /// Region the in-flight (or most recently requested) render covers.
-    ///
-    /// Separate from `rendered_view_rect` so "do we need to re-render?" can be
-    /// answered against what is already on its way, rather than re-requesting
-    /// the same window on every pan event while it is still rendering.
-    pub requested_view_rect: [f32; 4],
-    /// Phase 115: Pixel dimensions for the above preview byte buffers
-    pub working_preview_dims: (u32, u32),
-    pub rendered_preview_dims: (u32, u32),
-    /// Phase 25: Pan offset in normalized coordinates
-    pub pan_offset: cgmath::Vector2<f32>,
     /// Phase 25: Canvas cache for main image rendering
     pub canvas_cache: iced::widget::canvas::Cache,
     /// Phase 25: Drag state for panning
@@ -655,31 +245,8 @@ pub struct RawEditor {
     /// Double-click detection for the title bar drag surface (toggles maximize).
     /// Separate from `last_click_time`, which is scoped to the preview canvas.
     pub last_titlebar_click: Option<std::time::Instant>,
-    /// Phase 26: Viewport size for zoom-to-cursor calculations (actual displayed size)
-    pub viewport_size: (f32, f32), // (width, height) in screen pixels
-    /// Set by the per-tick edit path, cleared by `flush_edits` at commit
-    /// points. Keeps SQLite writes off the slider-drag hot path.
-    pub edits_dirty: bool,
-    pub scale_factor: f32,
     /// Phase 29: Instant preview handle (displayed while RAW loads)
     pub working_preview: Option<Handle>,
-    /// Phase 103: High-quality rendered preview (async updated)
-    /// Phase 41: Current image metadata for inspection
-    pub current_metadata: Option<raw::loader::RawDataResult>,
-    /// Which image `current_metadata` was read from. It is only refreshed by
-    /// a Develop RAW load, so without this the Cull overlay showed whatever
-    /// photo was last opened in Develop. Read it via `selected_metadata`.
-    pub current_metadata_id: Option<i64>,
-    /// Phase 54: Edit settings clipboard for copy/paste.
-    ///
-    /// Carries the copied params AND which categories were selected, so paste
-    /// can merge rather than overwrite — see `core::types::EditClipboard`.
-    pub edit_clipboard: Option<crate::core::types::EditClipboard>,
-    /// Current selection in the Copy Settings picker. Persisted to
-    /// `AppSettings` so it survives a restart.
-    pub copy_categories: crate::core::types::CopyCategories,
-    /// Phase 55: Multi-selection set (image IDs)
-    pub multi_selection: HashSet<i64>,
     /// Phase 55: Track modifier keys for Ctrl/Cmd+Click
     pub last_modifiers: iced::keyboard::Modifiers,
     /// Character shortcuts whose key is currently held (see `key_is_fresh`).
@@ -688,12 +255,6 @@ pub struct RawEditor {
     /// shift. Held separately from `selected_image_id` because a range drag
     /// moves the current selection while the pivot must stay put.
     pub selection_anchor: Option<i64>,
-    /// Phase 83: Auto-advance to next image after rating/flagging
-    pub auto_advance: bool,
-    /// Phase 59: Minimum rating filter (0 = show all, 1-5 = show rating or higher)
-    pub min_filter_rating: u8,
-    /// Library folder filter (path prefix)
-    pub library_folder_filter: Option<String>,
     /// Folder the open RemoveFolder dialog acts on — a snapshot taken when the
     /// dialog opens, mirroring `pending_delete_ids`.
     pub pending_remove_folder: Option<String>,
@@ -702,103 +263,17 @@ pub struct RawEditor {
     pub drop_import: DropImport,
     /// Phase 79: Modular Info Overlay state
     pub info_overlay: InfoOverlayState,
-    /// Phase 65: Undo/Redo History Map<ImageID, (HistoryStack, CurrentIndex)>
-    pub history_map: HashMap<i64, (Vec<crate::core::types::EditParams>, usize)>,
-    /// Phase 67: Interactive crop mode
-    pub is_cropping: bool,
-    /// WB eyedropper tool active: next click on the preview samples a neutral.
-    /// Mutually exclusive with `is_cropping`.
-    pub is_wb_picking: bool,
-    /// Level tool armed: the next drag on the preview draws a line that
-    /// should be level (or upright), and sets Straighten from it. Mutually
-    /// exclusive with every other tool.
-    pub is_leveling: bool,
     /// The Develop slider whose value is being typed, if any.
     pub slider_entry: Option<SliderEntry>,
-    /// Local adjustment mask tool (placement mode). Mutually exclusive with
-    /// crop and WB picker.
-    pub mask_tool: MaskTool,
-    /// Index into current_edit_params.masks of the mask being edited
-    /// (overlay handles + sidebar sliders). None = no mask selected.
-    pub selected_mask: Option<usize>,
-    /// Brush tool settings for painting masks (UI state).
-    pub brush_settings: BrushSettings,
-    /// Painting into the selected mask is armed (always on for brush masks).
-    pub brush_armed: bool,
-    /// A stroke is in progress.
-    pub is_painting: bool,
-    /// Tint the selected mask's coverage over the render.
-    pub show_mask_overlay: bool,
-    /// The colour-range eyedropper is armed for this mask.
-    pub color_picking_mask: Option<usize>,
     /// Collapsed Develop sidebar sections (UI state).
     pub collapsed_sections: HashSet<crate::app::message::SidebarSection>,
     /// Which point curve the curve editor is showing (UI state, not an edit).
     pub curve_channel: crate::core::curves::CurveChannel,
     /// Phase 67: Drag mode for interaction
     pub drag_mode: DragMode,
-    /// Phase 78: Async Task Deduplication (track pending preview loads)
-    pub pending_loads: HashSet<i64>,
-    /// Phase 81: Throttled preview loader queue
-    pub queued_loads: Vec<(i64, String)>,
-    /// Pending RAW preload jobs
-    pub pending_raw_loads: HashSet<i64>,
-    /// Throttled RAW preload queue
-    pub queued_raw_loads: Vec<(i64, String)>,
-    /// Images whose selected-image RAW decode is in flight (started outside the
-    /// preload queue), so a second selection does not start a second decode.
-    pub direct_raw_loads: HashSet<i64>,
-
-    /// Phase 104: Performance Profiler
-    pub profiler: crate::core::profiler::Profiler,
     pub show_profiler: bool,
     /// Phase 105: Cache for profiler canvas (cleared on each new frame push)
     pub profiler_cache: iced::widget::canvas::Cache,
-
-    /// Phase 106: Render Throttling
-    pub is_rendering: bool,
-    pub pending_render: bool,
-    /// Params pushed while a render was in flight, with the image they belong
-    /// to. The render task is the only writer of the uniform block while it
-    /// runs (it patches `view_rect` between its own submits, and the stages
-    /// read `stage_params` at render time), so the UI thread parks the push
-    /// here and `trigger_async_render` applies it before the next frame.
-    pub deferred_push: Option<(i64, crate::core::types::EditParams)>,
-    /// True while a full-resolution resource rebuild is in flight. One at a
-    /// time, across images: each holds a full-size working set on the GPU,
-    /// and navigating quickly must not stack them. Cleared only by that
-    /// rebuild's own result (`Message::FullResReady`).
-    pub full_res_upgrading: bool,
-    /// The image whose full-resolution rebuild last failed (out of GPU
-    /// memory, say): not retried on every render while it stays selected.
-    pub full_res_failed: Option<i64>,
-    /// A noise-reduction slider is being dragged (set by its change handlers,
-    /// cleared by `commit_current_state` — the slider's release). While set,
-    /// a zoomed-in view renders from `preview_resources` so the drag stays
-    /// interactive; the release re-renders at full resolution.
-    pub stage_drag: bool,
-    /// When the last undo step was pushed (`commit_current_state`). A double-click
-    /// reset on a slider amends that step instead of adding a second one.
-    pub last_commit: Option<std::time::Instant>,
-    /// The on-screen render came from `preview_resources` only because of a
-    /// `stage_drag`, so it is softer than the view calls for.
-    pub display_from_drag_preview: bool,
-    /// See [`HeldNoise`]. `Some` from a noise slider's first tick until the
-    /// drag pauses (`NOISE_SETTLE`) or ends.
-    pub held_noise: Option<HeldNoise>,
-    /// Matches the settle timer to the latest noise-slider tick.
-    pub noise_settle_token: u64,
-    pub loupe: LoupeState,
-    pub lensfun: LensfunState,
-    /// The open AI-select session, if any (`handlers::ai_mask`).
-    pub ai_select: Option<crate::app::handlers::ai_mask::AiSelect>,
-    /// The selected image's decoded AI-mask bitmaps.
-    pub ai_bitmaps: crate::app::handlers::ai_mask::AiBitmapState,
-    /// AI model downloads (`handlers::models`).
-    pub models: crate::app::handlers::models::ModelsState,
-    /// The AI denoise modal (`handlers::ai_denoise`).
-    pub ai_denoise: crate::app::handlers::ai_denoise::AiDenoiseState,
-    pub camera_profiles: CameraProfileState,
 
     // ── Scroll boost + filmstrip momentum ──────────────────────────────────
     /// True while the cursor is over the library grid, from the grid's own
@@ -854,34 +329,23 @@ impl InfoOverlayState {
     }
 }
 
-/// Pixel size of the `crop` sub-rect (normalised `[x, y, w, h]`) of a `w`×`h`
-/// image, never collapsing to zero — `fitted_size` divides by it.
-pub fn crop_dims(w: u32, h: u32, crop: [f32; 4]) -> (u32, u32) {
-    (
-        ((w as f32 * crop[2]).round() as u32).max(1),
-        ((h as f32 * crop[3]).round() as u32).max(1),
-    )
-}
-
-/// True when `path` lies inside `folder` or any of its subfolders.
-///
-/// Component-wise, not a string prefix: `/photos/2024` must not match
-/// `/photos/2024-old/a.NEF`, which a bare `str::starts_with` happily did —
-/// clicking one folder in the sidebar also showed its similarly-named siblings.
-pub fn path_is_within(path: &str, folder: &str) -> bool {
-    std::path::Path::new(path).starts_with(folder)
-}
-
-pub const RAW_CACHE_ENTRY_CAPACITY: usize = 4096;
-pub const PREVIEW_PRELOAD_BEHIND_MAX: usize = 30;
-pub const PREVIEW_PRELOAD_AHEAD_MAX: usize = 100;
-pub const RAW_PRELOAD_BEHIND_MAX: usize = 10;
-pub const RAW_PRELOAD_AHEAD_MAX: usize = 20;
-/// Upper bound for the free-RAM headroom slider. Above this the setting would
-/// pause exports permanently on any ordinary machine.
-pub const MIN_FREE_RAM_MB_MAX: u32 = 16384;
 /// Shortest time the startup splash stays on screen.
 pub const SPLASH_MIN: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Keep `cached` the handle for `frame`'s pixels, building a new one only
+/// when the frame changed.
+fn sync_frame_handle(cached: &mut Option<(std::sync::Arc<[u8]>, Handle)>, frame: Option<&crate::session::LoupeView>) {
+    *cached = match frame {
+        None => None,
+        Some(frame) => match cached.take() {
+            Some((rgba, handle)) if std::sync::Arc::ptr_eq(&rgba, &frame.rgba) => Some((rgba, handle)),
+            _ => Some((
+                frame.rgba.clone(),
+                Handle::from_rgba(frame.size, frame.size, iced::advanced::image::Bytes::from_owner(frame.rgba.clone())),
+            )),
+        },
+    };
+}
 
 impl RawEditor {
     pub fn title(&self) -> String {
@@ -906,186 +370,76 @@ impl RawEditor {
             crate::ui::motion::set_reduced(settings.reduce_motion);
             crate::ui::theme::set_appearance(appearance);
         }
-        let cache_capacity = settings.cache_capacity.clamp(20, 500);
-        let raw_preload_budget_mb = settings.raw_preload_budget_mb.min(4096);
         let thumbnail_size = settings.thumbnail_size.clamp(100.0, 400.0);
-        let preview_preload_behind = settings
-            .preview_preload_behind
-            .min(PREVIEW_PRELOAD_BEHIND_MAX);
-        let preview_preload_ahead = settings
-            .preview_preload_ahead
-            .min(PREVIEW_PRELOAD_AHEAD_MAX);
-        let raw_preload_behind = settings.raw_preload_behind.min(RAW_PRELOAD_BEHIND_MAX);
-        let raw_preload_ahead = settings.raw_preload_ahead.min(RAW_PRELOAD_AHEAD_MAX);
 
         // Determine the database path (e.g., in the application's data directory)
         let _db_path = database::library::Library::get_db_path();
 
-        (
-            RawEditor {
-                library: None, // Phase 23: Database loads in background
-                status: "Starting…".to_string(),
-                images: Vec::new(), // Empty until database loads
-                pending_cache_count: 0,
-                selected_image_id: None,
-                preview_cache: LruCache::new(NonZeroUsize::new(cache_capacity).unwrap()),
-                edited_proxies: LruCache::new(
-                    NonZeroUsize::new(EDITED_PROXY_CAPACITY).unwrap_or(NonZeroUsize::MIN),
-                ),
-                proxy_generation: 0,
-                proxy_awaiting: HashMap::new(),
-                pending_proxy_loads: HashSet::new(),
-                queued_proxy_loads: Vec::new(),
-                raw_preload_budget_mb,
-                min_free_ram_mb: settings.min_free_ram_mb.min(MIN_FREE_RAM_MB_MAX),
-                export_paused_for_memory: false,
-                raw_cache: LruCache::new(NonZeroUsize::new(RAW_CACHE_ENTRY_CAPACITY).unwrap()),
-                raw_cache_bytes: 0,
-                cache_workers_live: 0,
-                current_raw: None,
-                preview_preload_behind,
-                preview_preload_ahead,
-                raw_preload_behind,
-                raw_preload_ahead,
-                current_tab: AppTab::Library, // Start in Library view
-                current_edit_params: crate::core::types::EditParams::default(),
-                current_dcp_profile: None, // Phase 140: No DCP profile initially
-                dcp_memo: std::cell::RefCell::new(None),
-                as_shot_wb: None,
-
-                // Phase 95: Unified GPU Pipeline Architecture
-                gpu_context: None, // Will be initialized on first image load
-                gpu_init: Arc::new(tokio::sync::OnceCell::new()),
-                image_resources: None,
-                preview_resources: None,
-                editor_readiness: EditorReadiness::NoSelection,
-
-                histogram_data: std::cell::RefCell::new([[0; 256]; 3]),
-                histogram_cache: iced::widget::canvas::Cache::default(),
-                histogram_enabled: settings.histogram_enabled,
-                before_peek: false,
-                zoom: 1.0,
-                pan_offset: cgmath::Vector2::new(0.0, 0.0),
-                canvas_cache: iced::widget::canvas::Cache::default(),
-                is_dragging: false,
-                last_cursor_position: None,
-                last_click_time: None,
-                last_titlebar_click: None,
-                viewport_size: (800.0, 400.0),
-                edits_dirty: false,
-                scale_factor: 1.0,
-                working_preview: None,
-                working_preview_bytes: None,
-                rendered_preview_bytes: None,
-                preview_generation: 1,
-                rendered_view_rect: crate::gpu::params::FULL_VIEW_RECT,
-                requested_view_rect: crate::gpu::params::FULL_VIEW_RECT,
-                working_preview_dims: (1, 1),
-                rendered_preview_dims: (1, 1),
-                current_metadata: None,
-                current_metadata_id: None,
-                edit_clipboard: None,
-                copy_categories: settings.copy_categories,
-                multi_selection: HashSet::new(),
-                last_modifiers: iced::keyboard::Modifiers::default(),
-                keys_down: Default::default(),
-                selection_anchor: None,
-                auto_advance: settings.auto_advance,
-                min_filter_rating: 0,
-                library_folder_filter: None,
-                pending_remove_folder: None,
-                drop_import: DropImport::default(),
-                // Must be the enum's own default (Hidden). Starting at
-                // Metadata booted the app with the overlay already on, at
-                // phase 2 of 3, so the first `I` press advanced the cycle
-                // instead of opening it.
-                info_overlay: crate::app::state::InfoOverlayState::default(),
-                // Phase 84
-                active_modal: Modal::None,
-                pending_delete_ids: Vec::new(),
-                is_deleting: false,
-                // Phase 85
-                cache_capacity,
-                // Phase 88
-                thumbnail_size,
-                // Phase 89
-                export_settings: ExportSettings::default(),
-                export_queue: Vec::new(),
-                export_jobs: Vec::new(),
-                is_exporting: false,
-
-                // Phase 104/105: Profiler
-                profiler: crate::core::profiler::Profiler::new(),
-                show_profiler: false,
-                profiler_cache: iced::widget::canvas::Cache::default(),
-                is_rendering: false,
-                pending_render: false,
-                deferred_push: None,
-                full_res_upgrading: false,
-                full_res_failed: None,
-                stage_drag: false,
-                last_commit: None,
-                display_from_drag_preview: false,
-                held_noise: None,
-                noise_settle_token: 0,
-                loupe: LoupeState::default(),
-                lensfun: LensfunState::default(),
-                ai_select: None,
-                ai_bitmaps: Default::default(),
-                models: Default::default(),
-                ai_denoise: Default::default(),
-                camera_profiles: CameraProfileState::default(),
-                cursor_over_grid: false,
-                grid_scroll_y: 0.0,
-                grid_viewport: (0.0, 0.0),
-                window_size: iced::Size::new(1920.0, 1080.0),
-                filmstrip_scroll_x: 0.0,
-                filmstrip_view_w: 0.0,
-                filmstrip_velocity: 0.0,
-                last_kinetic_tick: None,
-                modal_exit: None,
-                modal_exit_seq: 0,
-                reduce_motion: settings.reduce_motion,
-                appearance,
-                camera_profile_defaults: settings.camera_profile_defaults.clone(),
-                update_check: settings.update_check,
-                updates: Default::default(),
-                preferences_section: PreferencesSection::default(),
-                scroll_glide: None,
-                menu_generation: 0,
-                last_wheel_time: None,
-                filmstrip_input_speed: 0.0,
-                filmstrip_decay: 4.0,
-
-                // Background task
-                // background_task: None, // This field is not defined in the struct
-                history_map: HashMap::new(),
-                is_cropping: false,
-                is_wb_picking: false,
-                is_leveling: false,
-                slider_entry: None,
-                mask_tool: MaskTool::Inactive,
-                selected_mask: None,
-                curve_channel: crate::core::curves::CurveChannel::Master,
-                brush_settings: BrushSettings::default(),
-                brush_armed: false,
-                is_painting: false,
-                show_mask_overlay: false,
-                color_picking_mask: None,
-                collapsed_sections: match &settings.develop_folded {
-                    Some(names) => names
-                        .iter()
-                        .filter_map(|n| crate::app::message::SidebarSection::from_name(n))
-                        .collect(),
-                    None => crate::app::message::SidebarSection::FOLDED_BY_DEFAULT.into_iter().collect(),
-                },
-                drag_mode: DragMode::None,
-                pending_loads: HashSet::new(),
-                queued_loads: Vec::new(),
-                pending_raw_loads: HashSet::new(),
-                queued_raw_loads: Vec::new(),
-                direct_raw_loads: HashSet::new(),
+        let mut editor = RawEditor {
+            histogram_cache: iced::widget::canvas::Cache::default(),
+            histogram_enabled: settings.histogram_enabled,
+            canvas_cache: iced::widget::canvas::Cache::default(),
+            is_dragging: false,
+            last_cursor_position: None,
+            last_click_time: None,
+            last_titlebar_click: None,
+            working_preview: None,
+            last_modifiers: iced::keyboard::Modifiers::default(),
+            keys_down: Default::default(),
+            selection_anchor: None,
+            pending_remove_folder: None,
+            drop_import: DropImport::default(),
+            // Must be the enum's own default (Hidden). Starting at
+            // Metadata booted the app with the overlay already on, at
+            // phase 2 of 3, so the first `I` press advanced the cycle
+            // instead of opening it.
+            info_overlay: crate::app::state::InfoOverlayState::default(),
+            // Phase 84
+            active_modal: Modal::None,
+            // Phase 88
+            thumbnail_size,
+            show_profiler: false,
+            profiler_cache: iced::widget::canvas::Cache::default(),
+            cursor_over_grid: false,
+            grid_scroll_y: 0.0,
+            grid_viewport: (0.0, 0.0),
+            window_size: iced::Size::new(1920.0, 1080.0),
+            filmstrip_scroll_x: 0.0,
+            filmstrip_view_w: 0.0,
+            filmstrip_velocity: 0.0,
+            last_kinetic_tick: None,
+            modal_exit: None,
+            modal_exit_seq: 0,
+            reduce_motion: settings.reduce_motion,
+            appearance,
+            session: crate::session::Session::new(&settings),
+            update_prompt_choice: true,
+            model_offer: None,
+            proxy_handles: Default::default(),
+            proxy_handles_seen: 0,
+            loupe_handle: None,
+            ai_denoise_handle: None,
+            preferences_section: PreferencesSection::default(),
+            scroll_glide: None,
+            menu_generation: 0,
+            last_wheel_time: None,
+            filmstrip_input_speed: 0.0,
+            filmstrip_decay: 4.0,
+            slider_entry: None,
+            curve_channel: crate::core::curves::CurveChannel::Master,
+            collapsed_sections: match &settings.develop_folded {
+                Some(names) => names
+                    .iter()
+                    .filter_map(|n| crate::app::message::SidebarSection::from_name(n))
+                    .collect(),
+                None => crate::app::message::SidebarSection::FOLDED_BY_DEFAULT.into_iter().collect(),
             },
+            drag_mode: DragMode::None,
+        };
+        // The loupe renders only while its panel is open.
+        editor.session.loupe.panel_open = editor.loupe_panel_open();
+        (
+            editor,
             // The splash stays up for at least SPLASH_MIN, however fast the
             // database opens: on a small catalogue it otherwise flashed for a
             // frame. The load runs meanwhile, so a slow one costs nothing extra.
@@ -1101,238 +455,6 @@ impl RawEditor {
         )
     }
 
-    // Phase 65: Undo/Redo Helper
-    // Returns a mutable reference to the (Stack, Index) tuple for the current image.
-    // Initializes it if missing.
-    pub fn get_current_history(
-        &mut self,
-    ) -> Option<&mut (Vec<crate::core::types::EditParams>, usize)> {
-        if let Some(image_id) = self.selected_image_id {
-            // Ensure entry exists
-            self.history_map.entry(image_id).or_insert_with(|| {
-                // Initial state is the current params
-                (vec![self.current_edit_params], 0)
-            });
-
-            self.history_map.get_mut(&image_id)
-        } else {
-            None
-        }
-    }
-
-    /// The params the main view renders: the user's edit, except that noise
-    /// reduction stays where it was while a drag on its sliders is held back
-    /// (`held_noise`). Everything that pushes the edit to the GPU uses this;
-    /// what is saved, exported and undone is `current_edit_params`.
-    pub fn view_params(&self) -> crate::core::types::EditParams {
-        let mut p = self.current_edit_params;
-        if let Some(h) = self.held_noise.filter(|h| h.image_id == self.selected_image_id) {
-            p.luma_noise = h.luma;
-            p.luma_detail = h.detail;
-            p.color_noise = h.color;
-        }
-        p
-    }
-
-    /// Helper to push current state to history.
-    ///
-    /// Also flushes pending edits to SQLite: a history commit marks the end of
-    /// a gesture, which is exactly when the params are worth persisting. Tying
-    /// the two together means any future commit site gets persistence for free
-    /// and the two can't drift apart.
-    pub fn commit_current_state(&mut self) {
-        self.stage_drag = false;
-        self.flush_edits();
-        let params_to_push = self.current_edit_params;
-        let mut pushed = false;
-        if let Some((stack, index)) = self.get_current_history() {
-            // A release that changed nothing — clicking a slider without
-            // dragging, grabbing a crop handle and letting go — must not add a
-            // step, or the next Undo visibly does nothing. `is_cropping` is
-            // tool state, so entering crop mode alone isn't an edit either.
-            let unchanged = stack
-                .get(*index)
-                .is_some_and(|top| top.without_tool_state() == params_to_push.without_tool_state());
-            if unchanged {
-                return;
-            }
-
-            // Truncate any redo history
-            stack.truncate(*index + 1);
-
-            // Push new state
-            stack.push(params_to_push);
-            *index += 1;
-            pushed = true;
-            // Each step is ~21 KB: keep the newest HISTORY_LIMIT per image
-            // (the oldest undo steps go first).
-            if stack.len() > HISTORY_LIMIT {
-                let excess = stack.len() - HISTORY_LIMIT;
-                stack.drain(..excess);
-                *index -= excess;
-            }
-
-            tracing::debug!(
-                "History Commit: Stack size {}, Index {}",
-                stack.len(),
-                *index
-            );
-        }
-        if pushed {
-            self.last_commit = Some(std::time::Instant::now());
-        }
-    }
-
-    /// A double-click reset's commit. The first press of the double click
-    /// already pushed an undo step (the slider jumped to the click); if that
-    /// was moments ago, fold the reset into it, so one Undo returns to the
-    /// value the user had. Otherwise it is an ordinary commit.
-    pub fn commit_amending_last(&mut self) {
-        let recent = self.last_commit.is_some_and(|t| t.elapsed() < SLIDER_AMEND_WINDOW);
-        if !recent {
-            return self.commit_current_state();
-        }
-        self.last_commit = None;
-        self.stage_drag = false;
-        self.flush_edits();
-        let params = self.current_edit_params;
-        if let Some((stack, index)) = self.get_current_history() {
-            if *index == 0 {
-                return;
-            }
-            stack[*index] = params;
-            // The reset landed back on where the user started: no step at all.
-            if stack[*index - 1].without_tool_state() == params.without_tool_state() {
-                stack.remove(*index);
-                *index -= 1;
-            }
-        }
-    }
-
-    /// Mirror the crop tool's on/off state into the params the shader reads.
-    ///
-    /// `is_cropping` rides in `EditParams` only because that is what reaches
-    /// the GPU. Anything that swaps the params wholesale — undo/redo, reset,
-    /// loading another image's edits — would otherwise leave the shader and
-    /// the crop overlay disagreeing about whether crop mode is on.
-    pub fn sync_tool_flags(&mut self) {
-        self.current_edit_params.is_cropping = u32::from(self.is_cropping);
-        // The mask overlay shows while the user asks for it, or while a
-        // stroke is being painted (you need to see what you are painting).
-        self.current_edit_params.mask_overlay = match self.selected_mask {
-            Some(i) if (self.show_mask_overlay || self.is_painting || self.ai_select.is_some())
-                && i < self.current_edit_params.mask_count as usize =>
-            {
-                i as u32 + 1
-            }
-            _ => 0,
-        };
-    }
-
-    /// True while the mask tool wants the preview canvas (placement mode or a
-    /// selected mask with visible handles) — suppresses panning, like crop.
-    pub fn mask_overlay_active(&self) -> bool {
-        self.mask_tool != MaskTool::Inactive || self.selected_mask.is_some()
-    }
-
-    /// Size of the pixel buffer the develop viewport currently holds.
-    ///
-    /// This is the RENDER TARGET size, which since the windowed render is no
-    /// longer the image's shape: at zoom it covers only the visible slice.
-    /// Use it to size textures and nothing else — for anything that reasons
-    /// about where the image sits on screen, use `image_display_dims`.
-    /// MUST mirror the fallback priority in `views/develop.rs`
-    /// (rendered > working > placeholder).
-    pub fn buffer_dims(&self) -> (u32, u32) {
-        if self.rendered_preview_bytes.is_some() {
-            self.rendered_preview_dims
-        } else if self.working_preview_bytes.is_some() {
-            self.working_preview_dims
-        } else {
-            PLACEHOLDER_DIMS
-        }
-    }
-
-    /// The images the CURRENT TAB is showing, in display order.
-    ///
-    /// The one place the per-tab filter predicates live. They differ, and the
-    /// differences are deliberate:
-    ///
-    /// | Tab | rating filter | folder filter | marked for removal |
-    /// |-----|---------------|---------------|--------------------|
-    /// | Library | yes | yes | visible |
-    /// | Cull | yes | no | visible |
-    /// | Develop | yes | no | **excluded** |
-    ///
-    /// A mark is stored as 200 + stars (`models::is_marked`), which satisfies `>=` against any
-    /// real 0-5 threshold, so marked images survive the rating filter — that
-    /// is intentional, and why Develop needs its own explicit exclusion.
-    ///
-    /// Anything that reasons about "the images on screen" must come through
-    /// here: the three views that render lists, range selection, select-all,
-    /// and arrow-key navigation. Re-inlining the predicate is how the four
-    /// drift apart.
-    pub fn displayed_images(&self) -> Vec<&ImageData> {
-        self.images
-            .iter()
-            .filter(|img| self.min_filter_rating == 0 || img.rating >= self.min_filter_rating)
-            .filter(|img| {
-                if self.current_tab != AppTab::Library {
-                    return true;
-                }
-                self.library_folder_filter
-                    .as_ref()
-                    .map(|folder| path_is_within(&img.path, folder))
-                    .unwrap_or(true)
-            })
-            // Marked-for-removal is hidden where acting on it would be wrong:
-            // Develop refuses to edit them, and Export refuses to write out
-            // images the user has flagged for deletion.
-            .filter(|img| {
-                !matches!(self.current_tab, AppTab::Develop | AppTab::Export)
-                    || !crate::database::models::is_marked(img.rating)
-            })
-            .collect()
-    }
-
-    /// RAW metadata for the selected image, or `None` when what is held
-    /// belongs to some other image (or nothing has been loaded yet).
-    pub fn selected_metadata(&self) -> Option<&raw::loader::RawDataResult> {
-        if self.current_metadata_id.is_some() && self.current_metadata_id == self.selected_image_id
-        {
-            self.current_metadata.as_ref()
-        } else {
-            None
-        }
-    }
-
-    /// Ids of [`Self::displayed_images`], in the same order.
-    pub fn displayed_ids(&self) -> Vec<i64> {
-        self.displayed_images().iter().map(|i| i.id).collect()
-    }
-
-    /// The images a rate / flag / delete action applies to: the whole
-    /// multi-selection when there is one, else the current image.
-    pub fn action_target_ids(&self) -> Vec<i64> {
-        if !self.multi_selection.is_empty() {
-            self.multi_selection.iter().copied().collect()
-        } else {
-            self.selected_image_id.into_iter().collect()
-        }
-    }
-
-    /// Apply `f` to the in-memory catalogue rows for `ids`.
-    ///
-    /// One pass over the catalogue with a set lookup — the per-id
-    /// `iter().find()` this replaces was O(selection × catalogue) on every
-    /// select-all rating.
-    pub fn apply_to_images(&mut self, ids: &[i64], mut f: impl FnMut(&mut ImageData)) {
-        let ids: HashSet<i64> = ids.iter().copied().collect();
-        for img in self.images.iter_mut().filter(|img| ids.contains(&img.id)) {
-            f(img);
-        }
-    }
-
     /// The thumbnail to show for `img`: its edited proxy when it has edits,
     /// the camera's embedded preview otherwise.
     ///
@@ -1342,9 +464,13 @@ impl RawEditor {
     /// the camera has none (its preview could not be read, so the cache job
     /// failed): then the render is the only picture there is, edited or not.
     pub fn thumbnail_handle(&self, img: &ImageData) -> Option<Handle> {
-        if let Some(proxy) = self.edited_proxies.peek(&img.id) {
+        if let Some(proxy) = self.session.edited_proxies.peek(&img.id) {
             if proxy.edited || img.cache_path_thumb.is_none() {
-                return Some(proxy.handle.clone());
+                return Some(match self.proxy_handles.get(&img.id) {
+                    Some((generation, handle)) if *generation == proxy.generation => handle.clone(),
+                    // Only between a capture and the end of its `update`.
+                    _ => proxy.preview.to_handle(),
+                });
             }
             return img.cache_path_thumb.as_ref().map(Handle::from_path);
         }
@@ -1354,299 +480,74 @@ impl RawEditor {
             .map(Handle::from_path)
     }
 
-    /// Forget the edited proxies of `ids`, whose saved edits just changed
-    /// without being rendered — see `handlers::proxy`. Their thumbnails fall
-    /// back to the camera's until they are next developed. The stale files
-    /// are swept at the next launch (`Library::sweep_edited_proxies`).
-    pub fn invalidate_proxies(&mut self, ids: &[i64]) {
-        for id in ids {
-            self.edited_proxies.pop(id);
-        }
-        let wanted: HashSet<i64> = ids.iter().copied().collect();
-        let had_saved: Vec<i64> = self
-            .images
-            .iter()
-            .filter(|img| img.cache_path_edited.is_some() && wanted.contains(&img.id))
-            .map(|img| img.id)
-            .collect();
-        if had_saved.is_empty() {
-            return;
-        }
-        if let Some(lib) = &self.library {
-            if let Err(e) = lib.clear_edited_proxies(&had_saved) {
-                tracing::warn!("Could not clear stale edited thumbnails: {e}");
-            }
-        }
-        self.apply_to_images(&had_saved, |img| img.cache_path_edited = None);
+    /// Is the detail loupe's panel open (neither it nor the Detail section
+    /// around it folded)?
+    pub fn loupe_panel_open(&self) -> bool {
+        use crate::app::message::SidebarSection;
+        !self.collapsed_sections.contains(&SidebarSection::Detail)
+            && !self.collapsed_sections.contains(&SidebarSection::DetailPreview)
     }
 
-    /// True when the selected image's edits are being rendered, so its proxy
-    /// follows them on its own.
-    fn renders_selected_image(&self) -> bool {
-        self.current_tab == AppTab::Develop
-            && self.selected_image_id.is_some()
-            && self.image_resources.as_ref().map(|r| r.image_id) == self.selected_image_id
-    }
-
-    /// True when this image should render as selected.
-    ///
-    /// The single predicate for both the library grid and the filmstrip. They
-    /// used to disagree — the grid ORed `selected_image_id` with
-    /// `multi_selection`, the filmstrip read only `multi_selection` — which
-    /// happened to look consistent only because a plain click kept the two in
-    /// sync. Range selection breaks that assumption.
-    pub fn is_selected(&self, image_id: i64) -> bool {
-        self.selected_image_id == Some(image_id) || self.multi_selection.contains(&image_id)
-    }
-
-    /// Display-space (EXIF-oriented) dimensions of what is actually ON SCREEN.
-    ///
-    /// The single dims source for all on-screen geometry: letterbox fit,
-    /// zoom-to-cursor, crop and mask drag math, and the canvas overlay. Only
-    /// the ASPECT actually matters to `core::viewport::image_rect`, which is
-    /// why taking it from the GPU resources is safe even while a preview of a
-    /// different resolution is on screen — and why it must not come from the
-    /// render buffer, whose aspect now tracks the viewport rather than the
-    /// image.
-    ///
-    /// **Crop-aware.** Outside crop mode the viewport shows the crop sub-rect,
-    /// so these are the CROPPED dimensions. Returning the full frame's here
-    /// made the letterbox reserve the uncropped aspect and the shader stretch
-    /// the crop to fill it — a 16:9 crop of a 3:2 frame rendered vertically
-    /// squashed. (Export was unaffected: it renders the crop to its own
-    /// correctly-sized target.) In crop mode the shader deliberately reveals
-    /// the whole sensor so the handles can be dragged over it, so the full
-    /// frame genuinely is what's displayed and the crop must NOT be applied.
-    ///
-    /// **Before the GPU resources exist** (the RAW is still loading) what is on
-    /// screen is the placeholder, shown in its own shape: an edited proxy is
-    /// already cropped, and the camera JPEG never is. Applying the crop here
-    /// squeezed the full camera frame into the crop's aspect for as long as
-    /// the load took — and would crop an already-cropped proxy a second time.
-    pub fn image_display_dims(&self) -> (u32, u32) {
-        let Some(res) = &self.image_resources else {
-            return if self.working_preview_bytes.is_some() {
-                self.working_preview_dims
-            } else {
-                PLACEHOLDER_DIMS
+    /// Bring what the app draws from session state up to date, after a
+    /// message: the canvas caches the session marked changed, the camera
+    /// preview, the proxies' and the loupe's image handles.
+    pub fn sync_from_session(&mut self) {
+        use crate::session::{Changed, PreviewHandle as Preview};
+        let changed = self.session.changed.take();
+        if changed.contains(Changed::OVERLAY) {
+            self.canvas_cache.clear();
+        }
+        if changed.contains(Changed::HISTOGRAM) {
+            self.histogram_cache.clear();
+        }
+        if changed.contains(Changed::PROFILER) {
+            self.profiler_cache.clear();
+        }
+        if let Some(preview) = self.session.camera_preview.take() {
+            self.working_preview = match preview {
+                Preview::Clear => None,
+                Preview::Cached(pixels) => Some(pixels.to_handle()),
+                Preview::Path(path) => Some(Handle::from_path(path)),
             };
-        };
-        let (w, h) = res.oriented_dims(self.current_edit_params.quarter_turns);
-        if self.is_cropping {
-            return (w, h);
         }
-        crop_dims(w, h, self.current_edit_params.crop)
+        self.sync_proxy_handles();
+        sync_frame_handle(&mut self.loupe_handle, self.session.loupe.frame.as_ref());
+        sync_frame_handle(&mut self.ai_denoise_handle, self.session.ai_denoise.frame.as_ref());
     }
 
-    /// Magnification as a photographer reads it: 100% means one full-resolution
-    /// sensor pixel per physical screen pixel.
-    ///
-    /// Distinct from `self.zoom`, which is relative to fit — at fit a 6000px
-    /// image on a 1900px viewport is `zoom == 1.0` but only ~32%.
-    pub fn zoom_percent(&self) -> f32 {
-        let (dw, dh) = self.image_display_dims();
-        let (vw, vh) = self.viewport_size;
-        let (fw, _) = crate::core::viewport::fitted_size(dw, dh, vw, vh);
-        // Against the FULL-resolution width: the develop texture may be a
-        // subsampled preview, and reporting against that would claim 100%
-        // while showing half the detail.
-        let full_w = self
-            .image_resources
-            .as_ref()
-            .map(|r| r.oriented_original_dims(self.current_edit_params.quarter_turns).0)
-            .unwrap_or(dw)
-            .max(1) as f32;
-        // `fw` spans the CROPPED region (image_display_dims is crop-aware), so
-        // the sensor pixels it covers are only that fraction of the full width.
-        let visible_w = if self.is_cropping {
-            full_w
-        } else {
-            (full_w * self.current_edit_params.crop[2]).max(1.0)
-        };
-        fw * self.zoom * self.scale_factor / visible_w * 100.0
-    }
-
-    /// Helper to save current edit parameters to database
-    /// Signal that the preview pixel buffer's contents changed, so the viewport
-    /// shader re-uploads its texture on the next redraw. Must be called
-    /// wherever `working_preview_bytes` or `rendered_preview_bytes` is
-    /// replaced — a missed call shows a stale image.
-    pub fn bump_preview_generation(&mut self) {
-        self.preview_generation = self.preview_generation.wrapping_add(1);
-        // 0 is reserved for the shader's 1x1 placeholder.
-        if self.preview_generation == 0 {
-            self.preview_generation = 1;
-        }
-    }
-
-    /// Mark the current image's edits as needing persistence.
-    ///
-    /// Called from the per-slider-tick path (`update_pipeline`). Writing to
-    /// SQLite there directly meant a JSON serialize + SELECT + UPDATE + fsync
-    /// per mouse-move event, on the UI thread; the flag defers that to the
-    /// commit points below.
-    pub fn mark_edits_dirty(&mut self) {
-        self.edits_dirty = true;
-    }
-
-    /// Persist the current image's edits if anything changed since the last
-    /// flush. Cheap and safe to call unconditionally at any commit point.
-    ///
-    /// Flush points must cover every way the current params can stop being
-    /// current: slider release (`CommitEdit`), drag release, image switch, tab
-    /// switch, and window close. Missing one loses the last gesture's edits.
-    pub fn flush_edits(&mut self) {
-        if !self.edits_dirty {
+    /// Build handles for proxies captured or read since the last sync, and
+    /// let go of those whose proxy is gone (or replaced). Cheap when nothing
+    /// changed: runs after every message.
+    pub fn sync_proxy_handles(&mut self) {
+        if self.proxy_handles_seen == self.session.proxy_generation {
             return;
         }
-        // Clear first: a failed write should not spin on every later flush.
-        self.edits_dirty = false;
-        self.save_current_edits();
-        // Edits saved with no render behind them (undo, reset or paste in
-        // Library or Cull): the image's proxy now shows something else.
-        if !self.renders_selected_image() {
-            if let Some(id) = self.selected_image_id {
-                self.invalidate_proxies(&[id]);
-            }
-        }
-    }
-
-    /// Unconditional write, bypassing the dirty flag. Prefer `flush_edits`;
-    /// this exists for callers that write params for an image other than the
-    /// selected one, or that must persist regardless of flag state.
-    pub fn save_current_edits(&self) {
-        // Phase 23: Only save if database is loaded
-        if let Some(library) = &self.library {
-            if let Some(image_id) = self.selected_image_id {
-                if let Err(e) = library.save_edit_params(image_id, &self.current_edit_params) {
-                    tracing::error!("Failed to save edits for image {}: {:?}", image_id, e);
-                }
-            }
-        }
-    }
-
-    /// Phase 66: Helper to calculate a center crop for a target aspect ratio
-    /// Returns [x, y, w, h] in normalized coordinates (0.0 to 1.0)
-    pub fn calculate_center_crop(target_ratio: f32, image_w: u32, image_h: u32) -> [f32; 4] {
-        let image_ratio = image_w as f32 / image_h as f32;
-
-        if image_ratio > target_ratio {
-            // Image is wider than target: Crop width (sides)
-            // h = 1.0, w = target / image
-            let w = target_ratio / image_ratio;
-            let x = (1.0 - w) / 2.0;
-            [x, 0.0, w, 1.0]
-        } else {
-            // Image is taller than target: Crop height (top/bottom)
-            // w = 1.0, h = image / target
-            let h = image_ratio / target_ratio;
-            let y = (1.0 - h) / 2.0;
-            [0.0, y, 1.0, h]
-        }
-    }
-
-    fn raw_cache_entry_bytes(raw: &raw::loader::RawDataResult) -> usize {
-        raw.data.len()
-            .saturating_mul(std::mem::size_of::<u16>())
-            .saturating_add(1024)
-    }
-
-    pub fn raw_cache_budget_bytes(&self) -> usize {
-        (self.raw_preload_budget_mb as usize).saturating_mul(1024 * 1024)
-    }
-
-    /// Headroom to keep free system-wide, in bytes. `0` = check disabled.
-    /// Mirrors `raw_cache_budget_bytes`'s shape deliberately.
-    pub fn min_free_bytes(&self) -> u64 {
-        (self.min_free_ram_mb as u64).saturating_mul(1024 * 1024)
-    }
-
-    /// Drop everything regenerable the app is holding, and let wgpu hand back
-    /// what has already been released.
-    ///
-    /// Called under memory pressure. These caches exist purely to make
-    /// navigation fast; rebuilding them costs time, whereas running the machine
-    /// out of RAM costs the user their session.
-    pub fn release_discretionary_memory(&mut self) {
-        self.preview_cache.clear();
-        self.raw_cache.clear();
-        self.raw_cache_bytes = 0;
-        if let Some(ctx) = &self.gpu_context {
-            ctx.reclaim();
-        }
-    }
-
-    pub fn evict_raw_cache_to_budget(&mut self) {
-        let budget = self.raw_cache_budget_bytes();
-        while self.raw_cache_bytes > budget {
-            if let Some((_id, raw)) = self.raw_cache.pop_lru() {
-                self.raw_cache_bytes = self
-                    .raw_cache_bytes
-                    .saturating_sub(Self::raw_cache_entry_bytes(&raw));
-            } else {
-                self.raw_cache_bytes = 0;
-                break;
-            }
-        }
-    }
-
-    /// The decoded RAW of `image_id` if memory holds it: the open image's pin
-    /// first, then the preload cache. Does not touch LRU order.
-    pub fn raw_for(&self, image_id: i64) -> Option<Arc<raw::loader::RawDataResult>> {
-        match &self.current_raw {
-            Some((id, raw)) if *id == image_id => Some(raw.clone()),
-            _ => self.raw_cache.peek(&image_id).cloned(),
-        }
-    }
-
-    pub fn insert_raw_cache(&mut self, image_id: i64, raw: Arc<raw::loader::RawDataResult>) {
-        if self.raw_preload_budget_mb == 0 {
-            return;
-        }
-
-        if let Some(old) = self.raw_cache.get(&image_id) {
-            self.raw_cache_bytes = self
-                .raw_cache_bytes
-                .saturating_sub(Self::raw_cache_entry_bytes(old));
-        }
-
-        self.raw_cache_bytes = self
-            .raw_cache_bytes
-            .saturating_add(Self::raw_cache_entry_bytes(&raw));
-        self.raw_cache.put(image_id, raw);
-        self.evict_raw_cache_to_budget();
-    }
-
-    /// Drop a deleted image's entry from the raw cache, keeping
-    /// `raw_cache_bytes` accounting correct.
-    pub fn remove_from_raw_cache(&mut self, image_id: i64) {
-        if self.current_raw.as_ref().is_some_and(|(id, _)| *id == image_id) {
-            self.current_raw = None;
-        }
-        if let Some(old) = self.raw_cache.pop(&image_id) {
-            self.raw_cache_bytes = self
-                .raw_cache_bytes
-                .saturating_sub(Self::raw_cache_entry_bytes(&old));
+        self.proxy_handles_seen = self.session.proxy_generation;
+        let proxies = &self.session.edited_proxies;
+        self.proxy_handles
+            .retain(|id, (generation, _)| proxies.peek(id).is_some_and(|p| p.generation == *generation));
+        for (id, proxy) in proxies.iter() {
+            self.proxy_handles.entry(*id).or_insert_with(|| (proxy.generation, proxy.preview.to_handle()));
         }
     }
 
     pub fn save_preferences(&self) {
         let settings = crate::core::settings::AppSettings {
-            cache_capacity: self.cache_capacity,
-            raw_preload_budget_mb: self.raw_preload_budget_mb,
+            cache_capacity: self.session.cache_capacity,
+            raw_preload_budget_mb: self.session.raw_preload_budget_mb,
             thumbnail_size: self.thumbnail_size,
-            auto_advance: self.auto_advance,
+            auto_advance: self.session.auto_advance,
             histogram_enabled: self.histogram_enabled,
-            preview_preload_behind: self.preview_preload_behind,
-            preview_preload_ahead: self.preview_preload_ahead,
-            raw_preload_behind: self.raw_preload_behind,
-            raw_preload_ahead: self.raw_preload_ahead,
-            copy_categories: self.copy_categories,
-            min_free_ram_mb: self.min_free_ram_mb,
+            preview_preload_behind: self.session.preview_preload_behind,
+            preview_preload_ahead: self.session.preview_preload_ahead,
+            raw_preload_behind: self.session.raw_preload_behind,
+            raw_preload_ahead: self.session.raw_preload_ahead,
+            copy_categories: self.session.copy_categories,
+            min_free_ram_mb: self.session.min_free_ram_mb,
             reduce_motion: self.reduce_motion,
             appearance: Some(self.appearance.name().to_string()),
-            camera_profile_defaults: self.camera_profile_defaults.clone(),
-            update_check: self.update_check,
+            camera_profile_defaults: self.session.camera_profile_defaults.clone(),
+            update_check: self.session.update_check,
             develop_folded: Some(
                 crate::app::message::SidebarSection::ALL
                     .into_iter()
@@ -1743,13 +644,7 @@ impl RawEditor {
             }
         });
 
-        // Borrowed, not cloned: subscription() is rebuilt after every message,
-        // and only the head of each queue is ever read.
-        let loader_subscription = crate::app::loader::subscription(
-            &self.queued_loads,
-            &self.queued_raw_loads,
-            &self.queued_proxy_loads,
-        );
+        let loader_subscription = crate::app::loader::subscription(&self.session);
 
         let mut subs = vec![keyboard_subscription, loader_subscription];
         // Only tick while a filmstrip glide or a reveal scroll is in progress
@@ -1758,7 +653,7 @@ impl RawEditor {
             subs.push(iced::window::frames().map(Message::KineticTick));
         }
         // AI progress bars: tick only while a download or an AI job runs.
-        if self.models.job.is_some() || self.ai_denoise.busy() {
+        if self.session.models.job.is_some() || self.session.ai_denoise.busy() {
             subs.push(iced::time::every(std::time::Duration::from_millis(100)).map(|_| Message::AiTick));
         }
         iced::Subscription::batch(subs)
@@ -1768,7 +663,9 @@ impl RawEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    use crate::app::message::AppTab;
+    use crate::session::{crop_dims, path_is_within, HISTORY_LIMIT};
+    use std::sync::Arc;
     fn editor() -> RawEditor {
         RawEditor::new().0
     }
@@ -1779,12 +676,12 @@ mod tests {
         assert!(std::mem::size_of::<Message>() < 1024, "{}", std::mem::size_of::<Message>());
 
         let mut e = editor();
-        e.selected_image_id = Some(1);
+        e.session.selected_image_id = Some(1);
         for i in 0..(HISTORY_LIMIT + 20) {
-            e.current_edit_params.exposure = i as f32 * 0.01;
-            e.commit_current_state();
+            e.session.current_edit_params.exposure = i as f32 * 0.01;
+            e.session.commit_current_state();
         }
-        let (stack, index) = e.get_current_history().unwrap();
+        let (stack, index) = e.session.get_current_history().unwrap();
         assert_eq!(stack.len(), HISTORY_LIMIT);
         assert_eq!(*index, HISTORY_LIMIT - 1);
         assert_eq!(stack[*index].exposure, (HISTORY_LIMIT + 19) as f32 * 0.01);
@@ -1821,13 +718,13 @@ mod tests {
     #[test]
     fn a_loading_placeholder_is_not_cropped_again() {
         let mut e = editor();
-        e.current_edit_params.crop = [0.0, 0.0, 0.5, 1.0];
-        e.working_preview_bytes = Some(std::sync::Arc::from(vec![0u8; 4]));
-        e.working_preview_dims = (384, 216);
-        assert_eq!(e.image_display_dims(), (384, 216));
+        e.session.current_edit_params.crop = [0.0, 0.0, 0.5, 1.0];
+        e.session.working_preview_bytes = Some(std::sync::Arc::from(vec![0u8; 4]));
+        e.session.working_preview_dims = (384, 216);
+        assert_eq!(e.session.image_display_dims(), (384, 216));
         // Nothing at all yet: the stock placeholder, also uncropped.
-        e.working_preview_bytes = None;
-        assert_eq!(e.image_display_dims(), (1280, 853));
+        e.session.working_preview_bytes = None;
+        assert_eq!(e.session.image_display_dims(), (1280, 853));
     }
 
     // ── displayed_images / selection ─────────────────────────────────────────
@@ -1850,7 +747,7 @@ mod tests {
     fn catalog() -> RawEditor {
         let mut e = editor();
         let marked = crate::database::models::with_mark(0, true);
-        e.images = vec![
+        e.session.images = vec![
             img(1, "/photos/2024/a.NEF", 0),
             img(2, "/photos/2024/b.NEF", 3),
             img(3, "/photos/2024-old/c.NEF", 5),
@@ -1865,21 +762,21 @@ mod tests {
     #[test]
     fn next_unmarked_prefers_an_image_the_filter_shows() {
         let mut e = catalog();
-        e.current_tab = AppTab::Develop;
-        e.min_filter_rating = 5;
-        assert_eq!(e.displayed_ids(), vec![3]);
-        assert_eq!(crate::app::handlers::navigation::find_next_unmarked_image_id(&e, 1), Some(3));
+        e.session.current_tab = AppTab::Develop;
+        e.session.min_filter_rating = 5;
+        assert_eq!(e.session.displayed_ids(), vec![3]);
+        assert_eq!(e.session.find_next_unmarked_image_id(1), Some(3));
     }
 
     #[test]
     fn displayed_images_library_shows_marked_and_honours_the_folder_filter() {
         let mut e = catalog();
-        e.current_tab = AppTab::Library;
-        assert_eq!(e.displayed_ids(), vec![1, 2, 3, 4, 5]);
+        e.session.current_tab = AppTab::Library;
+        assert_eq!(e.session.displayed_ids(), vec![1, 2, 3, 4, 5]);
 
-        e.library_folder_filter = Some("/photos/2024".to_string());
+        e.session.library_folder_filter = Some("/photos/2024".to_string());
         // Component match: 2024-old is a different folder and stays hidden.
-        assert_eq!(e.displayed_ids(), vec![1, 2, 5]);
+        assert_eq!(e.session.displayed_ids(), vec![1, 2, 5]);
     }
 
     #[test]
@@ -1894,8 +791,8 @@ mod tests {
     #[test]
     fn displayed_images_develop_excludes_marked_for_removal() {
         let mut e = catalog();
-        e.current_tab = AppTab::Develop;
-        assert_eq!(e.displayed_ids(), vec![1, 2, 3, 4]);
+        e.session.current_tab = AppTab::Develop;
+        assert_eq!(e.session.displayed_ids(), vec![1, 2, 3, 4]);
     }
 
     /// The folder filter is Library-only; applying it in Cull or Develop would
@@ -1903,31 +800,31 @@ mod tests {
     #[test]
     fn displayed_images_ignores_the_folder_filter_outside_library() {
         let mut e = catalog();
-        e.library_folder_filter = Some("/photos/2025".to_string());
-        e.current_tab = AppTab::Cull;
-        assert_eq!(e.displayed_ids(), vec![1, 2, 3, 4, 5]);
+        e.session.library_folder_filter = Some("/photos/2025".to_string());
+        e.session.current_tab = AppTab::Cull;
+        assert_eq!(e.session.displayed_ids(), vec![1, 2, 3, 4, 5]);
     }
 
     #[test]
     fn displayed_images_applies_the_rating_filter_in_every_tab() {
         let mut e = catalog();
-        e.min_filter_rating = 3;
-        e.current_tab = AppTab::Cull;
+        e.session.min_filter_rating = 3;
+        e.session.current_tab = AppTab::Cull;
         // 2 (3 stars), 3 (5 stars), and 5 — marked, whose sentinel 255 clears
         // any real threshold. That is intentional; Develop is where it's cut.
-        assert_eq!(e.displayed_ids(), vec![2, 3, 5]);
-        e.current_tab = AppTab::Develop;
-        assert_eq!(e.displayed_ids(), vec![2, 3]);
+        assert_eq!(e.session.displayed_ids(), vec![2, 3, 5]);
+        e.session.current_tab = AppTab::Develop;
+        assert_eq!(e.session.displayed_ids(), vec![2, 3]);
     }
 
     #[test]
     fn is_selected_covers_both_the_current_image_and_the_multi_selection() {
         let mut e = catalog();
-        e.selected_image_id = Some(2);
-        e.multi_selection.insert(4);
-        assert!(e.is_selected(2));
-        assert!(e.is_selected(4));
-        assert!(!e.is_selected(1));
+        e.session.selected_image_id = Some(2);
+        e.session.multi_selection.insert(4);
+        assert!(e.session.is_selected(2));
+        assert!(e.session.is_selected(4));
+        assert!(!e.session.is_selected(1));
     }
 
     /// The peek must not change the framing — that is the whole reason
@@ -1935,16 +832,16 @@ mod tests {
     #[test]
     fn before_peek_does_not_change_the_displayed_aspect() {
         let mut e = editor();
-        e.current_edit_params.crop = [0.0, 0.0, 0.5, 1.0];
-        let normal = e.image_display_dims();
+        e.session.current_edit_params.crop = [0.0, 0.0, 0.5, 1.0];
+        let normal = e.session.image_display_dims();
 
-        let before = e.current_edit_params.before_reference();
-        e.current_edit_params = before;
-        assert_eq!(e.image_display_dims(), normal);
+        let before = e.session.current_edit_params.before_reference();
+        e.session.current_edit_params = before;
+        assert_eq!(e.session.image_display_dims(), normal);
     }
 
     fn history_len(e: &mut RawEditor) -> usize {
-        e.get_current_history().map(|(stack, _)| stack.len()).unwrap_or(0)
+        e.session.get_current_history().map(|(stack, _)| stack.len()).unwrap_or(0)
     }
 
     /// Clicking a slider without moving it still fires CommitEdit; that must
@@ -1952,19 +849,19 @@ mod tests {
     #[test]
     fn a_commit_that_changed_nothing_adds_no_undo_step() {
         let mut e = editor();
-        e.selected_image_id = Some(1);
+        e.session.selected_image_id = Some(1);
         let base = history_len(&mut e);
 
-        e.commit_current_state();
+        e.session.commit_current_state();
         assert_eq!(history_len(&mut e), base);
 
-        e.current_edit_params.exposure = 1.0;
-        e.commit_current_state();
+        e.session.current_edit_params.exposure = 1.0;
+        e.session.commit_current_state();
         assert_eq!(history_len(&mut e), base + 1);
 
         // Toggling the crop tool alone is not an edit either.
-        e.current_edit_params.is_cropping = 1;
-        e.commit_current_state();
+        e.session.current_edit_params.is_cropping = 1;
+        e.session.commit_current_state();
         assert_eq!(history_len(&mut e), base + 1);
     }
 
@@ -1973,38 +870,42 @@ mod tests {
     #[test]
     fn undo_keeps_the_shader_crop_flag_in_step_with_the_tool() {
         let mut e = editor();
-        e.selected_image_id = Some(1);
-        e.current_tab = AppTab::Develop;
-        e.is_cropping = true;
-        e.sync_tool_flags();
+        e.session.selected_image_id = Some(1);
+        e.session.current_tab = AppTab::Develop;
+        e.session.is_cropping = true;
+        e.session.sync_tool_flags();
         let _ = history_len(&mut e);
-        e.current_edit_params.crop = [0.1, 0.1, 0.5, 0.5];
-        e.commit_current_state();
+        e.session.current_edit_params.crop = [0.1, 0.1, 0.5, 0.5];
+        e.session.commit_current_state();
 
-        e.is_cropping = false; // "Done"
+        e.session.is_cropping = false; // "Done"
         let _ = crate::app::handlers::develop::handle_undo(&mut e);
-        assert_eq!(e.current_edit_params.crop, [0.0, 0.0, 1.0, 1.0], "undo restored the old crop");
-        assert_eq!(e.current_edit_params.is_cropping, 0, "but not the old tool state");
+        assert_eq!(e.session.current_edit_params.crop, [0.0, 0.0, 1.0, 1.0], "undo restored the old crop");
+        assert_eq!(e.session.current_edit_params.is_cropping, 0, "but not the old tool state");
     }
 
     // ── edited proxies ────────────────────────────────────────────────────────
 
+    use crate::session::{CachedPreview, EditedProxy};
+
     fn proxy(edited: bool) -> EditedProxy {
         let preview = CachedPreview { width: 1, height: 1, bytes: Arc::from(vec![0u8; 4]) };
-        EditedProxy {
-            handle: preview.to_handle(),
-            preview,
-            edited,
-            params: None,
-            generation: 1,
-            persisted: false,
-        }
+        EditedProxy { preview, edited, params: None, generation: 1, persisted: false }
+    }
+
+    /// Put `proxy` in the session the way a capture does, and sync handles
+    /// the way the end of `update` does.
+    fn capture(e: &mut RawEditor, id: i64, mut proxy: EditedProxy) {
+        e.session.proxy_generation += 1;
+        proxy.generation = e.session.proxy_generation;
+        e.session.edited_proxies.put(id, proxy);
+        e.sync_proxy_handles();
     }
 
     #[test]
     fn thumbnails_prefer_the_edit_and_fall_back_to_the_camera() {
         let mut e = catalog();
-        let mut image = e.images[0].clone();
+        let mut image = e.session.images[0].clone();
         image.cache_path_thumb = Some("/c/thumb.jpg".into());
 
         // Never developed: the camera's own thumbnail.
@@ -2014,14 +915,19 @@ mod tests {
         image.cache_path_edited = Some("/c/edited.jpg".into());
         assert_eq!(e.thumbnail_handle(&image), Some(Handle::from_path("/c/edited.jpg")));
 
-        // A live render outranks the file.
-        let live = proxy(true);
-        let live_handle = live.handle.clone();
-        e.edited_proxies.put(image.id, live);
-        assert_eq!(e.thumbnail_handle(&image), Some(live_handle));
+        // A live render outranks the file — through one handle per capture,
+        // or iced would upload it again on every frame.
+        capture(&mut e, image.id, proxy(true));
+        let live = e.thumbnail_handle(&image).expect("live proxy");
+        assert!(matches!(live, Handle::Rgba { .. }));
+        assert_eq!(e.thumbnail_handle(&image), Some(live.clone()), "a new handle per call");
+        // A new capture gets a new handle; the old one is let go.
+        capture(&mut e, image.id, proxy(true));
+        assert_ne!(e.thumbnail_handle(&image), Some(live));
+        assert_eq!(e.proxy_handles.len(), 1);
 
         // ...including when it says the edit was just reset to defaults.
-        e.edited_proxies.put(image.id, proxy(false));
+        capture(&mut e, image.id, proxy(false));
         assert_eq!(e.thumbnail_handle(&image), Some(Handle::from_path("/c/thumb.jpg")));
     }
 
@@ -2031,14 +937,12 @@ mod tests {
     #[test]
     fn without_a_camera_thumbnail_an_unedited_render_is_shown() {
         let mut e = catalog();
-        let mut image = e.images[0].clone();
+        let mut image = e.session.images[0].clone();
         image.cache_path_thumb = None;
         assert_eq!(e.thumbnail_handle(&image), None);
 
-        let unedited = proxy(false);
-        let handle = unedited.handle.clone();
-        e.edited_proxies.put(image.id, unedited);
-        assert_eq!(e.thumbnail_handle(&image), Some(handle));
+        capture(&mut e, image.id, proxy(false));
+        assert!(matches!(e.thumbnail_handle(&image), Some(Handle::Rgba { .. })));
     }
 
     /// Undo / reset / paste in Library change an image's saved edits without
@@ -2046,15 +950,15 @@ mod tests {
     #[test]
     fn edits_saved_without_a_render_invalidate_the_proxy() {
         let mut e = catalog();
-        e.current_tab = AppTab::Library;
-        e.selected_image_id = Some(1);
-        e.images[0].cache_path_edited = Some("/c/edited.jpg".into());
-        e.edited_proxies.put(1, proxy(true));
+        e.session.current_tab = AppTab::Library;
+        e.session.selected_image_id = Some(1);
+        e.session.images[0].cache_path_edited = Some("/c/edited.jpg".into());
+        e.session.edited_proxies.put(1, proxy(true));
 
-        e.mark_edits_dirty();
-        e.flush_edits();
-        assert!(e.edited_proxies.peek(&1).is_none());
-        assert_eq!(e.images[0].cache_path_edited, None);
+        e.session.mark_edits_dirty();
+        e.session.flush_edits();
+        assert!(e.session.edited_proxies.peek(&1).is_none());
+        assert_eq!(e.session.images[0].cache_path_edited, None);
     }
 }
 
@@ -2228,13 +1132,13 @@ mod keymap_tests {
         crate::app::testkit::send(&mut e, Message::ImageSelected(1));
         let press = || Message::ShortcutKey { key: "3".into(), message: Box::new(Message::SetRating(3)) };
         crate::app::testkit::send(&mut e, press());
-        assert_eq!(e.images[0].rating, 3);
-        e.images[0].rating = 0; // a repeat must not set it again
+        assert_eq!(e.session.images[0].rating, 3);
+        e.session.images[0].rating = 0; // a repeat must not set it again
         crate::app::testkit::send(&mut e, press());
-        assert_eq!(e.images[0].rating, 0);
+        assert_eq!(e.session.images[0].rating, 0);
         crate::app::testkit::send(&mut e, Message::ShortcutKeyUp("3".into()));
         crate::app::testkit::send(&mut e, press());
-        assert_eq!(e.images[0].rating, 3);
+        assert_eq!(e.session.images[0].rating, 3);
     }
 
     /// Ctrl/Cmd/Alt + a letter or digit is not a shortcut: Ctrl+R must not

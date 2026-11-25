@@ -10,19 +10,19 @@ use crate::ui::theme;
 
 // Phase 74: The Cull Interface (Fast review mode)
 pub fn view_cull(editor: &RawEditor) -> Element<'_, Message> {
-    let main_content: Element<Message> = if let Some(id) = editor.selected_image_id {
+    let main_content: Element<Message> = if let Some(id) = editor.session.selected_image_id {
         view_preview(editor, id)
     } else {
         view_empty_state()
     };
 
-    let filtered_images: Vec<&ImageData> = editor.displayed_images();
+    let filtered_images: Vec<&ImageData> = editor.session.displayed_images();
     let filmstrip = ui::filmstrip::view(&filtered_images, editor);
 
     // Cull was the one tab with no export entry point, despite the export
     // handler explicitly optimising for the cull-then-export-the-selects flow
     // by reusing the already-decoded RAW cache.
-    let selected = editor.multi_selection.len().max(1);
+    let selected = editor.session.multi_selection.len().max(1);
     let export_bar = container(
         iced::widget::row![
             iced::widget::Space::with_width(Length::Fill),
@@ -53,7 +53,7 @@ pub fn view_cull(editor: &RawEditor) -> Element<'_, Message> {
 fn view_preview(editor: &RawEditor, id: i64) -> Element<'_, Message> {
     // Use working preview (1280px) if available (from cache or disk)
     let image_handle = editor.working_preview.clone()
-        .or_else(|| editor.images.iter().find(|i| i.id == id).and_then(|i| i.cache_path_working.as_ref()).map(|p| Handle::from_path(p.clone())));
+        .or_else(|| editor.session.images.iter().find(|i| i.id == id).and_then(|i| i.cache_path_working.as_ref()).map(|p| Handle::from_path(p.clone())));
         
     if let Some(handle) = image_handle {
         let image_widget = Image::new(handle).width(Length::Fill).height(Length::Fill).content_fit(iced::ContentFit::Contain);
@@ -96,7 +96,7 @@ fn view_overlay(editor: &RawEditor, id: i64) -> Element<'_, Message> {
 }
 
 fn view_filename_overlay(editor: &RawEditor, id: i64) -> Element<'_, Message> {
-    container(text(editor.images.iter().find(|img| img.id == id).map(|img| img.filename.clone()).unwrap_or_default()).size(theme::size::SMALL).style(|_| text::Style { color: Some(theme::colours().on_photo) })).padding(theme::space::XS).style(|_| container::Style { background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.4))), border: iced::border::Border { radius: theme::radius::CONTROL.into(), ..Default::default() }, ..Default::default() }).into()
+    container(text(editor.session.images.iter().find(|img| img.id == id).map(|img| img.filename.clone()).unwrap_or_default()).size(theme::size::SMALL).style(|_| text::Style { color: Some(theme::colours().on_photo) })).padding(theme::space::XS).style(|_| container::Style { background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.4))), border: iced::border::Border { radius: theme::radius::CONTROL.into(), ..Default::default() }, ..Default::default() }).into()
 }
 
 fn view_empty_state() -> Element<'static, Message> {
@@ -106,16 +106,16 @@ fn view_empty_state() -> Element<'static, Message> {
 /// Cached previews within the preload window, behind and ahead — in display
 /// order, the same order the preloader and the arrow keys use.
 fn count_cached_neighbors(editor: &RawEditor, id: i64) -> (usize, usize) {
-    let ids = editor.displayed_ids();
+    let ids = editor.session.displayed_ids();
     let Some(current) = ids.iter().position(|&i| i == id) else {
         return (0, 0);
     };
     let n = ids.len();
     let cached = |offset: usize, back: bool| {
         let i = if back { (current + n - offset % n) % n } else { (current + offset) % n };
-        editor.preview_cache.contains(&ids[i])
+        editor.session.preview_cache.contains(&ids[i])
     };
-    let before = (1..=editor.preview_preload_behind.min(n - 1)).filter(|&o| cached(o, true)).count();
-    let after = (1..=editor.preview_preload_ahead.min(n - 1)).filter(|&o| cached(o, false)).count();
+    let before = (1..=editor.session.preview_preload_behind.min(n - 1)).filter(|&o| cached(o, true)).count();
+    let after = (1..=editor.session.preview_preload_ahead.min(n - 1)).filter(|&o| cached(o, false)).count();
     (before, after)
 }

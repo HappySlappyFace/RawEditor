@@ -1,443 +1,77 @@
-// Local adjustment masks: create/select/delete masks and edit their
-// per-mask adjustments. Mask geometry lives in full-image display UV (the
-// same space as the crop rectangle); the color shader evaluates the masks
-// analytically in Step 10.5.
+//! Local adjustment masks, the app's side: the pointer state of a placement
+//! or handle drag, and the Alt key while painting. The masks themselves are
+//! the session's (`session::masks`).
 
-use crate::app::handlers::develop::update_pipeline;
+use crate::app::handlers::develop::switch_tool;
 use crate::app::message::{MaskAdjustment, Message, StrokeEvent};
-use crate::app::state::{DragMode, MaskTool, RawEditor};
-use crate::core::types::{MaskParams, MASK_BRUSH, MASK_RANGE, MAX_MASKS};
+use crate::app::state::{DragMode, RawEditor};
+use crate::app::update::run;
 use crate::ui::preview_renderer::MaskHandle;
 use iced::Task;
 
 /// Toggle mask placement mode (0 = linear, 1 = radial), or create a brush
-/// (2) or range (3) mask outright — those have no geometry to drag out.
-/// Mutually exclusive with crop mode and the WB picker.
+/// (2) or range (3) mask outright.
 pub fn handle_toggle_mask_placement(editor: &mut RawEditor, mask_type: u32) -> Task<Message> {
-    if mask_type == MASK_BRUSH || mask_type == MASK_RANGE {
-        return add_mask_now(editor, mask_type);
-    }
-    let target = if mask_type == 0 {
-        MaskTool::PlacingLinear
-    } else {
-        MaskTool::PlacingRadial
-    };
-    if editor.mask_tool == target {
-        editor.mask_tool = MaskTool::Inactive;
-        editor.status.clear();
-        return Task::none();
-    }
-
-    leave_other_tools(editor);
-    editor.brush_armed = false;
-    editor.mask_tool = target;
-    editor.status = if mask_type == 0 {
-        "Linear mask: drag across the image to place the gradient".to_string()
-    } else {
-        "Radial mask: drag on the image to place the ellipse".to_string()
-    };
-    update_pipeline(editor)
+    switch_tool(editor, |s| s.toggle_mask_placement(mask_type))
 }
 
-fn leave_other_tools(editor: &mut RawEditor) {
-    editor.is_wb_picking = false;
-    editor.is_leveling = false;
-    editor.color_picking_mask = None;
-    if editor.is_cropping {
-        // update_pipeline clears the shader's crop flag to match.
-        editor.is_cropping = false;
-        editor.drag_mode = DragMode::None;
-    }
-}
-
-/// Create a brush or range mask, select it, and arm the brush for a brush mask.
-fn add_mask_now(editor: &mut RawEditor, mask_type: u32) -> Task<Message> {
-    let count = editor.current_edit_params.mask_count as usize;
-    if count >= MAX_MASKS {
-        editor.status = format!("Mask limit reached ({MAX_MASKS})");
-        return Task::none();
-    }
-    leave_other_tools(editor);
-    editor.mask_tool = MaskTool::Inactive;
-    editor.current_edit_params.masks[count] = if mask_type == MASK_BRUSH {
-        MaskParams::new_brush()
-    } else {
-        MaskParams::new_range()
-    };
-    editor.current_edit_params.mask_count = (count + 1) as u32;
-    editor.selected_mask = Some(count);
-    editor.brush_armed = mask_type == MASK_BRUSH;
-    editor.status = if mask_type == MASK_BRUSH {
-        "Brush: paint on the image (hold Alt to erase)".to_string()
-    } else {
-        "Range mask: narrow it with the luminance and colour ranges".to_string()
-    };
-    let task = update_pipeline(editor);
-    editor.commit_current_state();
-    task
-}
-
-/// First press of the placement drag: create the mask at the pressed point
-/// and hand the rest of the gesture to the drag machinery, so press-drag
-/// sizes the new mask in one motion. `(u, v)` is full-image display UV.
+/// First press of the placement drag: the mask is created at the pressed
+/// point and the rest of the gesture drags its handle.
 pub fn handle_mask_placement_started(editor: &mut RawEditor, u: f32, v: f32) -> Task<Message> {
-    let count = editor.current_edit_params.mask_count as usize;
-    if count >= MAX_MASKS {
-        editor.mask_tool = MaskTool::Inactive;
-        editor.status = format!("Mask limit reached ({MAX_MASKS})");
-        return Task::none();
+    let (effects, handle) = editor.session.start_mask_placement(u, v);
+    if let Some(handle) = handle {
+        // The overlay press that triggered this message becomes a handle drag.
+        editor.drag_mode = DragMode::MaskHandle(handle);
+        editor.is_dragging = true;
     }
-
-    let (mask, drag_handle) = match editor.mask_tool {
-        MaskTool::PlacingLinear => (
-            MaskParams::new_linear(u, v, u, v),
-            MaskHandle::LinearEnd,
-        ),
-        MaskTool::PlacingRadial => (
-            MaskParams::new_radial(u, v, 0.001, 0.001),
-            MaskHandle::RadiusUniform,
-        ),
-        MaskTool::Inactive => return Task::none(),
-    };
-
-    editor.current_edit_params.masks[count] = mask;
-    editor.current_edit_params.mask_count = (count + 1) as u32;
-    editor.selected_mask = Some(count);
-    editor.mask_tool = MaskTool::Inactive;
-    editor.status.clear();
-
-    // The overlay press that triggered this message becomes a handle drag.
-    editor.drag_mode = DragMode::MaskHandle(drag_handle);
-    editor.is_dragging = true;
-
-    update_pipeline(editor)
+    run(effects)
 }
 
 pub fn handle_select_mask(editor: &mut RawEditor, index: Option<usize>) -> Task<Message> {
-    let count = editor.current_edit_params.mask_count as usize;
-    editor.selected_mask = index.filter(|&i| i < count);
-    // Selecting from the list shouldn't leave a stale placement mode active.
-    editor.mask_tool = MaskTool::Inactive;
-    editor.color_picking_mask = None;
-    if editor.selected_mask.is_some() {
-        // Its handles take the clicks now.
-        editor.is_leveling = false;
-    }
-    // A brush mask is only ever edited by painting; other masks paint only
-    // when explicitly armed.
-    editor.brush_armed = editor
-        .selected_mask
-        .is_some_and(|i| editor.current_edit_params.masks[i].mask_type == MASK_BRUSH);
-    editor.canvas_cache.clear();
-    // The overlay follows the selection.
-    update_pipeline(editor)
+    run(editor.session.select_mask(index))
 }
 
 pub fn handle_delete_mask(editor: &mut RawEditor, index: usize) -> Task<Message> {
-    let count = editor.current_edit_params.mask_count as usize;
-    if index >= count {
-        return Task::none();
-    }
-
-    // Shift the remaining masks down over the deleted slot; strokes follow
-    // their masks.
-    editor.current_edit_params.masks.copy_within(index + 1..count, index);
-    editor.current_edit_params.masks[count - 1] = MaskParams::default();
-    editor.current_edit_params.mask_count = (count - 1) as u32;
-    editor.current_edit_params.brush.remove_mask(index);
-    editor.color_picking_mask = None;
-    editor.brush_armed = false;
-
-    // An open AI-select session names its mask by slot: deleting that mask
-    // ends the session, deleting one below it moves the session down with it.
-    // (Done/Cancel take the session before they call this, so they are
-    // unaffected.)
-    match editor.ai_select.as_ref().map(|s| s.slot) {
-        Some(slot) if slot == index => {
-            editor.ai_select = None;
-            editor.status = String::new();
-        }
-        Some(slot) if slot > index => {
-            if let Some(s) = editor.ai_select.as_mut() {
-                s.slot = slot - 1;
-            }
-        }
-        _ => {}
-    }
-
-    editor.selected_mask = match editor.selected_mask {
-        Some(s) if s == index => None,
-        Some(s) if s > index => Some(s - 1),
-        other => other,
-    };
-
-    let task = update_pipeline(editor);
-    editor.commit_current_state();
-    task
+    run(editor.session.delete_mask(index))
 }
 
-pub fn handle_toggle_mask_enabled(
-    editor: &mut RawEditor,
-    index: usize,
-    enabled: bool,
-) -> Task<Message> {
-    if index >= editor.current_edit_params.mask_count as usize {
-        return Task::none();
-    }
-    editor.current_edit_params.masks[index].enabled = u32::from(enabled);
-    let task = update_pipeline(editor);
-    editor.commit_current_state();
-    task
+pub fn handle_toggle_mask_enabled(editor: &mut RawEditor, index: usize, enabled: bool) -> Task<Message> {
+    run(editor.session.set_mask_enabled(index, enabled))
 }
 
 pub fn handle_toggle_mask_invert(editor: &mut RawEditor, inverted: bool) -> Task<Message> {
-    let Some(index) = editor.selected_mask else {
-        return Task::none();
-    };
-    if index >= editor.current_edit_params.mask_count as usize {
-        return Task::none();
-    }
-    editor.current_edit_params.masks[index].invert = u32::from(inverted);
-    let task = update_pipeline(editor);
-    editor.commit_current_state();
-    task
+    run(editor.session.set_mask_inverted(inverted))
 }
 
-/// Slider change for the selected mask. Undo commit comes from the slider's
-/// on_release(CommitEdit), same as the global sliders.
-pub fn handle_mask_adjustment_changed(
-    editor: &mut RawEditor,
-    which: MaskAdjustment,
-    value: f32,
-) -> Task<Message> {
-    let Some(index) = editor.selected_mask else {
-        return Task::none();
-    };
-    if index >= editor.current_edit_params.mask_count as usize {
-        return Task::none();
-    }
-    let mask = &mut editor.current_edit_params.masks[index];
-    match which {
-        MaskAdjustment::Exposure => mask.exposure = value,
-        MaskAdjustment::Contrast => mask.contrast = value,
-        MaskAdjustment::Saturation => mask.saturation = value,
-        MaskAdjustment::Warmth => mask.warmth = value,
-        MaskAdjustment::Highlights => mask.highlights = value,
-        MaskAdjustment::Shadows => mask.shadows = value,
-        MaskAdjustment::Feather => mask.feather = value.clamp(0.0, 1.0),
-        MaskAdjustment::Tint => mask.tint = value.clamp(-1.0, 1.0),
-        MaskAdjustment::Rotation => mask.rotation = value.clamp(-180.0, 180.0),
-        MaskAdjustment::Hue => mask.hue = value.clamp(-1.0, 1.0),
-        MaskAdjustment::LumaLo => mask.luma_lo = value.min(mask.luma_hi).max(0.0),
-        MaskAdjustment::LumaHi => mask.luma_hi = value.max(mask.luma_lo).min(1.0),
-        MaskAdjustment::LumaSmooth => mask.luma_smooth = value.clamp(0.0, 0.5),
-        MaskAdjustment::ColorTolerance => mask.color_tolerance = value.clamp(0.0, 1.0),
-    }
-    update_pipeline(editor)
+pub fn handle_mask_adjustment_changed(editor: &mut RawEditor, which: MaskAdjustment, value: f32) -> Task<Message> {
+    run(editor.session.set_mask_adjustment(which, value))
 }
 
-/// Arm painting into the selected (non-brush) mask, or disarm it.
 pub fn handle_toggle_brush_armed(editor: &mut RawEditor) -> Task<Message> {
-    if editor.selected_mask.is_none() {
-        return Task::none();
-    }
-    editor.brush_armed = !editor.brush_armed;
-    editor.color_picking_mask = None;
-    editor.canvas_cache.clear();
+    editor.session.toggle_brush_armed();
     Task::none()
-}
-
-/// Full-image display aspect (w / h): brush radii are isotropic in it.
-fn display_aspect(editor: &RawEditor) -> f32 {
-    editor
-        .image_resources
-        .as_ref()
-        .map(|r| {
-            let (w, h) = r.oriented_dims(editor.current_edit_params.quarter_turns);
-            w as f32 / h.max(1) as f32
-        })
-        .unwrap_or(1.5)
-}
-
-/// A canvas point (full-image display UV) in the frame the brush layer is
-/// stored in: the layer is read at the source position the picture shows, so
-/// it follows Straighten and lens correction (`core::viewport::frame_to_layer_uv`).
-fn layer_uv(editor: &RawEditor, u: f32, v: f32) -> [f32; 2] {
-    let geo = editor
-        .selected_image_id
-        .and_then(|id| crate::app::handlers::develop::source_geometry(editor, id));
-    let Some(geo) = geo else { return [u, v] };
-    let orientation =
-        crate::color::compose_orientation(geo.exif_orientation, editor.current_edit_params.quarter_turns);
-    let (lu, lv) = crate::core::viewport::frame_to_layer_uv(
-        &editor.current_edit_params,
-        &geo.lens,
-        orientation,
-        geo.width,
-        geo.height,
-        u,
-        v,
-    );
-    [lu, lv]
 }
 
 pub fn handle_brush_stroke(editor: &mut RawEditor, ev: StrokeEvent) -> Task<Message> {
-    let live = editor
-        .selected_mask
-        .filter(|&i| i < editor.current_edit_params.mask_count as usize && editor.brush_armed);
-    let Some(index) = live else {
-        // Disarmed (or deselected) mid-stroke: the release must still end it,
-        // or `is_painting` stays set and the stroke is never committed.
-        if matches!(ev, StrokeEvent::End) {
-            return end_stroke(editor);
-        }
-        return Task::none();
-    };
-    let aspect = display_aspect(editor);
-    let ev = match ev {
-        StrokeEvent::Begin(u, v) => {
-            let [u, v] = layer_uv(editor, u, v);
-            StrokeEvent::Begin(u, v)
-        }
-        StrokeEvent::Move(u, v) => {
-            let [u, v] = layer_uv(editor, u, v);
-            StrokeEvent::Move(u, v)
-        }
-        end => end,
-    };
-    match ev {
-        StrokeEvent::Begin(u, v) => {
-            let b = editor.brush_settings;
-            // Alt flips paint/erase for the duration of the stroke.
-            let erase = b.erase != editor.last_modifiers.alt();
-            let brush = &mut editor.current_edit_params.brush;
-            if brush.begin(index as u32, erase, b.size, b.feather, b.flow).is_none() {
-                editor.status = format!(
-                    "Brush limit reached ({} strokes / {} points) — clear a mask's brush to free space",
-                    crate::core::brush::MAX_STROKES,
-                    crate::core::brush::MAX_POINTS,
-                );
-                return Task::none();
-            }
-            brush.extend([u, v], aspect);
-            editor.is_painting = true;
-            update_pipeline(editor)
-        }
-        StrokeEvent::Move(u, v) => {
-            if !editor.is_painting {
-                return Task::none();
-            }
-            let before = editor.current_edit_params.brush.point_count;
-            if !editor.current_edit_params.brush.extend([u, v], aspect) {
-                editor.status = "Brush point limit reached".to_string();
-            }
-            if editor.current_edit_params.brush.point_count == before {
-                return Task::none();
-            }
-            update_pipeline(editor)
-        }
-        StrokeEvent::End => end_stroke(editor),
-    }
-}
-
-/// Finish the stroke in progress (if any) and commit it.
-fn end_stroke(editor: &mut RawEditor) -> Task<Message> {
-    if !editor.is_painting {
-        return Task::none();
-    }
-    let aspect = display_aspect(editor);
-    editor.is_painting = false;
-    editor.current_edit_params.brush.finish(aspect);
-    let task = update_pipeline(editor);
-    editor.commit_current_state();
-    task
+    // Alt flips paint/erase for the duration of the stroke.
+    let alt = editor.last_modifiers.alt();
+    run(editor.session.brush_stroke(ev, alt))
 }
 
 pub fn handle_clear_mask_brush(editor: &mut RawEditor) -> Task<Message> {
-    let Some(index) = editor.selected_mask else {
-        return Task::none();
-    };
-    editor.current_edit_params.brush.clear_mask(index);
-    let task = update_pipeline(editor);
-    editor.commit_current_state();
-    task
-}
-
-fn selected_mask_mut(editor: &mut RawEditor) -> Option<&mut MaskParams> {
-    let i = editor.selected_mask?;
-    (i < editor.current_edit_params.mask_count as usize)
-        .then(|| &mut editor.current_edit_params.masks[i])
+    run(editor.session.clear_mask_brush())
 }
 
 pub fn handle_toggle_luma_range(editor: &mut RawEditor, on: bool) -> Task<Message> {
-    let Some(m) = selected_mask_mut(editor) else {
-        return Task::none();
-    };
-    if on {
-        m.enable_luma_range();
-    } else {
-        m.luma_range = 0;
-    }
-    let task = update_pipeline(editor);
-    editor.commit_current_state();
-    task
+    run(editor.session.set_luma_range(on))
 }
 
 pub fn handle_toggle_color_range(editor: &mut RawEditor, on: bool) -> Task<Message> {
-    let selected = editor.selected_mask;
-    let Some(m) = selected_mask_mut(editor) else {
-        return Task::none();
-    };
-    if !on {
-        m.color_range = 0;
-        editor.color_picking_mask = None;
-        let task = update_pipeline(editor);
-        editor.commit_current_state();
-        return task;
-    }
-    // Nothing to compare against yet: arm the eyedropper; the range turns on
-    // with the pick.
-    editor.color_picking_mask = selected;
-    editor.brush_armed = false;
-    editor.status = "Color range: click the colour to select".to_string();
-    Task::none()
+    run(editor.session.set_color_range(on))
 }
 
-/// Colour-range eyedropper click. Samples the raw mosaic (exactly what the
-/// shader's camera-native chromaticity sees), not the rendered preview,
-/// which already carries every adjustment — this mask's own included.
 pub fn handle_mask_color_picked(editor: &mut RawEditor, u: f32, v: f32) -> Task<Message> {
-    let Some(index) = editor.color_picking_mask.take() else {
-        return Task::none();
-    };
-    let Some(image_id) = editor.selected_image_id else {
-        return Task::none();
-    };
-    let (rgb, _clipped, raw) = match crate::app::handlers::develop::sample_raw_rgb(editor, image_id, u, v) {
-        Ok(s) => s,
-        Err(crate::app::handlers::develop::RawSampleError::Missing(msg)) => {
-            editor.status = format!("Color range: {msg}");
-            return Task::none();
-        }
-    };
-    // Same units as the demosaic output: black-subtracted, unit range.
-    let mean_black =
-        crate::app::handlers::develop::mean_black(&raw, editor.current_edit_params.black_offsets);
-    let range = (raw.white_level as f32 - mean_black).max(1.0);
-    let target = crate::core::types::mask_chroma(rgb.map(|c| c / range));
-    if index >= editor.current_edit_params.mask_count as usize {
-        return Task::none();
-    }
-    let m = &mut editor.current_edit_params.masks[index];
-    m.color_target = target;
-    m.color_range = 1;
-    if m.color_tolerance <= 0.0 {
-        m.color_tolerance = 0.3;
-    }
-    editor.status.clear();
-    let task = update_pipeline(editor);
-    editor.commit_current_state();
-    task
+    run(editor.session.mask_color_picked(u, v))
 }
 
 pub fn handle_mask_handle_grabbed(
@@ -461,12 +95,13 @@ pub fn handle_mask_handle_grabbed(
 mod tests {
     use super::*;
     use crate::app::update::update;
+    use crate::core::types::{MASK_BRUSH, MASK_RANGE};
 
     /// A headless editor with an image "selected", so undo history exists.
     fn editor() -> RawEditor {
         let mut e = RawEditor::new().0;
-        e.selected_image_id = Some(1);
-        e.get_current_history();
+        e.session.selected_image_id = Some(1);
+        e.session.get_current_history();
         e
     }
 
@@ -484,27 +119,27 @@ mod tests {
     fn painting_a_brush_mask_records_one_undoable_stroke() {
         let mut e = editor();
         let _ = update(&mut e, Message::ToggleMaskPlacement(MASK_BRUSH));
-        assert_eq!(e.current_edit_params.mask_count, 1);
-        assert!(e.brush_armed, "a new brush mask is ready to paint");
+        assert_eq!(e.session.current_edit_params.mask_count, 1);
+        assert!(e.session.brush_armed, "a new brush mask is ready to paint");
 
         let _ = update(&mut e, Message::BrushStroke(StrokeEvent::Begin(0.2, 0.5)));
-        assert!(e.is_painting);
-        assert_eq!(e.current_edit_params.mask_overlay, 1, "overlay shows while painting");
+        assert!(e.session.is_painting);
+        assert_eq!(e.session.current_edit_params.mask_overlay, 1, "overlay shows while painting");
         for i in 1..=20 {
             let _ = update(&mut e, Message::BrushStroke(StrokeEvent::Move(0.2 + i as f32 * 0.02, 0.5)));
         }
         let _ = update(&mut e, Message::BrushStroke(StrokeEvent::End));
-        assert!(!e.is_painting);
-        assert_eq!(e.current_edit_params.mask_overlay, 0, "overlay off again after the stroke");
+        assert!(!e.session.is_painting);
+        assert_eq!(e.session.current_edit_params.mask_overlay, 0, "overlay off again after the stroke");
 
-        let b = e.current_edit_params.brush;
+        let b = e.session.current_edit_params.brush;
         assert_eq!(b.stroke_count, 1);
         assert!(!b.strokes[0].erase);
         assert_eq!(b.strokes[0].len, 2, "a straight stroke simplifies to its ends");
 
         let _ = update(&mut e, Message::Undo);
-        assert_eq!(e.current_edit_params.brush.stroke_count, 0, "undo removes the stroke");
-        assert_eq!(e.current_edit_params.mask_count, 1, "…but not the mask");
+        assert_eq!(e.session.current_edit_params.brush.stroke_count, 0, "undo removes the stroke");
+        assert_eq!(e.session.current_edit_params.mask_count, 1, "…but not the mask");
     }
 
     /// With Straighten on, a stroke is stored where the shader reads the
@@ -517,17 +152,17 @@ mod tests {
             width: 6000,
             height: 4000,
             orientation: 1,
-            ..crate::ml::segment::tests::disc_raw(60, 40)
+            ..crate::ml::segment::test_support::disc_raw(60, 40)
         };
-        e.raw_cache.put(1, std::sync::Arc::new(raw));
-        e.current_edit_params.rotation = 10.0;
+        e.session.raw_cache.put(1, std::sync::Arc::new(raw));
+        e.session.current_edit_params.rotation = 10.0;
         let _ = update(&mut e, Message::ToggleMaskPlacement(MASK_BRUSH));
         let _ = update(&mut e, Message::BrushStroke(StrokeEvent::Begin(0.8, 0.3)));
         let _ = update(&mut e, Message::BrushStroke(StrokeEvent::End));
-        let b = e.current_edit_params.brush;
+        let b = e.session.current_edit_params.brush;
         let got = b.points_of(&b.strokes[0])[0];
         let lens = crate::core::lens::LensContext::default();
-        let want = crate::core::viewport::frame_to_layer_uv(&e.current_edit_params, &lens, 1, 6000, 4000, 0.8, 0.3);
+        let want = crate::core::viewport::frame_to_layer_uv(&e.session.current_edit_params, &lens, 1, 6000, 4000, 0.8, 0.3);
         assert!((got[0] - want.0).abs() < 1e-6 && (got[1] - want.1).abs() < 1e-6, "{got:?} vs {want:?}");
         assert!((got[0] - 0.8).abs() + (got[1] - 0.3).abs() > 0.02, "Straighten must move it: {got:?}");
     }
@@ -538,23 +173,23 @@ mod tests {
         let _ = update(&mut e, Message::ToggleMaskPlacement(MASK_BRUSH));
         e.last_modifiers = iced::keyboard::Modifiers::ALT;
         paint(&mut e, (0.2, 0.2), (0.4, 0.2));
-        assert!(e.current_edit_params.brush.strokes[0].erase);
+        assert!(e.session.current_edit_params.brush.strokes[0].erase);
         e.last_modifiers = iced::keyboard::Modifiers::default();
         let _ = update(&mut e, Message::SetBrushErase(true));
         paint(&mut e, (0.2, 0.3), (0.4, 0.3));
-        assert!(e.current_edit_params.brush.strokes[1].erase);
+        assert!(e.session.current_edit_params.brush.strokes[1].erase);
     }
 
     #[test]
     fn painting_needs_an_armed_brush() {
         let mut e = editor();
         let _ = update(&mut e, Message::ToggleMaskPlacement(MASK_RANGE));
-        assert!(!e.brush_armed, "range masks do not paint until asked");
+        assert!(!e.session.brush_armed, "range masks do not paint until asked");
         paint(&mut e, (0.2, 0.2), (0.4, 0.2));
-        assert!(e.current_edit_params.brush.is_empty());
+        assert!(e.session.current_edit_params.brush.is_empty());
         let _ = update(&mut e, Message::ToggleBrushArmed);
         paint(&mut e, (0.2, 0.2), (0.4, 0.2));
-        assert_eq!(e.current_edit_params.brush.stroke_count, 1);
+        assert_eq!(e.session.current_edit_params.brush.stroke_count, 1);
     }
 
     #[test]
@@ -565,8 +200,8 @@ mod tests {
         let _ = update(&mut e, Message::ToggleMaskPlacement(MASK_BRUSH));
         paint(&mut e, (0.1, 0.8), (0.3, 0.8));
         let _ = update(&mut e, Message::DeleteMask(0));
-        let b = e.current_edit_params.brush;
-        assert_eq!(e.current_edit_params.mask_count, 1);
+        let b = e.session.current_edit_params.brush;
+        assert_eq!(e.session.current_edit_params.mask_count, 1);
         assert_eq!(b.stroke_count, 1);
         assert_eq!(b.strokes[0].mask, 0, "the surviving stroke follows its mask down");
         assert_eq!(b.points_of(&b.strokes[0])[0], [0.1, 0.8]);
@@ -577,12 +212,34 @@ mod tests {
         let mut e = editor();
         let _ = update(&mut e, Message::ToggleMaskPlacement(MASK_RANGE));
         let _ = update(&mut e, Message::ToggleMaskOverlay(true));
-        assert_eq!(e.current_edit_params.mask_overlay, 1);
-        let json = e.current_edit_params.to_json().unwrap();
+        assert_eq!(e.session.current_edit_params.mask_overlay, 1);
+        let json = e.session.current_edit_params.to_json().unwrap();
         assert!(!json.contains("mask_overlay"), "never persisted");
-        let history = e.history_map.get(&1).unwrap().0.len();
+        let history = e.session.history_map.get(&1).unwrap().0.len();
         let _ = update(&mut e, Message::CommitEdit);
-        assert_eq!(e.history_map.get(&1).unwrap().0.len(), history, "toggling it is not an undo step");
+        assert_eq!(e.session.history_map.get(&1).unwrap().0.len(), history, "toggling it is not an undo step");
+    }
+
+    /// Press-drag places a mask and sizes it in one motion: the press
+    /// creates it and the rest of the gesture is a drag of its handle,
+    /// which the release ends.
+    #[test]
+    fn placing_a_mask_hands_the_gesture_to_its_handle() {
+        let mut e = editor();
+        let _ = update(&mut e, Message::ToggleMaskPlacement(1));
+        let _ = update(&mut e, Message::MaskPlacementStarted(0.5, 0.5));
+        assert_eq!(e.session.current_edit_params.mask_count, 1);
+        assert_eq!(e.session.selected_mask, Some(0));
+        assert!(e.is_dragging);
+        assert_eq!(e.drag_mode, DragMode::MaskHandle(MaskHandle::RadiusUniform));
+        let _ = update(&mut e, Message::MouseReleased);
+        assert!(!e.is_dragging);
+        assert_eq!(e.drag_mode, DragMode::None);
+
+        // With no placement armed, a press places nothing and starts no drag.
+        let _ = update(&mut e, Message::MaskPlacementStarted(0.2, 0.2));
+        assert_eq!(e.session.current_edit_params.mask_count, 1);
+        assert!(!e.is_dragging);
     }
 
     #[test]
@@ -591,7 +248,7 @@ mod tests {
         let _ = update(&mut e, Message::ToggleMaskPlacement(0));
         let _ = update(&mut e, Message::MaskPlacementStarted(0.5, 0.5));
         let _ = update(&mut e, Message::ToggleMaskLumaRange(true));
-        let m = e.current_edit_params.masks[0];
+        let m = e.session.current_edit_params.masks[0];
         assert_eq!((m.luma_range, m.luma_lo, m.luma_hi), (1, 0.0, 1.0));
     }
 }

@@ -1,27 +1,10 @@
 use crate::database::models::Image as ImageData;
-use crate::raw;
-use crate::ui::preview_renderer::{CropHandle, MaskHandle};
+pub use crate::session::{
+    CopyCategory, CropHandle, DefringeParam, GtParam, LensParam, LensToggle, MaskAdjustment, MaskHandle,
+    StrokeEvent,
+};
 use iced::{Point, Rectangle};
 use std::path::PathBuf;
-
-/// Which per-mask adjustment a slider targets (see MaskAdjustmentChanged)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MaskAdjustment {
-    Exposure,
-    Contrast,
-    Saturation,
-    Warmth,
-    Highlights,
-    Shadows,
-    Feather,
-    Tint,
-    Rotation,
-    Hue,
-    LumaLo,
-    LumaHi,
-    LumaSmooth,
-    ColorTolerance,
-}
 
 /// Brush tool settings (see `BrushSettingChanged`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,53 +12,6 @@ pub enum BrushSetting {
     Size,
     Feather,
     Flow,
-}
-
-/// One phase of a brush stroke on the preview, in full-image display UV.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum StrokeEvent {
-    Begin(f32, f32),
-    Move(f32, f32),
-    End,
-}
-
-/// Which GT (Uchimura) shape parameter a slider targets. Mirrors the
-/// `MaskAdjustment` pattern: one message for a family of sliders that all
-/// land in the same handler.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GtParam {
-    Contrast,
-    LinearStart,
-    LinearLength,
-    BlackTightness,
-}
-
-/// Which lens-correction slider changed (see `LensParamChanged`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LensParam {
-    ProfileDistortion,
-    ProfileVignetting,
-    Distortion,
-    Vignetting,
-    CaRed,
-    CaBlue,
-}
-
-/// Which lens-correction checkbox changed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LensToggle {
-    Profile,
-    ProfileCa,
-    Constrain,
-}
-
-/// Which defringe slider changed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DefringeParam {
-    PurpleAmount,
-    PurpleHue,
-    GreenAmount,
-    GreenHue,
 }
 
 /// The Develop sidebar's foldable sections, top to bottom (UI state only).
@@ -138,68 +74,14 @@ impl SidebarSection {
     }
 }
 
-/// Which group of adjustments a Copy Settings checkbox targets.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CopyCategory {
-    Tone,
-    Color,
-    WhiteBalance,
-    Presence,
-    Noise,
-    Detail,
-    Geometry,
-    Profile,
-    Masks,
-    Lens,
-    BlackLevels,
-}
-
-/// Application tabs/modules
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AppTab {
-    Library, // Browse, import, organize images
-    Cull,
-    Develop, // Edit selected image with full preview
-    Export,  // Batch export queue and settings
-}
-
-/// Result of a folder import operation
-#[derive(Debug, Clone)]
-pub struct ImportResult {
-    pub imported_count: usize,
-    pub skipped_count: usize,
-}
-
-/// Everything a completed develop render hands back to the UI thread.
-#[derive(Debug, Clone)]
-pub struct RenderOutput {
-    /// Image the render was made from. A render still in flight when the
-    /// user navigates must not land on the next image's viewport.
-    pub image_id: i64,
-    /// The on-screen window's pixels (RGBA), `dims` in size.
-    pub display: std::sync::Arc<[u8]>,
-    pub dims: (u32, u32),
-    /// The window `display` covers. Travels with the pixels so the viewport
-    /// never draws a buffer against a window it wasn't rendered for.
-    pub view_rect: [f32; 4],
-    /// Small whole-image render (RGBA), `overview_dims` in size: histogram
-    /// source and edited-proxy candidate.
-    pub overview: std::sync::Arc<[u8]>,
-    pub overview_dims: (u32, u32),
-    pub histogram: crate::core::histogram::HistogramData,
-    /// The params rendered, when they are the user's real edit — `None` for
-    /// the before/after peek and the crop tool's full-sensor visualisation,
-    /// neither of which may stand in for the edited image.
-    pub edit: Option<crate::core::types::EditParams>,
-    pub upload_ms: f32,
-    pub render_ms: f32,
-    pub update_ms: f32,
-}
+pub use crate::session::AppTab;
 
 /// Application messages (events)
 #[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
 pub enum Message {
+    /// A piece of work the session asked for has finished (`crate::session`).
+    Session(crate::session::SessionEvent),
     // ========== Startup Messages (Phase 23) ==========
     /// Database loading completed (async background task)
     /// Phase 23: Only send images Vec, Library created on main thread (not Send)
@@ -209,12 +91,6 @@ pub enum Message {
     ImportFolder,
     /// Placeholder for camera import workflow
     ImportFromCamera,
-    /// Background import finished (or failed — e.g. the catalogue could not
-    /// be opened).
-    ImportComplete(Result<ImportResult, String>),
-    /// Phase 28: Multi-tier cache processing completed
-    /// Result is (image_id, thumb_path, instant_path, working_path) or (image_id, error)
-    CacheProcessed(Result<(i64, String, String, String), (i64, String)>),
 
     /// User switched to a different tab
     TabChanged(AppTab),
@@ -306,7 +182,7 @@ pub enum Message {
     ResetEdits,
 
     // ========== Export Messages (Phase 89) ==========
-    SetExportFormat(crate::app::state::ExportFormat),
+    SetExportFormat(crate::session::ExportFormat),
     SetExportColorSpace(crate::core::output_space::OutputSpace),
     SetExportQuality(u8),
     ToggleExportResize(bool),
@@ -318,30 +194,6 @@ pub enum Message {
     ExportConfirmed,
     /// Stop after the image currently rendering finishes.
     CancelExport,
-    ProcessNextExport,
-    /// Carries the exported image's OWN saved edit params alongside its RAW
-    /// data. They must travel with the job rather than be read from
-    /// `editor.current_edit_params`, which is whatever image happens to be open
-    /// in Develop — a batch export previously applied that one image's edits to
-    /// every image in the queue.
-    /// (Boxed: `EditParams` is ~21 KB and would size every `Message`.)
-    ExportRawLoaded(
-        i64,
-        Box<crate::core::types::EditParams>,
-        Result<std::sync::Arc<raw::loader::RawDataResult>, String>,
-    ),
-    ExportPipelineReady(
-        i64,
-        Box<crate::core::types::EditParams>,
-        Result<
-            (
-                std::sync::Arc<crate::gpu::shared::SharedContext>,
-                std::sync::Arc<crate::gpu::shared::ImageResources>,
-            ),
-            String,
-        >,
-    ),
-    ExportSaveComplete(i64, Result<PathBuf, String>),
 
     /// Phase 60: Toggle for HUD overlay (ISO, Shutter, etc.)
     ToggleInfoHud,
@@ -395,8 +247,6 @@ pub enum Message {
     MarkForRemovalConfirmed,
     /// "Delete from Disk" button in the delete modal, and the global Enter key.
     DeleteFromDiskConfirmed,
-    /// Background hard-delete (trash move + DB row removal) batch finished.
-    HardDeleteComplete(crate::app::handlers::delete::HardDeleteOutcome),
     /// Phase 65: Undo/Redo History
     Undo,
     Redo,
@@ -491,9 +341,6 @@ pub enum Message {
     /// Help › Check for Updates, or Preferences' Check Now: check and show
     /// the result.
     CheckForUpdates,
-    /// A check finished. `manual`: the user asked, so show the result (an
-    /// automatic check only lights the title-bar badge, and only on success).
-    UpdateChecked { result: Result<Option<crate::core::updates::Available>, String>, manual: bool },
     /// The first-run prompt's checkbox.
     UpdatePromptToggled(bool),
     /// The first-run prompt's Continue: save the answer.
@@ -509,22 +356,15 @@ pub enum Message {
     AiSelectStart,
     /// Reopen an AI mask's selection.
     AiSelectRefine(usize),
-    /// The session's engine (embeddings + decoder) is ready, by session token.
-    AiEngineReady(u64, Result<crate::app::handlers::ai_mask::EngineHandle, String>),
     /// A click while AI select is open, full-image display UV.
     AiPrompt { u: f32, v: f32, positive: bool },
     /// A box dragged while AI select is open, full-image display UV corners.
     AiRect(f32, f32, f32, f32),
-    /// A selection came back from the model (saved under a new id).
-    AiMaskReady(u64, Result<crate::app::handlers::ai_mask::Selection, String>),
     AiSelectDone,
     AiSelectCancel,
-    /// AI-mask bitmaps read from disk for an image.
-    AiBitmapsLoaded(i64, Vec<(u64, Result<std::sync::Arc<crate::ml::masks::Bitmap>, String>)>),
 
     // ========== AI models (handlers::models) ==========
     ModelDownload(crate::ml::models::ModelId),
-    ModelDownloaded(crate::ml::models::ModelId, Result<(), String>),
     ModelDownloadCancel,
     ModelRemove(crate::ml::models::ModelId),
     /// Redraw while a download or an AI job reports progress.
@@ -532,43 +372,26 @@ pub enum Message {
 
     // ========== AI denoise (handlers::ai_denoise) ==========
     OpenAiDenoise,
-    AiDenoiseReady(i64, Result<crate::app::handlers::ai_denoise::EngineHandle, String>),
-    AiDenoiseCropReady(i64, Result<crate::app::handlers::ai_denoise::CropHandle, String>),
-    AiDenoiseRendered(i64, Result<crate::gpu::loupe::LoupeFrame, String>),
     AiDenoiseAmount(f32),
     /// Holding "Before" (true) or letting go.
     AiDenoiseBefore(bool),
     AiDenoisePan(f32, f32),
     AiDenoiseApply,
-    AiDenoiseApplied(i64, f32, Result<(), String>),
     AiDenoiseRemove,
     AiDenoiseCancel,
-    AiDenoiseRegenerated(i64, Result<(), String>),
 
-    /// The detail loupe for an image was prepared (or could not be).
-    LoupeReady(i64, Result<std::sync::Arc<crate::gpu::loupe::Loupe>, String>),
-    /// A detail-loupe render finished.
-    LoupeRendered(i64, Result<crate::gpu::loupe::LoupeFrame, String>),
     /// Dragging inside the loupe, by this many logical pixels.
     LoupePan(f32, f32),
     /// Arm or disarm "click the image to place the loupe".
     ToggleLoupeTarget,
     /// The image was clicked while placing the loupe (display-space UV).
     LoupeTargetPicked(f32, f32),
-    /// A noise-reduction drag paused: let the main view catch up, if this is
-    /// still the latest tick's timer.
-    NoiseSettled(u64),
     /// Ask lensfun what database it currently publishes.
     LensfunCheck,
-    LensfunChecked(Result<crate::core::lensfun::Remote, String>),
     /// Download (or update) the lensfun database.
     LensfunDownload,
-    LensfunInstalled(Result<crate::core::lensfun::Installed, String>),
     /// Re-read the lens folders — after adding XML files by hand.
     LensfunRescan,
-    /// The lens database was (re)loaded in the background. `true` when it
-    /// may have changed, so the open image's profile lookup is stale.
-    LensDbLoaded(bool),
     /// Develop's profile dropdown: this image's camera profile.
     CameraProfileSelected(crate::core::camera_profiles::ProfileChoice),
     /// Preferences: a camera's default profile — a file name, `"builtin"`,
@@ -576,20 +399,13 @@ pub enum Message {
     SetCameraProfileDefault(String, Option<String>),
     /// Download RawTherapee's profile for the open image's camera.
     DownloadCameraProfile,
-    CameraProfileDownloaded(String, Result<Option<String>, String>),
     /// Pick `.dcp` files to import.
     ImportCameraProfiles,
     CameraProfilesPicked(Option<Vec<std::path::PathBuf>>),
-    /// Imported names, and the failures.
-    CameraProfilesImported(Vec<String>, Vec<String>),
     /// Refresh every downloaded profile from RawTherapee.
     UpdateCameraProfiles,
-    CameraProfilesUpdated(Result<crate::core::camera_profiles::UpdateReport, String>),
     /// Re-read the profile folders — after adding files by hand.
     RescanCameraProfiles,
-    /// The profile folders were (re)scanned; `true` when they may have
-    /// changed, so the open image's profile may resolve differently.
-    CameraProfilesScanned(bool),
     /// Open a URL in the default browser (Preferences › Licenses).
     OpenLink(&'static str),
     /// Preferences side menu: show this page.
@@ -636,18 +452,6 @@ pub enum Message {
     /// Select previous image (Left arrow)
     SelectPreviousImage,
 
-    /// Phase 73: Preview loaded from cache/disk
-    /// Phase 76: Eager Background Decoding (width, height, pixels)
-    PreviewCached(i64, Result<(u32, u32, std::sync::Arc<[u8]>), String>),
-    /// Phase 77: Working Preview Ready
-    WorkingPreviewReady(
-        i64,
-        iced::widget::image::Handle,
-        Option<std::sync::Arc<[u8]>>,
-        /// Phase 115: Actual pixel dimensions of the byte buffer
-        (u32, u32),
-    ),
-
     // ========== Phase 25: Zoom & Pan Messages ==========
     /// User zoomed with mouse wheel (delta, cursor position)
     Zoom(f32, Point),
@@ -664,38 +468,6 @@ pub enum Message {
     /// Reset zoom and pan to default (1.0, 0.0)
     ResetView,
 
-    // ========== GPU Pipeline Messages ==========
-    /// Background RAW data loading completed
-    RawDataLoaded(i64, Result<raw::loader::RawDataResult, String>),
-    /// Background RAW preload for adjacent images completed
-    RawPreloaded(i64, Result<std::sync::Arc<raw::loader::RawDataResult>, String>),
-    /// GPU pipeline initialization completed
-    // Phase 95: GPU ImageResources loaded (wrapped in Arc for Clone)
-    ImageResourcesReady(
-        i64,
-        Result<
-            (
-                std::sync::Arc<crate::gpu::shared::SharedContext>,
-                std::sync::Arc<crate::gpu::shared::ImageResources>,
-            ),
-            String,
-        >,
-    ),
-    /// The full-resolution rebuild (`loading::trigger_full_res_upgrade`)
-    /// finished. Separate from `ImageResourcesReady` so only its own result
-    /// releases the one-at-a-time upgrade guard, and so a failed upgrade
-    /// keeps the working preview instead of failing the editor.
-    FullResReady(
-        i64,
-        Result<
-            (
-                std::sync::Arc<crate::gpu::shared::SharedContext>,
-                std::sync::Arc<crate::gpu::shared::ImageResources>,
-            ),
-            String,
-        >,
-    ),
-
     // ========== Export Messages (Phase 19) ==========
     // Legacy export messages removed
 
@@ -709,13 +481,6 @@ pub enum Message {
     /// The develop viewport's logical size changed: (width, height).
     ViewportResized(f32, f32),
 
-    /// A develop render completed. Boxed: the histogram alone is 3 KB.
-    RenderFinished(Box<RenderOutput>),
-    /// An edited proxy finished saving to disk: (image, proxy generation,
-    /// path or error). See `handlers::proxy`.
-    EditedProxySaved(i64, u64, Result<String, String>),
-    /// A saved edited proxy was read back into memory: (image, pixels).
-    EditedProxyLoaded(i64, Result<(u32, u32, std::sync::Arc<[u8]>), String>),
     /// Phase 104: Toggle Profiler Overlay
     ToggleProfiler,
 

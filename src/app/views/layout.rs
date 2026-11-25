@@ -72,7 +72,7 @@ pub(super) fn splash() -> Handle {
 /// Build the user interface
 pub fn view(editor: &RawEditor) -> Element<'_, Message> {
     // Phase 23: Show splash screen if database is still loading
-    let content = match &editor.library {
+    let content = match &editor.session.library {
         None => super::splash::view(editor),
         Some(_) => view_main(editor),
     };
@@ -120,7 +120,7 @@ pub fn view(editor: &RawEditor) -> Element<'_, Message> {
 fn view_main(editor: &RawEditor) -> Element<'_, Message> {
     let title_bar = view_title_bar(editor);
 
-    let content = match editor.current_tab {
+    let content = match editor.session.current_tab {
         AppTab::Library => view_library(editor),
         AppTab::Cull => view_cull(editor),
         AppTab::Develop => view_develop(editor),
@@ -129,7 +129,7 @@ fn view_main(editor: &RawEditor) -> Element<'_, Message> {
     // Each tab fades up through the app background as it arrives (and the
     // whole workspace does once, as the splash hands over).
     let content = crate::ui::widgets::transition::fade_through(
-        tab_index(editor.current_tab) as u64,
+        tab_index(editor.session.current_tab) as u64,
         app_background(),
         content,
     );
@@ -145,15 +145,15 @@ fn view_main(editor: &RawEditor) -> Element<'_, Message> {
     // Performance HUD does something in every tab. Render stats are
     // develop-specific, hence None elsewhere.
     let profiler = editor.show_profiler.then(|| {
-        let stats = (editor.current_tab == AppTab::Develop).then(|| {
+        let stats = (editor.session.current_tab == AppTab::Develop).then(|| {
             crate::ui::widgets::profiler_graph::RenderStats {
-                zoom_percent: editor.zoom_percent(),
-                target: editor.rendered_preview_dims,
-                view_extent: (editor.rendered_view_rect[2], editor.rendered_view_rect[3]),
+                zoom_percent: editor.session.zoom_percent(),
+                target: editor.session.rendered_preview_dims,
+                view_extent: (editor.session.rendered_view_rect[2], editor.session.rendered_view_rect[3]),
             }
         });
         container(crate::ui::widgets::profiler_graph::view_profiler_overlay(
-            &editor.profiler,
+            &editor.session.profiler,
             &editor.profiler_cache,
             stats,
         ))
@@ -389,7 +389,7 @@ fn view_title_bar(editor: &RawEditor) -> Element<'_, Message> {
     // them — `ui::widgets::indicator`. The buttons themselves are transparent
     // when active and only tint on hover, so the highlight shows through.
     let tab_buttons = TABS.iter().fold(row![].height(Length::Fill), |tabs, &(tab, icon, label)| {
-        let is_active = editor.current_tab == tab;
+        let is_active = editor.session.current_tab == tab;
         tabs.push(
             button(
                 container(
@@ -411,7 +411,7 @@ fn view_title_bar(editor: &RawEditor) -> Element<'_, Message> {
     });
     let highlight = crate::ui::widgets::indicator::indicator(
         TABS.len(),
-        tab_index(editor.current_tab),
+        tab_index(editor.session.current_tab),
         TAB_WIDTH,
         crate::ui::widgets::indicator::Appearance {
             fill: theme::colours().surface_raised,
@@ -457,7 +457,7 @@ fn view_title_bar(editor: &RawEditor) -> Element<'_, Message> {
 /// "Update available" in the title bar, after a check found a newer
 /// release. Opens the update dialog.
 fn update_badge(editor: &RawEditor) -> Option<Element<'_, Message>> {
-    let available = editor.updates.available.as_ref()?;
+    let available = editor.session.updates.available.as_ref()?;
     Some(
         container(
             button(

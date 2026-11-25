@@ -74,7 +74,7 @@ pub fn view(editor: &RawEditor) -> Element<'_, Message> {
         3,
         bg,
         column![
-            ui_text::tinted(&editor.status, theme::size::SMALL, c.text_muted),
+            ui_text::tinted(&editor.session.status, theme::size::SMALL, c.text_muted),
             Space::with_height(theme::space::L),
             sweep_bar(2.0, c.border_subtle, c.accent),
         ]

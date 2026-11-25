@@ -6,19 +6,24 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app;
-pub mod color;
-mod core;
-mod database;
 mod debug;
-mod gpu;
-mod ml;
-mod raw;
+#[cfg(target_os = "linux")]
+mod desktop;
 mod ui;
+
+// The engine (GPU pipeline, RAW decoding, colour science, catalogue, AI) is
+// the `raw-editor-core` crate. Importing its modules at the root keeps every
+// `crate::core::…`/`crate::gpu::…` path in the app working unchanged.
+use raw_editor_core::{core, database, gpu, ml, raw};
+#[cfg(test)]
+use raw_editor_core::color;
+// The editing session (`raw-editor-session`), at the same path it had in the app.
+use raw_editor_session::session;
 
 use iced::Font;
 
 /// The app icon (a crop of the wordmark for now): the window's own, and on
-/// Linux the desktop entry's (`core::desktop`).
+/// Linux the desktop entry's (`desktop`).
 pub const APP_ICON_PNG: &[u8] = include_bytes!("../assets/icon.png");
 
 pub fn main() -> iced::Result {
@@ -30,8 +35,8 @@ pub fn main() -> iced::Result {
     // A packaged install ships its own entry in /usr/share/applications.
     #[cfg(target_os = "linux")]
     if core::updates::packaged().is_none() {
-        std::thread::spawn(|| match core::desktop::install() {
-            Ok(true) => tracing::info!("Desktop entry installed for {}", core::desktop::APP_ID),
+        std::thread::spawn(|| match desktop::install() {
+            Ok(true) => tracing::info!("Desktop entry installed for {}", desktop::APP_ID),
             Ok(false) => {}
             Err(e) => tracing::warn!("Desktop entry not installed: {e}"),
         });
@@ -59,7 +64,7 @@ pub fn main() -> iced::Result {
         icon: iced::window::icon::from_file_data(APP_ICON_PNG, None).ok(),
         #[cfg(target_os = "linux")]
         platform_specific: iced::window::settings::PlatformSpecific {
-            application_id: core::desktop::APP_ID.to_string(),
+            application_id: desktop::APP_ID.to_string(),
             ..Default::default()
         },
         ..Default::default()

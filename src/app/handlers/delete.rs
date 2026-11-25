@@ -15,25 +15,10 @@
 
 use crate::app::handlers::navigation;
 use crate::app::message::Message;
-use crate::app::state::{EditorReadiness, Modal, RawEditor};
-use crate::database::models::{is_marked, with_mark};
+use crate::app::state::{Modal, RawEditor};
+use crate::app::update::run;
+use crate::session::{DeleteRequest, HardDeleteOutcome};
 use iced::Task;
-use std::path::PathBuf;
-
-#[derive(Debug, Clone)]
-pub struct HardDeleteOutcome {
-    pub deleted_ids: Vec<i64>,
-    pub failed: Vec<(i64, String)>,
-}
-
-struct DeleteTarget {
-    id: i64,
-    path: String,
-    cache_thumb: Option<String>,
-    cache_instant: Option<String>,
-    cache_working: Option<String>,
-    cache_edited: Option<String>,
-}
 
 /// Dispatcher for Message::DeleteImage: instant-unmark when every target is
 /// already marked, otherwise opens the confirmation modal.
@@ -41,281 +26,40 @@ pub fn handle_delete_image_requested(editor: &mut RawEditor) -> Task<Message> {
     if editor.active_modal != Modal::None {
         return Task::none();
     }
-    let ids = editor.action_target_ids();
-    if ids.is_empty() {
-        return Task::none();
-    }
-
-    let marked: std::collections::HashSet<i64> = editor
-        .images
-        .iter()
-        .filter(|i| is_marked(i.rating))
-        .map(|i| i.id)
-        .collect();
-    let all_marked = ids.iter().all(|id| marked.contains(id));
-
-    if all_marked {
-        if let Some(lib) = &editor.library {
-            if let Err(e) = lib.set_marked(&ids, false) {
-                tracing::error!("Failed to unmark {} image(s): {e}", ids.len());
-                editor.status = format!("Could not unmark: {e}");
-                return Task::none();
-            }
-            editor.apply_to_images(&ids, |img| img.rating = with_mark(img.rating, false));
-        }
-        editor.status = format!("Unmarked {} image(s)", ids.len());
-        Task::none()
-    } else {
-        editor.pending_delete_ids = ids;
+    if editor.session.request_delete() == DeleteRequest::Confirm {
         editor.active_modal = Modal::Delete;
-        Task::none()
     }
+    Task::none()
 }
 
 pub fn handle_mark_for_removal_confirmed(editor: &mut RawEditor) -> Task<Message> {
     if editor.active_modal != Modal::Delete {
         return Task::none();
     }
-    let ids = std::mem::take(&mut editor.pending_delete_ids);
     editor.active_modal = Modal::None;
-    if ids.is_empty() {
-        return Task::none();
+    if editor.session.mark_pending_for_removal() {
+        navigation::ensure_develop_selection_not_marked(editor)
+    } else {
+        Task::none()
     }
-
-    if let Some(lib) = &editor.library {
-        if let Err(e) = lib.set_marked(&ids, true) {
-            tracing::error!("Failed to mark {} image(s) for removal: {e}", ids.len());
-            editor.status = format!("Could not mark for removal: {e}");
-            return Task::none();
-        }
-        editor.apply_to_images(&ids, |img| img.rating = with_mark(img.rating, true));
-    }
-    editor.status = format!("Marked {} image(s) for removal", ids.len());
-
-    navigation::ensure_develop_selection_not_marked(editor)
 }
 
 pub fn handle_delete_from_disk_confirmed(editor: &mut RawEditor) -> Task<Message> {
-    if editor.active_modal != Modal::Delete || editor.is_deleting {
+    if editor.active_modal != Modal::Delete || editor.session.is_deleting {
         return Task::none();
     }
-    let ids = std::mem::take(&mut editor.pending_delete_ids);
     editor.active_modal = Modal::None;
-    if ids.is_empty() {
-        return Task::none();
-    }
-
-    let targets: Vec<DeleteTarget> = ids
-        .iter()
-        .filter_map(|id| {
-            editor.images.iter().find(|i| i.id == *id).map(|img| DeleteTarget {
-                id: img.id,
-                path: img.path.clone(),
-                cache_thumb: img.cache_path_thumb.clone(),
-                cache_instant: img.cache_path_instant.clone(),
-                cache_working: img.cache_path_working.clone(),
-                cache_edited: img.cache_path_edited.clone(),
-            })
-        })
-        .collect();
-
-    let Some(db_path) = editor.library.as_ref().map(|l| l.path().clone()) else {
-        return Task::none();
-    };
-    if targets.is_empty() {
-        return Task::none();
-    }
-
-    editor.is_deleting = true;
-    editor.status = format!("Deleting {} image(s)…", targets.len());
-    Task::perform(hard_delete_async(targets, db_path), Message::HardDeleteComplete)
+    run(editor.session.delete_pending_from_disk())
 }
 
 pub fn handle_hard_delete_complete(editor: &mut RawEditor, outcome: HardDeleteOutcome) -> Task<Message> {
-    editor.is_deleting = false;
-    let deleted: std::collections::HashSet<i64> = outcome.deleted_ids.iter().copied().collect();
-
-    // Compute the fallback selection before mutating editor.images: find how
-    // many deleted images preceded the current selection, so the adjusted
-    // index lands roughly where the user was.
-    let mut fallback: Option<i64> = None;
-    if let Some(sel) = editor.selected_image_id {
-        if deleted.contains(&sel) {
-            if let Some(old_idx) = editor.images.iter().position(|i| i.id == sel) {
-                let remaining: Vec<i64> = editor
-                    .images
-                    .iter()
-                    .filter(|i| !deleted.contains(&i.id))
-                    .map(|i| i.id)
-                    .collect();
-                if !remaining.is_empty() {
-                    let deleted_before = editor.images[..old_idx]
-                        .iter()
-                        .filter(|i| deleted.contains(&i.id))
-                        .count();
-                    let new_idx = (old_idx - deleted_before).min(remaining.len() - 1);
-                    fallback = Some(remaining[new_idx]);
-                }
-            }
-        }
-    }
-
-    editor.images.retain(|img| !deleted.contains(&img.id));
-    editor.multi_selection.retain(|id| !deleted.contains(id));
-    editor.pending_delete_ids.clear();
-
-    for id in &outcome.deleted_ids {
-        editor.preview_cache.pop(id);
-        editor.edited_proxies.pop(id);
-        editor.remove_from_raw_cache(*id);
-        editor.history_map.remove(id);
-        editor.pending_loads.remove(id);
-        editor.pending_raw_loads.remove(id);
-    }
-    editor.queued_loads.retain(|(id, _)| !deleted.contains(id));
-    editor.queued_raw_loads.retain(|(id, _)| !deleted.contains(id));
-
-    let mut nav_task = Task::none();
-    if let Some(sel) = editor.selected_image_id {
-        if deleted.contains(&sel) {
-            // The open image is gone: whatever it had unsaved has nowhere to
-            // go. `handle_image_selected` flushes first, and with the
-            // selection already moved it would write these params onto the
-            // fallback image.
-            editor.edits_dirty = false;
-            editor.working_preview_bytes = None;
-            editor.rendered_preview_bytes = None;
-            editor.image_resources = None;
-            editor.preview_resources = None;
-            editor.selected_image_id = fallback;
-            if let Some(next_id) = fallback {
-                nav_task = Task::done(Message::ImageMoved(next_id));
-            } else {
-                editor.editor_readiness = EditorReadiness::NoSelection;
-                editor.working_preview = None;
-            }
-        }
-    }
-
-    editor.status = if outcome.failed.is_empty() {
-        format!("Deleted {} image(s).", outcome.deleted_ids.len())
-    } else {
-        for (id, err) in &outcome.failed {
-            tracing::error!("Failed to delete image {}: {}", id, err);
-        }
-        format!(
-            "Deleted {} image(s), {} failed — see log.",
-            outcome.deleted_ids.len(),
-            outcome.failed.len()
-        )
-    };
-
-    nav_task
-}
-
-// ── async helpers ───────────────────────────────────────────────────────
-
-async fn hard_delete_async(targets: Vec<DeleteTarget>, db_path: PathBuf) -> HardDeleteOutcome {
-    tokio::task::spawn_blocking(move || {
-        let conn = match rusqlite::Connection::open(&db_path) {
-            Ok(c) => {
-                crate::database::library::apply_pragmas(&c);
-                c
-            }
-            Err(e) => {
-                tracing::error!("delete: failed to open DB: {}", e);
-                return HardDeleteOutcome {
-                    deleted_ids: vec![],
-                    failed: targets
-                        .into_iter()
-                        .map(|t| (t.id, format!("DB open failed: {e}")))
-                        .collect(),
-                };
-            }
-        };
-
-        let mut deleted_ids = Vec::new();
-        let mut failed = Vec::new();
-
-        for t in targets {
-            // Cache tiers are regenerable — a failure here is non-fatal and
-            // doesn't block the DB row delete.
-            for cache in [&t.cache_thumb, &t.cache_instant, &t.cache_working, &t.cache_edited]
-                .into_iter()
-                .flatten()
-            {
-                if let Err(e) = trash_or_missing(cache) {
-                    tracing::warn!(
-                        "delete: cache tier trash failed for image {} ({}): {}",
-                        t.id,
-                        cache,
-                        e
-                    );
-                }
-            }
-
-            match trash_or_missing(&t.path) {
-                // Edits go explicitly: `ON DELETE CASCADE` is inert because
-                // foreign keys are never enabled (see `apply_pragmas`), so
-                // this used to orphan an `edits` row per deleted image.
-                Ok(()) => match conn
-                    .execute("DELETE FROM edits WHERE image_id = ?1", [t.id])
-                    .and_then(|_| conn.execute("DELETE FROM images WHERE id = ?1", [t.id]))
-                {
-                    Ok(_) => deleted_ids.push(t.id),
-                    Err(e) => {
-                        tracing::error!("delete: DB row delete failed for {}: {}", t.id, e);
-                        failed.push((t.id, format!("DB delete failed: {e}")));
-                    }
-                },
-                Err(e) => {
-                    tracing::error!("delete: trash failed for image {} ({}): {}", t.id, t.path, e);
-                    failed.push((t.id, format!("Trash failed: {e}")));
-                }
-            }
-        }
-        HardDeleteOutcome { deleted_ids, failed }
-    })
-    .await
-    .unwrap_or_else(|e| {
-        tracing::error!("delete: task join failed: {}", e);
-        HardDeleteOutcome { deleted_ids: vec![], failed: vec![] }
-    })
-}
-
-/// Treat "file already gone" as success — the goal state (file not present)
-/// is already achieved, so this isn't an error worth blocking the DB delete on.
-fn trash_or_missing(path: &str) -> Result<(), String> {
-    let p = std::path::Path::new(path);
-    if !p.exists() {
-        return Ok(());
-    }
-    trash::delete(p).map_err(|e| e.to_string())
+    let moved = editor.session.hard_delete_complete(outcome);
+    navigation::apply_moved(moved)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Not run in normal `cargo test` (needs a real desktop trash location,
-    /// which CI/sandboxed environments may lack) — run explicitly with
-    /// `cargo test --lib trash_crate_moves_file -- --ignored` to verify the
-    /// `trash` crate actually works on a given machine before relying on it.
-    #[test]
-    #[ignore]
-    fn trash_crate_moves_file() {
-        let dir = std::env::temp_dir().join("raw-editor-trash-smoke-test");
-        std::fs::create_dir_all(&dir).unwrap();
-        let scratch = dir.join("scratch.txt");
-        std::fs::write(&scratch, b"smoke test").unwrap();
-        assert!(scratch.exists());
-
-        trash_or_missing(scratch.to_str().unwrap()).expect("trash::delete failed");
-        assert!(!scratch.exists(), "file should be gone from its original location");
-
-        // Missing files are treated as already-succeeded, not an error.
-        trash_or_missing(scratch.to_str().unwrap()).expect("missing file should not error");
-    }
 
     /// The doomed image can still be dirty when the background delete lands.
     /// `handle_image_selected`, which follows via `ImageSelected`, flushes
@@ -331,20 +75,20 @@ mod tests {
         let a = lib.import_image("/x/a.nef", "a.nef").unwrap();
         let b = lib.import_image("/x/b.nef", "b.nef").unwrap();
         let mut e = RawEditor::new().0;
-        e.images = lib.get_all_images().unwrap();
-        e.library = Some(lib);
-        e.selected_image_id = Some(a);
-        e.current_edit_params.exposure = 2.0;
-        e.edits_dirty = true;
+        e.session.images = lib.get_all_images().unwrap();
+        e.session.library = Some(lib);
+        e.session.selected_image_id = Some(a);
+        e.session.current_edit_params.exposure = 2.0;
+        e.session.edits_dirty = true;
 
         let outcome = HardDeleteOutcome { deleted_ids: vec![a], failed: vec![] };
-        let _ = crate::app::update::update(&mut e, Message::HardDeleteComplete(outcome));
-        assert_eq!(e.selected_image_id, Some(b));
+        let _ = crate::app::update::update(&mut e, Message::Session(crate::session::SessionEvent::HardDeleteComplete(outcome)));
+        assert_eq!(e.session.selected_image_id, Some(b));
         let _ = crate::app::update::update(&mut e, Message::ImageMoved(b));
 
-        let saved = e.library.as_ref().unwrap().load_edit_params(b).unwrap_or_default();
+        let saved = e.session.library.as_ref().unwrap().load_edit_params(b).unwrap_or_default();
         assert_eq!(saved.exposure, 0.0, "the deleted image's edits landed on its neighbour");
-        assert_eq!(e.current_edit_params.exposure, 0.0);
+        assert_eq!(e.session.current_edit_params.exposure, 0.0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

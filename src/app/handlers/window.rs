@@ -85,7 +85,7 @@ pub fn handle_set_preferences_section(
 
 pub fn handle_open_link(editor: &mut RawEditor, url: &'static str) -> Task<Message> {
     open_url(url);
-    editor.status = format!("Opened {url}");
+    editor.session.status = format!("Opened {url}");
     Task::none()
 }
 
@@ -94,16 +94,16 @@ pub fn handle_open_app_folder(
     folder: crate::core::paths::AppFolder,
 ) -> Task<Message> {
     let Some(path) = folder.path() else {
-        editor.status = "This platform reports no cache folder".to_string();
+        editor.session.status = "This platform reports no cache folder".to_string();
         return Task::none();
     };
-    editor.status = format!("Opened {}", path.display());
+    editor.session.status = format!("Opened {}", path.display());
     Task::future(tokio::task::spawn_blocking(move || reveal_folder(&path))).discard()
 }
 
 pub fn handle_open_repository(editor: &mut RawEditor) -> Task<Message> {
     open_url(REPO_URL);
-    editor.status = format!("Opened {REPO_URL}");
+    editor.session.status = format!("Opened {REPO_URL}");
     Task::none()
 }
 
@@ -120,13 +120,13 @@ pub fn query_scale_factor() -> Task<Message> {
 /// The develop render target is sized in physical pixels, so a new scale
 /// factor needs a new render to stay sharp.
 pub fn handle_scale_factor_changed(editor: &mut RawEditor, scale: f32) -> Task<Message> {
-    if !scale.is_finite() || scale <= 0.0 || (scale - editor.scale_factor).abs() < 0.001 {
+    if !scale.is_finite() || scale <= 0.0 || (scale - editor.session.scale_factor).abs() < 0.001 {
         return Task::none();
     }
     tracing::info!("Display scale factor: {scale}");
-    editor.scale_factor = scale;
-    if editor.current_tab == crate::app::message::AppTab::Develop
-        && matches!(editor.editor_readiness, crate::app::state::EditorReadiness::Ready(_))
+    editor.session.scale_factor = scale;
+    if editor.session.current_tab == crate::app::message::AppTab::Develop
+        && matches!(editor.session.editor_readiness, crate::app::state::EditorReadiness::Ready(_))
     {
         return crate::app::handlers::navigation::throttled_render(editor);
     }
@@ -144,10 +144,10 @@ pub fn handle_maximize_window() -> Task<Message> {
 pub fn handle_close_window(editor: &mut RawEditor) -> Task<Message> {
     // Last chance to persist: a slider moved but never released still has its
     // edits only in memory.
-    editor.flush_edits();
+    editor.session.flush_edits();
     // And the open image's edited thumbnail, synchronously: a spawned save
     // would never get to run.
-    crate::app::handlers::proxy::persist_now(editor);
+    editor.session.persist_proxy_now();
     window::get_latest().and_then(window::close)
 }
 
@@ -203,25 +203,25 @@ pub fn handle_modal_confirm(editor: &mut RawEditor) -> Task<Message> {
         // Help, Preferences and About have nothing to confirm; Enter closes
         // them, which is the least surprising thing a dialog can do.
         Modal::Help | Modal::Preferences | Modal::About => handle_close_modal(editor),
-        Modal::AiModel => match editor.models.offered {
-            Some(id) if editor.models.job.is_none() => crate::app::handlers::models::handle_download(editor, id),
+        Modal::AiModel => match editor.model_offer {
+            Some(id) if editor.session.models.job.is_none() => crate::app::handlers::models::handle_download(editor, id),
             _ => Task::none(),
         },
         Modal::AiDenoise => crate::app::handlers::ai_denoise::handle_apply(editor),
         Modal::UpdatePrompt => crate::app::handlers::updates::handle_prompt_confirmed(editor),
-        Modal::Update if editor.updates.available.is_some() && !editor.updates.checking => {
+        Modal::Update if editor.session.updates.available.is_some() && !editor.session.updates.checking => {
             crate::app::handlers::updates::handle_open_page(editor)
         }
         Modal::Update => handle_close_modal(editor),
         // No modal: Enter finishes an AI selection, if one is open.
-        Modal::None if editor.ai_select.is_some() => crate::app::handlers::ai_mask::handle_done(editor),
+        Modal::None if editor.session.ai_select.is_some() => crate::app::handlers::ai_mask::handle_done(editor),
         Modal::None => Task::none(),
     }
 }
 
 pub fn handle_close_modal(editor: &mut RawEditor) -> Task<Message> {
     editor.active_modal = Modal::None;
-    editor.pending_delete_ids.clear();
+    editor.session.pending_delete_ids.clear();
     editor.pending_remove_folder = None;
     editor.drop_import = Default::default();
     Task::none()
@@ -232,37 +232,37 @@ pub fn handle_escape(editor: &mut RawEditor) -> Task<Message> {
         // Leaving a typed slider value is all this press means.
     } else if editor.active_modal != Modal::None {
         editor.active_modal = Modal::None;
-        editor.pending_delete_ids.clear();
+        editor.session.pending_delete_ids.clear();
         editor.pending_remove_folder = None;
         editor.drop_import = Default::default();
-    } else if editor.ai_select.is_some() {
+    } else if editor.session.ai_select.is_some() {
         return crate::app::handlers::ai_mask::handle_cancel(editor);
-    } else if editor.is_wb_picking {
-        editor.is_wb_picking = false;
-        editor.status.clear();
-    } else if editor.loupe.targeting {
-        editor.loupe.targeting = false;
-        editor.status.clear();
-    } else if editor.is_leveling {
-        editor.is_leveling = false;
-        editor.status.clear();
-    } else if editor.mask_tool != crate::app::state::MaskTool::Inactive {
-        editor.mask_tool = crate::app::state::MaskTool::Inactive;
-        editor.status.clear();
-    } else if editor.selected_mask.is_some() {
-        editor.selected_mask = None;
+    } else if editor.session.is_wb_picking {
+        editor.session.is_wb_picking = false;
+        editor.session.status.clear();
+    } else if editor.session.loupe.targeting {
+        editor.session.loupe.targeting = false;
+        editor.session.status.clear();
+    } else if editor.session.is_leveling {
+        editor.session.is_leveling = false;
+        editor.session.status.clear();
+    } else if editor.session.mask_tool != crate::app::state::MaskTool::Inactive {
+        editor.session.mask_tool = crate::app::state::MaskTool::Inactive;
+        editor.session.status.clear();
+    } else if editor.session.selected_mask.is_some() {
+        editor.session.selected_mask = None;
         editor.canvas_cache.clear();
-    } else if editor.multi_selection.len() > 1 {
+    } else if editor.session.multi_selection.len() > 1 {
         // Last in the chain: collapse a multi-selection back to just the
         // current image. Only fires when there is a real multi-selection, so
         // Escape never clears an ordinary single selection out from under the
         // user.
-        editor.multi_selection.clear();
-        if let Some(id) = editor.selected_image_id {
-            editor.multi_selection.insert(id);
+        editor.session.multi_selection.clear();
+        if let Some(id) = editor.session.selected_image_id {
+            editor.session.multi_selection.insert(id);
         }
-        editor.selection_anchor = editor.selected_image_id;
-        editor.status.clear();
+        editor.selection_anchor = editor.session.selected_image_id;
+        editor.session.status.clear();
     }
     Task::none()
 }
@@ -302,63 +302,63 @@ pub fn handle_set_thumbnail_size(editor: &mut RawEditor, size: f32) -> Task<Mess
 
 pub fn handle_set_cache_capacity(editor: &mut RawEditor, val: f32) -> Task<Message> {
     let new_capacity = (val as usize).clamp(20, 500);
-    editor.cache_capacity = new_capacity;
+    editor.session.cache_capacity = new_capacity;
     if let Some(non_zero_cap) = std::num::NonZeroUsize::new(new_capacity) {
-        editor.preview_cache.resize(non_zero_cap);
+        editor.session.preview_cache.resize(non_zero_cap);
     }
     Task::none()
 }
 
 pub fn handle_set_raw_preload_budget(editor: &mut RawEditor, val: f32) -> Task<Message> {
     let budget_mb = (val.max(0.0) as u32).min(4096);
-    editor.raw_preload_budget_mb = budget_mb;
+    editor.session.raw_preload_budget_mb = budget_mb;
 
     if budget_mb == 0 {
-        editor.raw_cache.clear();
-        editor.raw_cache_bytes = 0;
+        editor.session.raw_cache.clear();
+        editor.session.raw_cache_bytes = 0;
         // Cancel the neighbours' preloads, but not one Develop is waiting on:
         // the selection is left to its running preload rather than decoded
         // twice, so dropping it would leave `Loading` with nothing in flight.
         // (It stays in the running head: anything ahead of it only goes.)
-        let awaited = match editor.editor_readiness {
-            crate::app::state::EditorReadiness::Loading(id) if editor.selected_image_id == Some(id) => Some(id),
+        let awaited = match editor.session.editor_readiness {
+            crate::app::state::EditorReadiness::Loading(id) if editor.session.selected_image_id == Some(id) => Some(id),
             _ => None,
         };
-        editor.queued_raw_loads.retain(|(id, _)| Some(*id) == awaited);
-        editor.pending_raw_loads.retain(|id| Some(*id) == awaited);
+        editor.session.queued_raw_loads.retain(|(id, _)| Some(*id) == awaited);
+        editor.session.pending_raw_loads.retain(|id| Some(*id) == awaited);
     } else {
-        editor.evict_raw_cache_to_budget();
+        editor.session.evict_raw_cache_to_budget();
     }
 
     Task::none()
 }
 
 pub fn handle_set_preview_preload_behind(editor: &mut RawEditor, val: f32) -> Task<Message> {
-    editor.preview_preload_behind =
+    editor.session.preview_preload_behind =
         (val.max(0.0) as usize).min(crate::app::state::PREVIEW_PRELOAD_BEHIND_MAX);
     Task::none()
 }
 
 pub fn handle_set_preview_preload_ahead(editor: &mut RawEditor, val: f32) -> Task<Message> {
-    editor.preview_preload_ahead =
+    editor.session.preview_preload_ahead =
         (val.max(0.0) as usize).min(crate::app::state::PREVIEW_PRELOAD_AHEAD_MAX);
     Task::none()
 }
 
 pub fn handle_set_raw_preload_behind(editor: &mut RawEditor, val: f32) -> Task<Message> {
-    editor.raw_preload_behind =
+    editor.session.raw_preload_behind =
         (val.max(0.0) as usize).min(crate::app::state::RAW_PRELOAD_BEHIND_MAX);
     Task::none()
 }
 
 pub fn handle_set_raw_preload_ahead(editor: &mut RawEditor, val: f32) -> Task<Message> {
-    editor.raw_preload_ahead =
+    editor.session.raw_preload_ahead =
         (val.max(0.0) as usize).min(crate::app::state::RAW_PRELOAD_AHEAD_MAX);
     Task::none()
 }
 
 pub fn handle_set_min_free_ram(editor: &mut RawEditor, val: f32) -> Task<Message> {
-    editor.min_free_ram_mb =
+    editor.session.min_free_ram_mb =
         (val.max(0.0) as u32).min(crate::app::state::MIN_FREE_RAM_MB_MAX);
     Task::none()
 }
@@ -374,26 +374,26 @@ pub fn handle_save_preferences(editor: &mut RawEditor) -> Task<Message> {
 pub fn handle_reset_preferences(editor: &mut RawEditor) -> Task<Message> {
     let defaults = crate::core::settings::AppSettings::default();
 
-    editor.cache_capacity = defaults.cache_capacity;
-    if let Some(non_zero_cap) = std::num::NonZeroUsize::new(editor.cache_capacity) {
-        editor.preview_cache.resize(non_zero_cap);
+    editor.session.cache_capacity = defaults.cache_capacity;
+    if let Some(non_zero_cap) = std::num::NonZeroUsize::new(editor.session.cache_capacity) {
+        editor.session.preview_cache.resize(non_zero_cap);
     }
 
-    editor.raw_preload_budget_mb = defaults.raw_preload_budget_mb;
+    editor.session.raw_preload_budget_mb = defaults.raw_preload_budget_mb;
     editor.thumbnail_size = defaults.thumbnail_size;
-    editor.auto_advance = defaults.auto_advance;
+    editor.session.auto_advance = defaults.auto_advance;
     editor.histogram_enabled = defaults.histogram_enabled;
-    editor.preview_preload_behind = defaults.preview_preload_behind;
-    editor.preview_preload_ahead = defaults.preview_preload_ahead;
-    editor.raw_preload_behind = defaults.raw_preload_behind;
-    editor.raw_preload_ahead = defaults.raw_preload_ahead;
-    editor.min_free_ram_mb = defaults.min_free_ram_mb;
+    editor.session.preview_preload_behind = defaults.preview_preload_behind;
+    editor.session.preview_preload_ahead = defaults.preview_preload_ahead;
+    editor.session.raw_preload_behind = defaults.raw_preload_behind;
+    editor.session.raw_preload_ahead = defaults.raw_preload_ahead;
+    editor.session.min_free_ram_mb = defaults.min_free_ram_mb;
     editor.reduce_motion = defaults.reduce_motion;
     crate::ui::motion::set_reduced(editor.reduce_motion);
     editor.appearance = crate::ui::theme::Appearance::default();
     crate::ui::theme::set_appearance(editor.appearance);
 
-    editor.evict_raw_cache_to_budget();
+    editor.session.evict_raw_cache_to_budget();
     editor.save_preferences();
     Task::none()
 }
@@ -418,12 +418,12 @@ mod tests {
         let lib = crate::database::library::Library::open_at(&dir.join("c.db")).unwrap();
         let a = lib.import_image("/x/a.nef", "a.nef").unwrap();
         let mut e = RawEditor::new().0;
-        e.library = Some(lib);
-        e.selected_image_id = Some(a);
-        e.current_edit_params.exposure = 1.5;
-        e.edits_dirty = true;
+        e.session.library = Some(lib);
+        e.session.selected_image_id = Some(a);
+        e.session.current_edit_params.exposure = 1.5;
+        e.session.edits_dirty = true;
         let _ = crate::app::update::update(&mut e, Message::CloseWindow);
-        let saved = e.library.as_ref().unwrap().load_edit_params(a).unwrap();
+        let saved = e.session.library.as_ref().unwrap().load_edit_params(a).unwrap();
         assert_eq!(saved.exposure, 1.5);
         let _ = std::fs::remove_dir_all(&dir);
     }

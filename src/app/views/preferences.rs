@@ -187,7 +187,7 @@ fn general(editor: &RawEditor) -> Element<'_, Message> {
         .spacing(theme::space::XS),
         group_label("Workflow"),
         column![
-            checkbox("Auto-advance", editor.auto_advance)
+            checkbox("Auto-advance", editor.session.auto_advance)
                 .on_toggle(|_| Message::ToggleAutoAdvance)
                 .size(16)
                 .spacing(theme::space::M)
@@ -230,7 +230,7 @@ fn update_controls(editor: &RawEditor) -> Element<'_, Message> {
     }
     column![
         column![
-            checkbox("Check for updates at startup", editor.update_check == Some(true))
+            checkbox("Check for updates at startup", editor.session.update_check == Some(true))
                 .on_toggle(|_| Message::ToggleUpdateCheck)
                 .size(16)
                 .spacing(theme::space::M)
@@ -241,7 +241,7 @@ fn update_controls(editor: &RawEditor) -> Element<'_, Message> {
         .spacing(theme::space::XS),
         row![
             button(text("Check Now").size(theme::size::BODY))
-                .on_press_maybe((!editor.updates.checking).then_some(Message::CheckForUpdates))
+                .on_press_maybe((!editor.session.updates.checking).then_some(Message::CheckForUpdates))
                 .padding([theme::space::S, theme::space::XL])
                 .style(ui::styles::NeutralButton::style),
             version,
@@ -255,7 +255,7 @@ fn update_controls(editor: &RawEditor) -> Element<'_, Message> {
 
 /// The last Check Now's result, under its button.
 fn update_status(editor: &RawEditor) -> Option<Element<'_, Message>> {
-    let st = &editor.updates;
+    let st = &editor.session.updates;
     let warn = theme::colours().warn;
     let ok = theme::colours().text_secondary;
     let line = |s: String, color: Color| -> Element<'_, Message> {
@@ -286,28 +286,28 @@ fn update_status(editor: &RawEditor) -> Option<Element<'_, Message>> {
 }
 
 fn performance(editor: &RawEditor) -> Element<'_, Message> {
-    let used_mb = editor.raw_cache_bytes as f32 / (1024.0 * 1024.0);
-    let budget_mb = editor.raw_preload_budget_mb as f32;
+    let used_mb = editor.session.raw_cache_bytes as f32 / (1024.0 * 1024.0);
+    let budget_mb = editor.session.raw_preload_budget_mb as f32;
 
     column![
         heading("Performance"),
         readout(format!("RAW Cache Usage: {used_mb:.0} / {budget_mb:.0} MB")),
         group_label("Previews"),
-        value_row("Memory Cache Size:", format!("{} Images", editor.cache_capacity)),
-        slider(20.0..=500.0, editor.cache_capacity as f32, Message::SetCacheCapacity)
+        value_row("Memory Cache Size:", format!("{} Images", editor.session.cache_capacity)),
+        slider(20.0..=500.0, editor.session.cache_capacity as f32, Message::SetCacheCapacity)
             .on_release(Message::SavePreferences)
             .step(10.0_f32)
             .style(ui::styles::ProSlider::style),
         hint("Controls how many high-res previews are kept in RAM."),
         value_row(
             "Preview Preload (Behind/Ahead):",
-            format!("{}/{}", editor.preview_preload_behind, editor.preview_preload_ahead),
+            format!("{}/{}", editor.session.preview_preload_behind, editor.session.preview_preload_ahead),
         ),
         labelled_slider(
             "Behind",
             slider(
                 0.0..=crate::app::state::PREVIEW_PRELOAD_BEHIND_MAX as f32,
-                editor.preview_preload_behind as f32,
+                editor.session.preview_preload_behind as f32,
                 Message::SetPreviewPreloadBehind,
             )
             .on_release(Message::SavePreferences)
@@ -318,7 +318,7 @@ fn performance(editor: &RawEditor) -> Element<'_, Message> {
             "Ahead",
             slider(
                 0.0..=crate::app::state::PREVIEW_PRELOAD_AHEAD_MAX as f32,
-                editor.preview_preload_ahead as f32,
+                editor.session.preview_preload_ahead as f32,
                 Message::SetPreviewPreloadAhead,
             )
             .on_release(Message::SavePreferences)
@@ -327,21 +327,21 @@ fn performance(editor: &RawEditor) -> Element<'_, Message> {
         ),
         hint("How many working previews stay queued around your current image."),
         group_label("RAW Files"),
-        value_row("RAW Preload Budget:", format!("{} MB", editor.raw_preload_budget_mb)),
-        slider(0.0..=4096.0, editor.raw_preload_budget_mb as f32, Message::SetRawPreloadBudget)
+        value_row("RAW Preload Budget:", format!("{} MB", editor.session.raw_preload_budget_mb)),
+        slider(0.0..=4096.0, editor.session.raw_preload_budget_mb as f32, Message::SetRawPreloadBudget)
             .on_release(Message::SavePreferences)
             .step(64.0_f32)
             .style(ui::styles::ProSlider::style),
         hint("Develop RAW preloading budget. Set to 0 to disable RAW preloading."),
         value_row(
             "RAW Preload (Behind/Ahead):",
-            format!("{}/{}", editor.raw_preload_behind, editor.raw_preload_ahead),
+            format!("{}/{}", editor.session.raw_preload_behind, editor.session.raw_preload_ahead),
         ),
         labelled_slider(
             "Behind",
             slider(
                 0.0..=crate::app::state::RAW_PRELOAD_BEHIND_MAX as f32,
-                editor.raw_preload_behind as f32,
+                editor.session.raw_preload_behind as f32,
                 Message::SetRawPreloadBehind,
             )
             .on_release(Message::SavePreferences)
@@ -352,7 +352,7 @@ fn performance(editor: &RawEditor) -> Element<'_, Message> {
             "Ahead",
             slider(
                 0.0..=crate::app::state::RAW_PRELOAD_AHEAD_MAX as f32,
-                editor.raw_preload_ahead as f32,
+                editor.session.raw_preload_ahead as f32,
                 Message::SetRawPreloadAhead,
             )
             .on_release(Message::SavePreferences)
@@ -378,15 +378,15 @@ fn memory(editor: &RawEditor) -> Element<'_, Message> {
         group_label("Memory Safety"),
         value_row(
             "Keep RAM Free:",
-            if editor.min_free_ram_mb == 0 {
+            if editor.session.min_free_ram_mb == 0 {
                 "Off".to_string()
             } else {
-                format!("{} MB", editor.min_free_ram_mb)
+                format!("{} MB", editor.session.min_free_ram_mb)
             },
         ),
         slider(
             0.0..=crate::app::state::MIN_FREE_RAM_MB_MAX as f32,
-            editor.min_free_ram_mb as f32,
+            editor.session.min_free_ram_mb as f32,
             Message::SetMinFreeRam,
         )
         .on_release(Message::SavePreferences)
@@ -419,11 +419,11 @@ impl std::fmt::Display for DefaultOption {
 /// RawTherapee's open-source ones and keeping them current, and importing
 /// the user's own (`handlers::camera_profiles`).
 fn camera_profiles(editor: &RawEditor) -> Element<'_, Message> {
-    use crate::app::state::ProfileJob;
+    use crate::session::ProfileJob;
     use crate::core::camera_profiles::{camera_name, Catalog, Origin};
 
     let catalog = Catalog::loaded();
-    let state = &editor.camera_profiles;
+    let state = &editor.session.camera_profiles;
     let idle = state.busy.is_none();
 
     let installed: Element<'_, Message> = match &catalog {
@@ -439,7 +439,7 @@ fn camera_profiles(editor: &RawEditor) -> Element<'_, Message> {
                 label: p.name.clone(),
             }));
             options.push(DefaultOption { value: Some("builtin".to_string()), label: "None (built-in colour)".to_string() });
-            let current = editor.camera_profile_defaults.get(&camera).cloned();
+            let current = editor.session.camera_profile_defaults.get(&camera).cloned();
             let selected = options.iter().find(|o| o.value == current).or(options.first()).cloned();
             let key = camera.clone();
             let default = iced::widget::pick_list(options, selected, move |o: DefaultOption| {
@@ -504,7 +504,7 @@ fn camera_profiles(editor: &RawEditor) -> Element<'_, Message> {
     };
 
     // Download for the image open in Develop, when there is one.
-    let open_camera = editor.current_metadata.as_ref().map(|m| camera_name(&m.make, &m.model));
+    let open_camera = editor.session.current_metadata.as_ref().map(|m| camera_name(&m.make, &m.model));
     let mut actions = row![].spacing(theme::space::M);
     if let Some(camera) = &open_camera {
         actions = actions.push(
@@ -592,11 +592,11 @@ fn card_title_owned(title: String) -> Element<'static, Message> {
 /// The lensfun database: what is installed and where from, downloading and
 /// updating it (`handlers::lensfun`), and the folder for the user's own files.
 fn lens_profiles(editor: &RawEditor) -> Element<'_, Message> {
-    use crate::app::state::LensfunJob;
+    use crate::session::LensfunJob;
     use crate::core::lensfun::format_date;
 
     let db = crate::core::lens::LensDb::loaded();
-    let state = &editor.lensfun;
+    let state = &editor.session.lensfun;
     let busy = state.busy;
     let own_dir = crate::core::paths::lensfun_dir();
     let downloaded_dir = crate::core::paths::lensfun_updates_dir();
@@ -749,8 +749,8 @@ fn ai_models(editor: &RawEditor) -> Element<'_, Message> {
     let cards = ALL.iter().fold(column![].spacing(theme::space::XL), |list, model| {
         let id = model.id;
         let installed = is_installed(id);
-        let job = editor.models.job.as_ref().filter(|(j, _)| *j == id);
-        let busy = editor.models.job.is_some();
+        let job = editor.session.models.job.as_ref().filter(|(j, _)| *j == id);
+        let busy = editor.session.models.job.is_some();
         let action: Element<'_, Message> = match (job, installed) {
             (Some((_, progress)), _) => row![
                 iced::widget::progress_bar(0.0..=1.0, progress.fraction()).height(6).width(Length::Fixed(160.0)),
@@ -789,7 +789,7 @@ fn ai_models(editor: &RawEditor) -> Element<'_, Message> {
             hint(model.licence),
         ]
         .spacing(theme::space::M);
-        if let Some((_, e)) = editor.models.error.as_ref().filter(|(e, _)| *e == id) {
+        if let Some((_, e)) = editor.session.models.error.as_ref().filter(|(e, _)| *e == id) {
             body = body.push(text(format!("Download failed: {e}")).size(theme::size::SMALL).style(|_| text::Style {
                 color: Some(theme::colours().warn),
             }));
@@ -977,7 +977,7 @@ const LIBRARIES: &[Credit] = &[
     credit("chrono", &["chrono"], "MIT OR Apache-2.0", "Dates and times", "https://github.com/chronotope/chrono"),
     credit("dirs", &["dirs"], "MIT OR Apache-2.0", "Platform folder locations", "https://github.com/soc/dirs-rs"),
     credit("half", &["half"], "MIT OR Apache-2.0", "16-bit floats", "https://github.com/VoidStarKat/half-rs"),
-    credit("iced", &["iced", "iced_wgpu"], "MIT", "GUI toolkit", "https://github.com/iced-rs/iced"),
+    credit("iced", &["iced"], "MIT", "GUI toolkit", "https://github.com/iced-rs/iced"),
     credit("iced_aw", &["iced_aw"], "MIT", "Menu bar", "https://github.com/iced-rs/iced_aw"),
     credit("image · png", &["image", "png"], "MIT OR Apache-2.0", "Image decoding, PNG export", "https://github.com/image-rs/image"),
     credit("jpeg-encoder", &["jpeg-encoder"], "(MIT OR Apache-2.0) AND IJG", "JPEG export", "https://github.com/vstroebel/jpeg-encoder"),
@@ -1001,7 +1001,7 @@ const LIBRARIES: &[Credit] = &[
     credit("ureq", &["ureq"], "MIT OR Apache-2.0", "Downloading lens profiles", "https://github.com/algesten/ureq"),
     credit("walkdir", &["walkdir"], "Unlicense OR MIT", "Folder import", "https://github.com/BurntSushi/walkdir"),
     credit("webpki-roots", &[], "CDLA-Permissive-2.0", "Mozilla's trusted root certificates, for HTTPS", "https://github.com/rustls/webpki-roots"),
-    credit("wgpu", &[], "MIT OR Apache-2.0", "GPU rendering", "https://github.com/gfx-rs/wgpu"),
+    credit("wgpu", &["wgpu"], "MIT OR Apache-2.0", "GPU rendering", "https://github.com/gfx-rs/wgpu"),
     credit("zune-jpeg", &["zune-jpeg", "zune-core"], "MIT OR Apache-2.0 OR Zlib", "Fast JPEG decoding (fast-jpeg builds)", "https://github.com/etemesi254/zune-image"),
 ];
 
@@ -1194,28 +1194,46 @@ fn rule() -> Element<'static, Message> {
 mod tests {
     use super::*;
 
-    /// Every `[dependencies]` entry in Cargo.toml must be credited, so adding
-    /// a crate without a Licenses line fails here rather than going unnoticed.
+    /// Every `[dependencies]` entry of the app AND of the engine crate (both
+    /// ship in the binary) must be credited, so adding a crate without a
+    /// Licenses line fails here rather than going unnoticed.
     #[test]
     fn every_direct_dependency_is_credited() {
-        let manifest = include_str!("../../../Cargo.toml");
-        let deps = manifest
-            .split("\n[dependencies]\n")
-            .nth(1)
-            .and_then(|rest| rest.split("\n[").next())
-            .expect("Cargo.toml has a [dependencies] table");
+        let manifests = [
+            ("Cargo.toml", include_str!("../../../Cargo.toml")),
+            (
+                "crates/raw-editor-core/Cargo.toml",
+                include_str!("../../../crates/raw-editor-core/Cargo.toml"),
+            ),
+            (
+                "crates/raw-editor-session/Cargo.toml",
+                include_str!("../../../crates/raw-editor-session/Cargo.toml"),
+            ),
+        ];
         let credited: Vec<&str> =
             LIBRARIES.iter().flat_map(|c| c.crates.iter().copied()).collect();
 
         let mut missing = Vec::new();
-        for line in deps.lines().map(str::trim) {
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            let Some((name, _)) = line.split_once('=') else { continue };
-            let name = name.trim();
-            if !credited.contains(&name) {
-                missing.push(name);
+        for (file, manifest) in manifests {
+            let deps = manifest
+                .split("\n[dependencies]\n")
+                .nth(1)
+                .and_then(|rest| rest.split("\n[").next())
+                .unwrap_or_else(|| panic!("{file} has a [dependencies] table"));
+            for line in deps.lines().map(str::trim) {
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                let Some((name, _)) = line.split_once('=') else { continue };
+                // `tokio.workspace = true` names `tokio`.
+                let name = name.trim().trim_end_matches(".workspace");
+                // Our own crates, not third-party ones.
+                if name == "raw-editor-core" || name == "raw-editor-session" {
+                    continue;
+                }
+                if !credited.contains(&name) {
+                    missing.push(format!("{name} ({file})"));
+                }
             }
         }
         assert!(missing.is_empty(), "not credited in Preferences › Licenses: {missing:?}");

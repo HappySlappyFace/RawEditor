@@ -150,7 +150,7 @@ fn thumbnail_state(img: &ImageData) -> ThumbnailState {
 /// Delegates to the shared predicate so the grid and the filmstrip can never
 /// disagree about what looks selected.
 fn is_image_selected(editor: &RawEditor, image_id: i64) -> bool {
-    editor.is_selected(image_id)
+    editor.session.is_selected(image_id)
 }
 
 fn metric_pill<'a>(label: &'a str, value: impl ToString, color: Color) -> Element<'a, Message> {
@@ -212,7 +212,7 @@ fn compact_path(path: &str) -> String {
 
 fn collect_folder_stats(editor: &RawEditor) -> Vec<(String, usize)> {
     let mut counts: HashMap<String, usize> = HashMap::new();
-    for image in &editor.images {
+    for image in &editor.session.images {
         if let Some(parent) = std::path::Path::new(&image.path).parent() {
             let key = parent.to_string_lossy().to_string();
             *counts.entry(key).or_insert(0) += 1;
@@ -516,7 +516,7 @@ fn view_filter_bar<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
         button(label)
             .on_press(Message::SetMinRating(rating))
             .padding([theme::space::XS, theme::space::L])
-            .style(ui::styles::chip(editor.min_filter_rating == rating))
+            .style(ui::styles::chip(editor.session.min_filter_rating == rating))
     };
     let mut bar = row![chip(text("All").size(theme::size::SMALL).into(), 0)]
         .spacing(theme::space::S)
@@ -557,7 +557,7 @@ fn view_library_sidebar<'a>(
     folder_stats: &[(String, usize)],
     total_count: usize,
 ) -> Element<'a, Message> {
-    let selected_filter = editor.library_folder_filter.clone();
+    let selected_filter = editor.session.library_folder_filter.clone();
     let all_active = selected_filter.is_none();
 
     let mut folders_column = column![
@@ -684,7 +684,7 @@ fn view_status_bar<'a>(
     deleted_count: usize,
 ) -> Element<'a, Message> {
     let folder_label = editor
-        .library_folder_filter
+        .session.library_folder_filter
         .as_ref()
         .map(|folder| compact_path(folder))
         .unwrap_or_else(|| "All folders".to_string());
@@ -707,7 +707,7 @@ fn view_status_bar<'a>(
             iced::widget::horizontal_space(),
             view_thumbnail_size_presets(editor),
             Space::with_width(Length::Fixed(8.0)),
-            text(&editor.status).size(theme::size::SMALL).style(|_| text::Style {
+            text(&editor.session.status).size(theme::size::SMALL).style(|_| text::Style {
                 color: Some(theme::colours().text_secondary)
             }),
         ]
@@ -734,9 +734,9 @@ fn view_status_bar<'a>(
 pub fn view_library(editor: &RawEditor) -> Element<'_, Message> {
     let folder_stats = collect_folder_stats(editor);
     // The shared predicate, not a local copy of it — see
-    // `RawEditor::displayed_images` for why the per-tab filters live in one
+    // `crate::session::Session::displayed_images` for why the per-tab filters live in one
     // place (marked-for-removal images intentionally stay visible here).
-    let filtered_images: Vec<&ImageData> = editor.displayed_images();
+    let filtered_images: Vec<&ImageData> = editor.session.displayed_images();
 
     let cached_count = filtered_images
         .iter()
@@ -746,7 +746,7 @@ pub fn view_library(editor: &RawEditor) -> Element<'_, Message> {
         .iter()
         .filter(|img| thumbnail_state(img) == ThumbnailState::Missing)
         .count();
-    let total_count = editor.images.len();
+    let total_count = editor.session.images.len();
     let filtered_count = filtered_images.len();
     let selected_count = filtered_images
         .iter()

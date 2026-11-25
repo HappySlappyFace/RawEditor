@@ -1,0 +1,76 @@
+[package]
+name = "raw-editor-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "RawEditor's engine: GPU pipeline, RAW decoding, colour science, catalogue and AI"
+license.workspace = true
+publish = false
+
+[dependencies]
+tokio.workspace = true
+rusqlite.workspace = true
+dirs.workspace = true
+
+# Date and time utilities
+chrono = "0.4"
+
+# Serialization for edit parameters (save/load to JSON)
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# RAW image decoding - rawler is the modern fork of rawloader from the dnglab project
+rawler = "0.7.2"
+
+# GPU rendering for real-time RAW processing (version in the root Cargo.toml).
+wgpu.workspace = true
+bytemuck.workspace = true
+
+cgmath.workspace = true
+
+# lensfun lens-profile database (XML). Already in the tree via iced's SVG
+# stack, so this adds no new code to the build.
+roxmltree = "0.20"
+
+image.workspace = true
+kamadak-exif.workspace = true
+
+zune-jpeg = { workspace = true, optional = true }
+zune-core = { workspace = true, optional = true }
+
+png.workspace = true
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter", "time", "local-time"] }
+tracing-appender = "0.2"
+tiff.workspace = true
+half = { version = "2.7.1", features = ["bytemuck"] }
+
+# Lens-profile download (Preferences › Lens Profiles): the lensfun database is
+# fetched on request from lensfun.github.io — the app makes no other network
+# requests. Blocking HTTP (run in `spawn_blocking`) over rustls, so no OpenSSL
+# on any platform; pure-Rust bzip2 and tar for the `version_N.tar.bz2` archive.
+ureq = { version = "3.4", default-features = false, features = ["rustls"] }
+bzip2-rs = "0.1.2"
+tar = { version = "0.4.46", default-features = false }
+
+# AI masks and AI denoise (`src/ml`). ONNX Runtime, CPU execution, linked
+# statically from pyke's prebuilt binaries (fetched at BUILD time only).
+# Nothing initialises it until a model is first used, so the app pays nothing
+# — no thread pool, no weights in RAM — when the AI features are unused.
+# rustls for the build-time fetch, so still no OpenSSL anywhere.
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "tracing", "download-binaries", "tls-rustls", "api-31"] }
+# Verifies downloaded model files.
+sha2 = "0.10"
+
+[dev-dependencies]
+# Shader compile-time validation in unit tests (same version wgpu 0.19 uses)
+naga = { version = "0.19", features = ["wgsl-in"] }
+
+[features]
+# 3-5× faster JPEG decoding via zune-jpeg (SIMD). The app's own `fast-jpeg`
+# feature turns this on; see the root Cargo.toml.
+fast-jpeg = ["dep:zune-jpeg", "dep:zune-core"]
+# Fixtures for the app's tests (`Library::import_image`, `segment::test_support`
+# and the like): `#[cfg(test)]` only reaches this crate's own tests. Enabled by
+# the app's dev-dependency, so it never reaches a shipped binary.
+test-support = []

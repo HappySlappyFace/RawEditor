@@ -1,25 +1,31 @@
-[package]
-name = "raw-editor"
+[workspace]
+members = [".", "crates/raw-editor-core", "crates/raw-editor-session"]
+# Plain `cargo build/test/clippy` at the root cover the whole workspace, so the
+# commands in CLAUDE.md and CI keep checking the engine too.
+default-members = [".", "crates/raw-editor-core", "crates/raw-editor-session"]
+resolver = "2"
+
+# The release version for every crate. This is the line a release bumps (the
+# release workflow reads the first `version = "…"` in this file).
+[workspace.package]
 version = "0.9.26"
 edition = "2021"
 authors = ["Ayman REBAI"]
-description = "A native RAW photo editor"
 license = "MIT"
 
-[dependencies]
-# GUI framework with native rendering via wgpu
-iced = { version = "0.13", features = ["wgpu", "tokio", "image", "advanced", "canvas"] }
-iced_wgpu = "0.13"  # Direct access to wgpu types from iced
-
-# Additional widgets for iced: the menu for the title bar's dropdowns. The
-# feature is dependency-free (`menu = []`), so this costs compile time only.
-iced_aw = { version = "0.10", default-features = false, features = ["menu"] }
+# Versions used by more than one crate, so the app and the engine can't drift.
+[workspace.dependencies]
+raw-editor-core = { path = "crates/raw-editor-core" }
+raw-editor-session = { path = "crates/raw-editor-session" }
 
 # Async runtime for background tasks
 # "time" powers the export memory-pressure retry. It currently arrives
 # transitively via iced_futures, but relying on that would make an iced update
 # able to turn `tokio::time::sleep` into a runtime panic.
-tokio = { version = "1", features = ["rt", "fs", "sync", "time"] }
+# "rt-multi-thread": the engine's render entry points call
+# `tokio::task::block_in_place`, which needs it. It used to arrive only through
+# iced, so the engine crate did not build on its own.
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "fs", "sync", "time"] }
 
 # Database for catalog management (bundled = includes SQLite, no system dependency)
 rusqlite = { version = "0.32", features = ["bundled"] }
@@ -27,87 +33,86 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # Standard library for paths and directories
 dirs = "5.0"
 
-# Native file/folder picker dialogs
-rfd = "0.18"
-
-# Recursive directory traversal
-walkdir = "2.4"
-
-# Better error handling with derive macros
-thiserror = "1.0"
-
-# Date and time utilities
-chrono = "0.4"
-
-# Serialization for edit parameters (save/load to JSON)
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-
-# RAW image decoding - rawler is the modern fork of rawloader from the dnglab project
-rawler = "0.7.2"
-
-# GPU rendering for real-time RAW processing (use iced's wgpu)
 bytemuck = { version = "1.14", features = ["derive"] }
 
 # Matrix math for color space conversions (Phase 15)
 cgmath = "0.18"
-
-# lensfun lens-profile database (XML). Already in the tree via iced's SVG
-# stack, so this adds no new code to the build.
-roxmltree = "0.20"
 
 # Image processing (decode, resize, save thumbnails)
 image = "0.25"
 
 # Phase 64 / Phase 119: EXIF parsing (rawler doesn't expose Exif on RawImage, so we keep kamadak-exif)
 kamadak-exif = "0.5"
-lru = "0.12"
 
-zune-jpeg = { version = "0.4", optional = true }
-zune-core = { version = "0.4", optional = true }
+zune-jpeg = "0.4"
+zune-core = "0.4"
 
-# Direct encoders for export (avoiding image crate high-level APIs)
 png = "0.17"
-jpeg-encoder = "0.6"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "time", "local-time"] }
-tracing-appender = "0.2"
+# The engine's GPU API. The same version, with the same (default) features, as
+# iced's renderer, so Cargo builds one wgpu for both.
+wgpu = "0.19"
 tiff = "0.9"
-half = { version = "2.7.1", features = ["bytemuck"] }
-trash = "5.2.6"
 
-# Lens-profile download (Preferences › Lens Profiles): the lensfun database is
-# fetched on request from lensfun.github.io — the app makes no other network
-# requests. Blocking HTTP (run in `spawn_blocking`) over rustls, so no OpenSSL
-# on any platform; pure-Rust bzip2 and tar for the `version_N.tar.bz2` archive.
-ureq = { version = "3.4", default-features = false, features = ["rustls"] }
-bzip2-rs = "0.1.2"
-tar = { version = "0.4.46", default-features = false }
+[package]
+name = "raw-editor"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "A native RAW photo editor"
+license.workspace = true
 
-# AI masks and AI denoise (`src/ml`). ONNX Runtime, CPU execution, linked
-# statically from pyke's prebuilt binaries (fetched at BUILD time only).
-# Nothing initialises it until a model is first used, so the app pays nothing
-# — no thread pool, no weights in RAM — when the AI features are unused.
-# rustls for the build-time fetch, so still no OpenSSL anywhere.
-ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "tracing", "download-binaries", "tls-rustls", "api-31"] }
-# Verifies downloaded model files.
-sha2 = "0.10"
+[dependencies]
+# The engine: GPU pipeline, RAW decoding, colour science, catalogue, AI.
+raw-editor-core.workspace = true
+# The editing session: the app's logic, toolkit-free.
+raw-editor-session.workspace = true
 
+# GUI framework with native rendering via wgpu
+iced = { version = "0.13", features = ["wgpu", "tokio", "image", "advanced", "canvas"] }
+
+# Additional widgets for iced: the menu for the title bar's dropdowns. The
+# feature is dependency-free (`menu = []`), so this costs compile time only.
+iced_aw = { version = "0.10", default-features = false, features = ["menu"] }
+
+tokio.workspace = true
+dirs.workspace = true
+
+# Native file/folder picker dialogs
+rfd = "0.18"
+
+# Better error handling with derive macros
+thiserror = "1.0"
+
+bytemuck.workspace = true
+cgmath.workspace = true
+image.workspace = true
+tracing.workspace = true
+
+
+[dev-dependencies]
+# The engine's and the session's test fixtures, for the app's message-level
+# tests (`app::testkit` builds on `session::testkit`).
+raw-editor-core = { workspace = true, features = ["test-support"] }
+raw-editor-session = { workspace = true, features = ["test-support"] }
+# Only for the GPU tests that drive the editor (`app::tests::gpu_render`); app
+# code never touches wgpu (CLAUDE.md, constraint 6).
+wgpu.workspace = true
+# Runs `update`'s returned tasks outside iced's event loop, for the render
+# benchmark (`app::tests::gpu_render::bench_slider_ticks`). Already in the
+# tree as iced's runtime; same version.
+iced_runtime = "0.13"
 
 [target.'cfg(windows)'.build-dependencies]
 # Embeds assets/icon.ico so the .exe itself has an icon in Explorer.
 winresource = "0.1"
-
-[dev-dependencies]
-# Shader compile-time validation in unit tests (same version wgpu 0.19 uses)
-naga = { version = "0.19", features = ["wgsl-in"] }
 
 [features]
 # Default: maximum compatibility — no platform-specific dependencies.
 # Enable "fast-jpeg" for 3-5× faster JPEG decoding via zune-jpeg (SIMD on x86_64/aarch64,
 # scalar fallback elsewhere). See .cargo/config.toml for one-line aliases.
 default = []
-fast-jpeg = ["dep:zune-jpeg", "dep:zune-core"]
+fast-jpeg = ["raw-editor-session/fast-jpeg"]
 
 [profile.release]
 # Maximum performance optimizations

@@ -5,7 +5,7 @@ use iced::font::Font;
 use iced::widget::{column, container, mouse_area, row, stack, text, Space};
 use iced::{Alignment, Border, Color, Element, Length};
 
-use crate::app::handlers::ai_denoise::PREVIEW_SIZE;
+use crate::session::AI_DENOISE_PREVIEW_SIZE as PREVIEW_SIZE;
 use crate::app::message::Message;
 use crate::app::state::RawEditor;
 use crate::ui;
@@ -14,8 +14,8 @@ use crate::ui::dialog::Kind;
 
 
 pub fn view(editor: &RawEditor) -> Element<'_, Message> {
-    let st = &editor.ai_denoise;
-    let applied = editor.current_edit_params.ai_denoise;
+    let st = &editor.session.ai_denoise;
+    let applied = editor.session.current_edit_params.ai_denoise;
 
     let status: Option<String> = if let Some(e) = &st.error {
         Some(format!("Unavailable: {e}"))
@@ -26,10 +26,11 @@ pub fn view(editor: &RawEditor) -> Element<'_, Message> {
     } else {
         None
     };
-    let picture: Element<'_, Message> = match &st.frame {
-        Some(f) => {
+    let handle = st.frame.as_ref().and(editor.ai_denoise_handle.as_ref()).map(|(_, h)| h.clone());
+    let picture: Element<'_, Message> = match handle {
+        Some(handle) => {
             let mut layers = stack![
-                iced::widget::image(f.handle.clone())
+                iced::widget::image(handle)
                     .width(Length::Fixed(PREVIEW_SIZE))
                     .height(Length::Fixed(PREVIEW_SIZE)),
                 iced::widget::canvas::Canvas::new(ui::loupe::LoupeDrag { on_pan: Message::AiDenoisePan })

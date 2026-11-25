@@ -33,22 +33,27 @@ pub fn update(editor: &mut RawEditor, message: Message) -> Task<Message> {
     let modal_before = editor.active_modal;
     let task = dispatch(editor, message);
     let task = if slider_reset {
-        editor.commit_current_state();
+        editor.session.commit_current_state();
         Task::batch([task, handlers::develop::finish_stage_drag(editor)])
     } else {
         task
     };
-    let task = match handlers::ai_mask::track(editor) {
-        Some(ai) => Task::batch([task, ai]),
-        None => task,
-    };
+    let ai = editor.session.track_ai_masks();
+    let task = if ai.is_empty() { task } else { Task::batch([task, run(ai)]) };
     if modal_before == Modal::AiModel && editor.active_modal != Modal::AiModel {
         handlers::models::dismissed(editor);
     }
-    // However the AI denoise modal closed, its engine (a full mosaic) goes.
-    if modal_before == Modal::AiDenoise && editor.active_modal != Modal::AiDenoise {
-        handlers::ai_denoise::close(editor);
+    // The AI denoise dialog is open while the session has it open: the
+    // session closed it (Apply, Remove, Cancel)…
+    if editor.active_modal == Modal::AiDenoise && editor.session.ai_denoise.image_id.is_none() {
+        editor.active_modal = Modal::None;
     }
+    // …or the dialog closed some other way, and its engine (a full mosaic) goes.
+    if modal_before == Modal::AiDenoise && editor.active_modal != Modal::AiDenoise {
+        editor.session.close_ai_denoise();
+    }
+    // Caches, the camera preview and image handles follow the session.
+    editor.sync_from_session();
     match track_modal_exit(editor, modal_before) {
         Some(exit) => Task::batch([task, exit]),
         None => task,
@@ -157,14 +162,38 @@ fn is_slider_change(message: &Message) -> bool {
     )
 }
 
+/// Run the session's work as iced tasks; each result comes back as
+/// `Message::Session`.
+pub fn run(effects: crate::session::Effects) -> Task<Message> {
+    Task::batch(effects.into_iter().map(|e| Task::perform(e.future, Message::Session)))
+}
+
+/// A result of the session's work, handed back to it (`Session::handle`);
+/// the few the app has a part in come back to it.
+fn session_event(editor: &mut RawEditor, event: crate::session::SessionEvent) -> Task<Message> {
+    use crate::session::{Handled, SessionEvent};
+    let event = match editor.session.handle(event) {
+        Handled::Done(effects) => return run(effects),
+        Handled::FrontEnd(event) => *event,
+    };
+    match event {
+        SessionEvent::ModelDownloaded(id, r) => handlers::models::handle_downloaded(editor, id, r),
+        SessionEvent::CacheProcessed(res) => handlers::library::handle_cache_processed(editor, res),
+        SessionEvent::HardDeleteComplete(outcome) => handlers::delete::handle_hard_delete_complete(editor, outcome),
+        other => {
+            tracing::error!("Session event the app does not handle: {other:?}");
+            Task::none()
+        }
+    }
+}
+
 fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
     match message {
+        Message::Session(event) => session_event(editor, event),
         // Library
         Message::DatabaseLoaded(res) => handlers::library::handle_database_loaded(editor, res),
         Message::ImportFolder => handlers::library::handle_import_folder(editor),
         Message::ImportFromCamera => handlers::library::handle_import_from_camera(editor),
-        Message::ImportComplete(res) => handlers::library::handle_import_complete(editor, res),
-        Message::CacheProcessed(res) => handlers::library::handle_cache_processed(editor, res),
         Message::SetRating(r) => handlers::library::handle_set_rating(editor, r),
         Message::SetFlag(f) => handlers::library::handle_set_flag(editor, f),
         Message::ToggleAutoAdvance => handlers::library::handle_toggle_auto_advance(editor),
@@ -181,12 +210,6 @@ fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::MousePressed => handlers::navigation::handle_mouse_pressed(editor),
         Message::MouseReleased => handlers::navigation::handle_mouse_released(editor),
         Message::MouseMoved(p) => handlers::navigation::handle_mouse_moved(editor, p),
-        Message::WorkingPreviewReady(id, h, p, d) => {
-            handlers::navigation::handle_working_preview_ready(editor, id, h, p, d)
-        }
-        Message::PreviewCached(id, res) => {
-            handlers::navigation::handle_preview_cached(editor, id, res)
-        }
 
         // Develop
         Message::ExposureChanged(v) => handlers::develop::handle_exposure_changed(editor, v),
@@ -279,11 +302,11 @@ fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
         }
         Message::ToggleBrushArmed => handlers::masks::handle_toggle_brush_armed(editor),
         Message::SetBrushErase(erase) => {
-            editor.brush_settings.erase = erase;
+            editor.session.brush_settings.erase = erase;
             Task::none()
         }
         Message::BrushSettingChanged(which, v) => {
-            let b = &mut editor.brush_settings;
+            let b = &mut editor.session.brush_settings;
             match which {
                 crate::app::message::BrushSetting::Size => b.size = v.clamp(0.002, 0.5),
                 crate::app::message::BrushSetting::Feather => b.feather = v.clamp(0.0, 1.0),
@@ -295,14 +318,14 @@ fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::BrushStroke(ev) => handlers::masks::handle_brush_stroke(editor, ev),
         Message::ClearMaskBrush => handlers::masks::handle_clear_mask_brush(editor),
         Message::ToggleMaskOverlay(on) => {
-            editor.show_mask_overlay = on;
+            editor.session.show_mask_overlay = on;
             crate::app::handlers::develop::update_pipeline(editor)
         }
         Message::ToggleMaskLumaRange(on) => handlers::masks::handle_toggle_luma_range(editor, on),
         Message::ToggleMaskColorRange(on) => handlers::masks::handle_toggle_color_range(editor, on),
         Message::PickMaskColor => {
-            editor.color_picking_mask = editor.selected_mask;
-            editor.status = "Color range: click the colour to select".to_string();
+            editor.session.color_picking_mask = editor.session.selected_mask;
+            editor.session.status = "Color range: click the colour to select".to_string();
             Task::none()
         }
         Message::MaskColorPicked(u, v) => handlers::masks::handle_mask_color_picked(editor, u, v),
@@ -333,7 +356,7 @@ fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::SliderReset { change } => {
             editor.slider_entry = None;
             let task = dispatch(editor, *change);
-            editor.commit_amending_last();
+            editor.session.commit_amending_last();
             Task::batch([task, handlers::develop::finish_stage_drag(editor)])
         }
         Message::Undo => handlers::develop::handle_undo(editor),
@@ -359,7 +382,7 @@ fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::SetMinRating(r) => {
-            editor.min_filter_rating = r;
+            editor.session.min_filter_rating = r;
             Task::none()
         }
         Message::SetLibraryFolderFilter(folder_filter) => {
@@ -368,7 +391,6 @@ fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::DeleteImage => handlers::delete::handle_delete_image_requested(editor),
         Message::MarkForRemovalConfirmed => handlers::delete::handle_mark_for_removal_confirmed(editor),
         Message::DeleteFromDiskConfirmed => handlers::delete::handle_delete_from_disk_confirmed(editor),
-        Message::HardDeleteComplete(outcome) => handlers::delete::handle_hard_delete_complete(editor, outcome),
 
         // Export
         Message::SetExportFormat(f) => handlers::export::handle_set_export_format(editor, f),
@@ -382,16 +404,6 @@ fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::OpenExportModal => handlers::export::handle_open_export_modal(editor),
         Message::CancelExport => handlers::export::handle_cancel_export(editor),
         Message::ExportConfirmed => handlers::export::handle_export_confirmed(editor),
-        Message::ProcessNextExport => handlers::export::handle_process_next_export(editor),
-        Message::ExportRawLoaded(id, params, res) => {
-            handlers::export::handle_export_raw_loaded(editor, id, *params, res)
-        }
-        Message::ExportPipelineReady(id, params, res) => {
-            handlers::export::handle_export_pipeline_ready(editor, id, *params, res)
-        }
-        Message::ExportSaveComplete(id, res) => {
-            handlers::export::handle_export_save_complete(editor, id, res)
-        }
 
         // Window
         Message::MinimizeWindow => handlers::window::handle_minimize_window(),
@@ -428,7 +440,6 @@ fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::DropScanned { dropped, scan } => handlers::library::handle_drop_scanned(editor, dropped, scan),
         Message::DropImportConfirmed => handlers::library::handle_drop_import_confirmed(editor),
         Message::CheckForUpdates => handlers::updates::handle_check(editor),
-        Message::UpdateChecked { result, manual } => handlers::updates::handle_checked(editor, result, manual),
         Message::UpdatePromptToggled(on) => handlers::updates::handle_prompt_toggled(editor, on),
         Message::UpdatePromptConfirmed => handlers::updates::handle_prompt_confirmed(editor),
         Message::ToggleUpdateCheck => handlers::updates::handle_toggle(editor),
@@ -436,59 +447,36 @@ fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::OpenRepository => handlers::window::handle_open_repository(editor),
         Message::AiSelectStart => handlers::ai_mask::handle_start(editor),
         Message::AiSelectRefine(slot) => handlers::ai_mask::handle_refine(editor, slot),
-        Message::AiEngineReady(token, r) => handlers::ai_mask::handle_engine_ready(editor, token, r),
-        Message::AiPrompt { u, v, positive } => handlers::ai_mask::handle_prompt(editor, u, v, positive),
-        Message::AiRect(u0, v0, u1, v1) => handlers::ai_mask::handle_rect(editor, u0, v0, u1, v1),
-        Message::AiMaskReady(token, r) => handlers::ai_mask::handle_mask_ready(editor, token, r),
+        Message::AiPrompt { u, v, positive } => run(editor.session.ai_prompt(u, v, positive)),
+        Message::AiRect(u0, v0, u1, v1) => run(editor.session.ai_rect(u0, v0, u1, v1)),
         Message::AiSelectDone => handlers::ai_mask::handle_done(editor),
         Message::AiSelectCancel => handlers::ai_mask::handle_cancel(editor),
-        Message::AiBitmapsLoaded(id, loaded) => handlers::ai_mask::handle_bitmaps_loaded(editor, id, loaded),
         Message::ModelDownload(id) => handlers::models::handle_download(editor, id),
-        Message::ModelDownloaded(id, r) => handlers::models::handle_downloaded(editor, id, r),
         Message::ModelDownloadCancel => handlers::models::handle_cancel_download(editor),
         Message::ModelRemove(id) => handlers::models::handle_remove(editor, id),
         Message::AiTick => Task::none(),
         Message::OpenAiDenoise => handlers::ai_denoise::handle_open(editor),
-        Message::AiDenoiseReady(id, r) => handlers::ai_denoise::handle_ready(editor, id, r),
-        Message::AiDenoiseCropReady(id, r) => handlers::ai_denoise::handle_crop_ready(editor, id, r),
-        Message::AiDenoiseRendered(id, r) => handlers::ai_denoise::handle_rendered(editor, id, r),
-        Message::AiDenoiseAmount(a) => handlers::ai_denoise::handle_amount(editor, a),
-        Message::AiDenoiseBefore(b) => handlers::ai_denoise::handle_before(editor, b),
-        Message::AiDenoisePan(dx, dy) => handlers::ai_denoise::handle_pan(editor, dx, dy),
+        Message::AiDenoiseAmount(a) => run(editor.session.set_ai_denoise_amount(a)),
+        Message::AiDenoiseBefore(b) => run(editor.session.set_ai_denoise_before(b)),
+        Message::AiDenoisePan(dx, dy) => run(editor.session.pan_ai_denoise(dx, dy)),
         Message::AiDenoiseApply => handlers::ai_denoise::handle_apply(editor),
-        Message::AiDenoiseApplied(id, a, r) => handlers::ai_denoise::handle_applied(editor, id, a, r),
-        Message::AiDenoiseRemove => handlers::ai_denoise::handle_remove(editor),
+        Message::AiDenoiseRemove => run(editor.session.remove_ai_denoise()),
         Message::AiDenoiseCancel => handlers::ai_denoise::handle_cancel(editor),
-        Message::AiDenoiseRegenerated(id, r) => handlers::ai_denoise::handle_regenerated(editor, id, r),
-        Message::LoupeReady(id, r) => handlers::loupe::handle_ready(editor, id, r),
-        Message::LoupeRendered(id, r) => handlers::loupe::handle_rendered(editor, id, r),
         Message::LoupePan(dx, dy) => handlers::loupe::handle_pan(editor, dx, dy),
         Message::ToggleLoupeTarget => handlers::loupe::handle_toggle_target(editor),
         Message::LoupeTargetPicked(u, v) => handlers::loupe::handle_target_picked(editor, u, v),
-        Message::NoiseSettled(token) => handlers::loupe::handle_noise_settled(editor, token),
         Message::LensfunCheck => handlers::lensfun::handle_check(editor),
-        Message::LensfunChecked(r) => handlers::lensfun::handle_checked(editor, r),
         Message::LensfunDownload => handlers::lensfun::handle_download(editor),
-        Message::LensfunInstalled(r) => handlers::lensfun::handle_installed(editor, r),
         Message::LensfunRescan => handlers::lensfun::handle_rescan(editor),
-        Message::LensDbLoaded(changed) => handlers::lensfun::handle_db_loaded(editor, changed),
         Message::CameraProfileSelected(c) => handlers::camera_profiles::handle_selected(editor, c),
         Message::SetCameraProfileDefault(camera, value) => {
             handlers::camera_profiles::handle_set_default(editor, camera, value)
         }
         Message::DownloadCameraProfile => handlers::camera_profiles::handle_download(editor),
-        Message::CameraProfileDownloaded(camera, r) => handlers::camera_profiles::handle_downloaded(editor, camera, r),
         Message::ImportCameraProfiles => handlers::camera_profiles::handle_import(editor),
         Message::CameraProfilesPicked(files) => handlers::camera_profiles::handle_picked(editor, files),
-        Message::CameraProfilesImported(ok, failed) => {
-            handlers::camera_profiles::handle_imported(editor, ok, failed)
-        }
         Message::UpdateCameraProfiles => handlers::camera_profiles::handle_update(editor),
-        Message::CameraProfilesUpdated(r) => handlers::camera_profiles::handle_updated(editor, r),
         Message::RescanCameraProfiles => handlers::camera_profiles::handle_rescan(editor),
-        Message::CameraProfilesScanned(changed) => {
-            handlers::camera_profiles::handle_scanned(editor, changed)
-        }
         Message::OpenLink(url) => handlers::window::handle_open_link(editor, url),
         Message::SetPreferencesSection(section) => {
             handlers::window::handle_set_preferences_section(editor, section)
@@ -518,15 +506,9 @@ fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
             editor.show_profiler = !editor.show_profiler;
             Task::none()
         }
-        Message::RenderFinished(output) => handlers::develop::handle_render_finished(editor, *output),
-        Message::EditedProxySaved(id, generation, result) => {
-            handlers::proxy::handle_saved(editor, id, generation, result);
-            Task::none()
-        }
-        Message::EditedProxyLoaded(id, result) => handlers::proxy::handle_loaded(editor, id, result),
         Message::ViewportResized(w, h) => {
-            let (old_w, old_h) = editor.viewport_size;
-            editor.viewport_size = (w, h);
+            let (old_w, old_h) = editor.session.viewport_size;
+            editor.session.viewport_size = (w, h);
 
             // Re-render on a size change: a different visible window, and at
             // zoom the buffer only covers the window the old size implied.
@@ -539,13 +521,6 @@ fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
         }
         Message::ScaleFactorChanged(s) => handlers::window::handle_scale_factor_changed(editor, s),
 
-        // Loading
-        Message::RawDataLoaded(id, res) => handlers::loading::handle_raw_data_loaded(editor, id, res),
-        Message::RawPreloaded(id, res) => handlers::loading::handle_raw_preloaded(editor, id, res),
-        Message::ImageResourcesReady(id, res) => {
-            handlers::loading::handle_image_resources_ready(editor, id, res)
-        }
-        Message::FullResReady(id, res) => handlers::loading::handle_full_res_ready(editor, id, res),
 
         // Scroll boost + filmstrip momentum
         Message::WheelScrolled(delta) => handlers::scroll::handle_wheel(editor, delta),
@@ -597,7 +572,7 @@ mod tests {
     }
 
     fn history_len(e: &mut RawEditor) -> usize {
-        e.get_current_history().map(|(stack, _)| stack.len()).unwrap_or(0)
+        e.session.get_current_history().map(|(stack, _)| stack.len()).unwrap_or(0)
     }
 
     fn type_into(e: &mut RawEditor, key: &str) {
@@ -610,26 +585,26 @@ mod tests {
     #[test]
     fn a_typed_slider_value_is_applied_as_one_undo_step() {
         let mut e = editor();
-        e.selected_image_id = Some(1);
+        e.session.selected_image_id = Some(1);
         let base = history_len(&mut e);
         type_into(&mut e, "ExposureChanged(0.0)");
         let _ = update(&mut e, Message::SliderSet { change: Box::new(Message::ExposureChanged(1.5)), commit: true });
-        assert_eq!(e.current_edit_params.exposure, 1.5);
+        assert_eq!(e.session.current_edit_params.exposure, 1.5);
         assert!(e.slider_entry.is_none(), "the field closes");
         assert_eq!(history_len(&mut e), base + 1);
         let _ = update(&mut e, Message::Undo);
-        assert_eq!(e.current_edit_params.exposure, 0.0);
+        assert_eq!(e.session.current_edit_params.exposure, 0.0);
     }
 
     /// A tool setting (brush size) is set, but is not an edit to undo.
     #[test]
     fn a_typed_tool_setting_adds_no_undo_step() {
         let mut e = editor();
-        e.selected_image_id = Some(1);
+        e.session.selected_image_id = Some(1);
         let base = history_len(&mut e);
         let size = crate::app::message::BrushSetting::Size;
         let _ = update(&mut e, Message::SliderSet { change: Box::new(Message::BrushSettingChanged(size, 0.1)), commit: false });
-        assert_eq!(e.brush_settings.size, 0.1);
+        assert_eq!(e.session.brush_settings.size, 0.1);
         assert_eq!(history_len(&mut e), base);
     }
 
@@ -644,11 +619,11 @@ mod tests {
         assert!(e.slider_entry.is_none());
 
         type_into(&mut e, "ContrastChanged(0.0)");
-        e.is_wb_picking = true;
+        e.session.is_wb_picking = true;
         let _ = update(&mut e, Message::Escape);
         assert!(e.slider_entry.is_none());
-        assert!(e.is_wb_picking, "the first Escape only closes the field");
-        assert_eq!(e.current_edit_params.contrast, 0.0);
+        assert!(e.session.is_wb_picking, "the first Escape only closes the field");
+        assert_eq!(e.session.current_edit_params.contrast, 0.0);
     }
 
     /// iced's text field has no blur event: moving on to anything else
@@ -669,16 +644,16 @@ mod tests {
     #[test]
     fn the_level_tool_takes_turns_with_the_other_tools() {
         let mut e = editor();
-        e.current_tab = crate::app::message::AppTab::Develop;
+        e.session.current_tab = crate::app::message::AppTab::Develop;
         let _ = update(&mut e, Message::ToggleWbPicker);
         let _ = update(&mut e, Message::ToggleLevelTool);
-        assert!(e.is_leveling && !e.is_wb_picking);
+        assert!(e.session.is_leveling && !e.session.is_wb_picking);
         let _ = update(&mut e, Message::ToggleCrop);
-        assert!(e.is_cropping && !e.is_leveling);
+        assert!(e.session.is_cropping && !e.session.is_leveling);
         let _ = update(&mut e, Message::ToggleLevelTool);
-        assert!(e.is_leveling && !e.is_cropping);
+        assert!(e.session.is_leveling && !e.session.is_cropping);
         let _ = update(&mut e, Message::Escape);
-        assert!(!e.is_leveling);
+        assert!(!e.session.is_leveling);
     }
 
     /// A drawn line straightens and disarms the tool; a click that is not a
@@ -686,16 +661,16 @@ mod tests {
     #[test]
     fn a_level_line_sets_straighten_once() {
         let mut e = editor();
-        e.selected_image_id = Some(1);
-        e.current_tab = crate::app::message::AppTab::Develop;
+        e.session.selected_image_id = Some(1);
+        e.session.current_tab = crate::app::message::AppTab::Develop;
         let _ = update(&mut e, Message::ToggleLevelTool);
         let _ = update(&mut e, Message::LevelLineDrawn(2.0, 1.0));
-        assert!(e.is_leveling);
-        assert_eq!(e.current_edit_params.rotation, 0.0);
+        assert!(e.session.is_leveling);
+        assert_eq!(e.session.current_edit_params.rotation, 0.0);
         let _ = update(&mut e, Message::LevelLineDrawn(400.0, 20.0));
-        assert!(!e.is_leveling);
+        assert!(!e.session.is_leveling);
         let want = (20.0f32 / 400.0).atan().to_degrees();
-        assert!((e.current_edit_params.rotation - want).abs() < 1e-4);
+        assert!((e.session.current_edit_params.rotation - want).abs() < 1e-4);
     }
 
     #[test]
@@ -749,7 +724,7 @@ mod tests {
     fn dropped_folders_offer_only_new_photos_once() {
         use std::path::PathBuf;
         let mut e = editor();
-        e.images = vec![crate::database::models::Image {
+        e.session.images = vec![crate::database::models::Image {
             id: 1,
             filename: "a.nef".into(),
             path: "/card/a.nef".into(),
@@ -785,7 +760,7 @@ mod tests {
     #[test]
     fn a_catalogued_folder_is_shown_not_offered() {
         let mut e = editor();
-        e.images = vec![crate::database::models::Image {
+        e.session.images = vec![crate::database::models::Image {
             id: 1,
             filename: "a.nef".into(),
             path: "/card/a.nef".into(),
@@ -797,10 +772,10 @@ mod tests {
             rating: 0,
             flag: 0,
         }];
-        e.current_tab = crate::app::message::AppTab::Develop;
+        e.session.current_tab = crate::app::message::AppTab::Develop;
         scanned(&mut e, "/card", &["/card/a.nef"]);
         assert_eq!(e.active_modal, Modal::None);
-        assert_eq!(e.current_tab, crate::app::message::AppTab::Library);
-        assert_eq!(e.library_folder_filter.as_deref(), Some("/card"));
+        assert_eq!(e.session.current_tab, crate::app::message::AppTab::Library);
+        assert_eq!(e.session.library_folder_filter.as_deref(), Some("/card"));
     }
 }

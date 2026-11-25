@@ -141,10 +141,10 @@ pub fn view_help_modal<'a>() -> Element<'a, Message> {
 }
 
 pub fn view_export_modal<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
-    let count = if editor.multi_selection.is_empty() {
+    let count = if editor.session.multi_selection.is_empty() {
         1
     } else {
-        editor.multi_selection.len()
+        editor.session.multi_selection.len()
     };
     let label = if count == 1 { "Export 1 Image".to_string() } else { format!("Export {count} Images") };
 
@@ -155,7 +155,7 @@ pub fn view_export_modal<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
         dialog::actions([
             dialog::action("Cancel", Kind::Neutral).on_press(Message::CloseModal).into(),
             dialog::action(label, Kind::Primary)
-                .on_press_maybe((!editor.export_settings.size_invalid()).then_some(Message::ExportConfirmed))
+                .on_press_maybe((!editor.session.export_settings.size_invalid()).then_some(Message::ExportConfirmed))
                 .into(),
         ]),
     )
@@ -291,8 +291,8 @@ pub fn view_about_modal<'a>() -> Element<'a, Message> {
 pub fn view_copy_settings_modal(editor: &RawEditor) -> Element<'_, Message> {
     use crate::app::message::CopyCategory;
 
-    let cats = editor.copy_categories;
-    let mask_count = editor.current_edit_params.mask_count;
+    let cats = editor.session.copy_categories;
+    let mask_count = editor.session.current_edit_params.mask_count;
 
     // label, description, current value, which category
     let mut rows: Vec<(&str, String, bool, CopyCategory)> = vec![
@@ -412,12 +412,12 @@ pub fn view_copy_settings_modal(editor: &RawEditor) -> Element<'_, Message> {
 }
 
 pub fn view_delete_modal<'a>(editor: &'a RawEditor) -> Element<'a, Message> {
-    let count = editor.pending_delete_ids.len();
+    let count = editor.session.pending_delete_ids.len();
     let body = if count == 1 {
         let name = editor
-            .images
+            .session.images
             .iter()
-            .find(|i| i.id == editor.pending_delete_ids[0])
+            .find(|i| i.id == editor.session.pending_delete_ids[0])
             .map(|i| i.filename.clone())
             .unwrap_or_default();
         format!("\"{}\" will be removed.", name)
@@ -459,11 +459,11 @@ pub fn megabytes(bytes: u64) -> String {
 /// licence — then a download with progress. Closes itself and carries on
 /// with the feature once installed (`handlers::models`).
 pub fn view_ai_model_modal(editor: &RawEditor) -> Element<'_, Message> {
-    let Some(id) = editor.models.offered else {
+    let Some(id) = editor.model_offer else {
         return Space::new(Length::Shrink, Length::Shrink).into();
     };
     let model = id.model();
-    let job = editor.models.job.as_ref().filter(|(j, _)| *j == id);
+    let job = editor.session.models.job.as_ref().filter(|(j, _)| *j == id);
     let actions: Element<'_, Message> = match job {
         Some((_, progress)) => dialog::progress(
             progress.fraction(),
@@ -484,7 +484,7 @@ pub fn view_ai_model_modal(editor: &RawEditor) -> Element<'_, Message> {
         .into(),
     };
     let error = editor
-        .models
+        .session.models
         .error
         .as_ref()
         .filter(|(e, _)| *e == id)
@@ -516,7 +516,7 @@ pub fn view_ai_denoise_modal(editor: &RawEditor) -> Element<'_, Message> {
 /// answered the app makes no request (`handlers::updates`).
 pub fn view_update_prompt_modal(editor: &RawEditor) -> Element<'_, Message> {
     let body = column![
-        checkbox("Check for updates at startup", editor.updates.prompt_choice)
+        checkbox("Check for updates at startup", editor.update_prompt_choice)
             .on_toggle(Message::UpdatePromptToggled)
             .size(16)
             .spacing(theme::space::M)
@@ -538,7 +538,7 @@ pub fn view_update_prompt_modal(editor: &RawEditor) -> Element<'_, Message> {
 
 /// A check's outcome: checking, a newer version, up to date, or an error.
 pub fn view_update_modal(editor: &RawEditor) -> Element<'_, Message> {
-    let st = &editor.updates;
+    let st = &editor.session.updates;
     let current = crate::core::updates::current_version();
     let close = |label: &str| dialog::action(label.to_string(), Kind::Neutral).on_press(Message::CloseModal);
 
