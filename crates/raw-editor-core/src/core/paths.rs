@@ -18,6 +18,14 @@ const APP_DIR: &str = "raw-editor";
 /// (`profiles/`), the user's own lensfun files (`lensfun/`) and the logs.
 /// Everything here is the user's: losing it loses work.
 pub fn data_dir() -> PathBuf {
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(root) = test_root() {
+        return root.join("data");
+    }
+    users_data_dir()
+}
+
+fn users_data_dir() -> PathBuf {
     dirs::data_dir()
         .or_else(dirs::home_dir)
         .unwrap_or_else(|| PathBuf::from("."))
@@ -28,7 +36,31 @@ pub fn data_dir() -> PathBuf {
 /// proxies). Disposable: missing files are re-queued at the next launch.
 /// `None` when the platform reports neither a cache nor a home directory.
 pub fn cache_dir() -> Option<PathBuf> {
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(root) = test_root() {
+        return Some(root.join("cache"));
+    }
     dirs::cache_dir().or_else(dirs::home_dir).map(|dir| dir.join(APP_DIR))
+}
+
+#[cfg(any(test, feature = "test-support"))]
+static TEST_ROOT: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
+
+#[cfg(any(test, feature = "test-support"))]
+fn test_root() -> Option<PathBuf> {
+    TEST_ROOT.read().ok().and_then(|r| r.clone())
+}
+
+/// Tests that run a feature end to end (its files included): the data and
+/// cache folders become `root/data` and `root/cache` for the rest of the
+/// process, so nothing lands in the user's. Process-global, so only for
+/// tests that run one at a time (the ignored GPU tests). The models folder
+/// stays the user's: models are read-only inputs, and large.
+#[cfg(any(test, feature = "test-support"))]
+pub fn redirect_for_tests(root: &std::path::Path) {
+    if let Ok(mut r) = TEST_ROOT.write() {
+        *r = Some(root.to_path_buf());
+    }
 }
 
 /// Where DCP camera profiles are looked up.
@@ -53,7 +85,7 @@ pub fn lensfun_updates_dir() -> PathBuf {
 /// in the data folder rather than the cache because re-downloading them is
 /// slow and cache-clearing tools would take them.
 pub fn models_dir() -> PathBuf {
-    data_dir().join("models")
+    users_data_dir().join("models")
 }
 
 /// AI mask bitmaps (`ml::masks`): `<image id>/<mask id>.png`. User work —
