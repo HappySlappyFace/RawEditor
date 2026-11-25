@@ -8,6 +8,7 @@ mod gpu_render;
 mod loading;
 mod proxy;
 mod settings_isolation;
+mod window_and_preferences;
 mod mark_keeps_rating;
 mod mask_robustness;
 mod slider_reset;
