@@ -26,7 +26,12 @@
 //!
 //! Operators that are NOT scalar — Stephen Hill's ACES fit, AgX — apply 3×3
 //! matrices around the curve to deliberately shift chroma, so they cannot be
-//! baked this way and are not offered here.
+//! baked this way and are not offered here. ACES 2.0 is offered as its tone
+//! curve alone (`ToneMapper::Aces2`): its colour handling — tone mapping a
+//! perceptual lightness, then compressing chroma and gamut per hue — is what
+//! the hue-preserving application above and the shader's one gamut map
+//! (Step 15b) already do for every operator, so taking it too would add a
+//! second gamut stage with different rules.
 //!
 //! ## Output space
 //!
@@ -112,6 +117,14 @@ pub enum ToneMapper {
     /// especially kind to skin tones in a photo editor. This fit is the
     /// tone response only.
     AcesFitted,
+    /// ACES 2.0's tone curve (Daniele Siragusano's, from the ACES 2.0 output
+    /// transform) at its 100-nit SDR parameters. See [`aces2`].
+    ///
+    /// The reference curve, so it renders darker than the others: middle grey
+    /// lands at 10% display (the others put it near 18%) and display white
+    /// only at 128× scene white, far past what a photo holds — raise
+    /// Exposure to taste.
+    Aces2,
     /// Hajime Uchimura's Gran Turismo curve (CEDEC 2017).
     ///
     /// The most interesting one here for photography: with `contrast` at 1.0
@@ -124,12 +137,13 @@ pub enum ToneMapper {
 
 impl ToneMapper {
     /// Every variant, in UI order.
-    pub const ALL: [ToneMapper; 6] = [
+    pub const ALL: [ToneMapper; 7] = [
         ToneMapper::Camera,
         ToneMapper::Filmic,
         ToneMapper::Reinhard,
         ToneMapper::Hable,
         ToneMapper::AcesFitted,
+        ToneMapper::Aces2,
         ToneMapper::Gt,
     ];
 
@@ -140,7 +154,8 @@ impl ToneMapper {
             ToneMapper::Filmic => "Filmic",
             ToneMapper::Reinhard => "Reinhard",
             ToneMapper::Hable => "Hable",
-            ToneMapper::AcesFitted => "ACES",
+            ToneMapper::AcesFitted => "ACES Fit",
+            ToneMapper::Aces2 => "ACES 2",
             ToneMapper::Gt => "GT",
         }
     }
@@ -158,6 +173,7 @@ impl ToneMapper {
             ToneMapper::Hable => 3,
             ToneMapper::AcesFitted => 4,
             ToneMapper::Gt => 5,
+            ToneMapper::Aces2 => 6,
         }
     }
 
@@ -300,6 +316,51 @@ pub fn aces_fitted(x: f32) -> f32 {
     ((x * (A * x + B)) / (x * (C * x + D) + E)).clamp(0.0, 1.0)
 }
 
+/// ACES 2.0's tone curve at 100 nits (SDR), scene-linear → display-linear.
+///
+/// Siragusano's curve from the ACES 2.0 output transform: a Michaelis–Menten
+/// shape `m₂·(x/(x+s₂))^g` followed by a toe `f²/(f+t₁)` (flare
+/// compensation), with `g` the contrast. Its constants are derived from the
+/// published parameters exactly as the reference implementation derives
+/// them, with peak luminance `n` = 100 nits = display white:
+/// 18% grey → 10 nits (0.1 display; the parameter `c_d` = 10.013 is tuned
+/// to land there), and the curve reaches
+/// white ("hits the roof") at scene value `r_hit` = 128.
+pub fn aces2(x: f32) -> f32 {
+    let (m_2, s_2) = aces2_constants();
+    let x = x.max(0.0) as f64;
+    let f = m_2 * (x / (x + s_2)).powf(ACES2_G);
+    let h = f * f / (f + ACES2_T1);
+    (h as f32).clamp(0.0, 1.0)
+}
+
+/// Contrast (`g`, for a dim surround) and toe (`t₁`) of [`aces2`].
+const ACES2_G: f64 = 1.15;
+const ACES2_T1: f64 = 0.04;
+
+/// [`aces2`]'s `(m₂, s₂)`, derived from ACES 2.0's tone-scale parameters at
+/// 100 nits. Written as the reference does; at 100 nits the peak-dependent
+/// terms (`log(n/100)`) vanish, so `r_hit = 128` and `c_t = c_d/100`.
+fn aces2_constants() -> (f64, f64) {
+    const C: f64 = 0.18; // scene middle grey
+    const C_D: f64 = 10.013; // its output, nits
+    const N_R: f64 = 100.0; // normalised white, nits
+    const R_HIT: f64 = 128.0; // scene value that reaches peak
+    let (g, t_1) = (ACES2_G, ACES2_T1);
+    let m_0 = 1.0; // n / n_r
+    let m_1 = 0.5 * (m_0 + (m_0 * (m_0 + 4.0 * t_1)).sqrt());
+    let u = ((R_HIT / m_1) / ((R_HIT / m_1) + 1.0)).powf(g);
+    let m = m_1 / u;
+    let c_t = C_D / N_R;
+    let g_ip = 0.5 * (c_t + (c_t * (c_t + 4.0 * t_1)).sqrt());
+    let k = (g_ip / m).powf(1.0 / g);
+    let g_ipp2 = -(m_1 * k) / (k - 1.0);
+    let w_2 = C / g_ipp2;
+    let s_2 = w_2 * m_1;
+    let u_2 = ((R_HIT / m_1) / ((R_HIT / m_1) + w_2)).powf(g);
+    (m_1 / u_2, s_2)
+}
+
 /// Uchimura's Gran Turismo curve: a toe, a straight midsection, and an
 /// exponential shoulder, blended by weights that make the joins C1-continuous.
 pub fn uchimura(x: f32, gt: GtParams) -> f32 {
@@ -344,6 +405,7 @@ pub fn apply(mapper: ToneMapper, x: f32, gt: GtParams) -> f32 {
         ToneMapper::Reinhard => reinhard(x),
         ToneMapper::Hable => hable(x),
         ToneMapper::AcesFitted => aces_fitted(x),
+        ToneMapper::Aces2 => aces2(x),
         ToneMapper::Gt => uchimura(x, gt),
     }
 }
@@ -390,11 +452,12 @@ pub fn bake(mapper: ToneMapper, gt: GtParams) -> Vec<f32> {
 mod tests {
     use super::*;
 
-    const OPERATORS: [ToneMapper; 5] = [
+    const OPERATORS: [ToneMapper; 6] = [
         ToneMapper::Filmic,
         ToneMapper::Reinhard,
         ToneMapper::Hable,
         ToneMapper::AcesFitted,
+        ToneMapper::Aces2,
         ToneMapper::Gt,
     ];
 
@@ -477,6 +540,19 @@ mod tests {
             reinhard(grey) < grey * 0.9,
             "expected Reinhard to darken middle grey"
         );
+    }
+
+    /// ACES 2.0's own anchors: 18% grey to 10 nits of 100 (its `c_d` of
+    /// 10.013 is tuned so the derivation lands there), white reached at 128,
+    /// and the reference's values between (its formulas, double precision).
+    #[test]
+    fn aces2_matches_the_reference_curve() {
+        assert!((aces2(0.18) - 0.1).abs() < 1e-5, "grey went to {}", aces2(0.18));
+        assert!((aces2(128.0) - 1.0).abs() < 1e-4, "white is not at 128: {}", aces2(128.0));
+        assert!(aces2(100.0) < 0.999, "white reached too early");
+        for (x, want) in [(0.01, 0.000_71), (0.05, 0.016_05), (0.5, 0.279_8), (1.0, 0.457_57), (4.0, 0.787_15), (16.0, 0.943_48)] {
+            assert!((aces2(x) - want).abs() < 2e-5, "aces2({x}) = {}, reference {want}", aces2(x));
+        }
     }
 
     #[test]

@@ -987,6 +987,7 @@ mod tests {
                 ToneMapper::Reinhard,
                 ToneMapper::Hable,
                 ToneMapper::AcesFitted,
+                ToneMapper::Aces2,
                 ToneMapper::Gt,
             ] {
                 let out = render_with(mapper).await;

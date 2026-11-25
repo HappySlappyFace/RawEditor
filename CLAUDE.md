@@ -110,7 +110,8 @@ A DCP bundles *colour* rendering (ForwardMatrix + HueSatMap — sensor
 characterization, always in force) and *tone* rendering (ProfileToneCurve —
 an opinion about contrast). Only the second is swappable, and
 `EditParams::tone_mapper` swaps it: `Camera` (default), `Filmic`, `Reinhard`,
-`Hable`, `AcesFitted` (Narkowicz), `Gt` (Uchimura, shape exposed via `GtParams`).
+`Hable`, `AcesFitted` (Narkowicz), `Aces2` (ACES 2.0's tone curve, the 100-nit
+reference: grey to 0.1, white at 128), `Gt` (Uchimura, shape exposed via `GtParams`).
 
 - **Tone rendering is ONE selected stage.** Three things can curve the image —
   the ProfileToneCurve slot, the Step 15 filmic block, and the pre-HueSatMap
@@ -122,6 +123,8 @@ an opinion about contrast). Only the second is swappable, and
   shader reads it solely to decide Camera-vs-not. Consequence: operators must
   be scalar functions of one channel. Anything applying matrices around the
   curve (Hill's ACES fit, AgX) cannot be baked and is deliberately absent.
+  ACES 2.0 is its tone curve only: its per-hue chroma and gamut compression
+  would be a second gamut stage beside Step 15b (§B3).
 - **The LUT domain is log-encoded over `[0, TONE_LUT_MAX]`, not `[0,1]`** —
   `tone_lut_encode` on both sides, mirrored constants guarded by
   `shader_tone_lut_constants_match_rust`. Operators are *defined* as the
