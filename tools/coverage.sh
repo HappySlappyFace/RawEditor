@@ -4,9 +4,11 @@
 # distro's package).
 #
 #   tools/coverage.sh          the normal test suite
-#   tools/coverage.sh --gpu    plus the engine's ignored GPU tests, one at a
-#                              time (wgpu's GL backend fails in parallel); a few
-#                              known failures don't stop the report
+#   tools/coverage.sh --gpu    plus the ignored GPU tests (the engine's and the
+#                              app's), one at a time: wgpu's GL backend fails in
+#                              parallel. A few known failures don't stop the
+#                              report. Tuning tools, the benchmark and the test
+#                              that writes to the desktop trash are skipped.
 #
 # The report is a map of what no test reaches, not a score: the iced views
 # and widgets are left out on purpose, and shader code (WGSL) never shows.
@@ -28,8 +30,10 @@ IGNORE='(^|/)src/(ui|app/views)/|(^|/)src/main\.rs$|/tests?/|testkit\.rs$'
 cargo llvm-cov clean --workspace
 cargo llvm-cov --workspace --no-report
 if [[ "${1:-}" == "--gpu" ]]; then
-    cargo llvm-cov -p raw-editor-core --no-report --no-fail-fast \
-        -- --ignored --test-threads=1 --skip nr_sweep --skip presence_dump || true
+    cargo llvm-cov --workspace --no-report --no-fail-fast \
+        -- --ignored --test-threads=1 \
+        --skip nr_sweep --skip presence_dump --skip bench_slider_ticks --skip trash_crate_moves_file \
+        || true
 fi
 cargo llvm-cov report --workspace --html --ignore-filename-regex "$IGNORE"
 cargo llvm-cov report --workspace --summary-only --ignore-filename-regex "$IGNORE" \
