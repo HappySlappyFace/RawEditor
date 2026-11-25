@@ -1391,7 +1391,14 @@ mod tests {
         let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).build().unwrap();
         rt.block_on(async {
             let ctx = SharedContext::new().await.unwrap();
-            let raw = crate::raw::loader::load_raw_data(test_raw_path()).await.unwrap();
+            // The test photo if it is here, else a frame of gentle colours
+            // (so CI, which has no photos, still checks the maths).
+            let path = test_raw_path();
+            let raw = if std::path::Path::new(&path).exists() {
+                crate::raw::loader::load_raw_data(path).await.unwrap()
+            } else {
+                gentle_colours_raw(512, 384)
+            };
             let params = EditParams { saturation: 30.0, ..EditParams::default() };
             let as_shot = crate::color::as_shot_kelvin_tint(&raw);
             let (kelvin, _t, wb) =
@@ -1430,25 +1437,56 @@ mod tests {
 
             let srgb = &renders[0].1;
             // Colours well inside sRGB: no gamut map touched them anywhere.
+            // Judged on the sRGB render, so a channel it pinned at 0 or 1 marks
+            // a colour it had to bring in (a dark cyan past sRGB's red edge
+            // reads as low chroma once mapped), which a wider space keeps.
             let inside: Vec<usize> = (0..srgb.len())
                 .filter(|&i| {
                     let lab = crate::core::perceptual::linear_srgb_to_oklab(srgb[i]);
-                    lab[0] > 0.05 && lab[0] < 0.97 && lab[1].hypot(lab[2]) < 0.06
+                    let unpinned = srgb[i].iter().all(|&v| v > 1e-3 && v < 0.999);
+                    unpinned && lab[0] > 0.05 && lab[0] < 0.97 && lab[1].hypot(lab[2]) < 0.06
                 })
                 .collect();
             assert!(inside.len() > srgb.len() / 4, "test image has too few ordinary colours");
             for (space, lin) in &renders[1..] {
+                // Relative to the pixel's level: the 16-bit target is half
+                // float, whose step grows with the value, so an absolute
+                // error would depend on how bright the test image is.
                 let mut errs: Vec<f32> = inside
                     .iter()
-                    .map(|&i| (0..3).map(|c| (lin[i][c] - srgb[i][c]).abs()).fold(0.0, f32::max))
+                    .map(|&i| {
+                        let level = srgb[i].iter().cloned().fold(0.0, f32::max).max(0.02);
+                        (0..3).map(|c| (lin[i][c] - srgb[i][c]).abs()).fold(0.0, f32::max) / level
+                    })
                     .collect();
                 errs.sort_by(f32::total_cmp);
                 let p99 = errs[errs.len() * 99 / 100];
                 let mean = errs.iter().sum::<f32>() / errs.len() as f32;
                 eprintln!("{space}: mean {mean:.2e}, p99 {p99:.2e} over {} px", errs.len());
-                assert!(mean < 3e-4 && p99 < 2e-3, "{space} disagrees with sRGB: mean {mean}, p99 {p99}");
+                // Half-float rounding gives ~7e-4 mean, 1.6e-3 p99; one matrix
+                // coefficient 1% off gives 2–3e-3 mean, ~7e-3 p99.
+                assert!(mean < 1.2e-3 && p99 < 3.5e-3, "{space} disagrees with sRGB: mean {mean}, p99 {p99}");
             }
         });
+    }
+
+    /// A synthetic frame of ordinary colours: brightness ramps left to right,
+    /// and a gentle tint turns through every hue top to bottom. Neutral after
+    /// the as-shot WB, apart from the tint.
+    fn gentle_colours_raw(w: u32, h: u32) -> crate::raw::loader::RawDataResult {
+        let mut raw = crate::ml::segment::test_support::disc_raw(w, h);
+        let colours = crate::gpu::demosaic::tile_colors(raw.cfa_pattern);
+        let span = raw.white_level as f32;
+        for y in 0..h {
+            let hue = y as f32 / h as f32 * std::f32::consts::TAU;
+            for x in 0..w {
+                let c = colours[((y % 2) * 2 + x % 2) as usize] as usize;
+                let tint = 1.0 + 0.06 * (hue + c as f32 * std::f32::consts::TAU / 3.0).sin();
+                let level = span * (0.02 + 0.6 * x as f32 / w as f32);
+                raw.data[(y * w + x) as usize] = (level * tint / raw.wb_multipliers[c]) as u16;
+            }
+        }
+        raw
     }
 
     fn luma(p: &[u8]) -> f64 {
