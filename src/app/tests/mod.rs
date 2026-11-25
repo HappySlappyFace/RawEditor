@@ -10,6 +10,7 @@ mod proxy;
 mod settings_isolation;
 mod window_and_preferences;
 mod export_dialog;
+mod library_actions;
 mod mark_keeps_rating;
 mod mask_robustness;
 mod slider_reset;
