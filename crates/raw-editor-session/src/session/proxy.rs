@@ -419,4 +419,187 @@ mod tests {
         e.capture_proxy(3, px, (4, 4), edited());
         assert!(e.edited_proxies.peek(&3).is_none());
     }
+
+    // ── the session's side: capture, save, read back ─────────────────────────
+    //
+    // A save writes a JPEG to the user's cache folder, so these tests never
+    // run the "proxy save" effect: they deliver its result by hand.
+
+    use crate::session::testkit::{labels, open_in_develop, session_with_images};
+
+    fn pixels() -> Arc<[u8]> {
+        Arc::from(vec![128u8; 2 * 2 * 4])
+    }
+
+    /// Image 1 open in Develop with an edit, its render captured.
+    fn captured() -> Session {
+        let mut s = session_with_images(3);
+        let _ = open_in_develop(&mut s, 1);
+        s.current_edit_params = edited();
+        s.capture_proxy(1, pixels(), (2, 2), edited());
+        s
+    }
+
+    fn saved_path(s: &Session, id: i64) -> Option<String> {
+        let rows = s.library.as_ref().unwrap().get_all_images().unwrap();
+        rows.into_iter().find(|i| i.id == id).and_then(|i| i.cache_path_edited)
+    }
+
+    #[test]
+    fn a_capture_with_the_wrong_size_is_ignored() {
+        let mut s = session_with_images(1);
+        s.capture_proxy(1, Arc::from(vec![0u8; 5]), (2, 2), edited());
+        assert!(s.edited_proxies.is_empty());
+    }
+
+    /// Leaving the image saves its proxy once, and the catalogue records the
+    /// file; leaving again with nothing new saves nothing.
+    #[test]
+    fn leaving_an_edited_image_saves_its_proxy_once() {
+        let mut s = captured();
+        assert_eq!(labels(&s.persist_proxy()), ["proxy save"]);
+        let generation = s.edited_proxies.peek(&1).unwrap().generation;
+        s.proxy_saved(1, generation, Ok("/cache/edited/1.jpg".into()));
+        assert_eq!(saved_path(&s, 1).as_deref(), Some("/cache/edited/1.jpg"));
+        assert_eq!(s.images[0].cache_path_edited.as_deref(), Some("/cache/edited/1.jpg"));
+        assert!(s.persist_proxy().is_empty(), "saved again with nothing new");
+    }
+
+    /// A save that lands after a newer render records its file, but must not
+    /// mark the newer render as saved: leaving again saves that one.
+    #[test]
+    fn a_save_overtaken_by_a_newer_render_does_not_count_for_it() {
+        let mut s = captured();
+        let old = s.edited_proxies.peek(&1).unwrap().generation;
+        let _ = s.persist_proxy();
+        s.capture_proxy(1, pixels(), (2, 2), edited());
+        s.proxy_saved(1, old, Ok("/cache/edited/old.jpg".into()));
+        assert!(!s.edited_proxies.peek(&1).unwrap().persisted);
+        assert_eq!(labels(&s.persist_proxy()), ["proxy save"]);
+    }
+
+    #[test]
+    fn a_failed_save_leaves_the_catalogue_alone() {
+        let mut s = captured();
+        let generation = s.edited_proxies.peek(&1).unwrap().generation;
+        s.proxy_saved(1, generation, Err("disk full".into()));
+        assert_eq!(saved_path(&s, 1), None);
+        assert!(!s.edited_proxies.peek(&1).unwrap().persisted);
+    }
+
+    /// The edit moved on with no render to show it (crop mode, say): the
+    /// proxy, and the saved file it would replace, are dropped. The camera's
+    /// own thumbnail is wrong too, but never shows an edit that isn't there.
+    #[test]
+    fn a_proxy_behind_the_edit_is_dropped_with_its_saved_file() {
+        let mut s = captured();
+        s.proxy_saved(1, s.edited_proxies.peek(&1).unwrap().generation, Ok("/cache/edited/1.jpg".into()));
+        s.current_edit_params.exposure = 0.7;
+        assert!(s.persist_proxy().is_empty());
+        assert!(!s.edited_proxies.contains(&1));
+        assert_eq!(saved_path(&s, 1), None, "the stale file is still the catalogue's thumbnail");
+    }
+
+    /// Releasing a slider and moving straight on: the render of the final
+    /// value is still in flight. Wait for it rather than drop the thumbnail,
+    /// then save it if it shows that edit, or drop it if not.
+    #[test]
+    fn leaving_mid_render_waits_for_the_render_of_the_final_edit() {
+        let mut s = captured();
+        s.current_edit_params.exposure = 0.7;
+        s.is_rendering = true;
+        // The wait needs the in-flight render to be this image's, which
+        // needs its GPU resources: without them the proxy is dropped.
+        assert!(s.persist_proxy().is_empty());
+        assert!(s.proxy_awaiting.is_empty());
+
+        let mut s = captured();
+        let final_edit = EditParams { exposure: 0.7, ..EditParams::default() };
+        s.proxy_awaiting.insert(1, edit_key(&final_edit));
+        s.capture_proxy(1, pixels(), (2, 2), final_edit);
+        assert_eq!(labels(&s.resolve_awaiting_proxy(1, Some(final_edit))), ["proxy save"]);
+        assert!(s.resolve_awaiting_proxy(1, Some(final_edit)).is_empty(), "resolved twice");
+
+        let mut s = captured();
+        s.proxy_awaiting.insert(1, edit_key(&final_edit));
+        assert!(s.resolve_awaiting_proxy(1, Some(edited())).is_empty());
+        assert!(!s.edited_proxies.contains(&1), "a render of an older edit was kept");
+    }
+
+    /// An image reset to its defaults goes back to the camera's thumbnail:
+    /// the saved edited one is forgotten, with nothing written.
+    #[test]
+    fn a_reset_image_forgets_its_saved_proxy_without_writing() {
+        let mut s = captured();
+        s.proxy_saved(1, s.edited_proxies.peek(&1).unwrap().generation, Ok("/cache/edited/1.jpg".into()));
+        s.images[0].cache_path_thumb = Some("/cache/thumb/1.jpg".into());
+        s.current_edit_params = EditParams::default();
+        s.capture_proxy(1, pixels(), (2, 2), EditParams::default());
+        assert!(s.persist_proxy().is_empty());
+        assert_eq!(saved_path(&s, 1), None);
+        assert!(s.edited_proxies.peek(&1).unwrap().persisted);
+    }
+
+    /// Without a camera thumbnail, even an unedited render is saved: it is the
+    /// only thumbnail the image has.
+    #[test]
+    fn an_image_without_a_camera_thumbnail_keeps_an_unedited_proxy() {
+        let mut s = session_with_images(1);
+        let _ = open_in_develop(&mut s, 1);
+        s.capture_proxy(1, pixels(), (2, 2), EditParams::default());
+        assert_eq!(labels(&s.persist_proxy()), ["proxy save"]);
+    }
+
+    /// A proxy read from disk fills in what memory lacks, never replaces a
+    /// live capture, and while its image's RAW loads in Develop it is shown.
+    #[test]
+    fn a_proxy_read_back_fills_in_and_shows_while_loading() {
+        let mut s = session_with_images(3);
+        let _ = open_in_develop(&mut s, 1);
+        s.pending_proxy_loads.insert(1);
+        s.queued_proxy_loads.push((1, "/p/1.jpg".into()));
+        s.proxy_loaded(1, Ok((2, 2, pixels())));
+        assert!(s.pending_proxy_loads.is_empty() && s.queued_proxy_loads.is_empty());
+        let p = s.edited_proxies.peek(&1).unwrap();
+        assert!(p.persisted && p.edited);
+        assert_eq!(p.params, Some(edit_key(&s.current_edit_params)), "the open image's edit is known");
+        assert_eq!(s.working_preview_dims, (2, 2), "not shown while loading");
+
+        s.proxy_loaded(2, Ok((2, 2, pixels())));
+        assert_eq!(s.edited_proxies.peek(&2).unwrap().params, None, "another image's edit isn't known yet");
+
+        s.capture_proxy(3, pixels(), (2, 2), edited());
+        let live = s.edited_proxies.peek(&3).unwrap().generation;
+        s.proxy_loaded(3, Ok((4, 4, Arc::from(vec![0u8; 64]))));
+        assert_eq!(s.edited_proxies.peek(&3).unwrap().generation, live, "the disk copy replaced a live capture");
+    }
+
+    #[test]
+    fn an_unreadable_proxy_is_skipped() {
+        let mut s = session_with_images(1);
+        s.pending_proxy_loads.insert(1);
+        s.proxy_loaded(1, Err("truncated".into()));
+        assert!(s.pending_proxy_loads.is_empty());
+        assert!(s.edited_proxies.is_empty());
+    }
+
+    #[test]
+    fn preloads_are_the_saved_proxies_not_in_memory_in_the_order_asked() {
+        let mut s = session_with_images(4);
+        for id in [2, 3, 4] {
+            s.images[id as usize - 1].cache_path_edited = Some(format!("/p/{id}.jpg"));
+        }
+        s.capture_proxy(3, pixels(), (2, 2), edited());
+        assert_eq!(s.wanted_proxy_preloads(&[4, 1, 3, 2]), [(4, "/p/4.jpg".into()), (2, "/p/2.jpg".into())]);
+    }
+
+    /// On window close a stale proxy is dropped there and then (nothing will
+    /// render again to save it).
+    #[test]
+    fn closing_the_window_drops_a_stale_proxy() {
+        let mut s = captured();
+        s.current_edit_params.exposure = 0.7;
+        s.persist_proxy_now();
+        assert!(!s.edited_proxies.contains(&1));
+    }
 }
