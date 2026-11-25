@@ -403,4 +403,46 @@ mod tests {
         let _ = s.pan_loupe(1e6, -1e6);
         assert_eq!(s.loupe.center, [0.05, 0.95]);
     }
+
+    /// Placing the loupe takes the next click, so every other click tool
+    /// stands down; outside Develop there is nothing to place it on.
+    #[test]
+    fn targeting_turns_the_other_click_tools_off() {
+        let mut s = session();
+        s.toggle_loupe_target();
+        assert!(!s.loupe.targeting, "armed outside Develop");
+
+        s.current_tab = AppTab::Develop;
+        s.is_wb_picking = true;
+        s.is_leveling = true;
+        s.color_picking_mask = Some(0);
+        s.toggle_loupe_target();
+        assert!(s.loupe.targeting);
+        assert!(!s.is_wb_picking && !s.is_leveling && s.color_picking_mask.is_none());
+
+        let _ = s.loupe_target_picked(1.4, -0.2);
+        assert!(!s.loupe.targeting);
+        assert_eq!(s.loupe.center, [1.0, 0.0], "placed off the image");
+        assert!(s.status.is_empty());
+    }
+
+    /// Results for an image the user has left free their slot but show
+    /// nothing; a failure for the open one is remembered, not retried.
+    #[test]
+    fn results_for_another_image_free_the_slot_and_show_nothing() {
+        let mut s = session();
+        s.loupe.building = Some(3);
+        assert!(s.loupe_ready(3, Err("x".into())).is_empty());
+        assert_eq!(s.loupe.building, None);
+        assert_eq!(s.loupe.failed, None, "another image's failure was recorded");
+
+        s.loupe.in_flight = true;
+        let frame = crate::gpu::loupe::LoupeFrame { rgba: vec![0; 16], size: 2, window: [0.0, 0.0, 1.0, 1.0] };
+        let _ = s.loupe_rendered(3, Ok(frame));
+        assert!(!s.loupe.in_flight);
+        assert!(s.loupe.frame.is_none(), "showed another image's detail");
+
+        let _ = s.loupe_ready(7, Err("no RAW".into()));
+        assert_eq!(s.loupe.failed, Some((7, "no RAW".into())));
+    }
 }
