@@ -115,3 +115,55 @@ async fn process_raw_load_request(id: i64, path: String) -> SessionEvent {
         .map(std::sync::Arc::new);
     SessionEvent::RawPreloaded(id, result)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn queue(ids: std::ops::RangeInclusive<i64>, dir: &str) -> Vec<(i64, String)> {
+        ids.map(|id| (id, format!("/{dir}/{id}"))).collect()
+    }
+
+    /// Only the head of each queue runs, up to its own limit, in queue order:
+    /// the RAW limit is the tighter one, since each RAW holds ~100 MB.
+    #[test]
+    fn only_the_head_of_each_queue_runs() {
+        let mut s = Session::default();
+        assert_eq!(s.load_jobs().count(), 0);
+        s.queued_loads = queue(1..=6, "p");
+        s.queued_raw_loads = queue(1..=5, "r");
+        s.queued_proxy_loads = queue(7..=7, "e");
+        let jobs: Vec<LoadJob> = s.load_jobs().collect();
+        let ids = |f: fn(&LoadJob) -> Option<i64>| jobs.iter().filter_map(f).collect::<Vec<_>>();
+        assert_eq!(ids(|j| if let LoadJob::Preview(id, _) = j { Some(*id) } else { None }), [1, 2, 3, 4]);
+        assert_eq!(ids(|j| if let LoadJob::Raw(id, _) = j { Some(*id) } else { None }), [1, 2]);
+        assert_eq!(jobs.last(), Some(&LoadJob::Proxy(7, "/e/7".into())));
+    }
+
+    /// The jobs on real files: a JPEG preview decodes to RGBA at its size, a
+    /// saved proxy reads back, and a RAW that isn't there fails as a result
+    /// (never a panic), for the session to report.
+    #[test]
+    fn jobs_report_their_files() {
+        let dir = std::env::temp_dir().join(format!("raw-editor-load-jobs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let jpeg = dir.join("preview.jpg");
+        image::RgbImage::from_pixel(6, 4, image::Rgb([200, 100, 50])).save(&jpeg).unwrap();
+        let jpeg = jpeg.to_string_lossy().into_owned();
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+
+        match rt.block_on(LoadJob::Preview(3, jpeg.clone()).run()) {
+            SessionEvent::PreviewCached(3, Ok((6, 4, rgba))) => assert_eq!(rgba.len(), 6 * 4 * 4),
+            other => panic!("{other:?}"),
+        }
+        match rt.block_on(LoadJob::Proxy(3, jpeg).run()) {
+            SessionEvent::EditedProxyLoaded(3, Ok((6, 4, _))) => {}
+            other => panic!("{other:?}"),
+        }
+        let missing = dir.join("missing.NEF").to_string_lossy().into_owned();
+        assert!(matches!(rt.block_on(LoadJob::Raw(3, missing.clone()).run()), SessionEvent::RawPreloaded(3, Err(_))));
+        assert!(matches!(rt.block_on(LoadJob::Preview(3, missing).run()), SessionEvent::PreviewCached(3, Err(_))));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
