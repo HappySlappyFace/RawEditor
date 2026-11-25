@@ -1628,3 +1628,189 @@ mod tests {
         assert!(!dcp_memo_is_valid(5500.0, a, 5500.0, b));
     }
 }
+
+/// Zoom, pan and the handle drags, in viewport pixels. They take the image's
+/// shape from its GPU resources, so these need a GPU (lavapipe is enough) and
+/// are `#[ignore]`d like the rest: `cargo test -p raw-editor-session
+/// view_tests -- --ignored --test-threads=1`.
+#[cfg(test)]
+mod view_tests {
+    use super::*;
+    use crate::core::types::MaskParams;
+    use crate::core::viewport::{fitted_size, image_rect};
+    use crate::gpu::shared::{ImageResources, SharedContext};
+    use std::sync::Arc;
+
+    const VIEWPORT: (f32, f32) = (800.0, 600.0);
+
+    /// A 300×200 image open and ready in Develop on an 800×600 viewport, so
+    /// it fits as 800×533⅓ at zoom 1.
+    fn session() -> Session {
+        let ctx = Arc::new(block_on(SharedContext::new()).expect("gpu"));
+        let (w, h) = (300, 200);
+        let res = ImageResources::new(
+            &ctx, 1, &vec![2000u16; (w * h) as usize], w, h, &EditParams::default(), [2.0, 1.0, 1.5, 1.0],
+            [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], 0, [0; 4], 4095, None, None, 1, Default::default(),
+        )
+        .expect("resources");
+        let mut s = crate::session::testkit::session_with_images(1);
+        s.current_tab = AppTab::Develop;
+        s.selected_image_id = Some(1);
+        s.editor_readiness = EditorReadiness::Ready(1);
+        s.gpu_context = Some(ctx);
+        s.image_resources = Some(Arc::new(res));
+        s.viewport_size = VIEWPORT;
+        s.scale_factor = 1.0;
+        s
+    }
+
+    fn block_on<F: std::future::Future>(f: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(f)
+    }
+
+    fn fitted(s: &Session) -> (f32, f32) {
+        let (dw, dh) = s.image_display_dims();
+        fitted_size(dw, dh, VIEWPORT.0, VIEWPORT.1)
+    }
+
+    /// The fraction of the image under screen point `at`.
+    fn under(s: &Session, at: [f32; 2]) -> [f32; 2] {
+        let (dw, dh) = s.image_display_dims();
+        let r = image_rect(dw, dh, VIEWPORT.0, VIEWPORT.1, s.zoom, s.pan_offset);
+        [(at[0] - r.x) / r.width, (at[1] - r.y) / r.height]
+    }
+
+    #[test]
+    #[ignore]
+    fn zooming_keeps_the_point_under_the_cursor_still() {
+        let mut s = session();
+        let at = [620.0, 210.0];
+        let before = under(&s, at);
+        for d in [1.0, 1.0, -0.5, 2.0] {
+            s.is_rendering = false;
+            let _ = s.zoom_at(d, at);
+            let now = under(&s, at);
+            assert!(
+                (now[0] - before[0]).abs() < 1e-4 && (now[1] - before[1]).abs() < 1e-4,
+                "drifted to {now:?} from {before:?} at zoom {}",
+                s.zoom
+            );
+        }
+        assert!(s.zoom > 1.0);
+    }
+
+    #[test]
+    #[ignore]
+    fn zoom_is_bounded_and_frozen_while_cropping() {
+        let mut s = session();
+        for _ in 0..40 {
+            s.is_rendering = false;
+            let _ = s.zoom_at(1.0, [400.0, 300.0]);
+        }
+        assert_eq!(s.zoom, 10.0);
+        for _ in 0..80 {
+            s.is_rendering = false;
+            let _ = s.zoom_at(-1.0, [400.0, 300.0]);
+        }
+        assert_eq!(s.zoom, 0.1);
+
+        let mut s = session();
+        s.is_cropping = true;
+        assert!(s.zoom_at(1.0, [400.0, 300.0]).is_empty());
+        assert!(s.pan([0.1, 0.0]).is_empty());
+        assert_eq!((s.zoom, s.pan_offset.x), (1.0, 0.0));
+    }
+
+    /// Panning re-projects the rendered window for free, and asks for a new
+    /// render only once the view runs past its overscan margin.
+    #[test]
+    #[ignore]
+    fn panning_renders_only_past_the_rendered_margin() {
+        let mut s = session();
+        let _ = s.zoom_at(2.0, [400.0, 300.0]);
+        assert!(s.is_rendering, "zooming did not render");
+        s.is_rendering = false; // that render finished
+
+        let step = s.pan_fraction([8.0, 0.0]);
+        let (fw, _) = fitted(&s);
+        assert!((step[0] - 8.0 / fw).abs() < 1e-6, "a pixel of drag is not a pixel of pan");
+        assert!(s.pan(step).is_empty(), "a small pan re-rendered");
+        assert!(!s.is_rendering);
+
+        let _ = s.pan(s.pan_fraction([-300.0, 0.0]));
+        assert!(s.is_rendering, "panned off the rendered window without a render");
+    }
+
+    #[test]
+    #[ignore]
+    fn reset_view_goes_back_to_fit_and_renders() {
+        let mut s = session();
+        let _ = s.zoom_at(2.0, [100.0, 100.0]);
+        s.is_rendering = false;
+        let _ = s.reset_view();
+        assert_eq!((s.zoom, s.pan_offset.x, s.pan_offset.y), (1.0, 0.0, 0.0));
+        assert!(s.is_rendering);
+    }
+
+    /// Crop handles move by the dragged fraction of the shown image, never
+    /// invert or leave it, and the body moves the crop whole.
+    #[test]
+    #[ignore]
+    fn crop_handles_follow_the_drag_and_stay_on_the_image() {
+        let mut s = session();
+        s.is_cropping = true;
+        let (fw, fh) = fitted(&s);
+        s.drag_crop(CropHandle::BottomRight, [0.0, 0.0], [-fw * 0.25, -fh * 0.5]);
+        let c = s.current_edit_params.crop;
+        assert!((c[2] - 0.75).abs() < 1e-5 && (c[3] - 0.5).abs() < 1e-5, "{c:?}");
+        assert!(s.edits_dirty, "the drag would not be saved");
+
+        s.drag_crop(CropHandle::TopLeft, [0.0, 0.0], [fw * 5.0, fh * 5.0]);
+        let c = s.current_edit_params.crop;
+        assert!(c[2] >= 0.0099 && c[3] >= 0.0099, "the crop collapsed or inverted: {c:?}");
+
+        let mut s = session();
+        s.is_cropping = true;
+        s.current_edit_params.crop = [0.25, 0.25, 0.5, 0.5];
+        s.drag_crop(CropHandle::Body, [0.0, 0.0], [fw, -fh]);
+        let c = s.current_edit_params.crop;
+        assert_eq!(c, [0.5, 0.0, 0.5, 0.5], "the body left the image or changed size");
+    }
+
+    #[test]
+    #[ignore]
+    fn mask_handles_move_their_own_points() {
+        let mut s = session();
+        let (fw, fh) = fitted(&s);
+        s.current_edit_params.masks[0] = MaskParams { mask_type: 0, ax: 0.2, ay: 0.2, bx: 0.6, by: 0.6, ..MaskParams::default() };
+        s.current_edit_params.mask_count = 1;
+        s.selected_mask = Some(0);
+
+        s.move_mask_handle(MaskHandle::Center, [0.0, 0.0], [fw * 0.1, fh * 0.1]);
+        let m = s.current_edit_params.masks[0];
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-5;
+        assert!(close(m.ax, 0.3) && close(m.ay, 0.3) && close(m.bx, 0.7) && close(m.by, 0.7), "{m:?}");
+
+        s.move_mask_handle(MaskHandle::LinearEnd, [0.0, 0.0], [-fw * 0.2, 0.0]);
+        let m = s.current_edit_params.masks[0];
+        assert!(close(m.ax, 0.3) && close(m.bx, 0.5), "the end handle moved the start: {m:?}");
+
+        // Radial: a radius never reaches zero, and the uniform handle makes a
+        // circle on screen (equal pixels on both axes).
+        s.current_edit_params.masks[0] = MaskParams { mask_type: 1, ax: 0.5, ay: 0.5, bx: 0.1, by: 0.1, ..MaskParams::default() };
+        s.move_mask_handle(MaskHandle::RadiusX, [0.0, 0.0], [-fw, 0.0]);
+        assert_eq!(s.current_edit_params.masks[0].bx, 0.005);
+        s.current_edit_params.masks[0].bx = 0.1;
+        s.current_edit_params.masks[0].by = 0.1 * 1.5;
+        s.move_mask_handle(MaskHandle::RadiusUniform, [0.0, 0.0], [fw * 0.1, 0.0]);
+        let m = s.current_edit_params.masks[0];
+        let (dw, dh) = s.image_display_dims();
+        assert!(close(m.bx * dw as f32, m.by * dh as f32), "not a circle: {m:?}");
+
+        // No mask selected, or a slot past the count: nothing moves.
+        s.selected_mask = Some(3);
+        let before = s.current_edit_params;
+        s.move_mask_handle(MaskHandle::Center, [0.0, 0.0], [50.0, 50.0]);
+        assert_eq!(s.current_edit_params, before);
+    }
+}
