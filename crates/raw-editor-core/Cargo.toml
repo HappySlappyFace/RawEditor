@@ -42,7 +42,6 @@ png.workspace = true
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter", "time", "local-time"] }
 tracing-appender = "0.2"
-tiff.workspace = true
 half = { version = "2.7.1", features = ["bytemuck"] }
 
 # Lens-profile download (Preferences › Lens Profiles): the lensfun database is
