@@ -27,6 +27,8 @@ mod state;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testkit;
 #[cfg(test)]
+mod ai_flows;
+#[cfg(test)]
 mod tests;
 
 pub use camera_profiles::{CameraProfileState, ProfileJob};

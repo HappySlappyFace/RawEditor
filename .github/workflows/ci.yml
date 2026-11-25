@@ -72,10 +72,31 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y libxkbcommon-dev mesa-vulkan-drivers
 
+    # The AI models (~130 MB) from this repo's models-v1 release, checked
+    # against the hashes ml::models pins, and cached until those change.
+    - name: AI models (cache)
+      id: models
+      uses: actions/cache@v4
+      with:
+        path: models
+        key: ai-models-${{ hashFiles('crates/raw-editor-core/src/ml/models.rs') }}
+
+    - name: AI models (download)
+      if: steps.models.outputs.cache-hit != 'true'
+      run: |
+        mkdir -p models
+        awk '/name: "/{gsub(/[",]/,"",$2); n=$2} /sha256: "/{gsub(/[",]/,"",$2); print $2"  "n}' \
+          crates/raw-editor-core/src/ml/models.rs > models/SHA256SUMS
+        url=$(grep -A1 'pub const RELEASE_URL' crates/raw-editor-core/src/ml/models.rs | grep -o 'https://[^"]*')
+        cd models
+        for f in $(awk '{print $2}' SHA256SUMS); do curl -fsSL --retry 3 -o "$f" "$url$f"; done
+        sha256sum -c SHA256SUMS
+
     - name: GPU tests
+      env:
+        RAWEDITOR_MODELS_DIR: ${{ github.workspace }}/models
       run: >
         cargo test --workspace -- --ignored --test-threads=1
         --skip nr_sweep --skip presence_dump --skip bench_slider_ticks
         --skip trash_crate_moves_file
         --skip camera_profile_download --skip lensfun_download
-        --skip clicking_a_disc_selects_it --skip ai_denoise_vs_classical_nr

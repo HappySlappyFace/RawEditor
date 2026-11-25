@@ -92,6 +92,24 @@ pub fn run_ready(effects: Effects) -> Vec<SessionEvent> {
         .collect()
 }
 
+/// Run `effects` for real on `rt` (GPU, ONNX Runtime, disk), handing each
+/// result back through [`deliver`] and running what that asks for in turn,
+/// until nothing is left. Returns the labels run, in order. One effect at a
+/// time, which is one of the orders the app can run them in. For the ignored
+/// end-to-end tests; point the folders away from the user's first
+/// (`core::paths::redirect_for_tests`).
+pub fn drive(s: &mut Session, rt: &tokio::runtime::Runtime, effects: Effects) -> Vec<&'static str> {
+    let mut queue: std::collections::VecDeque<_> = effects.into_iter().collect();
+    let mut ran = Vec::new();
+    while let Some(effect) = queue.pop_front() {
+        assert!(ran.len() < 500, "the effects never settled: {ran:?}");
+        ran.push(effect.label);
+        let event = rt.block_on(effect.future);
+        queue.extend(deliver(s, event));
+    }
+    ran
+}
+
 /// A tiny but valid decoded RAW: 8×8 RGGB, a flat grey. `tag` lands in
 /// `model`, so tests can tell which delivery the session is holding.
 pub fn raw(tag: impl std::fmt::Display) -> RawDataResult {
