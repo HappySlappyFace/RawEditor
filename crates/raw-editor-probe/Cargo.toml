@@ -1,0 +1,23 @@
+[package]
+name = "raw-editor-probe"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "A headless run of RawEditor's session on one RAW: import, develop, slider ticks, export, with timings. For checking a new platform (Android) before any UI exists."
+license.workspace = true
+publish = false
+
+[dependencies]
+# The editing session (and, through it, the engine) exactly as a front end uses it.
+raw-editor-session.workspace = true
+tokio.workspace = true
+# Only to list the adapters and their limits; the same version the engine uses.
+wgpu.workspace = true
+tracing.workspace = true
+# The engine already builds this one; the probe only turns logging on.
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[features]
+# The per-render breakdown (CPU spans, GPU pass timestamps, counts) the
+# desktop's F3 overlay shows, printed after the slider ticks.
+profiling = ["raw-editor-session/profiling"]

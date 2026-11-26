@@ -26,8 +26,6 @@ walkdir = "2.4"
 png.workspace = true
 jpeg-encoder = "0.6"
 tiff.workspace = true
-# Delete moves files to the system trash.
-trash = "5.2.6"
 
 zune-jpeg = { workspace = true, optional = true }
 zune-core = { workspace = true, optional = true }
@@ -43,3 +41,8 @@ profiling = ["raw-editor-core/profiling"]
 
 [dev-dependencies]
 raw-editor-core = { workspace = true, features = ["test-support"] }
+
+# Delete moves files to the system trash. The crate has no backend on Android
+# or iOS, where Delete reports that it can't (`delete::trash_or_missing`).
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+trash = "5.2.6"

@@ -83,11 +83,37 @@ impl Readback<'_> {
             out.extend_from_slice(&data[start..end]);
         }
         drop(data);
+        self.finish();
+        out
+    }
+
+    /// [`Self::unpad`] straight into shared memory. `Arc::from(Vec)` copies
+    /// (the `Arc`'s counts sit in front of the data), and at a develop
+    /// display's size that second copy cost as much as the readback itself:
+    /// 3.6 ms of a 14.5 ms frame on a phone's fastest core.
+    fn unpad_shared(mut self) -> std::sync::Arc<[u8]> {
+        let row = (self.width * 4) as usize;
+        let mut out = std::sync::Arc::<[u8]>::new_uninit_slice(row * self.height as usize);
+        if row > 0 {
+            let dst = std::sync::Arc::get_mut(&mut out).expect("a new Arc is unshared");
+            let data = self.slice().get_mapped_range();
+            for (y, dst_row) in dst.chunks_exact_mut(row).enumerate() {
+                let start = y * self.bytes_per_row as usize;
+                dst_row.write_copy_of_slice(&data[start..start + row]);
+            }
+        }
+        self.finish();
+        // SAFETY: the rows tile the slice exactly (`height` rows of `row`
+        // bytes), so every byte has been written.
+        unsafe { out.assume_init() }
+    }
+
+    /// Unmap, so the buffer can go back to the pool.
+    fn finish(&mut self) {
         if let Some(buffer) = &self.buffer {
             buffer.unmap();
         }
         self.done = true;
-        out
     }
 }
 
@@ -347,12 +373,9 @@ pub async fn render_to_bytes(
     });
 
     if let Ok(Ok(())) = rx.await {
-        let result = readback.unpad();
+        let result = readback.unpad_shared();
         let render_ms = t_render_start.elapsed().as_secs_f32() * 1000.0;
-        // One copy: `Arc<[u8]>` needs a refcount header ahead of the data, so
-        // it cannot adopt the Vec's allocation. Building it here rather than at
-        // the call site at least keeps the total to a single conversion.
-        (std::sync::Arc::from(result), upload_ms, render_ms)
+        (result, upload_ms, render_ms)
     } else {
         (std::sync::Arc::from(Vec::new()), upload_ms, 0.0)
     }
@@ -465,21 +488,21 @@ pub async fn render_display_and_overview(
 
     let (overview, histogram) = if let Ok(Ok(())) = orx.await {
         let t = Timer::start();
-        let pixels = overview_rb.unpad();
+        let pixels = overview_rb.unpad_shared();
         detail.stop(Span::Unpad, t);
         let t = Timer::start();
         let histogram = crate::core::histogram::calculate(&pixels);
         detail.stop(Span::Histogram, t);
-        (std::sync::Arc::from(pixels), histogram)
+        (pixels, histogram)
     } else {
         (std::sync::Arc::from(Vec::new()), [[0u32; 256]; 3])
     };
 
     let display = if let Ok(Ok(())) = mrx.await {
         let t = Timer::start();
-        let pixels = main_rb.unpad();
+        let pixels = main_rb.unpad_shared();
         detail.stop(Span::Unpad, t);
-        std::sync::Arc::from(pixels)
+        pixels
     } else {
         std::sync::Arc::from(Vec::new())
     };

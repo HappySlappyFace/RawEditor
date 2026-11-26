@@ -3947,6 +3947,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "raw-editor-probe"
+version = "0.9.26"
+dependencies = [
+ "raw-editor-session",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "wgpu",
+]
+
+[[package]]
 name = "raw-editor-session"
 version = "0.9.26"
 dependencies = [
