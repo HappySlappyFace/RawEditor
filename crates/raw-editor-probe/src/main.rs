@@ -12,8 +12,12 @@
 //! folder; nothing touches the user's own data or cache folders.
 //!
 //! ```text
-//! raw-editor-probe <photo.raw> [--work DIR] [--ticks N]
+//! raw-editor-probe <photo.raw> [--work DIR] [--ticks N] [--surface]
 //! ```
+//!
+//! `--surface` draws the ticks the way a front end that owns its surface
+//! does (`Session::surface_frame` → `render_to_target`), into a stand-in
+//! 1080×2400 texture, with no readback of the display.
 
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -29,12 +33,14 @@ struct Args {
     raw: PathBuf,
     work: PathBuf,
     ticks: usize,
+    surface: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
     let mut raw = None;
     let mut work = None;
     let mut ticks = 100;
+    let mut surface = false;
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -42,6 +48,7 @@ fn parse_args() -> Result<Args, String> {
             "--ticks" => {
                 ticks = it.next().ok_or("--ticks needs a number")?.parse().map_err(|e| format!("--ticks: {e}"))?
             }
+            "--surface" => surface = true,
             "-h" | "--help" => return Err(String::new()),
             _ if raw.is_none() => raw = Some(PathBuf::from(a)),
             _ => return Err(format!("unexpected argument {a}")),
@@ -49,7 +56,7 @@ fn parse_args() -> Result<Args, String> {
     }
     let raw = raw.ok_or("which RAW file?")?;
     let work = work.unwrap_or_else(|| std::env::temp_dir().join("raw-editor-probe"));
-    Ok(Args { raw, work, ticks })
+    Ok(Args { raw, work, ticks, surface })
 }
 
 fn main() {
@@ -59,7 +66,7 @@ fn main() {
             if !e.is_empty() {
                 eprintln!("{e}");
             }
-            eprintln!("usage: raw-editor-probe <photo.raw> [--work DIR] [--ticks N]");
+            eprintln!("usage: raw-editor-probe <photo.raw> [--work DIR] [--ticks N] [--surface]");
             std::process::exit(2);
         }
     };
@@ -152,14 +159,23 @@ fn run(args: &Args) -> Result<(), String> {
     );
 
     // 4. Slider ticks: one render each, as when Exposure is dragged.
-    rt_section("Slider ticks");
+    rt_section(if args.surface { "Slider ticks (drawn onto a surface)" } else { "Slider ticks" });
     probe.session.profiler.history.clear();
     let mut ticks = Vec::with_capacity(args.ticks);
+    let surface = args.surface.then(|| StandInSurface::new(&probe.session, 1080, 2400)).flatten();
+    if args.surface && surface.is_none() {
+        return Err("no GPU context for the stand-in surface".into());
+    }
     for i in 0..args.ticks {
         probe.session.current_edit_params.exposure = (i % 40) as f32 * 0.05 - 1.0;
         let t = Instant::now();
-        let fx = probe.session.update_pipeline();
-        probe.drive(fx)?;
+        match &surface {
+            Some(surface) => surface.draw(&mut probe)?,
+            None => {
+                let fx = probe.session.update_pipeline();
+                probe.drive(fx)?;
+            }
+        }
         ticks.push(t.elapsed());
     }
     print_breakdown(&probe.session.profiler);
@@ -167,6 +183,9 @@ fn run(args: &Args) -> Result<(), String> {
     let fx = probe.session.update_pipeline();
     probe.drive(fx)?;
     probe.session.flush_edits();
+    if let Some((i, slowest)) = ticks.iter().enumerate().max_by_key(|(_, d)| **d) {
+        println!("slowest    tick {i} of {}, {:.1} ms", ticks.len(), ms(*slowest));
+    }
     if !ticks.is_empty() {
         ticks.sort();
         let n = ticks.len();
@@ -209,6 +228,57 @@ fn run(args: &Args) -> Result<(), String> {
         println!("peak memory  {peak} MB");
     }
     Ok(())
+}
+
+/// A texture standing in for a phone's surface, for `--surface`.
+struct StandInSurface {
+    view: wgpu::TextureView,
+    size: (u32, u32),
+}
+
+impl StandInSurface {
+    fn new(session: &Session, width: u32, height: u32) -> Option<Self> {
+        let ctx = session.gpu_context.as_ref()?;
+        let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("stand-in surface"),
+            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        Some(Self { view: texture.create_view(&Default::default()), size: (width, height) })
+    }
+
+    /// One frame, as a surface front end draws it on vsync.
+    fn draw(&self, probe: &mut Probe) -> Result<(), String> {
+        probe.session.mark_edits_dirty();
+        let t = Instant::now();
+        let frame = probe.session.surface_frame(self.size.0, self.size.1).ok_or("no image to draw")?;
+        let target = raw_editor_session::gpu::render_functions::DisplayTarget {
+            view: &self.view,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            size: self.size,
+            placement: frame.placement,
+            background: wgpu::Color::BLACK,
+        };
+        let out = probe.rt.block_on(raw_editor_session::gpu::render_functions::render_to_target(
+            &frame.context,
+            &frame.display,
+            &frame.overview,
+            target,
+            frame.overview_dims,
+            Default::default(),
+            || {},
+        ))?;
+        let fx = probe.session.surface_frame_finished(&frame, out);
+        let entry = probe.times.entry("surface frame".into()).or_default();
+        entry.0 += 1;
+        entry.1 += t.elapsed();
+        probe.drive(fx)
+    }
 }
 
 struct Probe {
