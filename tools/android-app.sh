@@ -2,6 +2,8 @@
 # Build and run the Android app (android/, with crates/raw-editor-android).
 #
 #   tools/android-app.sh build             the Rust library + the debug APK
+#                                          (profile `quick`, no LTO: seconds to
+#                                          rebuild; RELEASE=1 for the full build)
 #   tools/android-app.sh install           build, then install on the phone over adb
 #   tools/android-app.sh photo <file.raw>  copy a RAW into the app's folder (it opens the first)
 #   tools/android-app.sh run               start the app
@@ -15,7 +17,8 @@ cd "$(dirname "$0")/.."
 TARGET=aarch64-linux-android
 API=${ANDROID_API:-28}
 PACKAGE=dev.raweditor
-LIB=target/android/$TARGET/release/libraweditor.so
+PROFILE=$([[ -n "${RELEASE:-}" ]] && echo release || echo quick)
+LIB=target/android/$TARGET/$PROFILE/libraweditor.so
 JNI=android/app/src/main/jniLibs/arm64-v8a
 APK=android/app/build/outputs/apk/debug/app-debug.apk
 PHOTOS=/sdcard/Android/data/$PACKAGE/files
@@ -42,7 +45,7 @@ build() {
     AR_aarch64_linux_android=$bin/llvm-ar \
     RUSTC=~/.cargo/bin/rustc \
     CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="-C link-arg=-Wl,-z,max-page-size=16384" \
-        "$cargo" build --release -p raw-editor-android --target $TARGET
+        "$cargo" build --profile $PROFILE -p raw-editor-android --target $TARGET
 
     mkdir -p $JNI
     cp "$LIB" $JNI/
@@ -64,5 +67,5 @@ case "${1:-}" in
         adb push "$photo" $PHOTOS/ ;;
     run) adb shell am start -n $PACKAGE/.MainActivity ;;
     log) adb logcat -s RawEditor:V AndroidRuntime:E ;;
-    *) sed -n '2,10p' "$0"; exit 2 ;;
+    *) sed -n '2,12p' "$0"; exit 2 ;;
 esac

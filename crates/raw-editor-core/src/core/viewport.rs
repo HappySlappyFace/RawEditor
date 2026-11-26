@@ -144,6 +144,28 @@ pub fn screen_placement(
     Some((view_rect, Rect { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }))
 }
 
+/// The pan offset nearest `offset` that keeps the image covering the
+/// viewport along each axis it is larger than, and centred along any it is
+/// not: a dragged photo stops at its edges instead of leaving the screen.
+/// Same units as [`image_rect`].
+pub fn clamp_pan(
+    image_w: u32,
+    image_h: u32,
+    vp_w: f32,
+    vp_h: f32,
+    zoom: f32,
+    offset: cgmath::Vector2<f32>,
+) -> cgmath::Vector2<f32> {
+    let (fw, fh) = fitted_size(image_w, image_h, vp_w, vp_h);
+    // From image_rect: x = vw/2 − fw·zoom/2 + offset·fw. The image covers
+    // [0, vw] while |offset| ≤ (fw·zoom − vw) / 2fw.
+    let axis = |o: f32, fitted: f32, viewport: f32| {
+        let limit = if fitted > 0.0 { ((fitted * zoom - viewport) / (2.0 * fitted)).max(0.0) } else { 0.0 };
+        o.clamp(-limit, limit)
+    };
+    cgmath::Vector2::new(axis(offset.x, fw, vp_w), axis(offset.y, fh, vp_h))
+}
+
 /// Magnification past which a subsampled develop texture reads as soft, and
 /// the full-resolution rebuild is requested: the screen would draw each of
 /// its source pixels this much larger than one physical pixel. A little
@@ -429,6 +451,26 @@ pub fn overview_dims(display_w: u32, display_h: u32) -> (u32, u32) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_clamped_pan_keeps_the_image_on_screen() {
+        use super::{clamp_pan, image_rect};
+        // A 3:2 image on a 1000×1000 viewport: fit is 1000×667.
+        let far = cgmath::Vector2::new(5.0, -5.0);
+        // At fit nothing pans.
+        let o = clamp_pan(3000, 2000, 1000.0, 1000.0, 1.0, far);
+        assert_eq!((o.x, o.y), (0.0, 0.0));
+        // At 3× the image is 3000×2000: it may move until an edge meets the
+        // viewport's, and no further.
+        let o = clamp_pan(3000, 2000, 1000.0, 1000.0, 3.0, far);
+        let r = image_rect(3000, 2000, 1000.0, 1000.0, 3.0, o);
+        assert!(near(r.x, 0.0), "{r:?}");
+        assert!(near(r.y + r.height, 1000.0), "{r:?}");
+        // Inside the limits it is left alone.
+        let small = cgmath::Vector2::new(0.1, -0.1);
+        let o = clamp_pan(3000, 2000, 1000.0, 1000.0, 3.0, small);
+        assert_eq!((o.x, o.y), (0.1, -0.1));
+    }
+
     fn near(a: f32, b: f32) -> bool {
         (a - b).abs() < 1e-4
     }

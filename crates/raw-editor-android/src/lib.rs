@@ -82,6 +82,44 @@ pub extern "system" fn Java_dev_raweditor_NativeEngine_setExposure(_: JNIEnv, _:
     }
 }
 
+/// A pinch or drag on the photo: scale the zoom about (x, y), then move by
+/// (dx, dy), all in the surface's pixels.
+#[no_mangle]
+pub extern "system" fn Java_dev_raweditor_NativeEngine_transformView(
+    _: JNIEnv,
+    _: JObject,
+    handle: jlong,
+    scale: jfloat,
+    x: jfloat,
+    y: jfloat,
+    dx: jfloat,
+    dy: jfloat,
+) {
+    if let Some(e) = engine(handle) {
+        e.send(Command::View { scale, at: [x, y], pan: [dx, dy] });
+    }
+}
+
+/// A double tap at (x, y): back to fit, or zoom in about it.
+#[no_mangle]
+pub extern "system" fn Java_dev_raweditor_NativeEngine_toggleZoom(_: JNIEnv, _: JObject, handle: jlong, x: jfloat, y: jfloat) {
+    if let Some(e) = engine(handle) {
+        e.send(Command::ToggleZoom([x, y]));
+    }
+}
+
+/// How many photos have opened so far; when it moves, `openedExposure` is
+/// the new photo's saved exposure.
+#[no_mangle]
+pub extern "system" fn Java_dev_raweditor_NativeEngine_openedCount(_: JNIEnv, _: JObject, handle: jlong) -> jint {
+    engine(handle).map_or(0, |e| e.opened().0 as jint)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_dev_raweditor_NativeEngine_openedExposure(_: JNIEnv, _: JObject, handle: jlong) -> jfloat {
+    engine(handle).map_or(0.0, |e| e.opened().1)
+}
+
 /// One line for the on-screen readout: status and frame timings.
 #[no_mangle]
 pub extern "system" fn Java_dev_raweditor_NativeEngine_stats(env: JNIEnv, _: JObject, handle: jlong) -> jstring {

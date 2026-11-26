@@ -42,20 +42,27 @@ pub fn run(
         let t = Instant::now();
         let event = rt.block_on(future);
         timed(label, t.elapsed());
-        let next = match session.handle(event) {
-            Handled::Done(fx) => fx,
-            Handled::FrontEnd(event) => match *event {
-                SessionEvent::CacheProcessed(result) => match session.cache_processed(result) {
-                    CacheStep::Continue(fx) => fx,
-                    CacheStep::Retired | CacheStep::Finished => Effects::none(),
-                },
-                other => {
-                    tracing::warn!("a front-end event this host ignores: {other:?}");
-                    Effects::none()
-                }
-            },
-        };
-        queue.extend(next.into_iter().map(|e| (e.label, e.future)));
+        queue.extend(handle(session, event).into_iter().map(|e| (e.label, e.future)));
     }
     Ok(())
+}
+
+/// Hand one finished piece of work back to the session, as a front end
+/// with no dialogs of its own does: the cache workers' results are acted
+/// on, other front-end events are logged and dropped. For hosts that run
+/// effects in the background and collect their results as they come.
+pub fn handle(session: &mut Session, event: SessionEvent) -> Effects<SessionEvent> {
+    match session.handle(event) {
+        Handled::Done(fx) => fx,
+        Handled::FrontEnd(event) => match *event {
+            SessionEvent::CacheProcessed(result) => match session.cache_processed(result) {
+                CacheStep::Continue(fx) => fx,
+                CacheStep::Retired | CacheStep::Finished => Effects::none(),
+            },
+            other => {
+                tracing::warn!("a front-end event this host ignores: {other:?}");
+                Effects::none()
+            }
+        },
+    }
 }

@@ -15,6 +15,10 @@ impl Changed {
     pub const HISTOGRAM: Changed = Changed(1 << 1);
     /// The profiler's frame times.
     pub const PROFILER: Changed = Changed(1 << 2);
+    /// The image on screen is out of date. Only a front end that draws on
+    /// its own clock (`Session::surface_drawn`) needs it: everywhere else the
+    /// session starts the render itself.
+    pub const FRAME: Changed = Changed(1 << 3);
 
     pub fn insert(&mut self, other: Changed) {
         self.0 |= other.0;
