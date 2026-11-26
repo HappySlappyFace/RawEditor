@@ -14,6 +14,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.runtime.withFrameNanos
@@ -304,16 +305,20 @@ private fun Histogram(engine: Long, modifier: Modifier) {
             }
         }
     }
-    if (counts.size != 768) return
-    Canvas(modifier.background(Color(0x990A0A0A))) {
-        val max = counts.max().coerceAtLeast(1).toFloat()
+    if (counts.size != 769) return
+    // A hairline so the box shows over a dark photo.
+    Canvas(modifier.background(Color(0x990A0A0A)).border(1.dp, Color(0x33FFFFFF))) {
+        // The engine's scale: the clipped end bins don't set it, and are
+        // drawn clamped to the top.
+        val max = counts[768].coerceAtLeast(1).toFloat()
         val bar = size.width / 256f
         for (c in 0 until 3) {
             val path = Path()
             path.moveTo(0f, size.height)
             for (i in 0 until 256) {
-                path.lineTo(i * bar, size.height * (1f - counts[c * 256 + i] / max))
-                path.lineTo((i + 1) * bar, size.height * (1f - counts[c * 256 + i] / max))
+                val top = size.height * (1f - (counts[c * 256 + i] / max).coerceAtMost(1f))
+                path.lineTo(i * bar, top)
+                path.lineTo((i + 1) * bar, top)
             }
             path.lineTo(size.width, size.height)
             path.close()

@@ -155,8 +155,9 @@ pub extern "system" fn Java_dev_raweditor_NativeEngine_histogramVersion(_: JNIEn
     engine(handle).map_or(0, |e| e.histogram_version() as jint)
 }
 
-/// The histogram: red, green, blue, 256 counts each (empty before the first
-/// frame). A frame behind the screen, which nobody can see.
+/// The histogram: red, green, blue, 256 counts each, then the count to
+/// scale them to (clipped end bins excluded; they are drawn clamped). Empty
+/// before the first frame. A frame behind the screen, which nobody can see.
 #[no_mangle]
 pub extern "system" fn Java_dev_raweditor_NativeEngine_histogram(env: JNIEnv, _: JObject, handle: jlong) -> jintArray {
     let counts: Vec<jint> = engine(handle).map(|e| e.histogram()).unwrap_or_default().into_iter().map(|c| c.min(i32::MAX as u32) as jint).collect();

@@ -25,12 +25,9 @@ impl canvas::Program<Message> for Histogram {
     ) -> Vec<canvas::Geometry> {
         let mut frame = canvas::Frame::new(renderer, bounds.size());
 
-        // Find maximum value across all channels for normalization
-        let max_value = self.data.iter()
-            .flat_map(|channel| channel.iter())
-            .copied()
-            .max()
-            .unwrap_or(1) as f32;
+        // Scaled to the tallest bin but the clipped ends, which are drawn
+        // clamped (`core::histogram::display_peak`).
+        let max_value = crate::core::histogram::display_peak(&self.data) as f32;
 
         if max_value < 1.0 {
             return vec![frame.into_geometry()];
@@ -52,7 +49,7 @@ impl canvas::Program<Message> for Histogram {
 
             for (i, &count) in channel_data.iter().enumerate() {
                 if count > 0 {
-                    let normalized = count as f32 / max_value;
+                    let normalized = (count as f32 / max_value).min(1.0);
                     let bar_height = normalized * height;
                     let x = i as f32 * bar_width;
                     let y = height - bar_height;

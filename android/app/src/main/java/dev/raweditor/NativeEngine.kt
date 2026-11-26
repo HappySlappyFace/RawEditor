@@ -34,7 +34,7 @@ object NativeEngine {
     external fun openedValues(handle: Long): FloatArray
     /** Moves whenever the histogram does: fetch [histogram] only then. */
     external fun histogramVersion(handle: Long): Int
-    /** Red, green, blue: 256 counts each (empty before the first frame). */
+    /** Red, green, blue: 256 counts each, then the count to scale to (empty before the first frame). */
     external fun histogram(handle: Long): IntArray
     external fun stats(handle: Long): String
     /** Save and stop. The handle is dead afterwards. */

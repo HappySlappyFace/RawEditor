@@ -105,8 +105,8 @@ impl Engine {
         self.stats.lock().unwrap_or_else(|e| e.into_inner()).histogram_version
     }
 
-    /// The histogram: red, green, blue, 256 counts each (empty before the
-    /// first frame).
+    /// The histogram: red, green, blue, 256 counts each, then the count to
+    /// scale them to (empty before the first frame).
     pub fn histogram(&self) -> Vec<u32> {
         self.stats.lock().unwrap_or_else(|e| e.into_inner()).histogram.clone()
     }
@@ -138,7 +138,8 @@ pub struct Stats {
     values: Vec<f32>,
     /// The open photo's as-shot white balance (kelvin, tint).
     as_shot: (f32, f32),
-    /// Red, green, blue: 256 counts each.
+    /// Red, green, blue: 256 counts each, then the count to scale to
+    /// (`core::histogram::display_peak`).
     histogram: Vec<u32>,
     /// Moves whenever `histogram` does.
     histogram_version: u32,
@@ -291,7 +292,10 @@ impl RenderThread {
             let changed = self.session.changed.take();
             dirty |= changed.contains(Changed::FRAME);
             if changed.contains(Changed::HISTOGRAM) {
-                let histogram = self.session.histogram_data.borrow().iter().flatten().copied().collect();
+                let data = self.session.histogram_data.borrow();
+                let mut histogram: Vec<u32> = data.iter().flatten().copied().collect();
+                histogram.push(raw_editor_session::core::histogram::display_peak(&data));
+                drop(data);
                 let mut stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
                 stats.histogram = histogram;
                 stats.histogram_version = stats.histogram_version.wrapping_add(1);
