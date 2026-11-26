@@ -3990,6 +3990,7 @@ dependencies = [
  "tracing",
  "trash",
  "walkdir",
+ "wgpu",
  "zune-core",
  "zune-jpeg",
 ]

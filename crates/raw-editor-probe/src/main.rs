@@ -263,16 +263,21 @@ impl StandInSurface {
             placement: frame.placement,
             background: wgpu::Color::BLACK,
         };
-        let out = probe.rt.block_on(raw_editor_session::gpu::render_functions::render_to_target(
+        let out = raw_editor_session::gpu::render_functions::render_to_target(
             &frame.context,
             &frame.display,
-            &frame.overview,
+            frame.overview.as_deref(),
             target,
             frame.overview_dims,
             Default::default(),
             || {},
-        ))?;
-        let fx = probe.session.surface_frame_finished(&frame, out);
+        )?;
+        let finished = probe.session.surface_frame_finished(&frame, out);
+        // A phone collects the overview a frame later and never waits; with
+        // no vsync to pace it, the probe waits instead, so each tick is the
+        // frame's whole cost (GPU included) rather than work piling up.
+        let landed = probe.session.surface_overview_wait();
+        let fx = raw_editor_session::Effects::batch([finished, landed]);
         let entry = probe.times.entry("surface frame".into()).or_default();
         entry.0 += 1;
         entry.1 += t.elapsed();

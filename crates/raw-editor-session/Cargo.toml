@@ -41,6 +41,8 @@ profiling = ["raw-editor-core/profiling"]
 
 [dev-dependencies]
 raw-editor-core = { workspace = true, features = ["test-support"] }
+# A stand-in surface for the surface-frame tests; the engine's own version.
+wgpu.workspace = true
 
 # Delete moves files to the system trash. The crate has no backend on Android
 # or iOS, where Delete reports that it can't (`delete::trash_or_missing`).
