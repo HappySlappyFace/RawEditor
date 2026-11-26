@@ -370,6 +370,9 @@ pub struct Session {
     /// holding an immutable borrow of `gpu_context`/`image_resources`.
     /// Cleared on image load, where `current_dcp_profile` changes.
     pub dcp_memo: std::cell::RefCell<Option<DcpMemo>>,
+    /// A surface frame's overview still on the GPU (`Session::surface_frame`):
+    /// the histogram and edited proxy land a frame behind the display.
+    pub surface_overview: Option<develop::SurfaceOverview>,
     /// As-shot white balance of the current image as (Kelvin, Adobe tint),
     /// solved from the camera's WB multipliers via the color matrix (Robertson
     /// CCT). Anchor for the Temp/Tint sliders; None until a raw is loaded.
@@ -602,6 +605,7 @@ impl Session {
                 current_edit_params: crate::core::types::EditParams::default(),
                 current_dcp_profile: None, // Phase 140: No DCP profile initially
                 dcp_memo: std::cell::RefCell::new(None),
+                surface_overview: None,
                 as_shot_wb: None,
 
                 // Phase 95: Unified GPU Pipeline Architecture

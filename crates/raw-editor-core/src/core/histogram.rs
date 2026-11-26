@@ -13,9 +13,37 @@ pub fn calculate(rgba_bytes: &[u8]) -> HistogramData {
     histogram
 }
 
+/// The count a drawn histogram scales to: the tallest bin except the two
+/// ends. Clipped shadows or highlights pile into bin 0 or 255, and scaling to
+/// that spike flattens everything else to nothing (a dark edit then shows an
+/// empty box). The end bins are drawn clamped to full height instead. Falls
+/// back to the end bins only when nothing else is counted.
+pub fn display_peak(h: &HistogramData) -> u32 {
+    let inner = h.iter().flat_map(|c| c[1..255].iter()).copied().max().unwrap_or(0);
+    if inner > 0 {
+        inner
+    } else {
+        h.iter().flat_map(|c| [c[0], c[255]]).max().unwrap_or(0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_clipped_spike_does_not_set_the_scale() {
+        let mut h = [[0u32; 256]; 3];
+        h[2][0] = 1_000_000;
+        h[0][40] = 300;
+        h[1][200] = 500;
+        assert_eq!(display_peak(&h), 500);
+        // Everything clipped: the ends are all there is to show.
+        let mut all_black = [[0u32; 256]; 3];
+        all_black[1][0] = 70;
+        assert_eq!(display_peak(&all_black), 70);
+        assert_eq!(display_peak(&[[0; 256]; 3]), 0);
+    }
 
     #[test]
     fn test_empty_buffer_does_not_panic() {

@@ -32,6 +32,10 @@ object NativeEngine {
     /** How many photos have opened; when it moves, [openedValues] has the new one's sliders. */
     external fun openedCount(handle: Long): Int
     external fun openedValues(handle: Long): FloatArray
+    /** Moves whenever the histogram does: fetch [histogram] only then. */
+    external fun histogramVersion(handle: Long): Int
+    /** Red, green, blue: 256 counts each, then the count to scale to (empty before the first frame). */
+    external fun histogram(handle: Long): IntArray
     external fun stats(handle: Long): String
     /** Save and stop. The handle is dead afterwards. */
     external fun destroy(handle: Long)
