@@ -89,6 +89,9 @@ pub struct Stats {
     /// Recent frames: (work on the render thread, interval since the previous present).
     frames: VecDeque<(f32, Option<f32>)>,
     last_present: Option<Instant>,
+    /// This second's frames, logged when it ends: a long session can then
+    /// be read back from logcat next to temperatures and battery current.
+    second: Option<(Instant, Vec<f32>)>,
 }
 
 impl Stats {
@@ -100,6 +103,16 @@ impl Stats {
             self.frames.pop_front();
         }
         self.frames.push_back((work_ms, interval));
+
+        let (start, work) = self.second.get_or_insert_with(|| (now, Vec::new()));
+        work.push(work_ms);
+        if now.duration_since(*start) >= Duration::from_secs(1) {
+            let mut work = std::mem::take(work);
+            work.sort_by(f32::total_cmp);
+            let pct = |p: usize| work[(work.len() * p / 100).min(work.len() - 1)];
+            tracing::info!("frames {} in 1 s, work p50 {:.1} ms, p95 {:.1} ms", work.len(), pct(50), pct(95));
+            self.second = None;
+        }
     }
 
     fn summary(&self) -> String {
