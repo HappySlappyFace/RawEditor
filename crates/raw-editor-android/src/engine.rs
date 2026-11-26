@@ -16,6 +16,10 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+/// How often to look for an overview on its way back when nothing else
+/// wakes the thread.
+const OVERVIEW_POLL: Duration = Duration::from_millis(2);
+
 use raw_editor_session::gpu::render_functions::{render_to_target, DisplayTarget};
 use raw_editor_session::gpu::shared::{pick_surface_format, SharedContext};
 use raw_editor_session::session::{host, AppTab, EditorReadiness, LoadJob, SelectionChange, Session, SessionEvent};
@@ -96,6 +100,17 @@ impl Engine {
         (stats.opened, stats.values.clone())
     }
 
+    /// Moves whenever the histogram does.
+    pub fn histogram_version(&self) -> u32 {
+        self.stats.lock().unwrap_or_else(|e| e.into_inner()).histogram_version
+    }
+
+    /// The histogram: red, green, blue, 256 counts each (empty before the
+    /// first frame).
+    pub fn histogram(&self) -> Vec<u32> {
+        self.stats.lock().unwrap_or_else(|e| e.into_inner()).histogram.clone()
+    }
+
     /// How control `index` reads at `value` for the open photo.
     pub fn show(&self, index: usize, value: f32) -> String {
         let as_shot = self.stats.lock().unwrap_or_else(|e| e.into_inner()).as_shot;
@@ -123,6 +138,10 @@ pub struct Stats {
     values: Vec<f32>,
     /// The open photo's as-shot white balance (kelvin, tint).
     as_shot: (f32, f32),
+    /// Red, green, blue: 256 counts each.
+    histogram: Vec<u32>,
+    /// Moves whenever `histogram` does.
+    histogram_version: u32,
     /// Recent frames: (work on the render thread, interval since the previous present).
     frames: VecDeque<(f32, Option<f32>)>,
     last_present: Option<Instant>,
@@ -243,9 +262,18 @@ impl RenderThread {
             // waiting: the latest slider value is the only one that counts.
             let mut batch = Vec::new();
             if !(dirty && self.can_draw()) {
-                match rx.recv() {
+                // While an overview is on its way back, look again shortly
+                // even if nothing else happens: the last frame of a drag
+                // still owes the histogram.
+                let next = if self.session.surface_overview_pending() {
+                    rx.recv_timeout(OVERVIEW_POLL)
+                } else {
+                    rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected)
+                };
+                match next {
                     Ok(c) => batch.push(c),
-                    Err(_) => break,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 }
             }
             batch.extend(rx.try_iter());
@@ -256,10 +284,18 @@ impl RenderThread {
                     command => dirty |= self.apply(command)?,
                 }
             }
+            let fx = self.session.surface_overview_poll();
+            self.spawn(fx);
             self.start_loads();
             self.check_opened();
-            // Nothing else here draws from what `changed` signals.
-            dirty |= self.session.changed.take().contains(Changed::FRAME);
+            let changed = self.session.changed.take();
+            dirty |= changed.contains(Changed::FRAME);
+            if changed.contains(Changed::HISTOGRAM) {
+                let histogram = self.session.histogram_data.borrow().iter().flatten().copied().collect();
+                let mut stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
+                stats.histogram = histogram;
+                stats.histogram_version = stats.histogram_version.wrapping_add(1);
+            }
             self.session.camera_preview = None;
             if quit {
                 break;
@@ -269,7 +305,10 @@ impl RenderThread {
                 dirty = false;
             }
         }
-        // Leaving: save the edit and the edited proxy.
+        // Leaving: save the edit and the edited proxy (from the last frame's
+        // overview, if it is still on its way).
+        let fx = self.session.surface_overview_wait();
+        host::run(&mut self.session, &self.rt, fx, |_, _| {})?;
         self.session.flush_edits();
         let fx = self.session.set_tab(AppTab::Library);
         host::run(&mut self.session, &self.rt, fx, |_, _| {})?;
@@ -515,15 +554,15 @@ impl RenderThread {
             // theme::DARK's canvas, display-encoded.
             background: wgpu::Color { r: 0.04, g: 0.04, b: 0.043, a: 1.0 },
         };
-        let out = self.rt.block_on(render_to_target(
+        let out = render_to_target(
             &frame.context,
             &frame.display,
-            &frame.overview,
+            frame.overview.as_deref(),
             target,
             frame.overview_dims,
             Default::default(),
             move || texture.present(),
-        ))?;
+        )?;
         let fx = self.session.surface_frame_finished(&frame, out);
         self.stats.lock().unwrap_or_else(|e| e.into_inner()).frame(t.elapsed().as_secs_f32() * 1000.0);
         self.spawn(fx);

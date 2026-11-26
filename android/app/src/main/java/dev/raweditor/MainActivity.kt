@@ -12,7 +12,12 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.graphics.Path
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Spacer
@@ -196,6 +201,14 @@ private fun Editor(engine: Long, hasPhoto: Boolean, importAndOpen: suspend (Uri)
                     }
                 },
             )
+            Histogram(
+                engine,
+                Modifier
+                    .align(Alignment.TopEnd)
+                    .statusBarsPadding()
+                    .padding(12.dp)
+                    .size(width = 144.dp, height = 72.dp),
+            )
             // The SurfaceView's size, so its pixels are the surface's.
             Box(
                 Modifier
@@ -269,6 +282,45 @@ private fun Editor(engine: Long, hasPhoto: Boolean, importAndOpen: suspend (Uri)
 }
 
 private val RowHeight = 48.dp
+
+private val Channels = listOf(Color(0x80FF0000), Color(0x8000FF00), Color(0x800000FF))
+
+/**
+ * The engine's histogram (a frame behind the photo, which nobody can see),
+ * drawn as the desktop draws it: each channel's bins against the tallest.
+ * Looked at once per display frame, fetched only when it changed.
+ */
+@Composable
+private fun Histogram(engine: Long, modifier: Modifier) {
+    var counts by remember { mutableStateOf(IntArray(0)) }
+    LaunchedEffect(engine) {
+        var seen = -1
+        while (true) {
+            withFrameNanos { }
+            val version = NativeEngine.histogramVersion(engine)
+            if (version != seen) {
+                seen = version
+                counts = NativeEngine.histogram(engine)
+            }
+        }
+    }
+    if (counts.size != 768) return
+    Canvas(modifier.background(Color(0x990A0A0A))) {
+        val max = counts.max().coerceAtLeast(1).toFloat()
+        val bar = size.width / 256f
+        for (c in 0 until 3) {
+            val path = Path()
+            path.moveTo(0f, size.height)
+            for (i in 0 until 256) {
+                path.lineTo(i * bar, size.height * (1f - counts[c * 256 + i] / max))
+                path.lineTo((i + 1) * bar, size.height * (1f - counts[c * 256 + i] / max))
+            }
+            path.lineTo(size.width, size.height)
+            path.close()
+            drawPath(path, Channels[c])
+        }
+    }
+}
 
 /** Label (double tap resets), track, and the value as the engine reads it. */
 @Composable

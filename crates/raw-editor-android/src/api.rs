@@ -6,7 +6,7 @@
 //! Every function takes the `long` handle `create` returned.
 
 use jni::objects::{JObject, JString};
-use jni::sys::{jfloat, jfloatArray, jint, jlong, jstring};
+use jni::sys::{jfloat, jfloatArray, jint, jintArray, jlong, jstring};
 use jni::JNIEnv;
 
 use crate::engine::{Command, Engine};
@@ -146,6 +146,22 @@ pub extern "system" fn Java_dev_raweditor_NativeEngine_openedValues(env: JNIEnv,
     let values = engine(handle).map(|e| e.opened().1).unwrap_or_default();
     let Ok(array) = env.new_float_array(values.len() as jint) else { return std::ptr::null_mut() };
     let _ = env.set_float_array_region(&array, 0, &values);
+    array.into_raw()
+}
+
+/// Moves whenever the histogram does: fetch [`histogram`] only then.
+#[no_mangle]
+pub extern "system" fn Java_dev_raweditor_NativeEngine_histogramVersion(_: JNIEnv, _: JObject, handle: jlong) -> jint {
+    engine(handle).map_or(0, |e| e.histogram_version() as jint)
+}
+
+/// The histogram: red, green, blue, 256 counts each (empty before the first
+/// frame). A frame behind the screen, which nobody can see.
+#[no_mangle]
+pub extern "system" fn Java_dev_raweditor_NativeEngine_histogram(env: JNIEnv, _: JObject, handle: jlong) -> jintArray {
+    let counts: Vec<jint> = engine(handle).map(|e| e.histogram()).unwrap_or_default().into_iter().map(|c| c.min(i32::MAX as u32) as jint).collect();
+    let Ok(array) = env.new_int_array(counts.len() as jint) else { return std::ptr::null_mut() };
+    let _ = env.set_int_array_region(&array, 0, &counts);
     array.into_raw()
 }
 
