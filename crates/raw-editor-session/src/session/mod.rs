@@ -11,6 +11,7 @@ mod camera_profiles;
 mod delete;
 mod develop;
 mod export;
+pub mod ultra_hdr;
 mod helpers;
 pub mod host;
 mod lensfun;

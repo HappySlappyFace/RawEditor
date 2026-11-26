@@ -26,6 +26,20 @@ pub const HDR_RAMP_START_EV: f32 = 1.0;
 /// Stops above grey where it reaches the full headroom.
 pub const HDR_RAMP_END_EV: f32 = 5.0;
 
+/// The headroom an Ultra HDR export is made for (its gain map's maximum):
+/// the most the phone app shows, two stops above SDR white. A display with
+/// less applies part of it.
+pub const EXPORT_HEADROOM: f32 = 4.0;
+
+/// A gain as an Ultra HDR gain map stores it: `log2(gain) / log2(headroom)`,
+/// 0 for none, 1 for the full headroom (the colour pass's `fs_main_gain`).
+pub fn encode_gain(gain: f32, headroom: f32) -> f32 {
+    if headroom <= 1.0 {
+        return 0.0;
+    }
+    (gain.max(1.0).log2() / headroom.log2()).clamp(0.0, 1.0)
+}
+
 /// The gain for a pixel whose scene-linear level (peak channel at the tone
 /// stage) is `level`, on a display with `headroom` (≥ 1; 1 is SDR, and
 /// gives 1 everywhere).
@@ -67,6 +81,14 @@ mod tests {
         let at_ramp_end = HDR_GREY * HDR_RAMP_END_EV.exp2();
         assert_eq!(gain(at_ramp_end, 4.0), 4.0);
         assert_eq!(gain(at_ramp_end * 100.0, 4.0), 4.0);
+    }
+
+    #[test]
+    fn encoded_gain_spans_none_to_the_full_headroom() {
+        assert_eq!(encode_gain(1.0, 4.0), 0.0);
+        assert_eq!(encode_gain(2.0, 4.0), 0.5);
+        assert_eq!(encode_gain(4.0, 4.0), 1.0);
+        assert_eq!(encode_gain(3.0, 1.0), 0.0);
     }
 
     #[test]

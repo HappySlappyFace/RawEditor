@@ -537,7 +537,8 @@ impl RenderThread {
     }
 
     /// Export the open photo through the session's own export (as the
-    /// desktop's, one image): full size, sRGB, into the app's private
+    /// desktop's, one image): full size, sRGB (Ultra HDR while HDR is on),
+    /// into the app's private
     /// `exports` folder, from where Kotlin moves it into the gallery.
     fn export(&mut self) {
         if self.exporting {
@@ -554,6 +555,9 @@ impl RenderThread {
         settings.resize = false;
         settings.base_path = self.files.join("exports");
         settings.subfolder = String::new();
+        // With HDR on, the file carries what the screen shows: Ultra HDR,
+        // which looks as before wherever there is no HDR.
+        settings.ultra_hdr = self.hdr;
         match self.session.start_export() {
             Some(fx) if self.session.is_exporting => {
                 self.exporting = true;

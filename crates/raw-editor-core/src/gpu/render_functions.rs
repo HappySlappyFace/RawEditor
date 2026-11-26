@@ -207,6 +207,20 @@ fn encode_color_pass_with<'c>(
     detail: &mut Detail,
     marks: Option<(&FrameTimer, u32)>,
 ) -> (wgpu::CommandBuffer, Readback<'c>) {
+    encode_color_pass_through(context, &context.pipeline, bindings, width, height, detail, marks)
+}
+
+/// [`encode_color_pass_with`] through another `Rgba8Unorm` colour pipeline
+/// (the gain map's).
+fn encode_color_pass_through<'c>(
+    context: &'c SharedContext,
+    pipeline: &wgpu::RenderPipeline,
+    bindings: &super::shared::ColorBindings,
+    width: u32,
+    height: u32,
+    detail: &mut Detail,
+    marks: Option<(&FrameTimer, u32)>,
+) -> (wgpu::CommandBuffer, Readback<'c>) {
     let t = Timer::start();
     let output_texture = context.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("Output Texture"),
@@ -245,7 +259,7 @@ fn encode_color_pass_with<'c>(
             timestamp_writes: None,
             occlusion_query_set: None,
         });
-        render_pass.set_pipeline(&context.pipeline);
+        render_pass.set_pipeline(pipeline);
         render_pass.set_bind_group(0, &bindings.main, &[]);
         render_pass.set_bind_group(1, &bindings.masks, &[]);
         render_pass.set_bind_group(2, &bindings.presence, &[]);
@@ -348,6 +362,36 @@ pub async fn render_to_vec(
     } else {
         Err(READBACK_FAILED.into())
     }
+}
+
+/// An Ultra HDR export's gain map for the whole (cropped) image at
+/// `width`×`height`, one byte per pixel: `core::hdr::encode_gain` of the
+/// gain an HDR display of `headroom` shows it with (`fs_main_gain`).
+pub async fn render_gain_map(
+    context: &SharedContext,
+    resources: &ImageResources,
+    width: u32,
+    height: u32,
+    headroom: f32,
+) -> Result<Vec<u8>, String> {
+    write_view_rect(context, resources, super::params::FULL_VIEW_RECT);
+    write_hdr_headroom(context, resources, headroom);
+    let bindings = resources.prepare_stages(context, &mut Detail::default());
+    let (cb, readback) = encode_color_pass_through(
+        context, context.gain_pipeline(), &bindings, width, height, &mut Detail::default(), None,
+    );
+    context.queue.submit(Some(cb));
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    readback.slice().map_async(wgpu::MapMode::Read, move |res| {
+        let _ = tx.send(res);
+    });
+    tokio::task::block_in_place(|| {
+        context.device.poll(wgpu::Maintain::Wait);
+    });
+    if !matches!(rx.await, Ok(Ok(()))) {
+        return Err(READBACK_FAILED.into());
+    }
+    Ok(readback.unpad().iter().step_by(4).copied().collect())
 }
 
 /// Test-only now: the app renders through `render_display_and_overview`
@@ -1250,11 +1294,11 @@ mod tests {
     /// The HDR surface (`fs_main_hdr`, `core::hdr`): at headroom 1 it is the
     /// SDR rendering, linear (within the 8-bit pass's ±1 dither); with
     /// headroom it is that image times a gain between 1 and the headroom,
-    /// exactly 1 in the shadows, and never a different colour. Synthetic
-    /// input, so CI runs it.
+    /// exactly 1 in the shadows, and never a different colour; and the Ultra
+    /// HDR gain map stores those same gains. Synthetic input, so CI runs it.
     #[test]
     #[ignore]
-    fn hdr_surface_is_the_sdr_image_brightened_in_the_highlights() {
+    fn hdr_surface_is_the_sdr_image_brightened_in_the_highlights_and_the_gain_map_agrees() {
         let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).build().expect("runtime");
         rt.block_on(async {
             let ctx = SharedContext::new().await.expect("gpu context");
@@ -1366,6 +1410,22 @@ mod tests {
             }
             assert!(untouched > 0, "no pixel kept the SDR rendering: the shadows were lifted too");
             assert!(lifted > 0, "no highlight was brightened past 2×");
+
+            // The Ultra HDR gain map holds exactly these gains, so an export
+            // shows what the screen did.
+            let map = render_gain_map(&ctx, &res, w, h, 4.0).await.expect("gain map");
+            assert_eq!(map.len(), (w * h) as usize);
+            let mut worst = 0.0f32;
+            for (i, (f, b)) in flat.iter().zip(&bright).enumerate() {
+                let peak = f[0].max(f[1]).max(f[2]);
+                if peak < 0.05 {
+                    continue;
+                }
+                let g = b[0].max(b[1]).max(b[2]) / peak;
+                let want = crate::core::hdr::encode_gain(g, 4.0) * 255.0;
+                worst = worst.max((map[i] as f32 - want).abs());
+            }
+            assert!(worst <= 2.0, "the gain map differs from the screen's gain by {worst} levels");
         });
     }
 

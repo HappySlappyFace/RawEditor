@@ -1071,6 +1071,19 @@ fn fs_main_hdr(input: VertexOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(sdr * hdr_gain(hdr_level, params.hdr_headroom), c.a);
 }
 
+// An Ultra HDR export's gain map: fs_main_hdr's gain for the export's
+// headroom, as log2(gain) / log2(headroom) in [0, 1] (core::hdr::encode_gain).
+@fragment
+fn fs_main_gain(input: VertexOutput) -> @location(0) vec4<f32> {
+    _ = color_pass(input);
+    let h = max(params.hdr_headroom, 1.0);
+    var r = 0.0;
+    if (h > 1.0) {
+        r = log2(hdr_gain(hdr_level, h)) / log2(h);
+    }
+    return vec4<f32>(r, r, r, 1.0);
+}
+
 fn color_pass(input: VertexOutput) -> vec4<f32> {
     // Discard fragments outside texture bounds (letterboxing when zoomed out)
     if input.tex_coords.x < 0.0 || input.tex_coords.x > 1.0 ||

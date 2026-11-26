@@ -61,6 +61,8 @@ pub struct SharedContext {
     color_shader: wgpu::ShaderModule,
     color_layout: wgpu::PipelineLayout,
     display_pipelines: std::sync::Mutex<Vec<(wgpu::TextureFormat, Arc<wgpu::RenderPipeline>)>>,
+    /// The Ultra HDR gain map's (`fs_main_gain`), built on first use.
+    gain_pipeline: std::sync::OnceLock<wgpu::RenderPipeline>,
 }
 
 /// Output formats the 8-bit colour pass can draw into directly. Its output
@@ -416,6 +418,7 @@ impl SharedContext {
             color_shader,
             color_layout: pipeline_layout,
             display_pipelines: std::sync::Mutex::new(Vec::new()),
+            gain_pipeline: std::sync::OnceLock::new(),
         })
     }
 
@@ -440,6 +443,17 @@ impl SharedContext {
         ));
         built.push((format, p.clone()));
         Ok(p)
+    }
+
+    /// The colour pipeline that writes an Ultra HDR gain map
+    /// (`fs_main_gain`, `Rgba8Unorm`).
+    pub fn gain_pipeline(&self) -> &wgpu::RenderPipeline {
+        self.gain_pipeline.get_or_init(|| {
+            color_pipeline(
+                &self.device, &self.color_layout, &self.color_shader, wgpu::TextureFormat::Rgba8Unorm,
+                "fs_main_gain", "Color Render Pipeline (gain map)",
+            )
+        })
     }
 
     /// A surface on `target` (a window, or an Android `ANativeWindow`), made
