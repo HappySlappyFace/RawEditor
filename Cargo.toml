@@ -1,9 +1,10 @@
 [workspace]
 members = [".", "crates/raw-editor-core", "crates/raw-editor-session", "crates/raw-editor-probe", "crates/raw-editor-android"]
 # Plain `cargo build/test/clippy` at the root cover the whole workspace, so the
-# commands in CLAUDE.md and CI keep checking the engine too — except the
-# Android library, which only builds for Android (tools/android-app.sh).
-default-members = [".", "crates/raw-editor-core", "crates/raw-editor-session", "crates/raw-editor-probe"]
+# commands in CLAUDE.md and CI keep checking the engine too. The Android
+# library builds anywhere, but only its platform-free parts (`controls`) do
+# anything off Android; tools/android-app.sh builds the real one.
+default-members = [".", "crates/raw-editor-core", "crates/raw-editor-session", "crates/raw-editor-probe", "crates/raw-editor-android"]
 resolver = "2"
 
 # The release version for every crate. This is the line a release bumps (the

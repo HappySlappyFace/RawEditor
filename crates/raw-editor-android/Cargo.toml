@@ -12,8 +12,12 @@ publish = false
 name = "raweditor"
 crate-type = ["cdylib"]
 
-[target.'cfg(target_os = "android")'.dependencies]
+[dependencies]
+# Builds anywhere, so the platform-free parts (`controls`) are tested with
+# the rest of the workspace; everything else is Android-only below.
 raw-editor-session.workspace = true
+
+[target.'cfg(target_os = "android")'.dependencies]
 tokio.workspace = true
 wgpu.workspace = true
 tracing.workspace = true
