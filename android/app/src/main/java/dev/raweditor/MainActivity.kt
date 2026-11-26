@@ -1,8 +1,11 @@
 package dev.raweditor
 
+import android.content.ContentValues
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.view.Surface
 import android.view.SurfaceHolder
@@ -79,6 +82,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        // Exports the last run never got to move into the gallery.
+        File(filesDir, "exports").listFiles()?.forEach { it.delete() }
         engine = NativeEngine.create(filesDir.absolutePath)
         // Reopen the last photo, else the first RAW in the folder.
         val last = prefs.getString("last", null)?.let(::File)?.takeIf { it.exists() }
@@ -86,7 +91,7 @@ class MainActivity : ComponentActivity() {
             ?.filter { it.extension.lowercase() in RAW }
             ?.minByOrNull { it.name }
         if (raw != null) open(raw)
-        setContent { Editor(engine, hasPhoto = raw != null, ::importAndOpen) }
+        setContent { Editor(engine, hasPhoto = raw != null, ::importAndOpen, ::saveToGallery) }
     }
 
     private fun open(file: File) {
@@ -125,6 +130,43 @@ class MainActivity : ComponentActivity() {
         null
     }
 
+    /**
+     * Move an exported JPEG into the gallery (Pictures/RawEditor; a name
+     * already there gets a number) and delete the engine's copy. Returns
+     * what to tell the user.
+     */
+    private suspend fun saveToGallery(path: String): Result<String> = withContext(Dispatchers.IO) {
+        val file = File(path)
+        try {
+            runCatching {
+                // Earlier versions need the storage permission for this.
+                check(Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) { "Saving to the gallery needs Android 10 or newer" }
+                val values = ContentValues().apply {
+                    put(MediaStore.Images.Media.DISPLAY_NAME, file.name)
+                    put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+                    put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/RawEditor")
+                    // Hidden from other apps until it is complete.
+                    put(MediaStore.Images.Media.IS_PENDING, 1)
+                }
+                val collection = MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+                val uri = checkNotNull(contentResolver.insert(collection, values)) { "The gallery refused the photo" }
+                try {
+                    val out = checkNotNull(contentResolver.openOutputStream(uri)) { "Could not write to the gallery" }
+                    out.use { o -> file.inputStream().use { it.copyTo(o, 1 shl 20) } }
+                    values.clear()
+                    values.put(MediaStore.Images.Media.IS_PENDING, 0)
+                    contentResolver.update(uri, values, null, null)
+                } catch (e: Exception) {
+                    contentResolver.delete(uri, null, null)
+                    throw e
+                }
+                "Saved to Pictures/RawEditor"
+            }
+        } finally {
+            file.delete()
+        }
+    }
+
     override fun onDestroy() {
         NativeEngine.destroy(engine)
         engine = 0L
@@ -146,13 +188,20 @@ private val Rows: Int = Sections.maxOf { s -> Controls.count { it.section == s }
 private val Panel = Color(0xFF111113)
 
 @Composable
-private fun Editor(engine: Long, hasPhoto: Boolean, importAndOpen: suspend (Uri) -> String?) {
+private fun Editor(
+    engine: Long,
+    hasPhoto: Boolean,
+    importAndOpen: suspend (Uri) -> String?,
+    saveToGallery: suspend (String) -> Result<String>,
+) {
     val values = remember { mutableStateListOf(*Controls.map { it.default }.toTypedArray()) }
     var section by remember { mutableStateOf(Sections.first()) }
     var stats by remember { mutableStateOf("") }
     var opened by remember { mutableIntStateOf(0) }
     var photo by remember { mutableStateOf(hasPhoto) }
     var error by remember { mutableStateOf<String?>(null) }
+    var notice by remember { mutableStateOf<String?>(null) }
+    var exporting by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(engine) {
@@ -164,7 +213,25 @@ private fun Editor(engine: Long, hasPhoto: Boolean, importAndOpen: suspend (Uri)
                 opened = count
                 NativeEngine.openedValues(engine).forEachIndexed { i, v -> if (i < values.size) values[i] = v }
             }
+            // An export finished: into the gallery with it.
+            NativeEngine.takeExport(engine)?.let { result ->
+                val (kind, text) = result.split('\t', limit = 2).let { it[0] to it.getOrElse(1) { "" } }
+                if (kind == "ok") {
+                    saveToGallery(text).fold({ notice = it }, { error = it.message ?: "Could not save to the gallery" })
+                } else {
+                    error = "Export failed: $text"
+                }
+                exporting = false
+            }
             delay(250)
+        }
+    }
+
+    // A notice goes after a few seconds; the readout comes back.
+    LaunchedEffect(notice) {
+        if (notice != null) {
+            delay(4000)
+            notice = null
         }
     }
 
@@ -234,8 +301,8 @@ private fun Editor(engine: Long, hasPhoto: Boolean, importAndOpen: suspend (Uri)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    error ?: if (photo) stats else "No photo yet",
-                    color = if (error != null) Color(0xFFF87171) else Muted,
+                    error ?: notice ?: if (photo) stats else "No photo yet",
+                    color = if (error != null) Color(0xFFF87171) else if (notice != null) Color.White else Muted,
                     fontFamily = FontFamily.Monospace,
                     fontSize = 10.sp,
                     maxLines = 2,
@@ -243,6 +310,18 @@ private fun Editor(engine: Long, hasPhoto: Boolean, importAndOpen: suspend (Uri)
                 )
                 TextButton(onClick = { picker.launch(arrayOf("image/*", "application/octet-stream")) }) {
                     Text("Open…", color = Orange)
+                }
+                val canExport = opened > 0 && !exporting
+                TextButton(
+                    enabled = canExport,
+                    onClick = {
+                        exporting = true
+                        error = null
+                        notice = null
+                        NativeEngine.export(engine)
+                    },
+                ) {
+                    Text(if (exporting) "Exporting…" else "Export", color = if (canExport) Orange else Muted)
                 }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(20.dp), modifier = Modifier.padding(vertical = 4.dp)) {

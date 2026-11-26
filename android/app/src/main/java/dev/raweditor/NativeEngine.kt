@@ -29,6 +29,10 @@ object NativeEngine {
     external fun transformView(handle: Long, scale: Float, x: Float, y: Float, dx: Float, dy: Float)
     /** Double tap: back to fit, or zoom in about (x, y). */
     external fun toggleZoom(handle: Long, x: Float, y: Float)
+    /** Save the open photo, as edited, as a full-size JPEG in the app's folder. */
+    external fun export(handle: Long)
+    /** The next finished export, once: "ok\t<path>" or "error\t<why>"; null while there is none. */
+    external fun takeExport(handle: Long): String?
     /** How many photos have opened; when it moves, [openedValues] has the new one's sliders. */
     external fun openedCount(handle: Long): Int
     external fun openedValues(handle: Long): FloatArray

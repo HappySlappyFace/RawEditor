@@ -133,6 +133,27 @@ pub extern "system" fn Java_dev_raweditor_NativeEngine_toggleZoom(_: JNIEnv, _: 
     }
 }
 
+/// Save the open photo, as edited, as a full-size JPEG in the app's own
+/// folder. [`takeExport`] hears how it went.
+#[no_mangle]
+pub extern "system" fn Java_dev_raweditor_NativeEngine_export(_: JNIEnv, _: JObject, handle: jlong) {
+    if let Some(e) = engine(handle) {
+        e.send(Command::Export);
+    }
+}
+
+/// The next finished export, once: `ok\t<path of the JPEG>` or
+/// `error\t<why>`; null while there is none.
+#[no_mangle]
+pub extern "system" fn Java_dev_raweditor_NativeEngine_takeExport(env: JNIEnv, _: JObject, handle: jlong) -> jstring {
+    let text = match engine(handle).and_then(Engine::take_export) {
+        Some(Ok(path)) => format!("ok\t{}", path.display()),
+        Some(Err(e)) => format!("error\t{e}"),
+        None => return std::ptr::null_mut(),
+    };
+    env.new_string(text).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
+}
+
 /// How many photos have opened so far; when it moves, `openedValues` has
 /// the new photo's saved edit.
 #[no_mangle]
