@@ -13,6 +13,14 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Box
@@ -29,7 +37,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -119,9 +126,23 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+/** One slider, as the engine describes it ([NativeEngine.controls]). */
+private data class Control(val section: String, val label: String, val min: Float, val max: Float, val default: Float)
+
+private val Controls: List<Control> = NativeEngine.controls().lines().map { line ->
+    val f = line.split('\t')
+    Control(f[0], f[1], f[2].toFloat(), f[3].toFloat(), f[4].toFloat())
+}
+private val Sections: List<String> = Controls.map { it.section }.distinct()
+/** Every section's panel is as tall as the longest, so the photo above never resizes. */
+private val Rows: Int = Sections.maxOf { s -> Controls.count { it.section == s } }
+
+private val Panel = Color(0xFF111113)
+
 @Composable
 private fun Editor(engine: Long, hasPhoto: Boolean, importAndOpen: suspend (Uri) -> String?) {
-    var exposure by remember { mutableFloatStateOf(0f) }
+    val values = remember { mutableStateListOf(*Controls.map { it.default }.toTypedArray()) }
+    var section by remember { mutableStateOf(Sections.first()) }
     var stats by remember { mutableStateOf("") }
     var opened by remember { mutableIntStateOf(0) }
     var photo by remember { mutableStateOf(hasPhoto) }
@@ -131,11 +152,11 @@ private fun Editor(engine: Long, hasPhoto: Boolean, importAndOpen: suspend (Uri)
     LaunchedEffect(engine) {
         while (true) {
             stats = NativeEngine.stats(engine)
-            // A photo opened: the slider starts at its saved exposure.
+            // A photo opened: the sliders start at its saved edit.
             val count = NativeEngine.openedCount(engine)
             if (count != opened) {
                 opened = count
-                exposure = NativeEngine.openedExposure(engine)
+                NativeEngine.openedValues(engine).forEachIndexed { i, v -> if (i < values.size) values[i] = v }
             }
             delay(250)
         }
@@ -149,82 +170,141 @@ private fun Editor(engine: Long, hasPhoto: Boolean, importAndOpen: suspend (Uri)
         }
     }
 
-    Box(Modifier.fillMaxSize().background(Color(0xFF0A0A0A))) {
-        AndroidView(
-            modifier = Modifier.fillMaxSize(),
-            factory = { context ->
-                SurfaceView(context).apply {
-                    holder.addCallback(object : SurfaceHolder.Callback {
-                        override fun surfaceCreated(holder: SurfaceHolder) {}
+    Column(Modifier.fillMaxSize().background(Color(0xFF0A0A0A))) {
+        // The photo: the engine draws the surface; gestures go to it.
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            AndroidView(
+                modifier = Modifier.fillMaxSize(),
+                factory = { context ->
+                    SurfaceView(context).apply {
+                        holder.addCallback(object : SurfaceHolder.Callback {
+                            override fun surfaceCreated(holder: SurfaceHolder) {}
 
-                        override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-                            // Ask for the display's top rate; the engine
-                            // only draws when something changed.
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                                holder.surface.setFrameRate(120f, Surface.FRAME_RATE_COMPATIBILITY_DEFAULT)
+                            override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+                                // Ask for the display's top rate; the engine
+                                // only draws when something changed.
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                                    holder.surface.setFrameRate(120f, Surface.FRAME_RATE_COMPATIBILITY_DEFAULT)
+                                }
+                                NativeEngine.surfaceChanged(engine, holder.surface, width, height)
                             }
-                            NativeEngine.surfaceChanged(engine, holder.surface, width, height)
-                        }
 
-                        override fun surfaceDestroyed(holder: SurfaceHolder) {
-                            NativeEngine.surfaceDestroyed(engine)
-                        }
-                    })
-                }
-            },
-        )
-
-        // Gestures on the photo. This layer is the SurfaceView's size, so its
-        // pixels are the surface's; the controls below sit above it and keep
-        // their own touches.
-        Box(
-            Modifier
-                .fillMaxSize()
-                .pointerInput(engine) {
-                    detectTransformGestures { centroid, pan, zoom, _ ->
-                        NativeEngine.transformView(engine, zoom, centroid.x, centroid.y, pan.x, pan.y)
+                            override fun surfaceDestroyed(holder: SurfaceHolder) {
+                                NativeEngine.surfaceDestroyed(engine)
+                            }
+                        })
                     }
-                }
-                .pointerInput(engine) {
-                    detectTapGestures(onDoubleTap = { NativeEngine.toggleZoom(engine, it.x, it.y) })
                 },
-        )
+            )
+            // The SurfaceView's size, so its pixels are the surface's.
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .pointerInput(engine) {
+                        detectTransformGestures { centroid, pan, zoom, _ ->
+                            NativeEngine.transformView(engine, zoom, centroid.x, centroid.y, pan.x, pan.y)
+                        }
+                    }
+                    .pointerInput(engine) {
+                        detectTapGestures(onDoubleTap = { NativeEngine.toggleZoom(engine, it.x, it.y) })
+                    },
+            )
+        }
 
         Column(
             Modifier
-                .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .background(Color(0xCC0A0A0A))
+                .background(Panel)
                 .navigationBarsPadding()
-                .padding(horizontal = 20.dp, vertical = 12.dp),
+                .padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 8.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     error ?: if (photo) stats else "No photo yet",
                     color = if (error != null) Color(0xFFF87171) else Muted,
                     fontFamily = FontFamily.Monospace,
-                    fontSize = 11.sp,
+                    fontSize = 10.sp,
+                    maxLines = 2,
                     modifier = Modifier.weight(1f),
                 )
                 TextButton(onClick = { picker.launch(arrayOf("image/*", "application/octet-stream")) }) {
                     Text("Open…", color = Orange)
                 }
             }
-            Text(
-                "Exposure  %+.2f EV".format(exposure),
-                color = Color.White,
-                fontSize = 14.sp,
-                modifier = Modifier.padding(top = 4.dp),
-            )
-            Slider(
-                value = exposure,
-                onValueChange = {
-                    exposure = it
-                    NativeEngine.setExposure(engine, it)
-                },
-                valueRange = -3f..3f,
-                colors = SliderDefaults.colors(thumbColor = Orange, activeTrackColor = Orange),
-            )
+            Row(horizontalArrangement = Arrangement.spacedBy(20.dp), modifier = Modifier.padding(vertical = 4.dp)) {
+                Sections.forEach { s ->
+                    Text(
+                        s,
+                        color = if (s == section) Orange else Muted,
+                        fontSize = 14.sp,
+                        fontWeight = if (s == section) FontWeight.SemiBold else FontWeight.Normal,
+                        modifier = Modifier
+                            .clickable { section = s }
+                            .padding(vertical = 8.dp),
+                    )
+                }
+            }
+            val shown = Controls.withIndex().filter { it.value.section == section }
+            shown.forEach { (i, c) ->
+                SliderRow(
+                    label = c.label,
+                    value = values[i],
+                    range = c.min..c.max,
+                    shown = NativeEngine.display(engine, i, values[i]),
+                    onChange = {
+                        values[i] = it
+                        NativeEngine.setEdit(engine, i, it)
+                    },
+                    onRelease = { NativeEngine.commitEdit(engine) },
+                    onReset = {
+                        values[i] = c.default
+                        NativeEngine.setEdit(engine, i, c.default)
+                        NativeEngine.commitEdit(engine)
+                    },
+                )
+            }
+            repeat(Rows - shown.size) { Spacer(Modifier.height(RowHeight)) }
         }
+    }
+}
+
+private val RowHeight = 48.dp
+
+/** Label (double tap resets), track, and the value as the engine reads it. */
+@Composable
+private fun SliderRow(
+    label: String,
+    value: Float,
+    range: ClosedFloatingPointRange<Float>,
+    shown: String,
+    onChange: (Float) -> Unit,
+    onRelease: () -> Unit,
+    onReset: () -> Unit,
+) {
+    Row(Modifier.height(RowHeight), verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            label,
+            color = Color.White,
+            fontSize = 13.sp,
+            modifier = Modifier
+                .width(80.dp)
+                .pointerInput(Unit) { detectTapGestures(onDoubleTap = { onReset() }) },
+        )
+        Slider(
+            value = value,
+            onValueChange = onChange,
+            onValueChangeFinished = onRelease,
+            valueRange = range,
+            colors = SliderDefaults.colors(thumbColor = Orange, activeTrackColor = Orange, inactiveTrackColor = Color(0xFF3F3F46)),
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            shown,
+            color = Muted,
+            fontFamily = FontFamily.Monospace,
+            fontSize = 12.sp,
+            textAlign = TextAlign.End,
+            modifier = Modifier.width(72.dp),
+        )
     }
 }

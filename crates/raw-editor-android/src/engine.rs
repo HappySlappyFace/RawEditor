@@ -26,7 +26,10 @@ pub enum Command {
     Surface(ndk::native_window::NativeWindow, u32, u32),
     /// The surface is going; answer once it is dropped.
     SurfaceGone(Sender<()>),
-    Exposure(f32),
+    /// Control `.0` (`controls::CONTROLS`) moved to `.1`.
+    Edit(usize, f32),
+    /// A gesture ended: an undo step, saved.
+    Commit,
     /// A pinch or drag: scale the zoom about `at`, then move by `pan`
     /// (surface pixels).
     View { scale: f32, at: [f32; 2], pan: [f32; 2] },
@@ -86,11 +89,17 @@ impl Engine {
         self.stats.lock().unwrap_or_else(|e| e.into_inner()).summary()
     }
 
-    /// How many photos have opened, and the last one's saved exposure: the
-    /// UI sets its slider from it when the count moves.
-    pub fn opened(&self) -> (u32, f32) {
+    /// How many photos have opened, and the last one's values for every
+    /// control: the UI sets its sliders from them when the count moves.
+    pub fn opened(&self) -> (u32, Vec<f32>) {
         let stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
-        (stats.opened, stats.exposure)
+        (stats.opened, stats.values.clone())
+    }
+
+    /// How control `index` reads at `value` for the open photo.
+    pub fn show(&self, index: usize, value: f32) -> String {
+        let as_shot = self.stats.lock().unwrap_or_else(|e| e.into_inner()).as_shot;
+        crate::controls::CONTROLS.get(index).map(|c| (c.show)(value, as_shot)).unwrap_or_default()
     }
 }
 
@@ -111,7 +120,9 @@ impl Drop for Engine {
 pub struct Stats {
     status: String,
     opened: u32,
-    exposure: f32,
+    values: Vec<f32>,
+    /// The open photo's as-shot white balance (kelvin, tint).
+    as_shot: (f32, f32),
     /// Recent frames: (work on the render thread, interval since the previous present).
     frames: VecDeque<(f32, Option<f32>)>,
     last_present: Option<Instant>,
@@ -216,6 +227,8 @@ impl RenderThread {
         session.gpu_context = Some(context.clone());
         // This thread draws on vsync: the session must not render on its own.
         session.surface_drawn = true;
+        // No detail loupe here: it would render on every edit for nothing.
+        let _none = session.set_loupe_panel_open(false);
         Ok(Self { rt, session, context, files, live: None, stats, results, started: HashSet::new(), opening: None })
     }
 
@@ -289,10 +302,18 @@ impl RenderThread {
                 let _ = ack.send(());
                 Ok(false)
             }
-            Command::Exposure(ev) => {
-                self.session.current_edit_params.exposure = ev;
-                self.session.mark_edits_dirty();
-                Ok(true)
+            Command::Edit(index, value) => {
+                if let Some(control) = crate::controls::CONTROLS.get(index) {
+                    let value = value.clamp(control.min, control.max);
+                    let fx = self.session.edit(|p| (control.set)(p, value));
+                    self.spawn(fx);
+                }
+                Ok(false)
+            }
+            Command::Commit => {
+                let fx = self.session.commit_edit();
+                self.spawn(fx);
+                Ok(false)
             }
             Command::View { scale, at, pan } => {
                 self.session.transform_view(scale, at, pan);
@@ -408,7 +429,8 @@ impl RenderThread {
                 tracing::info!("opened {name} in {ms} ms");
                 let mut stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
                 stats.status = format!("{name}, opened in {ms} ms");
-                stats.exposure = self.session.current_edit_params.exposure;
+                stats.values = crate::controls::values(&self.session.current_edit_params);
+                stats.as_shot = self.session.as_shot_wb.unwrap_or((5000.0, 0.0));
                 stats.opened += 1;
             }
             EditorReadiness::Failed(f, e) if f == id => self.status(format!("Error: {name} did not load: {e}")),
