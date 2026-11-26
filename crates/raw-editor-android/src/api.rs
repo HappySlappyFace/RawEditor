@@ -6,7 +6,7 @@
 //! Every function takes the `long` handle `create` returned.
 
 use jni::objects::{JObject, JString};
-use jni::sys::{jfloat, jfloatArray, jint, jintArray, jlong, jstring};
+use jni::sys::{jboolean, jfloat, jfloatArray, jint, jintArray, jlong, jstring};
 use jni::JNIEnv;
 
 use crate::engine::{Command, Engine};
@@ -131,6 +131,28 @@ pub extern "system" fn Java_dev_raweditor_NativeEngine_toggleZoom(_: JNIEnv, _: 
     if let Some(e) = engine(handle) {
         e.send(Command::ToggleZoom([x, y]));
     }
+}
+
+/// Draw in HDR when the surface can, or not.
+#[no_mangle]
+pub extern "system" fn Java_dev_raweditor_NativeEngine_setHdr(_: JNIEnv, _: JObject, handle: jlong, on: jboolean) {
+    if let Some(e) = engine(handle) {
+        e.send(Command::Hdr(on != 0));
+    }
+}
+
+/// The display's current HDR/SDR ratio: HDR frames are drawn for it.
+#[no_mangle]
+pub extern "system" fn Java_dev_raweditor_NativeEngine_setHeadroom(_: JNIEnv, _: JObject, handle: jlong, ratio: jfloat) {
+    if let Some(e) = engine(handle) {
+        e.send(Command::Headroom(ratio));
+    }
+}
+
+/// True while the surface is drawn in HDR (wanted, and the surface offers it).
+#[no_mangle]
+pub extern "system" fn Java_dev_raweditor_NativeEngine_hdrActive(_: JNIEnv, _: JObject, handle: jlong) -> jboolean {
+    engine(handle).is_some_and(Engine::hdr_active) as jboolean
 }
 
 /// Save the open photo, as edited, as a full-size JPEG in the app's own

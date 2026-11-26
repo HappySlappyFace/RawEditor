@@ -25,7 +25,7 @@ const OVERVIEW_POLL: Duration = Duration::from_millis(2);
 const EXPORT_QUALITY: u8 = 92;
 
 use raw_editor_session::gpu::render_functions::{render_to_target, DisplayTarget};
-use raw_editor_session::gpu::shared::{pick_surface_format, SharedContext};
+use raw_editor_session::gpu::shared::{pick_surface_format, SharedContext, HDR_FORMAT};
 use raw_editor_session::core::output_space::OutputSpace;
 use raw_editor_session::session::{host, AppTab, EditorReadiness, ExportFormat, ExportJobState, LoadJob, SelectionChange, Session, SessionEvent};
 use raw_editor_session::{Changed, Effects};
@@ -47,6 +47,11 @@ pub enum Command {
     /// Save the open photo, as edited, as a full-size JPEG
     /// ([`Engine::take_export`] hears how it went).
     Export,
+    /// Draw in HDR when the surface can (`shared::HDR_FORMAT`), or not.
+    Hdr(bool),
+    /// How far above SDR white the display can go right now (Android's
+    /// HDR/SDR ratio); HDR frames are drawn for it.
+    Headroom(f32),
     /// A piece of the session's background work finished.
     Event(Box<SessionEvent>),
     /// Save and stop.
@@ -119,6 +124,11 @@ impl Engine {
         self.stats.lock().unwrap_or_else(|e| e.into_inner()).histogram.clone()
     }
 
+    /// True while the surface is drawn in HDR.
+    pub fn hdr_active(&self) -> bool {
+        self.stats.lock().unwrap_or_else(|e| e.into_inner()).hdr_active
+    }
+
     /// The next finished export, once: the JPEG's path, or why there is
     /// none. Kotlin copies the file into the gallery, then deletes it.
     pub fn take_export(&self) -> Option<Result<PathBuf, String>> {
@@ -159,6 +169,8 @@ pub struct Stats {
     histogram_version: u32,
     /// Finished exports not yet collected.
     exports: VecDeque<Result<PathBuf, String>>,
+    /// The surface is drawn in HDR.
+    hdr_active: bool,
     /// Recent frames: (work on the render thread, interval since the previous present).
     frames: VecDeque<(f32, Option<f32>)>,
     last_present: Option<Instant>,
@@ -209,6 +221,17 @@ impl Stats {
     }
 }
 
+/// theme::DARK's canvas: display-encoded for an SDR surface, linear for HDR.
+fn background(format: wgpu::TextureFormat) -> wgpu::Color {
+    if format == HDR_FORMAT {
+        // 0.04 sRGB-encoded, decoded.
+        let l = 0.04 / 12.92;
+        wgpu::Color { r: l, g: l, b: (0.043f64 / 12.92), a: 1.0 }
+    } else {
+        wgpu::Color { r: 0.04, g: 0.04, b: 0.043, a: 1.0 }
+    }
+}
+
 /// Only the newest surface in a batch counts. Android replaces a
 /// SurfaceView's surface whenever it likes, and while the thread was busy
 /// (opening a photo) several changes can queue up; attaching to one already
@@ -229,6 +252,17 @@ struct Live {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     view_format: wgpu::TextureFormat,
+    /// What the surface offers, for switching between SDR and HDR.
+    formats: Vec<wgpu::TextureFormat>,
+}
+
+/// The surface format to draw in: HDR when wanted and offered, else an SDR
+/// one the colour pass can draw (`(surface format, view format)`).
+fn choose_format(offered: &[wgpu::TextureFormat], hdr: bool) -> Option<(wgpu::TextureFormat, wgpu::TextureFormat)> {
+    if hdr && offered.contains(&HDR_FORMAT) {
+        return Some((HDR_FORMAT, HDR_FORMAT));
+    }
+    pick_surface_format(offered)
 }
 
 /// A photo on its way to the screen.
@@ -253,6 +287,10 @@ struct RenderThread {
     opening: Option<Opening>,
     /// An export is running (the session's `is_exporting`, as last seen).
     exporting: bool,
+    /// HDR is wanted (the UI's switch).
+    hdr: bool,
+    /// The display's current HDR/SDR ratio.
+    headroom: f32,
 }
 
 impl RenderThread {
@@ -267,7 +305,7 @@ impl RenderThread {
         session.surface_drawn = true;
         // No detail loupe here: it would render on every edit for nothing.
         let _none = session.set_loupe_panel_open(false);
-        Ok(Self { rt, session, context, files, live: None, stats, results, started: HashSet::new(), opening: None, exporting: false })
+        Ok(Self { rt, session, context, files, live: None, stats, results, started: HashSet::new(), opening: None, exporting: false, hdr: false, headroom: 1.0 })
     }
 
     fn status(&self, text: impl Into<String>) {
@@ -389,6 +427,19 @@ impl RenderThread {
             Command::Export => {
                 self.export();
                 Ok(false)
+            }
+            Command::Hdr(on) => {
+                self.hdr = on;
+                Ok(self.reconfigure())
+            }
+            Command::Headroom(h) => {
+                let h = if h.is_finite() { h.max(1.0) } else { 1.0 };
+                let changed = (h - self.headroom).abs() > 1e-3;
+                if (h - self.headroom).abs() > 0.05 {
+                    tracing::info!("HDR headroom {h:.2}");
+                }
+                self.headroom = h;
+                Ok(changed && self.view_format() == Some(HDR_FORMAT))
             }
             Command::Event(event) => {
                 let import_done = matches!(*event, SessionEvent::ImportComplete(_));
@@ -562,6 +613,27 @@ impl RenderThread {
         self.opening = None;
     }
 
+    fn view_format(&self) -> Option<wgpu::TextureFormat> {
+        self.live.as_ref().map(|l| l.view_format)
+    }
+
+    /// Switch the live surface between SDR and HDR after the switch moved;
+    /// true when it changed (and needs a frame).
+    fn reconfigure(&mut self) -> bool {
+        let Some(live) = &mut self.live else { return false };
+        let Some((format, view_format)) = choose_format(&live.formats, self.hdr) else { return false };
+        if format == live.config.format && view_format == live.view_format {
+            return false;
+        }
+        live.config.format = format;
+        live.config.view_formats = if view_format != format { vec![view_format] } else { vec![] };
+        live.view_format = view_format;
+        live.surface.configure(&self.context.device, &live.config);
+        tracing::info!("surface now {format:?} drawn as {view_format:?}");
+        self.stats.lock().unwrap_or_else(|e| e.into_inner()).hdr_active = view_format == HDR_FORMAT;
+        true
+    }
+
     fn attach(&mut self, window: ndk::native_window::NativeWindow, width: u32, height: u32) -> Result<(), String> {
         // The same window at a new size only needs reconfiguring.
         if let Some(live) = &mut self.live {
@@ -587,8 +659,10 @@ impl RenderThread {
         // in `Live` alongside the surface, which is dropped first.
         let surface = unsafe { self.context.create_surface(target)? };
         let caps = surface.get_capabilities(&self.context.adapter);
-        let (format, view_format) =
-            pick_surface_format(&caps.formats).ok_or_else(|| format!("no usable surface format in {:?}", caps.formats))?;
+        // Rgba16Float here is Android's HDR surface (extended linear sRGB).
+        tracing::info!("surface formats offered: {:?}", caps.formats);
+        let (format, view_format) = choose_format(&caps.formats, self.hdr)
+            .ok_or_else(|| format!("no usable surface format in {:?}", caps.formats))?;
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
@@ -605,7 +679,8 @@ impl RenderThread {
         tracing::info!("surface {width}×{height}, {format:?} drawn as {view_format:?}");
         self.session.viewport_size = (width as f32, height as f32);
         self.session.scale_factor = 1.0;
-        self.live = Some(Live { _window: window, surface, config, view_format });
+        self.stats.lock().unwrap_or_else(|e| e.into_inner()).hdr_active = view_format == HDR_FORMAT;
+        self.live = Some(Live { _window: window, surface, config, view_format, formats: caps.formats });
         Ok(())
     }
 
@@ -635,8 +710,8 @@ impl RenderThread {
             format: live.view_format,
             size: (w, h),
             placement: frame.placement,
-            // theme::DARK's canvas, display-encoded.
-            background: wgpu::Color { r: 0.04, g: 0.04, b: 0.043, a: 1.0 },
+            background: background(live.view_format),
+            headroom: self.headroom,
         };
         let out = render_to_target(
             &frame.context,

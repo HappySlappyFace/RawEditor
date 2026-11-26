@@ -73,6 +73,7 @@ private val Muted = Color(0xFFA1A1AA)
 
 class MainActivity : ComponentActivity() {
     private var engine = 0L
+    private lateinit var hdr: Hdr
 
     /** Where photos live: the app's own folder, which adb can push into too. */
     private val photos: File get() = getExternalFilesDir(null) ?: filesDir
@@ -85,13 +86,20 @@ class MainActivity : ComponentActivity() {
         // Exports the last run never got to move into the gallery.
         File(filesDir, "exports").listFiles()?.forEach { it.delete() }
         engine = NativeEngine.create(filesDir.absolutePath)
+        hdr = Hdr(this, engine)
+        hdr.setEnabled(prefs.getBoolean("hdr", true))
         // Reopen the last photo, else the first RAW in the folder.
         val last = prefs.getString("last", null)?.let(::File)?.takeIf { it.exists() }
         val raw = last ?: photos.listFiles()
             ?.filter { it.extension.lowercase() in RAW }
             ?.minByOrNull { it.name }
         if (raw != null) open(raw)
-        setContent { Editor(engine, hasPhoto = raw != null, ::importAndOpen, ::saveToGallery) }
+        setContent { Editor(engine, hasPhoto = raw != null, ::importAndOpen, ::saveToGallery, hdr, ::setHdr) }
+    }
+
+    private fun setHdr(on: Boolean) {
+        prefs.edit().putBoolean("hdr", on).apply()
+        hdr.setEnabled(on)
     }
 
     private fun open(file: File) {
@@ -168,6 +176,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        hdr.release()
         NativeEngine.destroy(engine)
         engine = 0L
         super.onDestroy()
@@ -193,6 +202,8 @@ private fun Editor(
     hasPhoto: Boolean,
     importAndOpen: suspend (Uri) -> String?,
     saveToGallery: suspend (String) -> Result<String>,
+    hdr: Hdr,
+    setHdr: (Boolean) -> Unit,
 ) {
     val values = remember { mutableStateListOf(*Controls.map { it.default }.toTypedArray()) }
     var section by remember { mutableStateOf(Sections.first()) }
@@ -202,6 +213,7 @@ private fun Editor(
     var error by remember { mutableStateOf<String?>(null) }
     var notice by remember { mutableStateOf<String?>(null) }
     var exporting by remember { mutableStateOf(false) }
+    var hdrOn by remember { mutableStateOf(hdr.enabled) }
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(engine) {
@@ -260,6 +272,7 @@ private fun Editor(
                                     holder.surface.setFrameRate(120f, Surface.FRAME_RATE_COMPATIBILITY_DEFAULT)
                                 }
                                 NativeEngine.surfaceChanged(engine, holder.surface, width, height)
+                                hdr.attach(this@apply)
                             }
 
                             override fun surfaceDestroyed(holder: SurfaceHolder) {
@@ -310,6 +323,14 @@ private fun Editor(
                 )
                 TextButton(onClick = { picker.launch(arrayOf("image/*", "application/octet-stream")) }) {
                     Text("Open…", color = Orange)
+                }
+                if (hdr.supported) {
+                    TextButton(onClick = {
+                        hdrOn = !hdrOn
+                        setHdr(hdrOn)
+                    }) {
+                        Text("HDR", color = if (hdrOn) Orange else Muted)
+                    }
                 }
                 val canExport = opened > 0 && !exporting
                 TextButton(

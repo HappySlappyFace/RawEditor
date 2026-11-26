@@ -29,6 +29,12 @@ object NativeEngine {
     external fun transformView(handle: Long, scale: Float, x: Float, y: Float, dx: Float, dy: Float)
     /** Double tap: back to fit, or zoom in about (x, y). */
     external fun toggleZoom(handle: Long, x: Float, y: Float)
+    /** Draw in HDR when the surface can, or not. */
+    external fun setHdr(handle: Long, on: Boolean)
+    /** The display's current HDR/SDR ratio: HDR frames are drawn for it. */
+    external fun setHeadroom(handle: Long, ratio: Float)
+    /** True while the surface is drawn in HDR. */
+    external fun hdrActive(handle: Long): Boolean
     /** Save the open photo, as edited, as a full-size JPEG in the app's folder. */
     external fun export(handle: Long)
     /** The next finished export, once: "ok\t<path>" or "error\t<why>"; null while there is none. */
