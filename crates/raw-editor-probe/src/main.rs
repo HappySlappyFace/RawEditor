@@ -12,16 +12,19 @@
 //! folder; nothing touches the user's own data or cache folders.
 //!
 //! ```text
-//! raw-editor-probe <photo.raw> [--work DIR] [--ticks N]
+//! raw-editor-probe <photo.raw> [--work DIR] [--ticks N] [--surface]
 //! ```
+//!
+//! `--surface` draws the ticks the way a front end that owns its surface
+//! does (`Session::surface_frame` → `render_to_target`), into a stand-in
+//! 1080×2400 texture, with no readback of the display.
 
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use raw_editor_session::session::{
-    AppTab, CacheStep, EditorReadiness, ExportFormat, ExportJobState, Handled, SelectionChange, Session,
-    SessionEvent,
+    AppTab, EditorReadiness, ExportFormat, ExportJobState, SelectionChange, Session, SessionEvent,
 };
 use raw_editor_session::Effects;
 
@@ -29,12 +32,14 @@ struct Args {
     raw: PathBuf,
     work: PathBuf,
     ticks: usize,
+    surface: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
     let mut raw = None;
     let mut work = None;
     let mut ticks = 100;
+    let mut surface = false;
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -42,6 +47,7 @@ fn parse_args() -> Result<Args, String> {
             "--ticks" => {
                 ticks = it.next().ok_or("--ticks needs a number")?.parse().map_err(|e| format!("--ticks: {e}"))?
             }
+            "--surface" => surface = true,
             "-h" | "--help" => return Err(String::new()),
             _ if raw.is_none() => raw = Some(PathBuf::from(a)),
             _ => return Err(format!("unexpected argument {a}")),
@@ -49,7 +55,7 @@ fn parse_args() -> Result<Args, String> {
     }
     let raw = raw.ok_or("which RAW file?")?;
     let work = work.unwrap_or_else(|| std::env::temp_dir().join("raw-editor-probe"));
-    Ok(Args { raw, work, ticks })
+    Ok(Args { raw, work, ticks, surface })
 }
 
 fn main() {
@@ -59,7 +65,7 @@ fn main() {
             if !e.is_empty() {
                 eprintln!("{e}");
             }
-            eprintln!("usage: raw-editor-probe <photo.raw> [--work DIR] [--ticks N]");
+            eprintln!("usage: raw-editor-probe <photo.raw> [--work DIR] [--ticks N] [--surface]");
             std::process::exit(2);
         }
     };
@@ -103,7 +109,7 @@ fn run(args: &Args) -> Result<(), String> {
     println!("work       {}", work.display());
 
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().map_err(|e| e.to_string())?;
-    let mut probe = Probe { session: Session::new(&Default::default()), rt, times: BTreeMap::new(), started: HashSet::new() };
+    let mut probe = Probe { session: Session::new(&Default::default()), rt, times: BTreeMap::new() };
 
     // 1. The GPU.
     rt_section("GPU");
@@ -152,14 +158,23 @@ fn run(args: &Args) -> Result<(), String> {
     );
 
     // 4. Slider ticks: one render each, as when Exposure is dragged.
-    rt_section("Slider ticks");
+    rt_section(if args.surface { "Slider ticks (drawn onto a surface)" } else { "Slider ticks" });
     probe.session.profiler.history.clear();
     let mut ticks = Vec::with_capacity(args.ticks);
+    let surface = args.surface.then(|| StandInSurface::new(&probe.session, 1080, 2400)).flatten();
+    if args.surface && surface.is_none() {
+        return Err("no GPU context for the stand-in surface".into());
+    }
     for i in 0..args.ticks {
         probe.session.current_edit_params.exposure = (i % 40) as f32 * 0.05 - 1.0;
         let t = Instant::now();
-        let fx = probe.session.update_pipeline();
-        probe.drive(fx)?;
+        match &surface {
+            Some(surface) => surface.draw(&mut probe)?,
+            None => {
+                let fx = probe.session.update_pipeline();
+                probe.drive(fx)?;
+            }
+        }
         ticks.push(t.elapsed());
     }
     print_breakdown(&probe.session.profiler);
@@ -167,6 +182,9 @@ fn run(args: &Args) -> Result<(), String> {
     let fx = probe.session.update_pipeline();
     probe.drive(fx)?;
     probe.session.flush_edits();
+    if let Some((i, slowest)) = ticks.iter().enumerate().max_by_key(|(_, d)| **d) {
+        println!("slowest    tick {i} of {}, {:.1} ms", ticks.len(), ms(*slowest));
+    }
     if !ticks.is_empty() {
         ticks.sort();
         let n = ticks.len();
@@ -211,63 +229,77 @@ fn run(args: &Args) -> Result<(), String> {
     Ok(())
 }
 
+/// A texture standing in for a phone's surface, for `--surface`.
+struct StandInSurface {
+    view: wgpu::TextureView,
+    size: (u32, u32),
+}
+
+impl StandInSurface {
+    fn new(session: &Session, width: u32, height: u32) -> Option<Self> {
+        let ctx = session.gpu_context.as_ref()?;
+        let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("stand-in surface"),
+            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        Some(Self { view: texture.create_view(&Default::default()), size: (width, height) })
+    }
+
+    /// One frame, as a surface front end draws it on vsync.
+    fn draw(&self, probe: &mut Probe) -> Result<(), String> {
+        probe.session.mark_edits_dirty();
+        let t = Instant::now();
+        let frame = probe.session.surface_frame(self.size.0, self.size.1).ok_or("no image to draw")?;
+        let target = raw_editor_session::gpu::render_functions::DisplayTarget {
+            view: &self.view,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            size: self.size,
+            placement: frame.placement,
+            background: wgpu::Color::BLACK,
+        };
+        let out = probe.rt.block_on(raw_editor_session::gpu::render_functions::render_to_target(
+            &frame.context,
+            &frame.display,
+            &frame.overview,
+            target,
+            frame.overview_dims,
+            Default::default(),
+            || {},
+        ))?;
+        let fx = probe.session.surface_frame_finished(&frame, out);
+        let entry = probe.times.entry("surface frame".into()).or_default();
+        entry.0 += 1;
+        entry.1 += t.elapsed();
+        probe.drive(fx)
+    }
+}
+
 struct Probe {
     session: Session,
     rt: tokio::runtime::Runtime,
     /// Count and total time per kind of work.
     times: BTreeMap<String, (u32, Duration)>,
-    /// Background loads already run, so each runs once (as the desktop's
-    /// subscriptions do).
-    started: HashSet<raw_editor_session::session::LoadJob>,
 }
 
 impl Probe {
-    /// Run `effects` and everything they lead to, one at a time, feeding each
-    /// result back to the session — plus the background loads it lists —
-    /// until nothing is left.
+    /// Run `effects` and everything they lead to (`session::host::run`),
+    /// adding up the time per kind of work.
     fn drive(&mut self, effects: Effects<SessionEvent>) -> Result<(), String> {
-        let mut queue: VecDeque<_> = effects.into_iter().map(|e| (e.label.to_string(), e.future)).collect();
-        let mut steps = 0;
-        loop {
-            // Nothing draws here; drop what a front end would redraw.
-            self.session.changed.take();
-            self.session.camera_preview = None;
-            if queue.is_empty() {
-                let next = self.session.load_jobs().find(|j| !self.started.contains(j));
-                let Some(job) = next else { break };
-                self.started.insert(job.clone());
-                let label = match &job {
-                    raw_editor_session::session::LoadJob::Preview(..) => "load preview",
-                    raw_editor_session::session::LoadJob::Raw(..) => "load raw",
-                    raw_editor_session::session::LoadJob::Proxy(..) => "load proxy",
-                };
-                queue.push_back((label.to_string(), Box::pin(job.run())));
-            }
-            let Some((label, future)) = queue.pop_front() else { break };
-            steps += 1;
-            if steps > 10_000 {
-                return Err("the session's work never settled".into());
-            }
-            let t = Instant::now();
-            let event = self.rt.block_on(future);
-            let entry = self.times.entry(label).or_default();
+        let times = &mut self.times;
+        raw_editor_session::session::host::run(&mut self.session, &self.rt, effects, |label, took| {
+            let entry = times.entry(label.to_string()).or_default();
             entry.0 += 1;
-            entry.1 += t.elapsed();
-            let next = match self.session.handle(event) {
-                Handled::Done(fx) => fx,
-                Handled::FrontEnd(event) => match *event {
-                    SessionEvent::CacheProcessed(result) => match self.session.cache_processed(result) {
-                        CacheStep::Continue(fx) => fx,
-                        CacheStep::Retired | CacheStep::Finished => Effects::none(),
-                    },
-                    other => {
-                        tracing::warn!("a front-end event the probe ignores: {other:?}");
-                        Effects::none()
-                    }
-                },
-            };
-            queue.extend(next.into_iter().map(|e| (e.label.to_string(), e.future)));
-        }
+            entry.1 += took;
+        })?;
+        // Nothing draws here; drop what a front end would redraw.
+        self.session.changed.take();
+        self.session.camera_preview = None;
         Ok(())
     }
 }

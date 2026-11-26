@@ -12,6 +12,7 @@ mod delete;
 mod develop;
 mod export;
 mod helpers;
+pub mod host;
 mod lensfun;
 mod library;
 mod loader;
@@ -46,7 +47,7 @@ pub use masks::MaskAdjustment;
 pub use lens::{DefringeParam, LensParam, LensToggle};
 pub use develop::{
     CopyCategory, CropHandle, EditSection, GtParam, MaskHandle, RawSampleError, RenderOutput,
-    StrokeEvent,
+    StrokeEvent, SurfaceFrame,
 };
 pub use navigation::{Moved, PreviewHandle, SelectionChange, TabLoad};
 pub use proxy::{edit_key, load_proxy, read_jpeg, CachedPreview, EditedProxy, EDITED_PROXY_CAPACITY};

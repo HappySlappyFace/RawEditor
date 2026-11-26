@@ -1,0 +1,6 @@
+.gradle/
+build/
+app/build/
+local.properties
+# Built by tools/android-app.sh from crates/raw-editor-android.
+app/src/main/jniLibs/

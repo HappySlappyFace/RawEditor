@@ -511,6 +511,137 @@ pub async fn render_display_and_overview(
     DisplayRender { display, overview, histogram, encode_ms, gpu_ms, detail }
 }
 
+/// A texture the display pass draws into directly — a window's or a
+/// phone's surface — instead of rendering into its own and reading it back.
+pub struct DisplayTarget<'a> {
+    /// The surface texture's view. Its format must be one the colour pass
+    /// draws into (`shared::is_display_format`; `shared::pick_surface_format`
+    /// chooses one).
+    pub view: &'a wgpu::TextureView,
+    pub format: wgpu::TextureFormat,
+    /// The view's size in pixels.
+    pub size: (u32, u32),
+    /// The visible slice of the image and where it goes on the target
+    /// (`core::viewport::screen_placement`); `None` draws only the background.
+    pub placement: Option<([f32; 4], crate::core::viewport::Rect)>,
+    /// What shows around the image.
+    pub background: wgpu::Color,
+}
+
+/// [`render_display_and_overview`] for a front end that draws straight to
+/// the screen: the display pass goes into `target` (no readback), and only
+/// the small whole-image overview is read back, for the histogram and the
+/// edited proxy. `present` runs once the work is submitted — the surface
+/// texture can be presented then — before the wait for the overview.
+///
+/// The returned `display` is empty.
+#[allow(clippy::too_many_arguments)]
+pub async fn render_to_target(
+    context: &SharedContext,
+    resources: &ImageResources,
+    overview_resources: &ImageResources,
+    target: DisplayTarget<'_>,
+    overview_dims: (u32, u32),
+    mut detail: Detail,
+    present: impl FnOnce(),
+) -> Result<DisplayRender, String> {
+    let pipeline = context.display_pipeline(target.format)?;
+    // Everything up to the wait is in this block: the GPU timer holds a lock
+    // in `profiling` builds, which must not be held across an await.
+    let (overview_rb, orx, encode_ms, t_render_start) = {
+        let gpu = context.timer.frame();
+        gpu.mark_now(context, 0);
+        let t_encode = std::time::Instant::now();
+        write_view_rect(context, overview_resources, super::params::FULL_VIEW_RECT);
+        let (overview_cb, overview_rb) = encode_color_pass(
+            context, overview_resources, overview_dims.0, overview_dims.1, &mut detail, Some((&gpu, 1)),
+        );
+        let mut encode_ms = t_encode.elapsed().as_secs_f32() * 1000.0;
+        let t = Timer::start();
+        context.queue.submit(Some(overview_cb));
+        detail.stop(Span::Submit, t);
+        if let Some((view_rect, _)) = target.placement {
+            write_view_rect(context, resources, view_rect);
+        }
+        gpu.mark_now(context, 3);
+
+        let t_encode_b = std::time::Instant::now();
+        let bindings = resources.prepare_stages(context, &mut detail);
+        let t = Timer::start();
+        let mut encoder = context
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("Display Encoder") });
+        gpu.mark(&mut encoder, 4);
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Display Pass (surface)"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target.view,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(target.background), store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            if let Some((_, rect)) = target.placement {
+                // Inside the target, as wgpu requires; `screen_placement`
+                // already clips, this only guards rounding.
+                let (w, h) = (target.size.0 as f32, target.size.1 as f32);
+                let x = rect.x.clamp(0.0, w);
+                let y = rect.y.clamp(0.0, h);
+                let rw = rect.width.min(w - x);
+                let rh = rect.height.min(h - y);
+                if rw > 0.0 && rh > 0.0 {
+                    pass.set_viewport(x, y, rw, rh, 0.0, 1.0);
+                    pass.set_pipeline(&pipeline);
+                    pass.set_bind_group(0, &bindings.main, &[]);
+                    pass.set_bind_group(1, &bindings.masks, &[]);
+                    pass.set_bind_group(2, &bindings.presence, &[]);
+                    pass.draw(0..3, 0..1);
+                }
+            }
+        }
+        gpu.mark(&mut encoder, 5);
+        let commands = encoder.finish();
+        detail.stop(Span::Record, t);
+        encode_ms += t_encode_b.elapsed().as_secs_f32() * 1000.0;
+
+        let t_render_start = std::time::Instant::now();
+        let t = Timer::start();
+        context.queue.submit(Some(commands));
+        detail.stop(Span::Submit, t);
+        gpu.resolve(context);
+        present();
+
+        let (otx, orx) = tokio::sync::oneshot::channel();
+        overview_rb.slice().map_async(wgpu::MapMode::Read, move |r| {
+            let _ = otx.send(r);
+        });
+        let t = Timer::start();
+        tokio::task::block_in_place(|| {
+            context.device.poll(wgpu::Maintain::Wait);
+        });
+        detail.stop(Span::Wait, t);
+        gpu.read(&mut detail);
+        (overview_rb, orx, encode_ms, t_render_start)
+    };
+
+    let (overview, histogram) = if let Ok(Ok(())) = orx.await {
+        let t = Timer::start();
+        let pixels = overview_rb.unpad_shared();
+        detail.stop(Span::Unpad, t);
+        let t = Timer::start();
+        let histogram = crate::core::histogram::calculate(&pixels);
+        detail.stop(Span::Histogram, t);
+        (pixels, histogram)
+    } else {
+        (std::sync::Arc::from(Vec::new()), [[0u32; 256]; 3])
+    };
+    let gpu_ms = t_render_start.elapsed().as_secs_f32() * 1000.0;
+    Ok(DisplayRender { display: std::sync::Arc::from(Vec::new()), overview, histogram, encode_ms, gpu_ms, detail })
+}
+
 /// Render to opaque RGB `u16` samples, for 16-bit TIFF export. Mirrors
 /// `render_to_bytes` but targets `Rgba16Float` via `context.pipeline_16` —
 /// a wgpu RenderPipeline's output format is baked in at creation time, so
@@ -918,6 +1049,122 @@ mod tests {
         });
     }
 
+
+    /// Drawing straight onto a surface (`render_to_target`) shows what the
+    /// read-back path shows: the same pixels in the image's rectangle (two
+    /// ±1 dithers whose patterns follow the screen position, so within 2,
+    /// with no shift on average), exactly the background around it, and the
+    /// same overview and histogram. In both byte orders a surface may use.
+    /// Synthetic input, so CI runs it.
+    #[test]
+    #[ignore]
+    fn drawing_onto_a_surface_matches_the_read_back_render() {
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).build().expect("runtime");
+        rt.block_on(async {
+            let ctx = SharedContext::new().await.expect("gpu context");
+            let (w, h) = (600u32, 400u32);
+            let data: Vec<u16> = (0..w * h).map(|i| 600 + ((i * 7919) % 3000) as u16).collect();
+            let params = EditParams { exposure: 0.7, ..EditParams::default() };
+            let res = ImageResources::new(
+                &ctx, 1, &data, w, h, &params, [2.0, 1.0, 1.5, 1.0],
+                [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], 0, [256; 4], 4095,
+                None, None, 1, Default::default(),
+            )
+            .expect("image resources");
+            res.update_uniforms(&ctx, &params, None, None);
+
+            // A 400×400 "screen" showing a zoomed-in slice of the image in a
+            // whole-pixel 320×160 band, so its pixels line up one to one with
+            // a 320×160 read-back render of the same slice.
+            let (sw, sh) = (400u32, 400u32);
+            let rect = crate::core::viewport::Rect { x: 40.0, y: 120.0, width: 320.0, height: 160.0 };
+            let placement = ([0.2, 0.1, 0.5, 0.5], rect);
+            let dims = crate::core::viewport::overview_dims(w, h);
+            let reference = render_display_and_overview(
+                &ctx, &res, &res, 320, 160, placement.0, dims, Detail::default(),
+            )
+            .await;
+
+            let background = wgpu::Color { r: 0.25, g: 0.5, b: 0.75, a: 1.0 };
+            for format in [wgpu::TextureFormat::Rgba8Unorm, wgpu::TextureFormat::Bgra8Unorm] {
+                let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("stand-in surface"),
+                    size: wgpu::Extent3d { width: sw, height: sh, depth_or_array_layers: 1 },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                    view_formats: &[],
+                });
+                let view = texture.create_view(&Default::default());
+                let mut presented = false;
+                let out = render_to_target(
+                    &ctx, &res, &res,
+                    DisplayTarget { view: &view, format, size: (sw, sh), placement: Some(placement), background },
+                    dims, Detail::default(), || presented = true,
+                )
+                .await
+                .expect("render to target");
+                assert!(presented, "{format:?}: present was not called");
+                assert!(out.display.is_empty());
+                assert_eq!(out.overview, reference.overview, "{format:?}: overview differs");
+                assert_eq!(out.histogram, reference.histogram, "{format:?}: histogram differs");
+
+                // Read the stand-in surface back, as RGBA.
+                let bytes_per_row = (sw * 4 + 255) & !255;
+                let buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: None,
+                    size: (bytes_per_row * sh) as u64,
+                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                    mapped_at_creation: false,
+                });
+                let mut encoder = ctx.device.create_command_encoder(&Default::default());
+                encoder.copy_texture_to_buffer(
+                    texture.as_image_copy(),
+                    wgpu::ImageCopyBuffer {
+                        buffer: &buffer,
+                        layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(bytes_per_row), rows_per_image: None },
+                    },
+                    wgpu::Extent3d { width: sw, height: sh, depth_or_array_layers: 1 },
+                );
+                ctx.queue.submit(Some(encoder.finish()));
+                buffer.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+                ctx.device.poll(wgpu::Maintain::Wait);
+                let mapped = buffer.slice(..).get_mapped_range();
+                let pixel = |x: u32, y: u32| {
+                    let i = (y * bytes_per_row + x * 4) as usize;
+                    let p = &mapped[i..i + 4];
+                    if format == wgpu::TextureFormat::Bgra8Unorm { [p[2], p[1], p[0], p[3]] } else { [p[0], p[1], p[2], p[3]] }
+                };
+
+                let bg = [64u8, 128, 191, 255];
+                let mut worst = 0u8;
+                let (mut signed, mut n) = (0i64, 0i64);
+                for y in 0..sh {
+                    for x in 0..sw {
+                        let got = pixel(x, y);
+                        let inside = (40..360).contains(&x) && (120..280).contains(&y);
+                        if inside {
+                            let i = (((y - 120) * 320 + (x - 40)) * 4) as usize;
+                            for c in 0..3 {
+                                worst = worst.max(got[c].abs_diff(reference.display[i + c]));
+                                signed += got[c] as i64 - reference.display[i + c] as i64;
+                                n += 1;
+                            }
+                        } else {
+                            for c in 0..3 {
+                                assert!(got[c].abs_diff(bg[c]) <= 1, "{format:?}: background at ({x},{y}) is {got:?}");
+                            }
+                        }
+                    }
+                }
+                assert!(worst <= 2, "{format:?}: the image differs from the read-back render by {worst}");
+                let bias = signed as f64 / n as f64;
+                assert!(bias.abs() < 0.05, "{format:?}: the image is shifted by {bias:.3} on average");
+            }
+        });
+    }
 
     /// End-to-end proof that a selected tone operator actually reaches the
     /// GPU and renders sanely.

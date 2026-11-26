@@ -1,0 +1,25 @@
+[package]
+name = "raw-editor-android"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "RawEditor's Android front end, native half: the session on a render thread drawing straight into the app's SurfaceView, behind a small JNI API for the Kotlin UI (android/)."
+license.workspace = true
+publish = false
+
+[lib]
+# libraweditor.so, loaded by the Kotlin side (`System.loadLibrary("raweditor")`).
+name = "raweditor"
+crate-type = ["cdylib"]
+
+[target.'cfg(target_os = "android")'.dependencies]
+raw-editor-session.workspace = true
+tokio.workspace = true
+wgpu.workspace = true
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter"] }
+# The JNI calls from Kotlin, and the Surface → ANativeWindow wgpu draws into.
+jni = "0.21"
+ndk = "0.9"
+ndk-sys = "0.6"
+raw-window-handle = "0.6"

@@ -1574,6 +1574,106 @@ impl Session {
     }
 }
 
+/// One frame for a front end that draws straight onto a surface
+/// (`gpu::render_functions::render_to_target`) rather than through the
+/// read-back render loop: what to draw with, and where.
+pub struct SurfaceFrame {
+    pub context: Arc<crate::gpu::shared::SharedContext>,
+    /// What the display pass draws, and what the overview is rendered from.
+    pub display: Arc<crate::gpu::shared::ImageResources>,
+    pub overview: Arc<crate::gpu::shared::ImageResources>,
+    /// The visible slice and where it goes on the surface.
+    pub placement: Option<([f32; 4], crate::core::viewport::Rect)>,
+    pub overview_dims: (u32, u32),
+    image_id: i64,
+    edit: Option<EditParams>,
+}
+
+impl Session {
+    /// The frame to draw now on a `surface_w`×`surface_h` surface (physical
+    /// pixels), with the current edit pushed to the GPU. `None` until an image
+    /// is ready. The caller renders it with `render_to_target` and hands the
+    /// result to [`Session::surface_frame_finished`].
+    ///
+    /// For a front end that renders on vsync from one thread: the push
+    /// happens here, with no render in flight, so the uniforms keep one
+    /// writer without the read-back loop's `deferred_push`.
+    pub fn surface_frame(&mut self, surface_w: u32, surface_h: u32) -> Option<SurfaceFrame> {
+        let context = self.gpu_context.clone()?;
+        let resources = self.image_resources.clone()?;
+        if Some(resources.image_id) != self.selected_image_id {
+            return None;
+        }
+        let params = self.view_params();
+        let (interpolated, wb_override) = self.resolve_wb_and_dcp(&params);
+        resources.update_uniforms(&context, &params, interpolated.as_deref(), wb_override);
+        // After a full-resolution upgrade the subsampled set renders the
+        // overview, as in `render`.
+        let preview = self.preview_resources.clone().filter(|p| p.image_id == resources.image_id);
+        if let Some(preview) = &preview {
+            preview.update_uniforms(&context, &params, interpolated.as_deref(), wb_override);
+        }
+        let (disp_w, disp_h) = self.image_display_dims();
+        let placement = crate::core::viewport::screen_placement(
+            disp_w,
+            disp_h,
+            surface_w as f32,
+            surface_h as f32,
+            self.zoom,
+            self.pan_offset,
+        );
+        // Same rule as `render`: only the user's real edit may become the proxy.
+        let edit = (!self.before_peek
+            && !self.is_cropping
+            && self.current_edit_params.mask_overlay == 0
+            && self.held_noise.is_none())
+        .then_some(self.current_edit_params);
+        Some(SurfaceFrame {
+            context,
+            overview: preview.unwrap_or_else(|| resources.clone()),
+            display: resources.clone(),
+            placement,
+            overview_dims: crate::core::viewport::overview_dims(disp_w, disp_h),
+            image_id: resources.image_id,
+            edit,
+        })
+    }
+
+    /// A [`SurfaceFrame`] was drawn: keep what was read back — the histogram,
+    /// and the overview as the image's edited proxy — as `render_finished`
+    /// does for the read-back loop.
+    pub fn surface_frame_finished(
+        &mut self,
+        frame: &SurfaceFrame,
+        out: crate::gpu::render_functions::DisplayRender,
+    ) -> Effects {
+        if frame.context.is_lost() {
+            return self.gpu_lost();
+        }
+        let current = self.image_resources.as_ref().map(|r| r.image_id);
+        if current == Some(frame.image_id) {
+            *self.histogram_data.borrow_mut() = out.histogram;
+            self.changed.insert(Changed::HISTOGRAM);
+        }
+        let awaited = self.proxy_awaiting.contains_key(&frame.image_id);
+        if let Some(params) = frame.edit.filter(|_| current == Some(frame.image_id) || awaited) {
+            self.capture_proxy(frame.image_id, out.overview, frame.overview_dims, params);
+        }
+        let save = self.resolve_awaiting_proxy(frame.image_id, frame.edit);
+        let mut detail = out.detail;
+        detail.finish();
+        self.profiler.push_frame(crate::core::profiler::ProfilerFrame {
+            update_ms: 0.0,
+            upload_ms: out.encode_ms,
+            render_ms: out.gpu_ms,
+            total_ms: out.encode_ms + out.gpu_ms,
+            detail,
+        });
+        self.changed.insert(Changed::PROFILER);
+        save
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
