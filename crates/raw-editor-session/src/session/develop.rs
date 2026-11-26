@@ -990,6 +990,10 @@ impl Session {
     /// follow-up. At most one running plus one pending — without this, a stream of
     /// scroll or drag events spawns a GPU task each, piling up readback buffers.
     pub fn throttled_render(&mut self) -> Effects {
+        if self.surface_drawn {
+            self.changed.insert(Changed::FRAME);
+            return Effects::none();
+        }
         if self.is_rendering {
             if self.pending_render {
                 // Folded into the render already waiting.
@@ -1368,6 +1372,34 @@ impl Session {
         !crate::core::viewport::view_rect_contains(self.requested_view_rect, needed)
     }
 
+    /// A touch gesture: scale the zoom by `scale` about `centroid`, then
+    /// move by `pan` (viewport pixels), so the point under the fingers stays
+    /// under them. Zoom stays between fit and 10×, and the pan within the
+    /// image's edges (`core::viewport::clamp_pan`). Starts no render: for
+    /// front ends that draw on their own clock (`surface_drawn`), which see
+    /// `Changed::FRAME`.
+    pub fn transform_view(&mut self, scale: f32, centroid: [f32; 2], pan: [f32; 2]) {
+        if self.is_cropping || !scale.is_finite() || scale <= 0.0 {
+            return;
+        }
+        let (dw, dh) = self.image_display_dims();
+        let (vw, vh) = self.viewport_size;
+        let (fw, fh) = crate::core::viewport::fitted_size(dw, dh, vw, vh);
+        let ib = crate::core::viewport::image_rect(dw, dh, vw, vh, self.zoom, self.pan_offset);
+        // The image point under the centroid, as a fraction of the image.
+        let tx = (centroid[0] - ib.x) / ib.width.max(1.0);
+        let ty = (centroid[1] - ib.y) / ib.height.max(1.0);
+        let zoom = (self.zoom * scale).clamp(1.0, 10.0);
+        // Inverting image_rect (see `zoom_at`): that point lands at centroid + pan.
+        let offset = cgmath::Vector2::new(
+            (centroid[0] + pan[0] - vw / 2.0) / fw.max(1.0) - zoom * (tx - 0.5),
+            (centroid[1] + pan[1] - vh / 2.0) / fh.max(1.0) - zoom * (ty - 0.5),
+        );
+        self.zoom = zoom;
+        self.pan_offset = crate::core::viewport::clamp_pan(dw, dh, vw, vh, zoom, offset);
+        self.changed.insert(Changed::OVERLAY | Changed::FRAME);
+    }
+
     /// Back to fit.
     pub fn reset_view(&mut self) -> Effects {
         self.zoom = 1.0;
@@ -1587,6 +1619,8 @@ pub struct SurfaceFrame {
     pub overview_dims: (u32, u32),
     image_id: i64,
     edit: Option<EditParams>,
+    /// The view magnifies a subsampled texture: ask for full resolution.
+    soft: bool,
 }
 
 impl Session {
@@ -1607,12 +1641,6 @@ impl Session {
         let params = self.view_params();
         let (interpolated, wb_override) = self.resolve_wb_and_dcp(&params);
         resources.update_uniforms(&context, &params, interpolated.as_deref(), wb_override);
-        // After a full-resolution upgrade the subsampled set renders the
-        // overview, as in `render`.
-        let preview = self.preview_resources.clone().filter(|p| p.image_id == resources.image_id);
-        if let Some(preview) = &preview {
-            preview.update_uniforms(&context, &params, interpolated.as_deref(), wb_override);
-        }
         let (disp_w, disp_h) = self.image_display_dims();
         let placement = crate::core::viewport::screen_placement(
             disp_w,
@@ -1622,6 +1650,30 @@ impl Session {
             self.zoom,
             self.pan_offset,
         );
+        // Surface pixels per source pixel of the open set, as `render_target`
+        // has it (the surface is in physical pixels: no scale factor).
+        let magnification = placement.map_or(0.0, |(uv, rect)| {
+            (rect.width / (uv[2] * disp_w as f32).max(1.0)).max(rect.height / (uv[3] * disp_h as f32).max(1.0))
+        });
+        let soft = magnification > crate::core::viewport::FULL_RES_MAGNIFICATION;
+        // After a full-resolution upgrade the subsampled set renders the
+        // overview, and the display too unless the view magnifies it or a
+        // noise slider is mid-drag, as in `render`.
+        let preview = self.preview_resources.clone().filter(|p| p.image_id == resources.image_id);
+        if let Some(preview) = &preview {
+            preview.update_uniforms(&context, &params, interpolated.as_deref(), wb_override);
+        }
+        let display = match &preview {
+            Some(preview) => {
+                let preview_magnification = magnification * resources.width as f32 / preview.width.max(1) as f32;
+                if preview_magnification <= crate::core::viewport::FULL_RES_MAGNIFICATION || self.stage_drag {
+                    preview.clone()
+                } else {
+                    resources.clone()
+                }
+            }
+            None => resources.clone(),
+        };
         // Same rule as `render`: only the user's real edit may become the proxy.
         let edit = (!self.before_peek
             && !self.is_cropping
@@ -1631,11 +1683,12 @@ impl Session {
         Some(SurfaceFrame {
             context,
             overview: preview.unwrap_or_else(|| resources.clone()),
-            display: resources.clone(),
+            display,
             placement,
             overview_dims: crate::core::viewport::overview_dims(disp_w, disp_h),
             image_id: resources.image_id,
             edit,
+            soft,
         })
     }
 
@@ -1660,6 +1713,13 @@ impl Session {
             self.capture_proxy(frame.image_id, out.overview, frame.overview_dims, params);
         }
         let save = self.resolve_awaiting_proxy(frame.image_id, frame.edit);
+        // A subsampled texture shown magnified: fetch full resolution (once;
+        // `trigger_full_res_upgrade` guards repeats), as `render` does.
+        let upgrade = if frame.soft && current == Some(frame.image_id) && self.current_tab == AppTab::Develop {
+            self.trigger_full_res_upgrade()
+        } else {
+            Effects::none()
+        };
         let mut detail = out.detail;
         detail.finish();
         self.profiler.push_frame(crate::core::profiler::ProfilerFrame {
@@ -1670,7 +1730,7 @@ impl Session {
             detail,
         });
         self.changed.insert(Changed::PROFILER);
-        save
+        Effects::batch([save, upgrade])
     }
 }
 
@@ -1797,6 +1857,45 @@ mod view_tests {
             );
         }
         assert!(s.zoom > 1.0);
+    }
+
+    #[test]
+    #[ignore]
+    fn a_pinch_keeps_the_point_under_the_fingers() {
+        let mut s = session();
+        let at = [500.0, 260.0];
+        let before = under(&s, at);
+        for scale in [1.5, 1.3, 0.9] {
+            s.transform_view(scale, at, [0.0, 0.0]);
+            let now = under(&s, at);
+            assert!(
+                (now[0] - before[0]).abs() < 1e-4 && (now[1] - before[1]).abs() < 1e-4,
+                "drifted to {now:?} from {before:?} at zoom {}",
+                s.zoom
+            );
+        }
+        // A drag moves that point with the fingers.
+        s.transform_view(1.0, at, [-30.0, 12.0]);
+        let moved = under(&s, [at[0] - 30.0, at[1] + 12.0]);
+        assert!((moved[0] - before[0]).abs() < 1e-4 && (moved[1] - before[1]).abs() < 1e-4, "{moved:?}");
+        // Pinching in past fit stops at fit, centred.
+        s.transform_view(0.01, at, [0.0, 0.0]);
+        assert_eq!((s.zoom, s.pan_offset.x, s.pan_offset.y), (1.0, 0.0, 0.0));
+        assert!(s.changed.contains(Changed::FRAME));
+    }
+
+    /// A front end drawing on its own clock gets a FRAME signal where the
+    /// session would otherwise start a read-back render, which would fight
+    /// its frames for the image's uniforms.
+    #[test]
+    #[ignore]
+    fn a_surface_drawn_session_starts_no_read_back_render() {
+        let mut s = session();
+        s.surface_drawn = true;
+        let fx = s.push_uniforms_and_render(&EditParams::default());
+        assert!(!fx.labels().any(|l| l == "render"), "{fx:?}");
+        assert!(!s.is_rendering);
+        assert!(s.changed.contains(Changed::FRAME));
     }
 
     #[test]

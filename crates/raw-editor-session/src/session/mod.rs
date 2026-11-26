@@ -436,6 +436,11 @@ pub struct Session {
     pub pan_offset: cgmath::Vector2<f32>,
     /// Phase 26: Viewport size for zoom-to-cursor calculations (actual displayed size)
     pub viewport_size: (f32, f32), // (width, height) in screen pixels
+    /// The front end draws with `surface_frame` on its own clock (a phone's
+    /// render thread on vsync), so the session never starts the read-back
+    /// render: where it would, it signals `Changed::FRAME` instead. Two
+    /// renders of one image at once would also fight over its uniforms.
+    pub surface_drawn: bool,
     /// Set by the per-tick edit path, cleared by `flush_edits` at commit
     /// points. Keeps SQLite writes off the slider-drag hot path.
     pub edits_dirty: bool,
@@ -611,6 +616,7 @@ impl Session {
                 zoom: 1.0,
                 pan_offset: cgmath::Vector2::new(0.0, 0.0),
                 viewport_size: (800.0, 400.0),
+                surface_drawn: false,
                 edits_dirty: false,
                 scale_factor: 1.0,
                 working_preview_bytes: None,
