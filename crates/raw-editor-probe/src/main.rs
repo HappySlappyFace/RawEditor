@@ -19,13 +19,12 @@
 //! does (`Session::surface_frame` → `render_to_target`), into a stand-in
 //! 1080×2400 texture, with no readback of the display.
 
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use raw_editor_session::session::{
-    AppTab, CacheStep, EditorReadiness, ExportFormat, ExportJobState, Handled, SelectionChange, Session,
-    SessionEvent,
+    AppTab, EditorReadiness, ExportFormat, ExportJobState, SelectionChange, Session, SessionEvent,
 };
 use raw_editor_session::Effects;
 
@@ -110,7 +109,7 @@ fn run(args: &Args) -> Result<(), String> {
     println!("work       {}", work.display());
 
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().map_err(|e| e.to_string())?;
-    let mut probe = Probe { session: Session::new(&Default::default()), rt, times: BTreeMap::new(), started: HashSet::new() };
+    let mut probe = Probe { session: Session::new(&Default::default()), rt, times: BTreeMap::new() };
 
     // 1. The GPU.
     rt_section("GPU");
@@ -286,58 +285,21 @@ struct Probe {
     rt: tokio::runtime::Runtime,
     /// Count and total time per kind of work.
     times: BTreeMap<String, (u32, Duration)>,
-    /// Background loads already run, so each runs once (as the desktop's
-    /// subscriptions do).
-    started: HashSet<raw_editor_session::session::LoadJob>,
 }
 
 impl Probe {
-    /// Run `effects` and everything they lead to, one at a time, feeding each
-    /// result back to the session — plus the background loads it lists —
-    /// until nothing is left.
+    /// Run `effects` and everything they lead to (`session::host::run`),
+    /// adding up the time per kind of work.
     fn drive(&mut self, effects: Effects<SessionEvent>) -> Result<(), String> {
-        let mut queue: VecDeque<_> = effects.into_iter().map(|e| (e.label.to_string(), e.future)).collect();
-        let mut steps = 0;
-        loop {
-            // Nothing draws here; drop what a front end would redraw.
-            self.session.changed.take();
-            self.session.camera_preview = None;
-            if queue.is_empty() {
-                let next = self.session.load_jobs().find(|j| !self.started.contains(j));
-                let Some(job) = next else { break };
-                self.started.insert(job.clone());
-                let label = match &job {
-                    raw_editor_session::session::LoadJob::Preview(..) => "load preview",
-                    raw_editor_session::session::LoadJob::Raw(..) => "load raw",
-                    raw_editor_session::session::LoadJob::Proxy(..) => "load proxy",
-                };
-                queue.push_back((label.to_string(), Box::pin(job.run())));
-            }
-            let Some((label, future)) = queue.pop_front() else { break };
-            steps += 1;
-            if steps > 10_000 {
-                return Err("the session's work never settled".into());
-            }
-            let t = Instant::now();
-            let event = self.rt.block_on(future);
-            let entry = self.times.entry(label).or_default();
+        let times = &mut self.times;
+        raw_editor_session::session::host::run(&mut self.session, &self.rt, effects, |label, took| {
+            let entry = times.entry(label.to_string()).or_default();
             entry.0 += 1;
-            entry.1 += t.elapsed();
-            let next = match self.session.handle(event) {
-                Handled::Done(fx) => fx,
-                Handled::FrontEnd(event) => match *event {
-                    SessionEvent::CacheProcessed(result) => match self.session.cache_processed(result) {
-                        CacheStep::Continue(fx) => fx,
-                        CacheStep::Retired | CacheStep::Finished => Effects::none(),
-                    },
-                    other => {
-                        tracing::warn!("a front-end event the probe ignores: {other:?}");
-                        Effects::none()
-                    }
-                },
-            };
-            queue.extend(next.into_iter().map(|e| (e.label.to_string(), e.future)));
-        }
+            entry.1 += took;
+        })?;
+        // Nothing draws here; drop what a front end would redraw.
+        self.session.changed.take();
+        self.session.camera_preview = None;
         Ok(())
     }
 }

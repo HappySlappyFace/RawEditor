@@ -12,6 +12,7 @@ mod delete;
 mod develop;
 mod export;
 mod helpers;
+pub mod host;
 mod lensfun;
 mod library;
 mod loader;
