@@ -1551,6 +1551,7 @@ fn tone_mapper_hint(editor: &RawEditor) -> Element<'_, Message> {
         ToneMapper::Reinhard => "Reference only — flat midtones by design",
         ToneMapper::Hable => "Uncharted 2 filmic: deep toe, long shoulder",
         ToneMapper::AcesFitted => "ACES tone response (Narkowicz fit) — contrasty",
+        ToneMapper::Aces2 => "ACES 2.0 reference curve — darker mids, long highlight roll-off",
         ToneMapper::Gt => "Gran Turismo — linear mids, shaped toe and shoulder",
     };
     text(hint)
