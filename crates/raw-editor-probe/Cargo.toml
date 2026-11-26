@@ -16,3 +16,8 @@ wgpu.workspace = true
 tracing.workspace = true
 # The engine already builds this one; the probe only turns logging on.
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[features]
+# The per-render breakdown (CPU spans, GPU pass timestamps, counts) the
+# desktop's F3 overlay shows, printed after the slider ticks.
+profiling = ["raw-editor-session/profiling"]

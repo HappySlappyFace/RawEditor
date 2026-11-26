@@ -6,6 +6,9 @@
 #   tools/android-probe.sh run <photo.raw>  push the probe and the photo, run it
 #                                           (extra arguments go to the probe, e.g. --ticks 200)
 #
+# PROBE_FEATURES=profiling adds the per-render breakdown (CPU spans, GPU pass
+# times) after the slider ticks.
+#
 # Needs: rustup with the aarch64-linux-android target (its cargo is used even
 # when the system's Rust comes first on PATH), the Android NDK (ANDROID_NDK_HOME,
 # else the newest under ~/Android/Sdk/ndk or ~/Android/ndk), and adb for `run`.
@@ -51,7 +54,7 @@ build() {
     CXX_aarch64_linux_android=$bin/$TARGET$API-clang++ \
     AR_aarch64_linux_android=$bin/llvm-ar \
     RUSTC=~/.cargo/bin/rustc \
-        "$cargo" build --release -p raw-editor-probe --target $TARGET
+        "$cargo" build --release -p raw-editor-probe --target $TARGET ${PROBE_FEATURES:+--features $PROBE_FEATURES}
 
     echo "Built $OUT ($(du -h "$OUT" | cut -f1))"
     echo "Shared libraries it needs:"
@@ -61,7 +64,7 @@ build() {
 run() {
     local photo=${1:?which RAW file?}
     shift
-    [[ -f $OUT ]] || build
+    [[ -f $OUT && -z ${PROBE_FEATURES:-} ]] || build
     command -v adb >/dev/null || { echo "adb not found" >&2; exit 1; }
     adb get-state >/dev/null
     echo "Device: $(adb shell getprop ro.product.manufacturer | tr -d '\r') $(adb shell getprop ro.product.model | tr -d '\r'), Android $(adb shell getprop ro.build.version.release | tr -d '\r'), $(adb shell getprop ro.soc.model | tr -d '\r')"

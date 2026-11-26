@@ -143,11 +143,17 @@ fn run(args: &Args) -> Result<(), String> {
     println!("open       {:.0} ms to the first render", ms(t.elapsed()));
     if let Some(res) = &probe.session.image_resources {
         let (w, h) = res.oriented_original_dims(0);
-        println!("photo      {w}×{h}");
+        println!("photo      {w}×{h}, develop texture {}×{}", res.width, res.height);
     }
+    let target = probe.session.render_target();
+    println!(
+        "render     {}×{} target, magnification {:.2}",
+        target.width, target.height, target.magnification
+    );
 
     // 4. Slider ticks: one render each, as when Exposure is dragged.
     rt_section("Slider ticks");
+    probe.session.profiler.history.clear();
     let mut ticks = Vec::with_capacity(args.ticks);
     for i in 0..args.ticks {
         probe.session.current_edit_params.exposure = (i % 40) as f32 * 0.05 - 1.0;
@@ -156,6 +162,7 @@ fn run(args: &Args) -> Result<(), String> {
         probe.drive(fx)?;
         ticks.push(t.elapsed());
     }
+    print_breakdown(&probe.session.profiler);
     probe.session.current_edit_params.exposure = 0.5;
     let fx = probe.session.update_pipeline();
     probe.drive(fx)?;
@@ -284,6 +291,29 @@ fn list_adapters() {
             l.max_storage_buffers_per_shader_stage,
             l.max_bind_groups,
         );
+    }
+}
+
+/// Where the ticks' renders spent their time, from the engine's profiler
+/// (`--features profiling`; without it there is nothing to show).
+fn print_breakdown(profiler: &raw_editor_session::core::profiler::Profiler) {
+    use raw_editor_session::core::profiler::{Count, Span, ENABLED};
+    if !ENABLED {
+        println!("(build with --features profiling for the per-render breakdown)");
+        return;
+    }
+    println!("per render ({} frames)        mean      max", profiler.history.len());
+    for span in Span::ALL {
+        let (_, mean, max) = profiler.span_stats(span);
+        if max > 0.0 {
+            println!("  {:<24} {mean:>7.2} ms {max:>7.2} ms", span.label());
+        }
+    }
+    for count in Count::ALL {
+        let n = profiler.count_total(count);
+        if n > 0 {
+            println!("  {:<24} {n:>7}", count.label());
+        }
     }
 }
 
