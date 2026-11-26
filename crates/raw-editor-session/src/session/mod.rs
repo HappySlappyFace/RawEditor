@@ -37,7 +37,7 @@ pub use delete::{DeleteRequest, HardDeleteOutcome};
 pub use export::{ExportFormat, ExportJob, ExportJobState, ExportSettings};
 pub use lensfun::{LensfunJob, LensfunState};
 pub use library::{collect_raw_files, CacheResult, CacheStep, ImportResult};
-pub use loader::{MAX_CONCURRENT_PREVIEW_LOADS, MAX_CONCURRENT_RAW_LOADS};
+pub use loader::{LoadJob, MAX_CONCURRENT_PREVIEW_LOADS, MAX_CONCURRENT_RAW_LOADS};
 pub use loading::{shared_context, BuiltResources};
 pub use loupe::{HeldNoise, LoupeState, LoupeView, LOUPE_SIZE};
 pub use ai_mask::{load_ai_bitmaps, AiBitmapState, AiSelect, ModelMissing, SelectEngine, Selection};

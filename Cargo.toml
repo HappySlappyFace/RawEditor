@@ -1,8 +1,8 @@
 [workspace]
-members = [".", "crates/raw-editor-core", "crates/raw-editor-session"]
+members = [".", "crates/raw-editor-core", "crates/raw-editor-session", "crates/raw-editor-probe"]
 # Plain `cargo build/test/clippy` at the root cover the whole workspace, so the
 # commands in CLAUDE.md and CI keep checking the engine too.
-default-members = [".", "crates/raw-editor-core", "crates/raw-editor-session"]
+default-members = [".", "crates/raw-editor-core", "crates/raw-editor-session", "crates/raw-editor-probe"]
 resolver = "2"
 
 # The release version for every crate. This is the line a release bumps (the
