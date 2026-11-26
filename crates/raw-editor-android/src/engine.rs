@@ -4,8 +4,12 @@
 //! drawn only when something changed, then waits for vsync in
 //! `get_current_texture` (FIFO presentation). With nothing to draw the
 //! thread sleeps in `recv`, so an idle screen costs nothing.
+//!
+//! It never waits on the session's work either: imports, decodes and the
+//! full-resolution rebuild run on the tokio runtime, and their results come
+//! back through the same channel as the UI's messages (`Command::Event`).
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
 use std::ptr::NonNull;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -14,7 +18,8 @@ use std::time::{Duration, Instant};
 
 use raw_editor_session::gpu::render_functions::{render_to_target, DisplayTarget};
 use raw_editor_session::gpu::shared::{pick_surface_format, SharedContext};
-use raw_editor_session::session::{host, AppTab, EditorReadiness, SelectionChange, Session};
+use raw_editor_session::session::{host, AppTab, EditorReadiness, LoadJob, SelectionChange, Session, SessionEvent};
+use raw_editor_session::{Changed, Effects};
 
 pub enum Command {
     Open(PathBuf),
@@ -22,6 +27,15 @@ pub enum Command {
     /// The surface is going; answer once it is dropped.
     SurfaceGone(Sender<()>),
     Exposure(f32),
+    /// A pinch or drag: scale the zoom about `at`, then move by `pan`
+    /// (surface pixels).
+    View { scale: f32, at: [f32; 2], pan: [f32; 2] },
+    /// A double tap at a point: back to fit, or in to 3× about it.
+    ToggleZoom([f32; 2]),
+    /// A piece of the session's background work finished.
+    Event(Box<SessionEvent>),
+    /// Save and stop.
+    Quit,
 }
 
 /// The handle Kotlin holds.
@@ -41,10 +55,11 @@ impl Engine {
         let stats = Arc::new(Mutex::new(Stats::default()));
         let thread = {
             let stats = stats.clone();
+            let results = tx.clone();
             std::thread::Builder::new()
                 .name("raweditor-render".into())
                 .spawn(move || {
-                    if let Err(e) = RenderThread::new(files, stats.clone()).and_then(|t| t.run(rx)) {
+                    if let Err(e) = RenderThread::new(files, stats.clone(), results).and_then(|t| t.run(rx)) {
                         tracing::error!("render thread stopped: {e}");
                         stats.lock().unwrap_or_else(|e| e.into_inner()).status = format!("Error: {e}");
                     }
@@ -70,11 +85,20 @@ impl Engine {
     pub fn summary(&self) -> String {
         self.stats.lock().unwrap_or_else(|e| e.into_inner()).summary()
     }
+
+    /// How many photos have opened, and the last one's saved exposure: the
+    /// UI sets its slider from it when the count moves.
+    pub fn opened(&self) -> (u32, f32) {
+        let stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
+        (stats.opened, stats.exposure)
+    }
 }
 
 impl Drop for Engine {
     fn drop(&mut self) {
-        // Closing the channel ends the thread's loop; it saves on the way out.
+        // The thread holds a sender of its own (for its results), so the
+        // channel never closes by itself: ask it to stop. It saves on the way out.
+        self.send(Command::Quit);
         self.tx.take();
         if let Some(t) = self.thread.take() {
             let _ = t.join();
@@ -86,6 +110,8 @@ impl Drop for Engine {
 #[derive(Default)]
 pub struct Stats {
     status: String,
+    opened: u32,
+    exposure: f32,
     /// Recent frames: (work on the render thread, interval since the previous present).
     frames: VecDeque<(f32, Option<f32>)>,
     last_present: Option<Instant>,
@@ -158,6 +184,14 @@ struct Live {
     view_format: wgpu::TextureFormat,
 }
 
+/// A photo on its way to the screen.
+enum Opening {
+    /// Its folder is being imported.
+    Importing { path: PathBuf, since: Instant },
+    /// Selected; its RAW is loading.
+    Loading { id: i64, name: String, since: Instant },
+}
+
 struct RenderThread {
     rt: tokio::runtime::Runtime,
     session: Session,
@@ -165,17 +199,24 @@ struct RenderThread {
     files: PathBuf,
     live: Option<Live>,
     stats: Arc<Mutex<Stats>>,
+    /// Where background work sends its results.
+    results: Sender<Command>,
+    /// The session's background loads already running.
+    started: HashSet<LoadJob>,
+    opening: Option<Opening>,
 }
 
 impl RenderThread {
-    fn new(files: PathBuf, stats: Arc<Mutex<Stats>>) -> Result<Self, String> {
+    fn new(files: PathBuf, stats: Arc<Mutex<Stats>>, results: Sender<Command>) -> Result<Self, String> {
         let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().map_err(|e| e.to_string())?;
         let context = Arc::new(rt.block_on(SharedContext::new())?);
         let info = context.adapter.get_info();
         tracing::info!("GPU: {} ({:?})", info.name, info.backend);
         let mut session = Session::new(&Default::default());
         session.gpu_context = Some(context.clone());
-        Ok(Self { rt, session, context, files, live: None, stats })
+        // This thread draws on vsync: the session must not render on its own.
+        session.surface_drawn = true;
+        Ok(Self { rt, session, context, files, live: None, stats, results, started: HashSet::new(), opening: None })
     }
 
     fn status(&self, text: impl Into<String>) {
@@ -195,8 +236,20 @@ impl RenderThread {
                 }
             }
             batch.extend(rx.try_iter());
+            let mut quit = false;
             for command in latest_surface_only(batch) {
-                dirty |= self.apply(command)?;
+                match command {
+                    Command::Quit => quit = true,
+                    command => dirty |= self.apply(command)?,
+                }
+            }
+            self.start_loads();
+            self.check_opened();
+            // Nothing else here draws from what `changed` signals.
+            dirty |= self.session.changed.take().contains(Changed::FRAME);
+            self.session.camera_preview = None;
+            if quit {
+                break;
             }
             if dirty && self.can_draw() {
                 self.draw()?;
@@ -218,8 +271,8 @@ impl RenderThread {
     fn apply(&mut self, command: Command) -> Result<bool, String> {
         match command {
             Command::Open(path) => {
-                self.open(path)?;
-                Ok(true)
+                self.open(path);
+                Ok(false)
             }
             Command::Surface(window, w, h) => match self.attach(window, w, h) {
                 Ok(()) => Ok(true),
@@ -241,42 +294,127 @@ impl RenderThread {
                 self.session.mark_edits_dirty();
                 Ok(true)
             }
+            Command::View { scale, at, pan } => {
+                self.session.transform_view(scale, at, pan);
+                Ok(false)
+            }
+            Command::ToggleZoom(at) => {
+                let scale = if self.session.zoom > 1.01 { 1.0 / self.session.zoom } else { 3.0 };
+                self.session.transform_view(scale, at, [0.0, 0.0]);
+                Ok(false)
+            }
+            Command::Event(event) => {
+                let import_done = matches!(*event, SessionEvent::ImportComplete(_));
+                let fx = host::handle(&mut self.session, *event);
+                self.spawn(fx);
+                if import_done {
+                    self.imported();
+                }
+                Ok(false)
+            }
+            Command::Quit => Ok(false),
         }
     }
 
-    fn open(&mut self, path: PathBuf) -> Result<(), String> {
-        let t = Instant::now();
+    /// Run the session's work in the background; each result comes back as
+    /// a `Command::Event`.
+    fn spawn(&mut self, effects: Effects<SessionEvent>) {
+        for effect in effects {
+            let results = self.results.clone();
+            self.rt.spawn(async move {
+                let event = effect.future.await;
+                let _ = results.send(Command::Event(Box::new(event)));
+            });
+        }
+    }
+
+    /// Start the background loads the session lists (the photo's RAW,
+    /// neighbours' previews), each once.
+    fn start_loads(&mut self) {
+        let jobs: Vec<LoadJob> = self.session.load_jobs().collect();
+        self.started.retain(|j| jobs.contains(j));
+        for job in jobs {
+            if self.started.insert(job.clone()) {
+                let results = self.results.clone();
+                self.rt.spawn(async move {
+                    let event = job.run().await;
+                    let _ = results.send(Command::Event(Box::new(event)));
+                });
+            }
+        }
+    }
+
+    /// Open a RAW: import its folder if the catalogue doesn't have it yet,
+    /// then select it. Nothing here waits; `imported` and `check_opened`
+    /// take it on as the work comes back.
+    fn open(&mut self, path: PathBuf) {
+        let since = Instant::now();
         self.status(format!("Opening {}…", path.file_name().unwrap_or_default().to_string_lossy()));
         if self.session.library.is_none() {
-            let library = raw_editor_session::database::library::Library::open_at(&self.files.join("catalogue.db"))
-                .map_err(|e| format!("opening the catalogue: {e}"))?;
-            self.session.images = library.get_all_images().unwrap_or_default();
-            self.session.library = Some(library);
+            match raw_editor_session::database::library::Library::open_at(&self.files.join("catalogue.db")) {
+                Ok(library) => {
+                    self.session.images = library.get_all_images().unwrap_or_default();
+                    self.session.library = Some(library);
+                }
+                Err(e) => {
+                    self.status(format!("Error: opening the catalogue: {e}"));
+                    return;
+                }
+            }
         }
-        let path_str = path.to_string_lossy().to_string();
-        if !self.session.images.iter().any(|i| i.path == path_str) {
-            let folder = path.parent().ok_or("the RAW has no folder")?.to_path_buf();
-            let fx = self.session.import_folder(folder);
-            host::run(&mut self.session, &self.rt, fx, |_, _| {})?;
+        if let Some(id) = self.image_id(&path) {
+            self.select(id, &path, since);
+            return;
         }
-        let id = self
-            .session
-            .images
-            .iter()
-            .find(|i| i.path == path_str)
-            .map(|i| i.id)
-            .ok_or_else(|| format!("{path_str} was not imported: {}", self.session.status))?;
+        let Some(folder) = path.parent().map(PathBuf::from) else {
+            self.status("Error: the RAW has no folder");
+            return;
+        };
+        let fx = self.session.import_folder(folder);
+        self.spawn(fx);
+        self.opening = Some(Opening::Importing { path, since });
+    }
+
+    fn image_id(&self, path: &std::path::Path) -> Option<i64> {
+        let path = path.to_string_lossy();
+        self.session.images.iter().find(|i| i.path == path).map(|i| i.id)
+    }
+
+    /// An import finished: select the photo it was for.
+    fn imported(&mut self) {
+        let Some(Opening::Importing { path, since }) = self.opening.take() else { return };
+        match self.image_id(&path) {
+            Some(id) => self.select(id, &path, since),
+            None => self.status(format!("Error: {} was not imported: {}", path.display(), self.session.status)),
+        }
+    }
+
+    fn select(&mut self, id: i64, path: &std::path::Path, since: Instant) {
         let fx = self.session.set_tab(AppTab::Develop);
-        host::run(&mut self.session, &self.rt, fx, |_, _| {})?;
+        self.spawn(fx);
         let fx = self.session.select_image(id, SelectionChange::Only);
-        host::run(&mut self.session, &self.rt, fx, |_, _| {})?;
-        if !matches!(self.session.editor_readiness, EditorReadiness::Ready(r) if r == id) {
-            return Err(format!("the photo did not load: {}", self.session.status));
-        }
+        self.spawn(fx);
         let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
-        tracing::info!("opened {name} in {} ms", t.elapsed().as_millis());
-        self.status(format!("{name}, opened in {} ms", t.elapsed().as_millis()));
-        Ok(())
+        self.opening = Some(Opening::Loading { id, name, since });
+    }
+
+    /// The selected photo is ready (or failed): say so, and hand its saved
+    /// exposure to the UI's slider.
+    fn check_opened(&mut self) {
+        let Some(Opening::Loading { id, name, since }) = &self.opening else { return };
+        let ms = since.elapsed().as_millis();
+        match &self.session.editor_readiness {
+            EditorReadiness::Ready(r) if r == id => {
+                tracing::info!("opened {name} in {ms} ms");
+                let mut stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
+                stats.status = format!("{name}, opened in {ms} ms");
+                stats.exposure = self.session.current_edit_params.exposure;
+                stats.opened += 1;
+            }
+            EditorReadiness::Failed(f, e) if f == id => self.status(format!("Error: {name} did not load: {e}")),
+            _ => return,
+        }
+        self.opening = None;
     }
 
     fn attach(&mut self, window: ndk::native_window::NativeWindow, width: u32, height: u32) -> Result<(), String> {
@@ -366,9 +504,7 @@ impl RenderThread {
         ))?;
         let fx = self.session.surface_frame_finished(&frame, out);
         self.stats.lock().unwrap_or_else(|e| e.into_inner()).frame(t.elapsed().as_secs_f32() * 1000.0);
-        host::run(&mut self.session, &self.rt, fx, |_, _| {})?;
-        self.session.changed.take();
-        self.session.camera_preview = None;
+        self.spawn(fx);
         Ok(())
     }
 }

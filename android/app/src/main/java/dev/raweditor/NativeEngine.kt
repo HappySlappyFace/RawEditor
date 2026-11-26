@@ -18,6 +18,13 @@ object NativeEngine {
     /** Returns once the engine has let go of the surface. */
     external fun surfaceDestroyed(handle: Long)
     external fun setExposure(handle: Long, ev: Float)
+    /** A pinch or drag: scale about (x, y), then move by (dx, dy), in surface pixels. */
+    external fun transformView(handle: Long, scale: Float, x: Float, y: Float, dx: Float, dy: Float)
+    /** Double tap: back to fit, or zoom in about (x, y). */
+    external fun toggleZoom(handle: Long, x: Float, y: Float)
+    /** How many photos have opened; when it moves, [openedExposure] is the new one's. */
+    external fun openedCount(handle: Long): Int
+    external fun openedExposure(handle: Long): Float
     external fun stats(handle: Long): String
     /** Save and stop. The handle is dead afterwards. */
     external fun destroy(handle: Long)
