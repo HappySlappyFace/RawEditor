@@ -262,6 +262,7 @@ impl StandInSurface {
             size: self.size,
             placement: frame.placement,
             background: wgpu::Color::BLACK,
+            headroom: 1.0,
         };
         let out = raw_editor_session::gpu::render_functions::render_to_target(
             &frame.context,

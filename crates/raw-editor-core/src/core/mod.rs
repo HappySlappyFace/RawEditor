@@ -3,6 +3,7 @@ pub mod camera_profiles;
 pub mod curves;
 pub mod guided;
 pub mod haze;
+pub mod hdr;
 pub mod highlights;
 pub mod histogram;
 pub mod lens;

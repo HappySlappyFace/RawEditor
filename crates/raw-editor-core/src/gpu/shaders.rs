@@ -72,7 +72,7 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     // zooms in: the target no longer grows with zoom, it just looks at a
     // smaller slice of the source at higher magnification.
     //
-    // (params.zoom / pan_x / pan_y are vestigial and intentionally unread —
+    // (params.zoom / pan_x were vestigial and are now src_scale —
     // the viewport shader's projection matrix owns zoom and pan.)
     let t = vec2<f32>((x + 1.0) * 0.5, (y + 1.0) * 0.5);
     let view = params.view_rect.xy + t * params.view_rect.zw;
@@ -117,7 +117,7 @@ struct EditParams {
     forward_matrix_2: vec3<f32>,  // row 2
     padding5: f32,
     src_scale: vec2<f32>,
-    pan_y: f32,           // vestigial; holds later offsets in place
+    hdr_headroom: f32,    // core::hdr; read only by fs_main_hdr
     // Phase 34: CFA Pattern
     cfa_pattern: u32,
 
@@ -878,6 +878,24 @@ fn dither_8bit(c: vec3<f32>, p: vec2<f32>) -> vec3<f32> {
 // `shader_tone_lut_constants_match_rust` asserts these agree.
 const TONE_LUT_MAX: f32 = 16.0;
 
+// ── HDR (core::hdr) ─────────────────────────────────────────────────────────
+// MIRRORED from core::hdr — `shader_hdr_constants_match_rust`.
+const HDR_GREY: f32 = 0.18;
+const HDR_RAMP_START_EV: f32 = 1.0;
+const HDR_RAMP_END_EV: f32 = 5.0;
+
+// The pixel's scene-linear level (peak channel) at the tone stage, before
+// any curve compressed it: what fs_main_hdr's gain is chosen by. Set by
+// color_pass; the SDR entry points never read it.
+var<private> hdr_level: f32 = 0.0;
+
+// core::hdr::gain: 1 up to a stop above grey, rising smoothly in stops to
+// the full headroom four stops further up.
+fn hdr_gain(level: f32, headroom: f32) -> f32 {
+    let ev = log2(max(level, 1e-6) / HDR_GREY);
+    return 1.0 + (max(headroom, 1.0) - 1.0) * smoothstep(HDR_RAMP_START_EV, HDR_RAMP_END_EV, ev);
+}
+
 // Tone mapper ids. Only Camera is distinguished here: every other operator's
 // SHAPE arrives baked into the curve LUT, so the shader needs no per-operator
 // branch and no per-operator cost. See core::tonemap.
@@ -1041,6 +1059,16 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 @fragment
 fn fs_main_16(input: VertexOutput) -> @location(0) vec4<f32> {
     return color_pass(input);
+}
+
+// HDR displays (an Rgba16Float surface in extended linear sRGB, 1.0 = SDR
+// white): the SDR rendering, linear, times the gain its scene level earns
+// (core::hdr). No dither: half floats have precision to spare.
+@fragment
+fn fs_main_hdr(input: VertexOutput) -> @location(0) vec4<f32> {
+    let c = color_pass(input);
+    let sdr = decode_output(c.rgb, 0u);
+    return vec4<f32>(sdr * hdr_gain(hdr_level, params.hdr_headroom), c.a);
 }
 
 fn color_pass(input: VertexOutput) -> vec4<f32> {
@@ -1368,6 +1396,8 @@ fn color_pass(input: VertexOutput) -> vec4<f32> {
         // apply_highlights_shadows.
         let hs_level = max(pp.r, max(pp.g, pp.b)) * to_surround;
         pp = apply_highlights_shadows(pp, params.highlights, params.shadows, hs_level);
+        // HDR: the scene level, before the knee and the profile curve.
+        hdr_level = max(pp.r, max(pp.g, pp.b));
 
         // Highlight shoulder — CAMERA OPERATOR, WITH A PROFILE CURVE, ONLY.
         //
@@ -1767,6 +1797,10 @@ fn color_pass(input: VertexOutput) -> vec4<f32> {
     //     selected operator is applied here.
     // Getting this gate wrong double-tone-maps, which is what the old
     // dcp_has_curve condition existed to prevent.
+    if (params.has_dcp == 0u) {
+        // HDR: the scene level, before this path's tone curve below.
+        hdr_level = max(color.r, max(color.g, color.b));
+    }
     if (params.tone_mapper != TONE_CAMERA) {
         if (params.has_dcp == 0u) {
             // Same baked LUT and same hue-preserving application the DCP path
@@ -1896,6 +1930,20 @@ mod tests {
             PASSTHROUGH_SHADER.contains(&expected),
             "shader is missing `{expected}` — CPU/GPU tone LUT domains disagree"
         );
+    }
+
+    /// `core::hdr` is what the unit tests (and the Ultra HDR gain map) use;
+    /// the shader is what the screen shows.
+    #[test]
+    fn shader_hdr_constants_match_rust() {
+        use crate::core::hdr::*;
+        for expected in [
+            format!("const HDR_GREY: f32 = {HDR_GREY:?};"),
+            format!("const HDR_RAMP_START_EV: f32 = {HDR_RAMP_START_EV:?};"),
+            format!("const HDR_RAMP_END_EV: f32 = {HDR_RAMP_END_EV:?};"),
+        ] {
+            assert!(PASSTHROUGH_SHADER.contains(&expected), "shader is missing `{expected}`");
+        }
     }
 
     /// `core::perceptual` is what the unit tests check; the shader is what

@@ -73,6 +73,12 @@ pub fn is_display_format(format: wgpu::TextureFormat) -> bool {
     matches!(format, F::Rgba8Unorm | F::Bgra8Unorm | F::Rgb10a2Unorm)
 }
 
+/// The HDR surface format: half floats in extended linear sRGB (1.0 = SDR
+/// white, brighter above), which wgpu's Vulkan backend asks the swapchain
+/// for whenever a surface is configured with it. The colour pass draws it
+/// through `fs_main_hdr` (`core::hdr`).
+pub const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+
 /// Pick a surface format the colour pass can draw into, from what the
 /// surface offers: `(surface format, view format)`. A surface that offers
 /// only `*Srgb` formats is drawn through a non-sRGB view of the same memory,
@@ -413,19 +419,23 @@ impl SharedContext {
         })
     }
 
-    /// The 8-bit colour pipeline for an output of `format` (one of
-    /// [`is_display_format`]): the context's own for `Rgba8Unorm`, otherwise
-    /// built on first use and kept.
+    /// The colour pipeline for an output of `format`: one of
+    /// [`is_display_format`] (`fs_main`, display-encoded), or [`HDR_FORMAT`]
+    /// (`fs_main_hdr`). Built on first use and kept.
     pub fn display_pipeline(&self, format: wgpu::TextureFormat) -> Result<Arc<wgpu::RenderPipeline>, String> {
-        if !is_display_format(format) {
+        let entry = if format == HDR_FORMAT {
+            "fs_main_hdr"
+        } else if is_display_format(format) {
+            "fs_main"
+        } else {
             return Err(format!("the colour pass cannot draw into {format:?}"));
-        }
+        };
         let mut built = self.display_pipelines.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((_, p)) = built.iter().find(|(f, _)| *f == format) {
             return Ok(p.clone());
         }
         let p = Arc::new(color_pipeline(
-            &self.device, &self.color_layout, &self.color_shader, format, "fs_main",
+            &self.device, &self.color_layout, &self.color_shader, format, entry,
             "Color Render Pipeline (display surface)",
         ));
         built.push((format, p.clone()));

@@ -25,6 +25,14 @@ fn write_view_rect(context: &SharedContext, resources: &ImageResources, view_rec
     );
 }
 
+/// The display's HDR headroom for the next frames (`core::hdr`; only
+/// `fs_main_hdr` reads it). A 4-byte targeted write like `write_view_rect`,
+/// after `update_uniforms`' whole-struct one, which resets it to 1.
+fn write_hdr_headroom(context: &SharedContext, resources: &ImageResources, headroom: f32) {
+    const OFFSET: u64 = std::mem::offset_of!(super::params::GpuEditParams, hdr_headroom) as u64;
+    context.queue.write_buffer(&resources.uniform_buffer, OFFSET, bytemuck::bytes_of(&headroom.max(1.0)));
+}
+
 /// What the user sees when `map_async` fails (device lost, out of memory):
 /// not "wrong data size" from an encoder fed an empty buffer.
 const READBACK_FAILED: &str = "the GPU readback failed (the graphics device may have been reset)";
@@ -526,6 +534,9 @@ pub struct DisplayTarget<'a> {
     pub placement: Option<([f32; 4], crate::core::viewport::Rect)>,
     /// What shows around the image.
     pub background: wgpu::Color,
+    /// How far above SDR white the display may go (`core::hdr`): read only
+    /// when `format` is `shared::HDR_FORMAT`. 1 for SDR.
+    pub headroom: f32,
 }
 
 /// What [`render_to_target`] leaves behind: the CPU's share of the frame,
@@ -659,6 +670,9 @@ pub fn render_to_target(
     });
     if let Some((view_rect, _)) = target.placement {
         write_view_rect(context, resources, view_rect);
+    }
+    if target.format == super::shared::HDR_FORMAT {
+        write_hdr_headroom(context, resources, target.headroom);
     }
 
     let bindings = resources.prepare_stages(context, &mut detail);
@@ -1169,7 +1183,7 @@ mod tests {
                 let mut presented = false;
                 let out = render_to_target(
                     &ctx, &res, Some(&res),
-                    DisplayTarget { view: &view, format, size: (sw, sh), placement: Some(placement), background },
+                    DisplayTarget { view: &view, format, size: (sw, sh), placement: Some(placement), background, headroom: 1.0 },
                     dims, Detail::default(), || presented = true,
                 )
                 .expect("render to target");
@@ -1230,6 +1244,128 @@ mod tests {
                 let bias = signed as f64 / n as f64;
                 assert!(bias.abs() < 0.05, "{format:?}: the image is shifted by {bias:.3} on average");
             }
+        });
+    }
+
+    /// The HDR surface (`fs_main_hdr`, `core::hdr`): at headroom 1 it is the
+    /// SDR rendering, linear (within the 8-bit pass's ±1 dither); with
+    /// headroom it is that image times a gain between 1 and the headroom,
+    /// exactly 1 in the shadows, and never a different colour. Synthetic
+    /// input, so CI runs it.
+    #[test]
+    #[ignore]
+    fn hdr_surface_is_the_sdr_image_brightened_in_the_highlights() {
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).build().expect("runtime");
+        rt.block_on(async {
+            let ctx = SharedContext::new().await.expect("gpu context");
+            let (w, h) = (256u32, 64u32);
+            // A ramp from deep shadow to clipped, left to right.
+            let data: Vec<u16> = (0..w * h).map(|i| (300 + (i % w) * 16).min(4095) as u16).collect();
+            let params = EditParams { exposure: 1.0, ..EditParams::default() };
+            let res = ImageResources::new(
+                &ctx, 1, &data, w, h, &params, [2.0, 1.0, 1.5, 1.0],
+                [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], 0, [256; 4], 4095,
+                None, None, 1, Default::default(),
+            )
+            .expect("image resources");
+            res.update_uniforms(&ctx, &params, None, None);
+            let sdr = render_display_and_overview(
+                &ctx, &res, &res, w, h, super::super::params::FULL_VIEW_RECT, (w, h), Detail::default(),
+            )
+            .await
+            .display;
+
+            let draw_hdr = |headroom: f32| -> Vec<[f32; 3]> {
+                let format = super::super::shared::HDR_FORMAT;
+                let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("stand-in HDR surface"),
+                    size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                    view_formats: &[],
+                });
+                let view = texture.create_view(&Default::default());
+                let rect = crate::core::viewport::Rect { x: 0.0, y: 0.0, width: w as f32, height: h as f32 };
+                let target = DisplayTarget {
+                    view: &view,
+                    format,
+                    size: (w, h),
+                    placement: Some((super::super::params::FULL_VIEW_RECT, rect)),
+                    background: wgpu::Color::BLACK,
+                    headroom,
+                };
+                render_to_target(&ctx, &res, None, target, (w, h), Detail::default(), || {}).expect("render");
+                let bytes_per_row = (w * 8 + 255) & !255;
+                let buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: None,
+                    size: (bytes_per_row * h) as u64,
+                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                    mapped_at_creation: false,
+                });
+                let mut encoder = ctx.device.create_command_encoder(&Default::default());
+                encoder.copy_texture_to_buffer(
+                    texture.as_image_copy(),
+                    wgpu::ImageCopyBuffer {
+                        buffer: &buffer,
+                        layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(bytes_per_row), rows_per_image: None },
+                    },
+                    wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                );
+                ctx.queue.submit(Some(encoder.finish()));
+                buffer.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+                ctx.device.poll(wgpu::Maintain::Wait);
+                let mapped = buffer.slice(..).get_mapped_range();
+                let mut out = Vec::with_capacity((w * h) as usize);
+                for y in 0..h as usize {
+                    let row: &[half::f16] = bytemuck::cast_slice(&mapped[y * bytes_per_row as usize..][..w as usize * 8]);
+                    for p in row.chunks(4) {
+                        out.push([p[0].to_f32(), p[1].to_f32(), p[2].to_f32()]);
+                    }
+                }
+                out
+            };
+
+            let srgb_to_linear = |e: f32| {
+                if e <= 0.04045 { e / 12.92 } else { ((e + 0.055) / 1.055).powf(2.4) }
+            };
+            let flat = draw_hdr(1.0);
+            let mut worst = 0.0f32;
+            for (i, p) in flat.iter().enumerate() {
+                for c in 0..3 {
+                    // One 8-bit step of the SDR render (its dither), linear.
+                    let e = sdr[i * 4 + c] as f32 / 255.0;
+                    let step = srgb_to_linear((e + 1.5 / 255.0).min(1.0)) - srgb_to_linear((e - 1.5 / 255.0).max(0.0));
+                    worst = worst.max((p[c] - srgb_to_linear(e)).abs() / step.max(1e-4));
+                }
+            }
+            assert!(worst <= 1.0, "headroom 1 differs from the SDR render by {worst:.2} dither steps");
+
+            let bright = draw_hdr(4.0);
+            let (mut untouched, mut lifted) = (0, 0);
+            for (i, (f, b)) in flat.iter().zip(&bright).enumerate() {
+                let peak = f[0].max(f[1]).max(f[2]);
+                if peak < 0.02 {
+                    continue;
+                }
+                let gains = [b[0] / f[0].max(1e-6), b[1] / f[1].max(1e-6), b[2] / f[2].max(1e-6)];
+                let g = b[0].max(b[1]).max(b[2]) / peak;
+                assert!((1.0 - 1e-3..=4.0 + 1e-3).contains(&g), "pixel {i}: gain {g} outside [1, 4]");
+                for (c, gc) in gains.iter().enumerate() {
+                    if f[c] > 0.02 {
+                        assert!((gc - g).abs() < 0.01 * g, "pixel {i}: channel {c} gained {gc}, not {g}: the colour moved");
+                    }
+                }
+                if g < 1.0 + 1e-3 {
+                    untouched += 1;
+                } else if g > 2.0 {
+                    lifted += 1;
+                }
+            }
+            assert!(untouched > 0, "no pixel kept the SDR rendering: the shadows were lifted too");
+            assert!(lifted > 0, "no highlight was brightened past 2×");
         });
     }
 

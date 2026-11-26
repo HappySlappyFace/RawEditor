@@ -1998,6 +1998,7 @@ mod view_tests {
                 size: (400, 300),
                 placement: frame.placement,
                 background: wgpu::Color::BLACK,
+                headroom: 1.0,
             };
             let asked = frame.overview.is_some();
             let out = crate::gpu::render_functions::render_to_target(
