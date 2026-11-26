@@ -17,6 +17,7 @@ cargo clippy --all-targets -- -D warnings   # lint; CI enforces this exactly, so
 tools/coverage.sh [--gpu]      # line coverage (cargo-llvm-cov): target/llvm-cov/html; --gpu adds the ignored GPU suite
 cargo run --release -p raw-editor-probe -- <photo.raw>  # headless session run (import, develop, ticks, export) with timings
 tools/android-probe.sh build | run <photo.raw>       # the same probe cross-compiled for Android, run over adb
+tools/android-app.sh build | install | photo <raw> | run | log   # the Android app (android/ + crates/raw-editor-android)
 ```
 
 Coverage is a map of what no test reaches, not a target: the views and widgets are excluded, shaders never show, and CI doesn't gate on it. Session logic (`crates/raw-editor-session`) is where gaps matter most; test it through `session::testkit`.
@@ -49,6 +50,7 @@ Neither the engine nor the session may depend on iced or any other UI toolkit. `
 - Test fixtures another crate's tests need are `#[cfg(any(test, feature = "test-support"))]`, for example `session::testkit` and `AiSelect::for_test`. The app's dev-dependencies turn the feature on for both crates. `#[cfg(test)]` alone doesn't reach another crate.
 - Shared dependency versions live in the root's `[workspace.dependencies]`. Every direct dependency of any crate needs a Preferences › Licenses credit; `every_direct_dependency_is_credited` checks all three manifests. A crate only the session uses (`lru`, `walkdir`, `trash`, the export encoders) belongs in the session's manifest, not the app's. `fast-jpeg` is forwarded app → session → engine.
 - `default-members` covers every crate, so plain `cargo test`/`clippy` check everything.
+- **Android** (`android/`, Kotlin + Jetpack Compose, and `crates/raw-editor-android`, the `libraweditor.so` it loads; in `members` but not `default-members`, as it only builds for Android). Compose draws the controls over a `SurfaceView`; the Rust side owns the session, the GPU and that surface on ONE render thread, and the JNI calls only post messages to it (`surfaceDestroyed` alone waits, as Android requires). It drains messages in batches (the latest slider value wins; only the newest surface counts: Android replaces a SurfaceView's surface at will) and draws only when something changed, paced by FIFO presentation: `Session::surface_frame` → `render_to_target` → `surface_frame_finished`, run with `session::host::run`. Link for 16 KB pages (`tools/android-app.sh` does). Logs and panics go to logcat (tag `RawEditor`).
 - `crates/raw-editor-probe` is a headless front end for checking a new platform (Android first): it drives a real `Session` through import, Develop, slider ticks and a full-resolution export, confined to its work folder, and prints timings. Not shipped. Session code must keep building for `aarch64-linux-android`: a desktop-only crate goes under a `[target.'cfg(…)'.dependencies]` table (`trash` is one), with a fallback where it's used.
 
 **The session (`session::Session`).** Its methods change state and return `Effects`: labelled boxed futures, like `Task::perform`/`batch` without iced. The app's side works like this:

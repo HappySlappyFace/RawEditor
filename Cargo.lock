@@ -3915,6 +3915,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "raw-editor-android"
+version = "0.9.26"
+dependencies = [
+ "jni",
+ "ndk",
+ "ndk-sys 0.6.0+11769913",
+ "raw-editor-session",
+ "raw-window-handle",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "wgpu",
+]
+
+[[package]]
 name = "raw-editor-core"
 version = "0.9.26"
 dependencies = [
