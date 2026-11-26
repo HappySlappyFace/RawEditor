@@ -51,26 +51,96 @@ pub struct SharedContext {
     pub(crate) readbacks: std::sync::Mutex<Vec<wgpu::Buffer>>,
     /// GPU pass timing for the performance overlay (`profiling` builds).
     pub(crate) timer: super::timing::GpuTimer,
+    /// Kept for front ends that draw straight to a window or phone surface:
+    /// a surface comes from the instance its device was made from, and what
+    /// it supports is the adapter's to say (`SharedContext::create_surface`).
+    pub instance: wgpu::Instance,
+    pub adapter: wgpu::Adapter,
+    /// What `display_pipeline` builds a colour pipeline for another output
+    /// format from, and the ones it has built.
+    color_shader: wgpu::ShaderModule,
+    color_layout: wgpu::PipelineLayout,
+    display_pipelines: std::sync::Mutex<Vec<(wgpu::TextureFormat, Arc<wgpu::RenderPipeline>)>>,
+}
+
+/// Output formats the 8-bit colour pass can draw into directly. Its output
+/// is already display-encoded (the transfer curve is applied in the shader),
+/// so the target must store values as given: unorm, never `*Srgb`, which
+/// would encode them a second time, and never float, which a compositor
+/// reads as linear.
+pub fn is_display_format(format: wgpu::TextureFormat) -> bool {
+    use wgpu::TextureFormat as F;
+    matches!(format, F::Rgba8Unorm | F::Bgra8Unorm | F::Rgb10a2Unorm)
+}
+
+/// Pick a surface format the colour pass can draw into, from what the
+/// surface offers: `(surface format, view format)`. A surface that offers
+/// only `*Srgb` formats is drawn through a non-sRGB view of the same memory,
+/// which its configuration must then list in `view_formats`.
+pub fn pick_surface_format(offered: &[wgpu::TextureFormat]) -> Option<(wgpu::TextureFormat, wgpu::TextureFormat)> {
+    if let Some(&f) = offered.iter().find(|&&f| is_display_format(f)) {
+        return Some((f, f));
+    }
+    offered
+        .iter()
+        .find(|&&f| f.is_srgb() && is_display_format(f.remove_srgb_suffix()))
+        .map(|&f| (f, f.remove_srgb_suffix()))
+}
+
+/// The Pass-2 colour pipeline writing `format` through `entry_point`.
+fn color_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    format: wgpu::TextureFormat,
+    entry_point: &str,
+    label: &str,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(label),
+        layout: Some(layout),
+        vertex: wgpu::VertexState { module: shader, entry_point: "vs_main", buffers: &[] },
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point,
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState::REPLACE),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, ..Default::default() },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview: None,
+    })
 }
 
 impl SharedContext {
     /// Create a new shared GPU context
     /// This should be called once on app startup
     pub async fn new() -> Result<Self, String> {
-        // Request wgpu adapter
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
-            ..Default::default()
-        });
-
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: None,
-                force_fallback_adapter: false,
-            })
-            .await
-            .ok_or("Failed to find suitable GPU adapter")?;
+        // The primary backends (Vulkan, Metal, DX12) first; OpenGL only where
+        // none of them has an adapter. The instance is kept for as long as
+        // the context (surfaces are made from it), and an instance with GL in
+        // it holds an EGL display: wgpu 0.19 tears that down under any other
+        // instance still using it, which panicked contexts dropped in
+        // parallel. An instance without GL never opens one.
+        async fn pick(backends: wgpu::Backends) -> Option<(wgpu::Instance, wgpu::Adapter)> {
+            let instance = wgpu::Instance::new(wgpu::InstanceDescriptor { backends, ..Default::default() });
+            let adapter = instance
+                .request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::HighPerformance,
+                    compatible_surface: None,
+                    force_fallback_adapter: false,
+                })
+                .await?;
+            Some((instance, adapter))
+        }
+        let (instance, adapter) = match pick(wgpu::Backends::PRIMARY).await {
+            Some(found) => found,
+            None => pick(wgpu::Backends::all()).await.ok_or("Failed to find suitable GPU adapter")?,
+        };
 
         // Request device and queue.
         //
@@ -293,60 +363,18 @@ impl SharedContext {
             push_constant_ranges: &[],
         });
 
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Color Render Pipeline (Pass 2)"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &color_shader,
-                entry_point: "vs_main",
-                buffers: &[],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &color_shader,
-                entry_point: "fs_main",
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Rgba8Unorm,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-        });
+        let pipeline = color_pipeline(
+            &device, &pipeline_layout, &color_shader, wgpu::TextureFormat::Rgba8Unorm, "fs_main",
+            "Color Render Pipeline (Pass 2)",
+        );
 
         // Same pipeline as above, targeting Rgba16Float instead of
         // Rgba8Unorm — used only for 16-bit TIFF export. Its own entry
         // point, because the 8-bit one dithers.
-        let pipeline_16 = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Color Render Pipeline 16-bit (Export)"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &color_shader,
-                entry_point: "vs_main",
-                buffers: &[],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &color_shader,
-                entry_point: "fs_main_16",
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Rgba16Float,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-        });
+        let pipeline_16 = color_pipeline(
+            &device, &pipeline_layout, &color_shader, wgpu::TextureFormat::Rgba16Float, "fs_main_16",
+            "Color Render Pipeline 16-bit (Export)",
+        );
 
         // Linear sampler (Filtering — for Pass 2 smooth preview downscaling)
         let sampler_linear = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -377,7 +405,43 @@ impl SharedContext {
             lost,
             readbacks: std::sync::Mutex::new(Vec::new()),
             timer,
+            instance,
+            adapter,
+            color_shader,
+            color_layout: pipeline_layout,
+            display_pipelines: std::sync::Mutex::new(Vec::new()),
         })
+    }
+
+    /// The 8-bit colour pipeline for an output of `format` (one of
+    /// [`is_display_format`]): the context's own for `Rgba8Unorm`, otherwise
+    /// built on first use and kept.
+    pub fn display_pipeline(&self, format: wgpu::TextureFormat) -> Result<Arc<wgpu::RenderPipeline>, String> {
+        if !is_display_format(format) {
+            return Err(format!("the colour pass cannot draw into {format:?}"));
+        }
+        let mut built = self.display_pipelines.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((_, p)) = built.iter().find(|(f, _)| *f == format) {
+            return Ok(p.clone());
+        }
+        let p = Arc::new(color_pipeline(
+            &self.device, &self.color_layout, &self.color_shader, format, "fs_main",
+            "Color Render Pipeline (display surface)",
+        ));
+        built.push((format, p.clone()));
+        Ok(p)
+    }
+
+    /// A surface on `target` (a window, or an Android `ANativeWindow`), made
+    /// from this context's instance so its device can draw into it.
+    ///
+    /// # Safety
+    /// `target`'s handles must stay valid for as long as the surface lives.
+    pub unsafe fn create_surface(
+        &self,
+        target: wgpu::SurfaceTargetUnsafe,
+    ) -> Result<wgpu::Surface<'static>, String> {
+        self.instance.create_surface_unsafe(target).map_err(|e| format!("could not create a surface: {e}"))
     }
 
     /// True once the GPU device has been lost; nothing built on this context
@@ -1694,5 +1758,18 @@ mod tests {
         // Output (0,0) = mean(500, 300, 100, 100) = 250
         assert_eq!(out[0], 250);
         assert_eq!(nw, 2);
+    }
+
+    /// A surface's format is taken as is when the colour pass can write it,
+    /// else through a non-sRGB view of an sRGB one (which would otherwise
+    /// encode the already-encoded output twice); float formats never.
+    #[test]
+    fn surface_formats_avoid_double_encoding() {
+        use super::pick_surface_format;
+        use wgpu::TextureFormat as F;
+        assert_eq!(pick_surface_format(&[F::Bgra8UnormSrgb, F::Bgra8Unorm]), Some((F::Bgra8Unorm, F::Bgra8Unorm)));
+        assert_eq!(pick_surface_format(&[F::Rgba8UnormSrgb]), Some((F::Rgba8UnormSrgb, F::Rgba8Unorm)));
+        assert_eq!(pick_surface_format(&[F::Rgba16Float, F::Rgb10a2Unorm]), Some((F::Rgb10a2Unorm, F::Rgb10a2Unorm)));
+        assert_eq!(pick_surface_format(&[F::Rgba16Float]), None);
     }
 }

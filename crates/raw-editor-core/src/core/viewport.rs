@@ -106,6 +106,44 @@ pub fn visible_view_rect(
     [gu0, gv0, gu1 - gu0, gv1 - gv0]
 }
 
+/// Where a render drawn straight onto a surface goes: the slice of the
+/// displayed image that is visible (`view_rect`, view UV, no overscan) and
+/// the rectangle it covers on the surface, in the surface's pixels. `None`
+/// when no part of the image is on screen.
+///
+/// The read-back path renders an overscanned slice into its own texture and
+/// lets the viewport shader place it; drawing on the surface, the colour
+/// pass places the image itself (through the render pass viewport), so the
+/// slice must be exactly what is visible and the rectangle inside the
+/// surface. Arguments as [`image_rect`], in the surface's own pixels.
+pub fn screen_placement(
+    image_w: u32,
+    image_h: u32,
+    surface_w: f32,
+    surface_h: f32,
+    zoom: f32,
+    offset: cgmath::Vector2<f32>,
+) -> Option<([f32; 4], Rect)> {
+    let ib = image_rect(image_w, image_h, surface_w, surface_h, zoom, offset);
+    if ib.width <= 0.0 || ib.height <= 0.0 {
+        return None;
+    }
+    let x0 = ib.x.max(0.0);
+    let y0 = ib.y.max(0.0);
+    let x1 = (ib.x + ib.width).min(surface_w);
+    let y1 = (ib.y + ib.height).min(surface_h);
+    if x1 <= x0 || y1 <= y0 {
+        return None;
+    }
+    let view_rect = [
+        (x0 - ib.x) / ib.width,
+        (y0 - ib.y) / ib.height,
+        (x1 - x0) / ib.width,
+        (y1 - y0) / ib.height,
+    ];
+    Some((view_rect, Rect { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }))
+}
+
 /// Magnification past which a subsampled develop texture reads as soft, and
 /// the full-resolution rebuild is requested: the screen would draw each of
 /// its source pixels this much larger than one physical pixel. A little
@@ -391,6 +429,44 @@ pub fn overview_dims(display_w: u32, display_h: u32) -> (u32, u32) {
 
 #[cfg(test)]
 mod tests {
+    fn near(a: f32, b: f32) -> bool {
+        (a - b).abs() < 1e-4
+    }
+
+    /// At fit, the whole image is drawn, letterboxed in the middle.
+    #[test]
+    fn screen_placement_letterboxes_the_whole_image_at_fit() {
+        // A 3:2 landscape photo on an upright 1080×2400 phone screen.
+        let (view, r) = screen_placement(6000, 4000, 1080.0, 2400.0, 1.0, cgmath::vec2(0.0, 0.0)).unwrap();
+        assert_eq!(view, [0.0, 0.0, 1.0, 1.0]);
+        assert!(near(r.x, 0.0) && near(r.width, 1080.0));
+        assert!(near(r.height, 720.0) && near(r.y, (2400.0 - 720.0) / 2.0), "{r:?}");
+    }
+
+    /// Zoomed in, only the visible slice is drawn, covering the screen, and
+    /// it is the same slice `visible_view_rect` finds without overscan.
+    #[test]
+    fn screen_placement_draws_only_the_visible_slice() {
+        let offset = cgmath::vec2(0.1, -0.05);
+        let (view, r) = screen_placement(6000, 4000, 1600.0, 1000.0, 3.0, offset).unwrap();
+        assert!(near(r.x, 0.0) && near(r.y, 0.0) && near(r.width, 1600.0) && near(r.height, 1000.0), "{r:?}");
+        let expected = super::visible_view_rect(6000, 4000, 1600.0, 1000.0, 3.0, offset, 1.0);
+        for (a, b) in view.iter().zip(expected) {
+            assert!(near(*a, b), "{view:?} vs {expected:?}");
+        }
+    }
+
+    /// Panned partly off one side, the rectangle stops at the screen's edge
+    /// and the slice at the image's; panned right off, nothing is drawn.
+    #[test]
+    fn screen_placement_clips_at_the_edges() {
+        // Fit is 1500×1000 in 1600×1000; panned right by half its width.
+        let (view, r) = screen_placement(6000, 4000, 1600.0, 1000.0, 1.0, cgmath::vec2(0.5, 0.0)).unwrap();
+        assert!(near(r.x, 800.0) && near(r.width, 800.0), "{r:?}");
+        assert!(near(view[0], 0.0) && near(view[2], 800.0 / 1500.0), "{view:?}");
+        assert!(screen_placement(6000, 4000, 1600.0, 1000.0, 1.0, cgmath::vec2(2.0, 0.0)).is_none());
+    }
+
     use super::*;
 
     fn no_offset() -> cgmath::Vector2<f32> {
