@@ -1214,12 +1214,17 @@ mod tests {
 
         let mut missing = Vec::new();
         for (file, manifest) in manifests {
-            let deps = manifest
-                .split("\n[dependencies]\n")
-                .nth(1)
-                .and_then(|rest| rest.split("\n[").next())
-                .unwrap_or_else(|| panic!("{file} has a [dependencies] table"));
-            for line in deps.lines().map(str::trim) {
+            // `[dependencies]` and any platform's `[target.'cfg(…)'.dependencies]`.
+            let tables: Vec<&str> = manifest
+                .split("\n[")
+                .filter_map(|table| table.split_once("]\n"))
+                .filter(|(header, _)| {
+                    *header == "dependencies" || (header.starts_with("target.") && header.ends_with(".dependencies"))
+                })
+                .map(|(_, body)| body)
+                .collect();
+            assert!(!tables.is_empty(), "{file} has a [dependencies] table");
+            for line in tables.iter().flat_map(|t| t.lines()).map(str::trim) {
                 if line.is_empty() || line.starts_with('#') {
                     continue;
                 }

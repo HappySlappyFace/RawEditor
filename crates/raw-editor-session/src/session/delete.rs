@@ -281,7 +281,19 @@ fn trash_or_missing(path: &str) -> Result<(), String> {
     if !p.exists() {
         return Ok(());
     }
+    move_to_trash(p)
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn move_to_trash(p: &std::path::Path) -> Result<(), String> {
     trash::delete(p).map_err(|e| e.to_string())
+}
+
+/// Mobile systems have no trash folder a file can be moved to, and deleting
+/// outright is not what Delete promises: refuse, and keep the file.
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn move_to_trash(_: &std::path::Path) -> Result<(), String> {
+    Err("this system has no trash to move it to".to_string())
 }
 
 
