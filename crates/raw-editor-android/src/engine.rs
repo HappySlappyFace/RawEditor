@@ -16,9 +16,18 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+/// How often to look for an overview on its way back when nothing else
+/// wakes the thread.
+const OVERVIEW_POLL: Duration = Duration::from_millis(2);
+
+/// JPEG quality for exports: high, as a gallery copy should be (the
+/// desktop's default, 80, is for sharing).
+const EXPORT_QUALITY: u8 = 92;
+
 use raw_editor_session::gpu::render_functions::{render_to_target, DisplayTarget};
-use raw_editor_session::gpu::shared::{pick_surface_format, SharedContext};
-use raw_editor_session::session::{host, AppTab, EditorReadiness, LoadJob, SelectionChange, Session, SessionEvent};
+use raw_editor_session::gpu::shared::{pick_surface_format, SharedContext, HDR_FORMAT};
+use raw_editor_session::core::output_space::OutputSpace;
+use raw_editor_session::session::{host, AppTab, EditorReadiness, ExportFormat, ExportJobState, LoadJob, SelectionChange, Session, SessionEvent};
 use raw_editor_session::{Changed, Effects};
 
 pub enum Command {
@@ -26,12 +35,23 @@ pub enum Command {
     Surface(ndk::native_window::NativeWindow, u32, u32),
     /// The surface is going; answer once it is dropped.
     SurfaceGone(Sender<()>),
-    Exposure(f32),
+    /// Control `.0` (`controls::CONTROLS`) moved to `.1`.
+    Edit(usize, f32),
+    /// A gesture ended: an undo step, saved.
+    Commit,
     /// A pinch or drag: scale the zoom about `at`, then move by `pan`
     /// (surface pixels).
     View { scale: f32, at: [f32; 2], pan: [f32; 2] },
     /// A double tap at a point: back to fit, or in to 3× about it.
     ToggleZoom([f32; 2]),
+    /// Save the open photo, as edited, as a full-size JPEG
+    /// ([`Engine::take_export`] hears how it went).
+    Export,
+    /// Draw in HDR when the surface can (`shared::HDR_FORMAT`), or not.
+    Hdr(bool),
+    /// How far above SDR white the display can go right now (Android's
+    /// HDR/SDR ratio); HDR frames are drawn for it.
+    Headroom(f32),
     /// A piece of the session's background work finished.
     Event(Box<SessionEvent>),
     /// Save and stop.
@@ -86,11 +106,39 @@ impl Engine {
         self.stats.lock().unwrap_or_else(|e| e.into_inner()).summary()
     }
 
-    /// How many photos have opened, and the last one's saved exposure: the
-    /// UI sets its slider from it when the count moves.
-    pub fn opened(&self) -> (u32, f32) {
+    /// How many photos have opened, and the last one's values for every
+    /// control: the UI sets its sliders from them when the count moves.
+    pub fn opened(&self) -> (u32, Vec<f32>) {
         let stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
-        (stats.opened, stats.exposure)
+        (stats.opened, stats.values.clone())
+    }
+
+    /// Moves whenever the histogram does.
+    pub fn histogram_version(&self) -> u32 {
+        self.stats.lock().unwrap_or_else(|e| e.into_inner()).histogram_version
+    }
+
+    /// The histogram: red, green, blue, 256 counts each, then the count to
+    /// scale them to (empty before the first frame).
+    pub fn histogram(&self) -> Vec<u32> {
+        self.stats.lock().unwrap_or_else(|e| e.into_inner()).histogram.clone()
+    }
+
+    /// True while the surface is drawn in HDR.
+    pub fn hdr_active(&self) -> bool {
+        self.stats.lock().unwrap_or_else(|e| e.into_inner()).hdr_active
+    }
+
+    /// The next finished export, once: the JPEG's path, or why there is
+    /// none. Kotlin copies the file into the gallery, then deletes it.
+    pub fn take_export(&self) -> Option<Result<PathBuf, String>> {
+        self.stats.lock().unwrap_or_else(|e| e.into_inner()).exports.pop_front()
+    }
+
+    /// How control `index` reads at `value` for the open photo.
+    pub fn show(&self, index: usize, value: f32) -> String {
+        let as_shot = self.stats.lock().unwrap_or_else(|e| e.into_inner()).as_shot;
+        crate::controls::CONTROLS.get(index).map(|c| (c.show)(value, as_shot)).unwrap_or_default()
     }
 }
 
@@ -111,7 +159,18 @@ impl Drop for Engine {
 pub struct Stats {
     status: String,
     opened: u32,
-    exposure: f32,
+    values: Vec<f32>,
+    /// The open photo's as-shot white balance (kelvin, tint).
+    as_shot: (f32, f32),
+    /// Red, green, blue: 256 counts each, then the count to scale to
+    /// (`core::histogram::display_peak`).
+    histogram: Vec<u32>,
+    /// Moves whenever `histogram` does.
+    histogram_version: u32,
+    /// Finished exports not yet collected.
+    exports: VecDeque<Result<PathBuf, String>>,
+    /// The surface is drawn in HDR.
+    hdr_active: bool,
     /// Recent frames: (work on the render thread, interval since the previous present).
     frames: VecDeque<(f32, Option<f32>)>,
     last_present: Option<Instant>,
@@ -162,6 +221,17 @@ impl Stats {
     }
 }
 
+/// theme::DARK's canvas: display-encoded for an SDR surface, linear for HDR.
+fn background(format: wgpu::TextureFormat) -> wgpu::Color {
+    if format == HDR_FORMAT {
+        // 0.04 sRGB-encoded, decoded.
+        let l = 0.04 / 12.92;
+        wgpu::Color { r: l, g: l, b: (0.043f64 / 12.92), a: 1.0 }
+    } else {
+        wgpu::Color { r: 0.04, g: 0.04, b: 0.043, a: 1.0 }
+    }
+}
+
 /// Only the newest surface in a batch counts. Android replaces a
 /// SurfaceView's surface whenever it likes, and while the thread was busy
 /// (opening a photo) several changes can queue up; attaching to one already
@@ -182,6 +252,17 @@ struct Live {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     view_format: wgpu::TextureFormat,
+    /// What the surface offers, for switching between SDR and HDR.
+    formats: Vec<wgpu::TextureFormat>,
+}
+
+/// The surface format to draw in: HDR when wanted and offered, else an SDR
+/// one the colour pass can draw (`(surface format, view format)`).
+fn choose_format(offered: &[wgpu::TextureFormat], hdr: bool) -> Option<(wgpu::TextureFormat, wgpu::TextureFormat)> {
+    if hdr && offered.contains(&HDR_FORMAT) {
+        return Some((HDR_FORMAT, HDR_FORMAT));
+    }
+    pick_surface_format(offered)
 }
 
 /// A photo on its way to the screen.
@@ -204,6 +285,12 @@ struct RenderThread {
     /// The session's background loads already running.
     started: HashSet<LoadJob>,
     opening: Option<Opening>,
+    /// An export is running (the session's `is_exporting`, as last seen).
+    exporting: bool,
+    /// HDR is wanted (the UI's switch).
+    hdr: bool,
+    /// The display's current HDR/SDR ratio.
+    headroom: f32,
 }
 
 impl RenderThread {
@@ -216,7 +303,9 @@ impl RenderThread {
         session.gpu_context = Some(context.clone());
         // This thread draws on vsync: the session must not render on its own.
         session.surface_drawn = true;
-        Ok(Self { rt, session, context, files, live: None, stats, results, started: HashSet::new(), opening: None })
+        // No detail loupe here: it would render on every edit for nothing.
+        let _none = session.set_loupe_panel_open(false);
+        Ok(Self { rt, session, context, files, live: None, stats, results, started: HashSet::new(), opening: None, exporting: false, hdr: false, headroom: 1.0 })
     }
 
     fn status(&self, text: impl Into<String>) {
@@ -230,9 +319,18 @@ impl RenderThread {
             // waiting: the latest slider value is the only one that counts.
             let mut batch = Vec::new();
             if !(dirty && self.can_draw()) {
-                match rx.recv() {
+                // While an overview is on its way back, look again shortly
+                // even if nothing else happens: the last frame of a drag
+                // still owes the histogram.
+                let next = if self.session.surface_overview_pending() {
+                    rx.recv_timeout(OVERVIEW_POLL)
+                } else {
+                    rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected)
+                };
+                match next {
                     Ok(c) => batch.push(c),
-                    Err(_) => break,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 }
             }
             batch.extend(rx.try_iter());
@@ -243,10 +341,22 @@ impl RenderThread {
                     command => dirty |= self.apply(command)?,
                 }
             }
+            let fx = self.session.surface_overview_poll();
+            self.spawn(fx);
             self.start_loads();
             self.check_opened();
-            // Nothing else here draws from what `changed` signals.
-            dirty |= self.session.changed.take().contains(Changed::FRAME);
+            self.check_export();
+            let changed = self.session.changed.take();
+            dirty |= changed.contains(Changed::FRAME);
+            if changed.contains(Changed::HISTOGRAM) {
+                let data = self.session.histogram_data.borrow();
+                let mut histogram: Vec<u32> = data.iter().flatten().copied().collect();
+                histogram.push(raw_editor_session::core::histogram::display_peak(&data));
+                drop(data);
+                let mut stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
+                stats.histogram = histogram;
+                stats.histogram_version = stats.histogram_version.wrapping_add(1);
+            }
             self.session.camera_preview = None;
             if quit {
                 break;
@@ -256,7 +366,10 @@ impl RenderThread {
                 dirty = false;
             }
         }
-        // Leaving: save the edit and the edited proxy.
+        // Leaving: save the edit and the edited proxy (from the last frame's
+        // overview, if it is still on its way).
+        let fx = self.session.surface_overview_wait();
+        host::run(&mut self.session, &self.rt, fx, |_, _| {})?;
         self.session.flush_edits();
         let fx = self.session.set_tab(AppTab::Library);
         host::run(&mut self.session, &self.rt, fx, |_, _| {})?;
@@ -289,10 +402,18 @@ impl RenderThread {
                 let _ = ack.send(());
                 Ok(false)
             }
-            Command::Exposure(ev) => {
-                self.session.current_edit_params.exposure = ev;
-                self.session.mark_edits_dirty();
-                Ok(true)
+            Command::Edit(index, value) => {
+                if let Some(control) = crate::controls::CONTROLS.get(index) {
+                    let value = value.clamp(control.min, control.max);
+                    let fx = self.session.edit(|p| (control.set)(p, value));
+                    self.spawn(fx);
+                }
+                Ok(false)
+            }
+            Command::Commit => {
+                let fx = self.session.commit_edit();
+                self.spawn(fx);
+                Ok(false)
             }
             Command::View { scale, at, pan } => {
                 self.session.transform_view(scale, at, pan);
@@ -302,6 +423,23 @@ impl RenderThread {
                 let scale = if self.session.zoom > 1.01 { 1.0 / self.session.zoom } else { 3.0 };
                 self.session.transform_view(scale, at, [0.0, 0.0]);
                 Ok(false)
+            }
+            Command::Export => {
+                self.export();
+                Ok(false)
+            }
+            Command::Hdr(on) => {
+                self.hdr = on;
+                Ok(self.reconfigure())
+            }
+            Command::Headroom(h) => {
+                let h = if h.is_finite() { h.max(1.0) } else { 1.0 };
+                let changed = (h - self.headroom).abs() > 1e-3;
+                if (h - self.headroom).abs() > 0.05 {
+                    tracing::info!("HDR headroom {h:.2}");
+                }
+                self.headroom = h;
+                Ok(changed && self.view_format() == Some(HDR_FORMAT))
             }
             Command::Event(event) => {
                 let import_done = matches!(*event, SessionEvent::ImportComplete(_));
@@ -398,6 +536,67 @@ impl RenderThread {
         self.opening = Some(Opening::Loading { id, name, since });
     }
 
+    /// Export the open photo through the session's own export (as the
+    /// desktop's, one image): full size, sRGB (Ultra HDR while HDR is on),
+    /// into the app's private
+    /// `exports` folder, from where Kotlin moves it into the gallery.
+    fn export(&mut self) {
+        if self.exporting {
+            return;
+        }
+        if !matches!(self.session.editor_readiness, EditorReadiness::Ready(_)) {
+            self.finish_export(Err("Open a photo first".into()));
+            return;
+        }
+        let settings = &mut self.session.export_settings;
+        settings.format = ExportFormat::Jpeg;
+        settings.color_space = OutputSpace::Srgb;
+        settings.quality = EXPORT_QUALITY;
+        settings.resize = false;
+        settings.base_path = self.files.join("exports");
+        settings.subfolder = String::new();
+        // With HDR on, the file carries what the screen shows: Ultra HDR,
+        // which looks as before wherever there is no HDR.
+        settings.ultra_hdr = self.hdr;
+        match self.session.start_export() {
+            Some(fx) if self.session.is_exporting => {
+                self.exporting = true;
+                self.status("Exporting…");
+                self.spawn(fx);
+            }
+            _ => {
+                let why = self.session.status.clone();
+                self.finish_export(Err(why));
+            }
+        }
+    }
+
+    /// The export ended: hand the result to Kotlin.
+    fn check_export(&mut self) {
+        if !self.exporting || self.session.is_exporting {
+            return;
+        }
+        self.exporting = false;
+        let result = match self.session.export_jobs.first().map(|j| &j.state) {
+            Some(ExportJobState::Done(path)) => Ok(path.clone()),
+            Some(ExportJobState::Failed(e)) => Err(e.clone()),
+            _ => Err(self.session.status.clone()),
+        };
+        self.finish_export(result);
+    }
+
+    fn finish_export(&mut self, result: Result<PathBuf, String>) {
+        match &result {
+            Ok(path) => tracing::info!("exported {}", path.display()),
+            Err(e) => tracing::error!("export failed: {e}"),
+        }
+        self.status(match &result {
+            Ok(_) => "Exported".to_string(),
+            Err(e) => format!("Error: export failed: {e}"),
+        });
+        self.stats.lock().unwrap_or_else(|e| e.into_inner()).exports.push_back(result);
+    }
+
     /// The selected photo is ready (or failed): say so, and hand its saved
     /// exposure to the UI's slider.
     fn check_opened(&mut self) {
@@ -408,13 +607,35 @@ impl RenderThread {
                 tracing::info!("opened {name} in {ms} ms");
                 let mut stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
                 stats.status = format!("{name}, opened in {ms} ms");
-                stats.exposure = self.session.current_edit_params.exposure;
+                stats.values = crate::controls::values(&self.session.current_edit_params);
+                stats.as_shot = self.session.as_shot_wb.unwrap_or((5000.0, 0.0));
                 stats.opened += 1;
             }
             EditorReadiness::Failed(f, e) if f == id => self.status(format!("Error: {name} did not load: {e}")),
             _ => return,
         }
         self.opening = None;
+    }
+
+    fn view_format(&self) -> Option<wgpu::TextureFormat> {
+        self.live.as_ref().map(|l| l.view_format)
+    }
+
+    /// Switch the live surface between SDR and HDR after the switch moved;
+    /// true when it changed (and needs a frame).
+    fn reconfigure(&mut self) -> bool {
+        let Some(live) = &mut self.live else { return false };
+        let Some((format, view_format)) = choose_format(&live.formats, self.hdr) else { return false };
+        if format == live.config.format && view_format == live.view_format {
+            return false;
+        }
+        live.config.format = format;
+        live.config.view_formats = if view_format != format { vec![view_format] } else { vec![] };
+        live.view_format = view_format;
+        live.surface.configure(&self.context.device, &live.config);
+        tracing::info!("surface now {format:?} drawn as {view_format:?}");
+        self.stats.lock().unwrap_or_else(|e| e.into_inner()).hdr_active = view_format == HDR_FORMAT;
+        true
     }
 
     fn attach(&mut self, window: ndk::native_window::NativeWindow, width: u32, height: u32) -> Result<(), String> {
@@ -442,8 +663,10 @@ impl RenderThread {
         // in `Live` alongside the surface, which is dropped first.
         let surface = unsafe { self.context.create_surface(target)? };
         let caps = surface.get_capabilities(&self.context.adapter);
-        let (format, view_format) =
-            pick_surface_format(&caps.formats).ok_or_else(|| format!("no usable surface format in {:?}", caps.formats))?;
+        // Rgba16Float here is Android's HDR surface (extended linear sRGB).
+        tracing::info!("surface formats offered: {:?}", caps.formats);
+        let (format, view_format) = choose_format(&caps.formats, self.hdr)
+            .ok_or_else(|| format!("no usable surface format in {:?}", caps.formats))?;
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
@@ -460,7 +683,8 @@ impl RenderThread {
         tracing::info!("surface {width}×{height}, {format:?} drawn as {view_format:?}");
         self.session.viewport_size = (width as f32, height as f32);
         self.session.scale_factor = 1.0;
-        self.live = Some(Live { _window: window, surface, config, view_format });
+        self.stats.lock().unwrap_or_else(|e| e.into_inner()).hdr_active = view_format == HDR_FORMAT;
+        self.live = Some(Live { _window: window, surface, config, view_format, formats: caps.formats });
         Ok(())
     }
 
@@ -490,18 +714,18 @@ impl RenderThread {
             format: live.view_format,
             size: (w, h),
             placement: frame.placement,
-            // theme::DARK's canvas, display-encoded.
-            background: wgpu::Color { r: 0.04, g: 0.04, b: 0.043, a: 1.0 },
+            background: background(live.view_format),
+            headroom: self.headroom,
         };
-        let out = self.rt.block_on(render_to_target(
+        let out = render_to_target(
             &frame.context,
             &frame.display,
-            &frame.overview,
+            frame.overview.as_deref(),
             target,
             frame.overview_dims,
             Default::default(),
             move || texture.present(),
-        ))?;
+        )?;
         let fx = self.session.surface_frame_finished(&frame, out);
         self.stats.lock().unwrap_or_else(|e| e.into_inner()).frame(t.elapsed().as_secs_f32() * 1000.0);
         self.spawn(fx);

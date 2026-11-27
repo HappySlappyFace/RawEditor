@@ -60,6 +60,10 @@ pub struct ExportSettings {
     pub max_width_text: String,
     pub subfolder: String,
     pub base_path: std::path::PathBuf,
+    /// JPEG only: write Ultra HDR (`session::ultra_hdr`), the SDR image
+    /// plus a gain map for `core::hdr::EXPORT_HEADROOM`. Viewers without
+    /// HDR show the SDR image as before.
+    pub ultra_hdr: bool,
 }
 
 impl ExportSettings {
@@ -88,6 +92,7 @@ impl Default for ExportSettings {
             max_width_text: "2048".to_string(),
             subfolder: "Export".to_string(),
             base_path: dirs::picture_dir().unwrap_or_else(|| std::path::PathBuf::from(".")),
+            ultra_hdr: false,
         }
     }
 }
@@ -565,7 +570,23 @@ impl Session {
                                 crate::gpu::params::FULL_VIEW_RECT,
                             )
                             .await?;
-                            ExportPixels::Rgba8(box_reduce(&bytes, render_w, render_h, factor))
+                            let sdr = box_reduce(&bytes, render_w, render_h, factor);
+                            drop(bytes);
+                            if settings.ultra_hdr && settings.format == ExportFormat::Jpeg {
+                                let scale = super::ultra_hdr::GAIN_MAP_SCALE;
+                                let (gw, gh) = (target_width.div_ceil(scale), target_height.div_ceil(scale));
+                                let gain = crate::gpu::render_functions::render_gain_map(
+                                    &context,
+                                    &resources,
+                                    gw,
+                                    gh,
+                                    crate::core::hdr::EXPORT_HEADROOM,
+                                )
+                                .await?;
+                                ExportPixels::UltraHdr { sdr, gain, gain_dims: (gw, gh) }
+                            } else {
+                                ExportPixels::Rgba8(sdr)
+                            }
                         };
                         save_export_async(filename, source, pixels, target_width, target_height, settings)
                             .await
@@ -732,6 +753,9 @@ enum ExportPixels {
     /// (96 MB at 24 MP) alive alongside the mapped readback buffer.
     Rgba8(Vec<u8>),
     Rgb16(Vec<u16>),
+    /// An Ultra HDR JPEG's two images: the SDR one (RGBA) and its gain map
+    /// (one byte a pixel, `gain_dims`).
+    UltraHdr { sdr: Vec<u8>, gain: Vec<u8>, gain_dims: (u32, u32) },
 }
 
 /// TIFF tag 34675, InterColorProfile.
@@ -769,7 +793,7 @@ async fn save_export_async(
         // A failed GPU readback hands back an empty buffer. Catch it before a
         // file exists, rather than leaving an empty or truncated image on disk.
         let (got, want) = match &pixels {
-            ExportPixels::Rgba8(b) => (b.len(), width as usize * height as usize * 4),
+            ExportPixels::Rgba8(b) | ExportPixels::UltraHdr { sdr: b, .. } => (b.len(), width as usize * height as usize * 4),
             ExportPixels::Rgb16(s) => (s.len(), width as usize * height as usize * 3),
         };
         if got != want {
@@ -829,6 +853,42 @@ async fn save_export_async(
                     encoder
                         .encode(&bytes, width as u16, height as u16, jpeg_encoder::ColorType::Rgba)
                         .map_err(|e| e.to_string())?;
+                }
+                (ExportFormat::Jpeg, ExportPixels::UltraHdr { sdr, gain, gain_dims: (gw, gh) }) => {
+                    if gain.len() != gw as usize * gh as usize {
+                        return Err("the gain map came back the wrong size".into());
+                    }
+                    let mut gain_map = Vec::new();
+                    let mut encoder = jpeg_encoder::Encoder::new(&mut gain_map, super::ultra_hdr::GAIN_MAP_QUALITY);
+                    encoder
+                        .add_app_segment(1, &super::ultra_hdr::gain_map_xmp(crate::core::hdr::EXPORT_HEADROOM))
+                        .map_err(|e| e.to_string())?;
+                    encoder
+                        .encode(&gain, gw as u16, gh as u16, jpeg_encoder::ColorType::Luma)
+                        .map_err(|e| e.to_string())?;
+
+                    // The primary: the plain export's segments plus the
+                    // container XMP; MPF is added once its size is known.
+                    let mut primary = Vec::new();
+                    let mut encoder = jpeg_encoder::Encoder::new(&mut primary, settings.quality);
+                    let color_space = settings.color_space.exif_color_space();
+                    if let Some(app1) =
+                        source.as_deref().and_then(|p| crate::raw::exif::export_app1(p, color_space))
+                    {
+                        if let Err(e) = encoder.add_app_segment(1, &app1) {
+                            tracing::warn!("Exporting without EXIF: {e}");
+                        }
+                    }
+                    encoder
+                        .add_app_segment(1, &super::ultra_hdr::primary_xmp(gain_map.len()))
+                        .map_err(|e| e.to_string())?;
+                    encoder.add_icc_profile(&icc).map_err(|e| e.to_string())?;
+                    encoder
+                        .encode(&sdr, width as u16, height as u16, jpeg_encoder::ColorType::Rgba)
+                        .map_err(|e| e.to_string())?;
+                    drop(sdr);
+                    let file = super::ultra_hdr::assemble(&primary, &gain_map)?;
+                    writer.write_all(&file).map_err(|e| e.to_string())?;
                 }
                 (ExportFormat::Tiff, ExportPixels::Rgb16(samples)) => {
                     let mut tiff = tiff::encoder::TiffEncoder::new(&mut writer).map_err(|e| e.to_string())?;

@@ -112,10 +112,13 @@ pub struct GpuEditParams {
     pub forward_matrix_2: [f32; 3],
     _padding5: f32,
     /// See `src_offset`. Occupies the vestigial Phase-25 `zoom`/`pan_x`
-    /// slots (the viewport shader's projection owns zoom and pan); `pan_y`
-    /// is still dead and only holds later offsets in place.
+    /// slots (the viewport shader's projection owns zoom and pan).
     pub src_scale: [f32; 2],
-    pub pan_y: f32,
+    /// How far above SDR white the display can go (`core::hdr`); read only
+    /// by the HDR entry point, `fs_main_hdr`. 1 everywhere else. Set per
+    /// frame by `render_functions::render_to_target` with a targeted write,
+    /// like `view_rect`. The vestigial Phase-25 `pan_y` slot — no offset moved.
+    pub hdr_headroom: f32,
     pub cfa_pattern: u32,
     /// Sub-region of the displayed image this render covers, as
     /// `(u0, v0, du, dv)` in VIEW UV — 0..1 across the post-crop image.
@@ -260,7 +263,7 @@ impl From<&EditParams> for GpuEditParams {
             forward_matrix_2: [0.0, 0.0, 1.0],
             _padding5: 0.0,
             src_scale: [1.0, 1.0],
-            pan_y: 0.0,
+            hdr_headroom: 1.0,
             cfa_pattern: 0,
             // Whole image by default; the windowed render path overwrites just
             // these 16 bytes per pass (see render_functions).
@@ -415,7 +418,7 @@ mod tests {
         assert_eq!(std::mem::offset_of!(GpuEditParams, src_offset), 40);
         assert_eq!(std::mem::offset_of!(GpuEditParams, wb_multipliers), 48);
         assert_eq!(std::mem::offset_of!(GpuEditParams, src_scale), 112);
-        assert_eq!(std::mem::offset_of!(GpuEditParams, pan_y), 120);
+        assert_eq!(std::mem::offset_of!(GpuEditParams, hdr_headroom), 120);
         assert_eq!(std::mem::offset_of!(GpuEditParams, cfa_pattern), 124);
     }
 

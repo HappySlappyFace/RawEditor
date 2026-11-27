@@ -25,6 +25,14 @@ fn write_view_rect(context: &SharedContext, resources: &ImageResources, view_rec
     );
 }
 
+/// The display's HDR headroom for the next frames (`core::hdr`; only
+/// `fs_main_hdr` reads it). A 4-byte targeted write like `write_view_rect`,
+/// after `update_uniforms`' whole-struct one, which resets it to 1.
+fn write_hdr_headroom(context: &SharedContext, resources: &ImageResources, headroom: f32) {
+    const OFFSET: u64 = std::mem::offset_of!(super::params::GpuEditParams, hdr_headroom) as u64;
+    context.queue.write_buffer(&resources.uniform_buffer, OFFSET, bytemuck::bytes_of(&headroom.max(1.0)));
+}
+
 /// What the user sees when `map_async` fails (device lost, out of memory):
 /// not "wrong data size" from an encoder fed an empty buffer.
 const READBACK_FAILED: &str = "the GPU readback failed (the graphics device may have been reset)";
@@ -199,6 +207,20 @@ fn encode_color_pass_with<'c>(
     detail: &mut Detail,
     marks: Option<(&FrameTimer, u32)>,
 ) -> (wgpu::CommandBuffer, Readback<'c>) {
+    encode_color_pass_through(context, &context.pipeline, bindings, width, height, detail, marks)
+}
+
+/// [`encode_color_pass_with`] through another `Rgba8Unorm` colour pipeline
+/// (the gain map's).
+fn encode_color_pass_through<'c>(
+    context: &'c SharedContext,
+    pipeline: &wgpu::RenderPipeline,
+    bindings: &super::shared::ColorBindings,
+    width: u32,
+    height: u32,
+    detail: &mut Detail,
+    marks: Option<(&FrameTimer, u32)>,
+) -> (wgpu::CommandBuffer, Readback<'c>) {
     let t = Timer::start();
     let output_texture = context.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("Output Texture"),
@@ -237,7 +259,7 @@ fn encode_color_pass_with<'c>(
             timestamp_writes: None,
             occlusion_query_set: None,
         });
-        render_pass.set_pipeline(&context.pipeline);
+        render_pass.set_pipeline(pipeline);
         render_pass.set_bind_group(0, &bindings.main, &[]);
         render_pass.set_bind_group(1, &bindings.masks, &[]);
         render_pass.set_bind_group(2, &bindings.presence, &[]);
@@ -340,6 +362,36 @@ pub async fn render_to_vec(
     } else {
         Err(READBACK_FAILED.into())
     }
+}
+
+/// An Ultra HDR export's gain map for the whole (cropped) image at
+/// `width`×`height`, one byte per pixel: `core::hdr::encode_gain` of the
+/// gain an HDR display of `headroom` shows it with (`fs_main_gain`).
+pub async fn render_gain_map(
+    context: &SharedContext,
+    resources: &ImageResources,
+    width: u32,
+    height: u32,
+    headroom: f32,
+) -> Result<Vec<u8>, String> {
+    write_view_rect(context, resources, super::params::FULL_VIEW_RECT);
+    write_hdr_headroom(context, resources, headroom);
+    let bindings = resources.prepare_stages(context, &mut Detail::default());
+    let (cb, readback) = encode_color_pass_through(
+        context, context.gain_pipeline(), &bindings, width, height, &mut Detail::default(), None,
+    );
+    context.queue.submit(Some(cb));
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    readback.slice().map_async(wgpu::MapMode::Read, move |res| {
+        let _ = tx.send(res);
+    });
+    tokio::task::block_in_place(|| {
+        context.device.poll(wgpu::Maintain::Wait);
+    });
+    if !matches!(rx.await, Ok(Ok(()))) {
+        return Err(READBACK_FAILED.into());
+    }
+    Ok(readback.unpad().iter().step_by(4).copied().collect())
 }
 
 /// Test-only now: the app renders through `render_display_and_overview`
@@ -526,120 +578,194 @@ pub struct DisplayTarget<'a> {
     pub placement: Option<([f32; 4], crate::core::viewport::Rect)>,
     /// What shows around the image.
     pub background: wgpu::Color,
+    /// How far above SDR white the display may go (`core::hdr`): read only
+    /// when `format` is `shared::HDR_FORMAT`. 1 for SDR.
+    pub headroom: f32,
+}
+
+/// What [`render_to_target`] leaves behind: the CPU's share of the frame,
+/// and the overview, if this frame asked for one, still on the GPU.
+pub struct SurfaceRender {
+    pub overview: Option<PendingOverview>,
+    pub encode_ms: f32,
+    /// The profiler's CPU breakdown (`profiling` builds; empty otherwise).
+    /// GPU pass times are not measured here: reading them back would wait
+    /// for the GPU, which is what this path avoids.
+    pub detail: Detail,
+}
+
+/// The overview (histogram, edited proxy) a surface frame rendered, on its
+/// way back from the GPU. Collect it a frame or so later with
+/// [`PendingOverview::try_read`], which never waits; dropping it abandons it.
+/// Read once: after `try_read` has returned `Some`, it is spent.
+pub struct PendingOverview {
+    /// `Some` until read.
+    buffer: Option<wgpu::Buffer>,
+    len: u64,
+    bytes_per_row: u32,
+    width: u32,
+    height: u32,
+    mapped: std::sync::mpsc::Receiver<Result<(), wgpu::BufferAsyncError>>,
+}
+
+/// A read-back overview: the pixels (RGBA) and their histogram.
+pub struct Overview {
+    pub pixels: std::sync::Arc<[u8]>,
+    pub histogram: crate::core::histogram::HistogramData,
+}
+
+impl PendingOverview {
+    /// Ask for `readback`'s buffer to be mapped, once the work copying into
+    /// it (already submitted) is done.
+    fn start(mut readback: Readback<'_>) -> Self {
+        let buffer = readback.buffer.take().expect("a live readback has its buffer");
+        let (tx, mapped) = std::sync::mpsc::channel();
+        buffer.slice(..readback.len).map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        Self {
+            buffer: Some(buffer),
+            len: readback.len,
+            bytes_per_row: readback.bytes_per_row,
+            width: readback.width,
+            height: readback.height,
+            mapped,
+        }
+    }
+
+    /// The overview if the GPU has finished it, without waiting; `None`
+    /// while it hasn't, to try again later.
+    pub fn try_read(&mut self, context: &SharedContext) -> Option<Result<Overview, String>> {
+        context.device.poll(wgpu::Maintain::Poll);
+        match self.mapped.try_recv() {
+            Ok(mapped) => Some(self.read(context, mapped)),
+            Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(Err("the overview's readback was dropped".into())),
+        }
+    }
+
+    /// Wait for the overview: for tests, probes, and a front end leaving.
+    pub fn wait(mut self, context: &SharedContext) -> Result<Overview, String> {
+        context.device.poll(wgpu::Maintain::Wait);
+        match self.mapped.recv() {
+            Ok(mapped) => self.read(context, mapped),
+            Err(_) => Err("the overview's readback was dropped".into()),
+        }
+    }
+
+    fn read(&mut self, context: &SharedContext, mapped: Result<(), wgpu::BufferAsyncError>) -> Result<Overview, String> {
+        mapped.map_err(|e| format!("reading the overview back: {e}"))?;
+        if self.buffer.is_none() {
+            return Err("the overview was already read".into());
+        }
+        // Back into a pooled readback, which unpads it and returns the
+        // buffer to the pool.
+        let readback = Readback {
+            pool: &context.readbacks,
+            buffer: self.buffer.take(),
+            len: self.len,
+            done: false,
+            bytes_per_row: self.bytes_per_row,
+            width: self.width,
+            height: self.height,
+        };
+        let pixels = readback.unpad_shared();
+        let histogram = crate::core::histogram::calculate(&pixels);
+        Ok(Overview { pixels, histogram })
+    }
 }
 
 /// [`render_display_and_overview`] for a front end that draws straight to
-/// the screen: the display pass goes into `target` (no readback), and only
-/// the small whole-image overview is read back, for the histogram and the
-/// edited proxy. `present` runs once the work is submitted — the surface
-/// texture can be presented then — before the wait for the overview.
+/// the screen: the display pass goes into `target` (no readback), and
+/// nothing waits for the GPU. `present` runs once the work is submitted.
 ///
-/// The returned `display` is empty.
+/// The overview (whole image, `overview_dims`, from `overview_resources`)
+/// is rendered only when asked for, and comes back as a
+/// [`PendingOverview`] for a later frame to collect: the histogram and the
+/// edited proxy run a frame behind, which nobody can see, and the frame
+/// costs the CPU only its own work. A front end keeps one in flight at a
+/// time (`None` while one is).
 #[allow(clippy::too_many_arguments)]
-pub async fn render_to_target(
+pub fn render_to_target(
     context: &SharedContext,
     resources: &ImageResources,
-    overview_resources: &ImageResources,
+    overview_resources: Option<&ImageResources>,
     target: DisplayTarget<'_>,
     overview_dims: (u32, u32),
     mut detail: Detail,
     present: impl FnOnce(),
-) -> Result<DisplayRender, String> {
+) -> Result<SurfaceRender, String> {
     let pipeline = context.display_pipeline(target.format)?;
-    // Everything up to the wait is in this block: the GPU timer holds a lock
-    // in `profiling` builds, which must not be held across an await.
-    let (overview_rb, orx, encode_ms, t_render_start) = {
-        let gpu = context.timer.frame();
-        gpu.mark_now(context, 0);
-        let t_encode = std::time::Instant::now();
+    let t_encode = std::time::Instant::now();
+    let overview = overview_resources.map(|overview_resources| {
         write_view_rect(context, overview_resources, super::params::FULL_VIEW_RECT);
         let (overview_cb, overview_rb) = encode_color_pass(
-            context, overview_resources, overview_dims.0, overview_dims.1, &mut detail, Some((&gpu, 1)),
+            context,
+            overview_resources,
+            overview_dims.0,
+            overview_dims.1,
+            &mut detail,
+            None,
         );
-        let mut encode_ms = t_encode.elapsed().as_secs_f32() * 1000.0;
         let t = Timer::start();
         context.queue.submit(Some(overview_cb));
         detail.stop(Span::Submit, t);
-        if let Some((view_rect, _)) = target.placement {
-            write_view_rect(context, resources, view_rect);
-        }
-        gpu.mark_now(context, 3);
+        overview_rb
+    });
+    if let Some((view_rect, _)) = target.placement {
+        write_view_rect(context, resources, view_rect);
+    }
+    if target.format == super::shared::HDR_FORMAT {
+        write_hdr_headroom(context, resources, target.headroom);
+    }
 
-        let t_encode_b = std::time::Instant::now();
-        let bindings = resources.prepare_stages(context, &mut detail);
-        let t = Timer::start();
-        let mut encoder = context
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("Display Encoder") });
-        gpu.mark(&mut encoder, 4);
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Display Pass (surface)"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: target.view,
-                    resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(target.background), store: wgpu::StoreOp::Store },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            if let Some((_, rect)) = target.placement {
-                // Inside the target, as wgpu requires; `screen_placement`
-                // already clips, this only guards rounding.
-                let (w, h) = (target.size.0 as f32, target.size.1 as f32);
-                let x = rect.x.clamp(0.0, w);
-                let y = rect.y.clamp(0.0, h);
-                let rw = rect.width.min(w - x);
-                let rh = rect.height.min(h - y);
-                if rw > 0.0 && rh > 0.0 {
-                    pass.set_viewport(x, y, rw, rh, 0.0, 1.0);
-                    pass.set_pipeline(&pipeline);
-                    pass.set_bind_group(0, &bindings.main, &[]);
-                    pass.set_bind_group(1, &bindings.masks, &[]);
-                    pass.set_bind_group(2, &bindings.presence, &[]);
-                    pass.draw(0..3, 0..1);
-                }
+    let bindings = resources.prepare_stages(context, &mut detail);
+    let t = Timer::start();
+    let mut encoder = context
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("Display Encoder") });
+    {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Display Pass (surface)"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target.view,
+                resolve_target: None,
+                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(target.background), store: wgpu::StoreOp::Store },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        if let Some((_, rect)) = target.placement {
+            // Inside the target, as wgpu requires; `screen_placement`
+            // already clips, this only guards rounding.
+            let (w, h) = (target.size.0 as f32, target.size.1 as f32);
+            let x = rect.x.clamp(0.0, w);
+            let y = rect.y.clamp(0.0, h);
+            let rw = rect.width.min(w - x);
+            let rh = rect.height.min(h - y);
+            if rw > 0.0 && rh > 0.0 {
+                pass.set_viewport(x, y, rw, rh, 0.0, 1.0);
+                pass.set_pipeline(&pipeline);
+                pass.set_bind_group(0, &bindings.main, &[]);
+                pass.set_bind_group(1, &bindings.masks, &[]);
+                pass.set_bind_group(2, &bindings.presence, &[]);
+                pass.draw(0..3, 0..1);
             }
         }
-        gpu.mark(&mut encoder, 5);
-        let commands = encoder.finish();
-        detail.stop(Span::Record, t);
-        encode_ms += t_encode_b.elapsed().as_secs_f32() * 1000.0;
+    }
+    let commands = encoder.finish();
+    detail.stop(Span::Record, t);
+    let encode_ms = t_encode.elapsed().as_secs_f32() * 1000.0;
 
-        let t_render_start = std::time::Instant::now();
-        let t = Timer::start();
-        context.queue.submit(Some(commands));
-        detail.stop(Span::Submit, t);
-        gpu.resolve(context);
-        present();
-
-        let (otx, orx) = tokio::sync::oneshot::channel();
-        overview_rb.slice().map_async(wgpu::MapMode::Read, move |r| {
-            let _ = otx.send(r);
-        });
-        let t = Timer::start();
-        tokio::task::block_in_place(|| {
-            context.device.poll(wgpu::Maintain::Wait);
-        });
-        detail.stop(Span::Wait, t);
-        gpu.read(&mut detail);
-        (overview_rb, orx, encode_ms, t_render_start)
-    };
-
-    let (overview, histogram) = if let Ok(Ok(())) = orx.await {
-        let t = Timer::start();
-        let pixels = overview_rb.unpad_shared();
-        detail.stop(Span::Unpad, t);
-        let t = Timer::start();
-        let histogram = crate::core::histogram::calculate(&pixels);
-        detail.stop(Span::Histogram, t);
-        (pixels, histogram)
-    } else {
-        (std::sync::Arc::from(Vec::new()), [[0u32; 256]; 3])
-    };
-    let gpu_ms = t_render_start.elapsed().as_secs_f32() * 1000.0;
-    Ok(DisplayRender { display: std::sync::Arc::from(Vec::new()), overview, histogram, encode_ms, gpu_ms, detail })
+    let t = Timer::start();
+    context.queue.submit(Some(commands));
+    detail.stop(Span::Submit, t);
+    present();
+    // Mapped once everything submitted so far is done, the overview's copy
+    // included; nothing here waits for that.
+    let overview = overview.map(PendingOverview::start);
+    Ok(SurfaceRender { overview, encode_ms, detail })
 }
 
 /// Render to opaque RGB `u16` samples, for 16-bit TIFF export. Mirrors
@@ -1100,16 +1226,15 @@ mod tests {
                 let view = texture.create_view(&Default::default());
                 let mut presented = false;
                 let out = render_to_target(
-                    &ctx, &res, &res,
-                    DisplayTarget { view: &view, format, size: (sw, sh), placement: Some(placement), background },
+                    &ctx, &res, Some(&res),
+                    DisplayTarget { view: &view, format, size: (sw, sh), placement: Some(placement), background, headroom: 1.0 },
                     dims, Detail::default(), || presented = true,
                 )
-                .await
                 .expect("render to target");
                 assert!(presented, "{format:?}: present was not called");
-                assert!(out.display.is_empty());
-                assert_eq!(out.overview, reference.overview, "{format:?}: overview differs");
-                assert_eq!(out.histogram, reference.histogram, "{format:?}: histogram differs");
+                let overview = out.overview.expect("an overview was asked for").wait(&ctx).expect("overview");
+                assert_eq!(overview.pixels, reference.overview, "{format:?}: overview differs");
+                assert_eq!(overview.histogram, reference.histogram, "{format:?}: histogram differs");
 
                 // Read the stand-in surface back, as RGBA.
                 let bytes_per_row = (sw * 4 + 255) & !255;
@@ -1163,6 +1288,144 @@ mod tests {
                 let bias = signed as f64 / n as f64;
                 assert!(bias.abs() < 0.05, "{format:?}: the image is shifted by {bias:.3} on average");
             }
+        });
+    }
+
+    /// The HDR surface (`fs_main_hdr`, `core::hdr`): at headroom 1 it is the
+    /// SDR rendering, linear (within the 8-bit pass's ±1 dither); with
+    /// headroom it is that image times a gain between 1 and the headroom,
+    /// exactly 1 in the shadows, and never a different colour; and the Ultra
+    /// HDR gain map stores those same gains. Synthetic input, so CI runs it.
+    #[test]
+    #[ignore]
+    fn hdr_surface_is_the_sdr_image_brightened_in_the_highlights_and_the_gain_map_agrees() {
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).build().expect("runtime");
+        rt.block_on(async {
+            let ctx = SharedContext::new().await.expect("gpu context");
+            let (w, h) = (256u32, 64u32);
+            // A ramp from deep shadow to clipped, left to right.
+            let data: Vec<u16> = (0..w * h).map(|i| (300 + (i % w) * 16).min(4095) as u16).collect();
+            let params = EditParams { exposure: 1.0, ..EditParams::default() };
+            let res = ImageResources::new(
+                &ctx, 1, &data, w, h, &params, [2.0, 1.0, 1.5, 1.0],
+                [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], 0, [256; 4], 4095,
+                None, None, 1, Default::default(),
+            )
+            .expect("image resources");
+            res.update_uniforms(&ctx, &params, None, None);
+            let sdr = render_display_and_overview(
+                &ctx, &res, &res, w, h, super::super::params::FULL_VIEW_RECT, (w, h), Detail::default(),
+            )
+            .await
+            .display;
+
+            let draw_hdr = |headroom: f32| -> Vec<[f32; 3]> {
+                let format = super::super::shared::HDR_FORMAT;
+                let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("stand-in HDR surface"),
+                    size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                    view_formats: &[],
+                });
+                let view = texture.create_view(&Default::default());
+                let rect = crate::core::viewport::Rect { x: 0.0, y: 0.0, width: w as f32, height: h as f32 };
+                let target = DisplayTarget {
+                    view: &view,
+                    format,
+                    size: (w, h),
+                    placement: Some((super::super::params::FULL_VIEW_RECT, rect)),
+                    background: wgpu::Color::BLACK,
+                    headroom,
+                };
+                render_to_target(&ctx, &res, None, target, (w, h), Detail::default(), || {}).expect("render");
+                let bytes_per_row = (w * 8 + 255) & !255;
+                let buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: None,
+                    size: (bytes_per_row * h) as u64,
+                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                    mapped_at_creation: false,
+                });
+                let mut encoder = ctx.device.create_command_encoder(&Default::default());
+                encoder.copy_texture_to_buffer(
+                    texture.as_image_copy(),
+                    wgpu::ImageCopyBuffer {
+                        buffer: &buffer,
+                        layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(bytes_per_row), rows_per_image: None },
+                    },
+                    wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                );
+                ctx.queue.submit(Some(encoder.finish()));
+                buffer.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+                ctx.device.poll(wgpu::Maintain::Wait);
+                let mapped = buffer.slice(..).get_mapped_range();
+                let mut out = Vec::with_capacity((w * h) as usize);
+                for y in 0..h as usize {
+                    let row: &[half::f16] = bytemuck::cast_slice(&mapped[y * bytes_per_row as usize..][..w as usize * 8]);
+                    for p in row.chunks(4) {
+                        out.push([p[0].to_f32(), p[1].to_f32(), p[2].to_f32()]);
+                    }
+                }
+                out
+            };
+
+            let srgb_to_linear = |e: f32| {
+                if e <= 0.04045 { e / 12.92 } else { ((e + 0.055) / 1.055).powf(2.4) }
+            };
+            let flat = draw_hdr(1.0);
+            let mut worst = 0.0f32;
+            for (i, p) in flat.iter().enumerate() {
+                for c in 0..3 {
+                    // One 8-bit step of the SDR render (its dither), linear.
+                    let e = sdr[i * 4 + c] as f32 / 255.0;
+                    let step = srgb_to_linear((e + 1.5 / 255.0).min(1.0)) - srgb_to_linear((e - 1.5 / 255.0).max(0.0));
+                    worst = worst.max((p[c] - srgb_to_linear(e)).abs() / step.max(1e-4));
+                }
+            }
+            assert!(worst <= 1.0, "headroom 1 differs from the SDR render by {worst:.2} dither steps");
+
+            let bright = draw_hdr(4.0);
+            let (mut untouched, mut lifted) = (0, 0);
+            for (i, (f, b)) in flat.iter().zip(&bright).enumerate() {
+                let peak = f[0].max(f[1]).max(f[2]);
+                if peak < 0.02 {
+                    continue;
+                }
+                let gains = [b[0] / f[0].max(1e-6), b[1] / f[1].max(1e-6), b[2] / f[2].max(1e-6)];
+                let g = b[0].max(b[1]).max(b[2]) / peak;
+                assert!((1.0 - 1e-3..=4.0 + 1e-3).contains(&g), "pixel {i}: gain {g} outside [1, 4]");
+                for (c, gc) in gains.iter().enumerate() {
+                    if f[c] > 0.02 {
+                        assert!((gc - g).abs() < 0.01 * g, "pixel {i}: channel {c} gained {gc}, not {g}: the colour moved");
+                    }
+                }
+                if g < 1.0 + 1e-3 {
+                    untouched += 1;
+                } else if g > 2.0 {
+                    lifted += 1;
+                }
+            }
+            assert!(untouched > 0, "no pixel kept the SDR rendering: the shadows were lifted too");
+            assert!(lifted > 0, "no highlight was brightened past 2×");
+
+            // The Ultra HDR gain map holds exactly these gains, so an export
+            // shows what the screen did.
+            let map = render_gain_map(&ctx, &res, w, h, 4.0).await.expect("gain map");
+            assert_eq!(map.len(), (w * h) as usize);
+            let mut worst = 0.0f32;
+            for (i, (f, b)) in flat.iter().zip(&bright).enumerate() {
+                let peak = f[0].max(f[1]).max(f[2]);
+                if peak < 0.05 {
+                    continue;
+                }
+                let g = b[0].max(b[1]).max(b[2]) / peak;
+                let want = crate::core::hdr::encode_gain(g, 4.0) * 255.0;
+                worst = worst.max((map[i] as f32 - want).abs());
+            }
+            assert!(worst <= 2.0, "the gain map differs from the screen's gain by {worst} levels");
         });
     }
 

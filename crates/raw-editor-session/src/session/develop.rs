@@ -1611,9 +1611,11 @@ impl Session {
 /// read-back render loop: what to draw with, and where.
 pub struct SurfaceFrame {
     pub context: Arc<crate::gpu::shared::SharedContext>,
-    /// What the display pass draws, and what the overview is rendered from.
+    /// What the display pass draws.
     pub display: Arc<crate::gpu::shared::ImageResources>,
-    pub overview: Arc<crate::gpu::shared::ImageResources>,
+    /// What the overview is rendered from; `None` while the last one is
+    /// still on its way back, so at most one is in flight.
+    pub overview: Option<Arc<crate::gpu::shared::ImageResources>>,
     /// The visible slice and where it goes on the surface.
     pub placement: Option<([f32; 4], crate::core::viewport::Rect)>,
     pub overview_dims: (u32, u32),
@@ -1621,6 +1623,23 @@ pub struct SurfaceFrame {
     edit: Option<EditParams>,
     /// The view magnifies a subsampled texture: ask for full resolution.
     soft: bool,
+}
+
+/// A surface frame's overview on its way back from the GPU, with what it
+/// was rendered from: the proxy it becomes must match that edit, not
+/// whatever the user has moved to since.
+pub struct SurfaceOverview {
+    pending: crate::gpu::render_functions::PendingOverview,
+    context: Arc<crate::gpu::shared::SharedContext>,
+    image_id: i64,
+    edit: Option<EditParams>,
+    dims: (u32, u32),
+}
+
+impl std::fmt::Debug for SurfaceOverview {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SurfaceOverview").field("image_id", &self.image_id).field("dims", &self.dims).finish()
+    }
 }
 
 impl Session {
@@ -1680,9 +1699,12 @@ impl Session {
             && self.current_edit_params.mask_overlay == 0
             && self.held_noise.is_none())
         .then_some(self.current_edit_params);
+        // One overview in flight at a time: a frame drawn while the last is
+        // still on the GPU skips it (and its pass).
+        let overview = self.surface_overview.is_none().then(|| preview.unwrap_or_else(|| resources.clone()));
         Some(SurfaceFrame {
             context,
-            overview: preview.unwrap_or_else(|| resources.clone()),
+            overview,
             display,
             placement,
             overview_dims: crate::core::viewport::overview_dims(disp_w, disp_h),
@@ -1692,45 +1714,97 @@ impl Session {
         })
     }
 
-    /// A [`SurfaceFrame`] was drawn: keep what was read back — the histogram,
-    /// and the overview as the image's edited proxy — as `render_finished`
-    /// does for the read-back loop.
+    /// A [`SurfaceFrame`] was drawn: keep its overview to collect later
+    /// ([`Session::surface_overview_poll`]), and ask for full resolution if
+    /// the view showed a subsampled texture magnified.
     pub fn surface_frame_finished(
         &mut self,
         frame: &SurfaceFrame,
-        out: crate::gpu::render_functions::DisplayRender,
+        out: crate::gpu::render_functions::SurfaceRender,
     ) -> Effects {
         if frame.context.is_lost() {
             return self.gpu_lost();
         }
+        if let Some(pending) = out.overview {
+            self.surface_overview = Some(SurfaceOverview {
+                pending,
+                context: frame.context.clone(),
+                image_id: frame.image_id,
+                edit: frame.edit,
+                dims: frame.overview_dims,
+            });
+        }
         let current = self.image_resources.as_ref().map(|r| r.image_id);
-        if current == Some(frame.image_id) {
-            *self.histogram_data.borrow_mut() = out.histogram;
-            self.changed.insert(Changed::HISTOGRAM);
-        }
-        let awaited = self.proxy_awaiting.contains_key(&frame.image_id);
-        if let Some(params) = frame.edit.filter(|_| current == Some(frame.image_id) || awaited) {
-            self.capture_proxy(frame.image_id, out.overview, frame.overview_dims, params);
-        }
-        let save = self.resolve_awaiting_proxy(frame.image_id, frame.edit);
-        // A subsampled texture shown magnified: fetch full resolution (once;
-        // `trigger_full_res_upgrade` guards repeats), as `render` does.
-        let upgrade = if frame.soft && current == Some(frame.image_id) && self.current_tab == AppTab::Develop {
-            self.trigger_full_res_upgrade()
-        } else {
-            Effects::none()
-        };
         let mut detail = out.detail;
         detail.finish();
         self.profiler.push_frame(crate::core::profiler::ProfilerFrame {
             update_ms: 0.0,
             upload_ms: out.encode_ms,
-            render_ms: out.gpu_ms,
-            total_ms: out.encode_ms + out.gpu_ms,
+            render_ms: 0.0,
+            total_ms: out.encode_ms,
             detail,
         });
         self.changed.insert(Changed::PROFILER);
-        Effects::batch([save, upgrade])
+        // A subsampled texture shown magnified: fetch full resolution (once;
+        // `trigger_full_res_upgrade` guards repeats), as `render` does.
+        if frame.soft && current == Some(frame.image_id) && self.current_tab == AppTab::Develop {
+            self.trigger_full_res_upgrade()
+        } else {
+            Effects::none()
+        }
+    }
+
+    /// An overview is on its way back: the front end should call
+    /// [`Session::surface_overview_poll`] soon, even with nothing to draw.
+    pub fn surface_overview_pending(&self) -> bool {
+        self.surface_overview.is_some()
+    }
+
+    /// Collect the in-flight overview if the GPU has finished it, without
+    /// waiting: the histogram, and the edited proxy (as `render_finished`
+    /// keeps them for the read-back loop).
+    pub fn surface_overview_poll(&mut self) -> Effects {
+        let Some(overview) = &mut self.surface_overview else { return Effects::none() };
+        let Some(read) = overview.pending.try_read(&overview.context) else { return Effects::none() };
+        let SurfaceOverview { image_id, edit, dims, .. } = *overview;
+        self.surface_overview = None;
+        self.surface_overview_landed(image_id, edit, dims, read)
+    }
+
+    /// Wait for the in-flight overview and keep it: for a front end that is
+    /// leaving, or measuring.
+    pub fn surface_overview_wait(&mut self) -> Effects {
+        let Some(SurfaceOverview { pending, context, image_id, edit, dims }) = self.surface_overview.take() else {
+            return Effects::none();
+        };
+        let read = pending.wait(&context);
+        self.surface_overview_landed(image_id, edit, dims, read)
+    }
+
+    fn surface_overview_landed(
+        &mut self,
+        image_id: i64,
+        edit: Option<EditParams>,
+        dims: (u32, u32),
+        read: Result<crate::gpu::render_functions::Overview, String>,
+    ) -> Effects {
+        let overview = match read {
+            Ok(overview) => overview,
+            Err(e) => {
+                tracing::warn!("no overview for image {image_id}: {e}");
+                return Effects::none();
+            }
+        };
+        let current = self.image_resources.as_ref().map(|r| r.image_id);
+        if current == Some(image_id) {
+            *self.histogram_data.borrow_mut() = overview.histogram;
+            self.changed.insert(Changed::HISTOGRAM);
+        }
+        let awaited = self.proxy_awaiting.contains_key(&image_id);
+        if let Some(params) = edit.filter(|_| current == Some(image_id) || awaited) {
+            self.capture_proxy(image_id, overview.pixels, dims, params);
+        }
+        self.resolve_awaiting_proxy(image_id, edit)
     }
 }
 
@@ -1896,6 +1970,59 @@ mod view_tests {
         assert!(!fx.labels().any(|l| l == "render"), "{fx:?}");
         assert!(!s.is_rendering);
         assert!(s.changed.contains(Changed::FRAME));
+    }
+
+    /// A surface frame never waits for its overview: the next frame skips
+    /// the overview while one is in flight, and it lands later as the
+    /// histogram.
+    #[test]
+    #[ignore]
+    fn a_surface_overview_lands_a_frame_later_one_at_a_time() {
+        let mut s = session();
+        let draw = |s: &mut Session| {
+            let frame = s.surface_frame(400, 300).expect("a frame");
+            let texture = frame.context.device.create_texture(&wgpu::TextureDescriptor {
+                label: None,
+                size: wgpu::Extent3d { width: 400, height: 300, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&Default::default());
+            let target = crate::gpu::render_functions::DisplayTarget {
+                view: &view,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                size: (400, 300),
+                placement: frame.placement,
+                background: wgpu::Color::BLACK,
+                headroom: 1.0,
+            };
+            let asked = frame.overview.is_some();
+            let out = crate::gpu::render_functions::render_to_target(
+                &frame.context,
+                &frame.display,
+                frame.overview.as_deref(),
+                target,
+                frame.overview_dims,
+                Default::default(),
+                || {},
+            )
+            .expect("render");
+            let _ = s.surface_frame_finished(&frame, out);
+            asked
+        };
+        *s.histogram_data.borrow_mut() = [[0; 256]; 3];
+        assert!(draw(&mut s), "the first frame asks for an overview");
+        assert!(s.surface_overview_pending());
+        assert!(!draw(&mut s), "a frame with one in flight skips it");
+        let _ = s.surface_overview_wait();
+        assert!(!s.surface_overview_pending());
+        let counted: u32 = s.histogram_data.borrow()[1].iter().sum();
+        assert!(counted > 0, "the overview landed as the histogram");
+        assert!(draw(&mut s), "and the next frame asks again");
     }
 
     #[test]
