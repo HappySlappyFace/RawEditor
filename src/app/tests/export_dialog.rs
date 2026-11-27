@@ -17,12 +17,14 @@ fn the_fields_set_the_export_settings() {
     send(&mut e, Message::SetExportQuality(73));
     send(&mut e, Message::SetExportSubfolder("Edits".into()));
     send(&mut e, Message::SetExportBasePath(PathBuf::from("/exports")));
+    send(&mut e, Message::ToggleExportUltraHdr(true));
     let s = &e.session.export_settings;
     assert_eq!(s.format, ExportFormat::Tiff);
     assert_eq!(s.color_space, OutputSpace::DisplayP3);
     assert_eq!(s.quality, 73);
     assert_eq!(s.subfolder, "Edits");
     assert_eq!(s.base_path, PathBuf::from("/exports"));
+    assert!(s.ultra_hdr);
 
     // A picker that hands back nothing leaves the folder alone.
     send(&mut e, Message::SetExportBasePath(PathBuf::new()));
