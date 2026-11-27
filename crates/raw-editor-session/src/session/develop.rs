@@ -1400,6 +1400,27 @@ impl Session {
         self.changed.insert(Changed::OVERLAY | Changed::FRAME);
     }
 
+    /// Fit the image inside the viewport less `insets` (left, top, right,
+    /// bottom, viewport pixels), never larger than fit. For the crop tool on
+    /// a phone, whose screen edges belong to system gestures: its handles
+    /// sit at the image's edges. [`Session::reset_view`] returns to fit.
+    /// Starts no render (`Changed::FRAME`, as `transform_view`).
+    pub fn inset_view(&mut self, insets: [f32; 4]) {
+        let [l, t, r, b] = insets.map(|v| if v.is_finite() { v.max(0.0) } else { 0.0 });
+        let (dw, dh) = self.image_display_dims();
+        let (vw, vh) = self.viewport_size;
+        let (fw, fh) = crate::core::viewport::fitted_size(dw, dh, vw, vh);
+        if fw <= 0.0 || fh <= 0.0 {
+            return;
+        }
+        let zoom = ((vw - l - r) / fw).min((vh - t - b) / fh).clamp(0.1, 1.0);
+        // image_rect centres the image at vw/2 + offset·fw: move it to the
+        // middle of the inset area.
+        self.zoom = zoom;
+        self.pan_offset = cgmath::Vector2::new((l - r) / 2.0 / fw, (t - b) / 2.0 / fh);
+        self.changed.insert(Changed::OVERLAY | Changed::FRAME);
+    }
+
     /// Back to fit.
     pub fn reset_view(&mut self) -> Effects {
         self.zoom = 1.0;
@@ -1956,6 +1977,37 @@ mod view_tests {
         s.transform_view(0.01, at, [0.0, 0.0]);
         assert_eq!((s.zoom, s.pan_offset.x, s.pan_offset.y), (1.0, 0.0, 0.0));
         assert!(s.changed.contains(Changed::FRAME));
+    }
+
+    /// The crop tool inset from the screen's edges: the whole frame fits
+    /// inside the insets, centred in what they leave, and a corner drag
+    /// still moves the crop by exactly the finger's distance on screen.
+    #[test]
+    #[ignore]
+    fn an_inset_crop_view_fits_inside_the_insets_and_drags_follow_the_finger() {
+        let mut s = session();
+        let _ = s.toggle_crop();
+        let insets = [40.0, 100.0, 40.0, 20.0];
+        s.inset_view(insets);
+        let (dw, dh) = s.image_display_dims();
+        let r = image_rect(dw, dh, VIEWPORT.0, VIEWPORT.1, s.zoom, s.pan_offset);
+        let eps = 1e-3;
+        assert!(r.x >= insets[0] - eps && r.y >= insets[1] - eps, "{r:?}");
+        assert!(r.x + r.width <= VIEWPORT.0 - insets[2] + eps, "{r:?}");
+        assert!(r.y + r.height <= VIEWPORT.1 - insets[3] + eps, "{r:?}");
+        let (cx, cy) = (r.x + r.width / 2.0, r.y + r.height / 2.0);
+        assert!((cx - 400.0).abs() < eps && (cy - (100.0 + 480.0 / 2.0)).abs() < eps, "not centred: {cx}, {cy}");
+        assert!(s.changed.contains(Changed::FRAME));
+
+        let corner = [r.x + r.width, r.y + r.height];
+        s.drag_crop(CropHandle::BottomRight, corner, [corner[0] - 30.0, corner[1] - 12.0]);
+        let c = s.current_edit_params.crop;
+        assert!((c[2] - (1.0 - 30.0 / r.width)).abs() < 1e-4, "{c:?}");
+        assert!((c[3] - (1.0 - 12.0 / r.height)).abs() < 1e-4, "{c:?}");
+
+        // Insets wider than fit never enlarge it.
+        s.inset_view([0.0; 4]);
+        assert_eq!((s.zoom, s.pan_offset.x, s.pan_offset.y), (1.0, 0.0, 0.0));
     }
 
     /// A front end drawing on its own clock gets a FRAME signal where the

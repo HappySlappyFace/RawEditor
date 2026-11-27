@@ -117,11 +117,22 @@ pub extern "system" fn Java_dev_raweditor_NativeEngine_resetAll(_: JNIEnv, _: JO
     }
 }
 
-/// The crop tool on or off.
+/// The crop tool on or off, its frame kept inside the insets (left, top,
+/// right, bottom, surface pixels).
 #[no_mangle]
-pub extern "system" fn Java_dev_raweditor_NativeEngine_setCropping(_: JNIEnv, _: JObject, handle: jlong, on: jboolean) {
+#[allow(clippy::too_many_arguments)]
+pub extern "system" fn Java_dev_raweditor_NativeEngine_setCropping(
+    _: JNIEnv,
+    _: JObject,
+    handle: jlong,
+    on: jboolean,
+    left: jfloat,
+    top: jfloat,
+    right: jfloat,
+    bottom: jfloat,
+) {
     if let Some(e) = engine(handle) {
-        e.send(Command::Cropping(on != 0));
+        e.send(Command::Cropping { on: on != 0, insets: [left, top, right, bottom] });
     }
 }
 

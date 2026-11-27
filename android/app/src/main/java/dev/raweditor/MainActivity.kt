@@ -32,7 +32,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.systemGestureExclusion
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.drawscope.DrawScope
@@ -242,8 +246,16 @@ private fun Editor(
         }
     }
 
-    // The Crop tab is the crop tool.
-    LaunchedEffect(cropping) { NativeEngine.setCropping(engine, cropping) }
+    // The Crop tab is the crop tool. Its frame stays clear of the screen's
+    // edges: the sides are the back gesture's, the top the status bar's.
+    val density = LocalDensity.current
+    val statusBar = WindowInsets.statusBars.getTop(density)
+    LaunchedEffect(cropping, statusBar) {
+        with(density) {
+            val side = CropSideInset.toPx()
+            NativeEngine.setCropping(engine, cropping, side, statusBar + CropEdgeInset.toPx(), side, CropEdgeInset.toPx())
+        }
+    }
 
     LaunchedEffect(engine) {
         while (true) {
@@ -306,7 +318,8 @@ private fun Editor(
                     }
                 },
             )
-            Histogram(
+            // Not over the crop tool: its top right corner is a handle.
+            if (!cropping) Histogram(
                 engine,
                 Modifier
                     .align(Alignment.TopEnd)
@@ -426,6 +439,11 @@ private fun Editor(
 private val RowHeight = 48.dp
 
 private const val CropSection = "Crop"
+/** The crop frame's distance from the screen's sides (the back gesture's) and from the status bar and panel. */
+private val CropSideInset = 40.dp
+private val CropEdgeInset = 16.dp
+/** How far from a corner a finger still grabs it. */
+private val CropReach = 32.dp
 private const val CropToolRows = 2
 
 /** The crop on the surface, in pixels, from the engine's crop frame. */
@@ -443,9 +461,15 @@ private fun cropRect(frame: FloatArray): Rect? {
 @Composable
 private fun CropOverlay(engine: Long, frame: FloatArray, modifier: Modifier) {
     val current by rememberUpdatedState(frame)
+    val reach = with(LocalDensity.current) { CropReach.toPx() }
+    // The back gesture would take a drag that starts near a side: not
+    // around the corners.
+    val corners = cropRect(frame)?.let { listOf(it.topLeft, it.topRight, it.bottomLeft, it.bottomRight) }.orEmpty()
+    val excluded = corners.fold(modifier) { m, c ->
+        m.systemGestureExclusion { Rect(c.x - reach, c.y - reach, c.x + reach, c.y + reach) }
+    }
     Canvas(
-        modifier.pointerInput(engine) {
-            val reach = 32.dp.toPx()
+        excluded.pointerInput(engine) {
             var which = -1
             detectDragGestures(
                 onDragStart = { at ->

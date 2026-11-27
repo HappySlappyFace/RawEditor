@@ -46,8 +46,10 @@ pub enum Command {
     /// Every edit back to its default, as one undo step.
     ResetAll,
     /// The crop tool on or off: the whole frame shown, the part cut away
-    /// dimmed, and [`Engine::crop_frame`] published for the handles.
-    Cropping(bool),
+    /// dimmed, and [`Engine::crop_frame`] published for the handles. The
+    /// frame sits inside `insets` (left, top, right, bottom, surface
+    /// pixels), clear of the system's edge gestures.
+    Cropping { on: bool, insets: [f32; 4] },
     /// A crop handle dragged from one point to another (surface pixels).
     CropDrag { handle: CropHandle, from: [f32; 2], to: [f32; 2] },
     /// The crop drag ended: an undo step, saved.
@@ -314,6 +316,10 @@ enum Opening {
     Loading { id: i64, name: String, since: Instant },
 }
 
+/// What an inset crop view was fitted for: the frame's shape, the surface,
+/// the insets.
+type InsetFor = ((u32, u32), (f32, f32), [f32; 4]);
+
 struct RenderThread {
     rt: tokio::runtime::Runtime,
     session: Session,
@@ -336,6 +342,11 @@ struct RenderThread {
     history: (bool, bool),
     /// The crop tool is wanted (the UI's Crop tab).
     cropping: bool,
+    /// Where its frame must stay inside (see `Command::Cropping`).
+    crop_insets: [f32; 4],
+    /// What the inset view was last fitted for: the frame's shape, the
+    /// surface, the insets. A turn or a new surface fits it again.
+    inset_for: Option<InsetFor>,
     /// The crop frame as last published.
     crop_frame: Option<[f32; 8]>,
 }
@@ -352,7 +363,7 @@ impl RenderThread {
         session.surface_drawn = true;
         // No detail loupe here: it would render on every edit for nothing.
         let _none = session.set_loupe_panel_open(false);
-        Ok(Self { rt, session, context, files, live: None, stats, results, started: HashSet::new(), opening: None, exporting: false, hdr: false, headroom: 1.0, history: (false, false), cropping: false, crop_frame: None })
+        Ok(Self { rt, session, context, files, live: None, stats, results, started: HashSet::new(), opening: None, exporting: false, hdr: false, headroom: 1.0, history: (false, false), cropping: false, crop_insets: [0.0; 4], inset_for: None, crop_frame: None })
     }
 
     fn status(&self, text: impl Into<String>) {
@@ -477,8 +488,9 @@ impl RenderThread {
                 let fx = self.session.reset_edits();
                 self.history_moved(fx)
             }
-            Command::Cropping(on) => {
+            Command::Cropping { on, insets } => {
                 self.cropping = on;
+                self.crop_insets = insets;
                 self.sync_cropping();
                 Ok(true)
             }
@@ -508,6 +520,8 @@ impl RenderThread {
             Command::Turn { clockwise } => {
                 let fx = self.session.turn_image(clockwise);
                 self.spawn(fx);
+                // A turn returns to fit, even when the frame keeps its shape.
+                self.inset_for = None;
                 Ok(true)
             }
             Command::View { scale, at, pan } => {
@@ -695,18 +709,29 @@ impl RenderThread {
     /// The selected photo is ready (or failed): say so, and hand its saved
     /// exposure to the UI's slider.
     /// Keep the session's crop tool as the UI wants it, once the photo is
-    /// ready (opening a photo turns it off). It starts at fit: the crop
-    /// tool shows the whole frame and neither zooms nor pans.
+    /// ready (opening a photo turns it off), its whole frame fitted inside
+    /// the insets: again after a turn (which returns to fit) or a new surface.
     fn sync_cropping(&mut self) {
-        if self.session.is_cropping == self.cropping || !matches!(self.session.editor_readiness, EditorReadiness::Ready(_)) {
+        if !matches!(self.session.editor_readiness, EditorReadiness::Ready(_)) {
             return;
         }
-        if self.cropping {
-            let fx = self.session.reset_view();
+        if self.session.is_cropping != self.cropping {
+            let fx = self.session.toggle_crop();
             self.spawn(fx);
+            self.inset_for = None;
+            if !self.cropping {
+                // Back to fit: the inset view is the crop tool's alone.
+                let fx = self.session.reset_view();
+                self.spawn(fx);
+            }
         }
-        let fx = self.session.toggle_crop();
-        self.spawn(fx);
+        if self.session.is_cropping {
+            let key = (self.session.image_display_dims(), self.session.viewport_size, self.crop_insets);
+            if self.inset_for != Some(key) {
+                self.inset_for = Some(key);
+                self.session.inset_view(self.crop_insets);
+            }
+        }
     }
 
     /// The crop frame for the UI's handles, when it moved.

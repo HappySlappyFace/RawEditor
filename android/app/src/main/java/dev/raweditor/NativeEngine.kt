@@ -51,8 +51,8 @@ object NativeEngine {
     external fun redo(handle: Long)
     /** Every edit back to its default, as one undo step. */
     external fun resetAll(handle: Long)
-    /** The crop tool on or off: the whole frame shown, the part cut away dimmed. */
-    external fun setCropping(handle: Long, on: Boolean)
+    /** The crop tool on or off: the whole frame shown inside the insets (surface pixels), the part cut away dimmed. */
+    external fun setCropping(handle: Long, on: Boolean, left: Float, top: Float, right: Float, bottom: Float)
     /** Crop handle [which] (0 top left, 1 top right, 2 bottom left, 3 bottom right, 4 the whole crop) dragged, surface pixels. */
     external fun cropDrag(handle: Long, which: Int, x0: Float, y0: Float, x1: Float, y1: Float)
     /** The crop drag ended: an undo step. */
