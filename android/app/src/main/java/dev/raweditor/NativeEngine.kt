@@ -51,6 +51,18 @@ object NativeEngine {
     external fun redo(handle: Long)
     /** Every edit back to its default, as one undo step. */
     external fun resetAll(handle: Long)
+    /** The crop tool on or off: the whole frame shown, the part cut away dimmed. */
+    external fun setCropping(handle: Long, on: Boolean)
+    /** Crop handle [which] (0 top left, 1 top right, 2 bottom left, 3 bottom right, 4 the whole crop) dragged, surface pixels. */
+    external fun cropDrag(handle: Long, which: Int, x0: Float, y0: Float, x1: Float, y1: Float)
+    /** The crop drag ended: an undo step. */
+    external fun cropEnd(handle: Long)
+    /** A centred crop of [ratio] (width / height); 0 for the whole frame. */
+    external fun cropAspect(handle: Long, ratio: Float)
+    /** A quarter turn of the whole frame. */
+    external fun turn(handle: Long, clockwise: Boolean)
+    /** While cropping: the image's rectangle on the surface (x, y, w, h, pixels), then the crop (left, top, w, h, fractions); empty otherwise. */
+    external fun cropFrame(handle: Long): FloatArray
     /** Bit 0: Undo has a step to take; bit 1: Redo does. */
     external fun history(handle: Long): Int
     /** Moves whenever the histogram does: fetch [histogram] only then. */
