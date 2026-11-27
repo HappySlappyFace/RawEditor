@@ -20,9 +20,14 @@ use std::time::{Duration, Instant};
 /// wakes the thread.
 const OVERVIEW_POLL: Duration = Duration::from_millis(2);
 
+/// JPEG quality for exports: high, as a gallery copy should be (the
+/// desktop's default, 80, is for sharing).
+const EXPORT_QUALITY: u8 = 92;
+
 use raw_editor_session::gpu::render_functions::{render_to_target, DisplayTarget};
 use raw_editor_session::gpu::shared::{pick_surface_format, SharedContext};
-use raw_editor_session::session::{host, AppTab, EditorReadiness, LoadJob, SelectionChange, Session, SessionEvent};
+use raw_editor_session::core::output_space::OutputSpace;
+use raw_editor_session::session::{host, AppTab, EditorReadiness, ExportFormat, ExportJobState, LoadJob, SelectionChange, Session, SessionEvent};
 use raw_editor_session::{Changed, Effects};
 
 pub enum Command {
@@ -39,6 +44,9 @@ pub enum Command {
     View { scale: f32, at: [f32; 2], pan: [f32; 2] },
     /// A double tap at a point: back to fit, or in to 3× about it.
     ToggleZoom([f32; 2]),
+    /// Save the open photo, as edited, as a full-size JPEG
+    /// ([`Engine::take_export`] hears how it went).
+    Export,
     /// A piece of the session's background work finished.
     Event(Box<SessionEvent>),
     /// Save and stop.
@@ -111,6 +119,12 @@ impl Engine {
         self.stats.lock().unwrap_or_else(|e| e.into_inner()).histogram.clone()
     }
 
+    /// The next finished export, once: the JPEG's path, or why there is
+    /// none. Kotlin copies the file into the gallery, then deletes it.
+    pub fn take_export(&self) -> Option<Result<PathBuf, String>> {
+        self.stats.lock().unwrap_or_else(|e| e.into_inner()).exports.pop_front()
+    }
+
     /// How control `index` reads at `value` for the open photo.
     pub fn show(&self, index: usize, value: f32) -> String {
         let as_shot = self.stats.lock().unwrap_or_else(|e| e.into_inner()).as_shot;
@@ -143,6 +157,8 @@ pub struct Stats {
     histogram: Vec<u32>,
     /// Moves whenever `histogram` does.
     histogram_version: u32,
+    /// Finished exports not yet collected.
+    exports: VecDeque<Result<PathBuf, String>>,
     /// Recent frames: (work on the render thread, interval since the previous present).
     frames: VecDeque<(f32, Option<f32>)>,
     last_present: Option<Instant>,
@@ -235,6 +251,8 @@ struct RenderThread {
     /// The session's background loads already running.
     started: HashSet<LoadJob>,
     opening: Option<Opening>,
+    /// An export is running (the session's `is_exporting`, as last seen).
+    exporting: bool,
 }
 
 impl RenderThread {
@@ -249,7 +267,7 @@ impl RenderThread {
         session.surface_drawn = true;
         // No detail loupe here: it would render on every edit for nothing.
         let _none = session.set_loupe_panel_open(false);
-        Ok(Self { rt, session, context, files, live: None, stats, results, started: HashSet::new(), opening: None })
+        Ok(Self { rt, session, context, files, live: None, stats, results, started: HashSet::new(), opening: None, exporting: false })
     }
 
     fn status(&self, text: impl Into<String>) {
@@ -289,6 +307,7 @@ impl RenderThread {
             self.spawn(fx);
             self.start_loads();
             self.check_opened();
+            self.check_export();
             let changed = self.session.changed.take();
             dirty |= changed.contains(Changed::FRAME);
             if changed.contains(Changed::HISTOGRAM) {
@@ -365,6 +384,10 @@ impl RenderThread {
             Command::ToggleZoom(at) => {
                 let scale = if self.session.zoom > 1.01 { 1.0 / self.session.zoom } else { 3.0 };
                 self.session.transform_view(scale, at, [0.0, 0.0]);
+                Ok(false)
+            }
+            Command::Export => {
+                self.export();
                 Ok(false)
             }
             Command::Event(event) => {
@@ -460,6 +483,63 @@ impl RenderThread {
         self.spawn(fx);
         let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
         self.opening = Some(Opening::Loading { id, name, since });
+    }
+
+    /// Export the open photo through the session's own export (as the
+    /// desktop's, one image): full size, sRGB, into the app's private
+    /// `exports` folder, from where Kotlin moves it into the gallery.
+    fn export(&mut self) {
+        if self.exporting {
+            return;
+        }
+        if !matches!(self.session.editor_readiness, EditorReadiness::Ready(_)) {
+            self.finish_export(Err("Open a photo first".into()));
+            return;
+        }
+        let settings = &mut self.session.export_settings;
+        settings.format = ExportFormat::Jpeg;
+        settings.color_space = OutputSpace::Srgb;
+        settings.quality = EXPORT_QUALITY;
+        settings.resize = false;
+        settings.base_path = self.files.join("exports");
+        settings.subfolder = String::new();
+        match self.session.start_export() {
+            Some(fx) if self.session.is_exporting => {
+                self.exporting = true;
+                self.status("Exporting…");
+                self.spawn(fx);
+            }
+            _ => {
+                let why = self.session.status.clone();
+                self.finish_export(Err(why));
+            }
+        }
+    }
+
+    /// The export ended: hand the result to Kotlin.
+    fn check_export(&mut self) {
+        if !self.exporting || self.session.is_exporting {
+            return;
+        }
+        self.exporting = false;
+        let result = match self.session.export_jobs.first().map(|j| &j.state) {
+            Some(ExportJobState::Done(path)) => Ok(path.clone()),
+            Some(ExportJobState::Failed(e)) => Err(e.clone()),
+            _ => Err(self.session.status.clone()),
+        };
+        self.finish_export(result);
+    }
+
+    fn finish_export(&mut self, result: Result<PathBuf, String>) {
+        match &result {
+            Ok(path) => tracing::info!("exported {}", path.display()),
+            Err(e) => tracing::error!("export failed: {e}"),
+        }
+        self.status(match &result {
+            Ok(_) => "Exported".to_string(),
+            Err(e) => format!("Error: export failed: {e}"),
+        });
+        self.stats.lock().unwrap_or_else(|e| e.into_inner()).exports.push_back(result);
     }
 
     /// The selected photo is ready (or failed): say so, and hand its saved
