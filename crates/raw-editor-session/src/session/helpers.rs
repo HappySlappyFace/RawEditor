@@ -5,6 +5,15 @@
 use super::*;
 
 impl Session {
+    /// Whether Undo and Redo would do anything for the open image, for a
+    /// front end that greys its buttons out.
+    pub fn history_steps(&self) -> (bool, bool) {
+        match self.selected_image_id.and_then(|id| self.history_map.get(&id)) {
+            Some((stack, index)) => (*index > 0, *index + 1 < stack.len()),
+            None => (false, false),
+        }
+    }
+
     // Phase 65: Undo/Redo Helper
     // Returns a mutable reference to the (Stack, Index) tuple for the current image.
     // Initializes it if missing.

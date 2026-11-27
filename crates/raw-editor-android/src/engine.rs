@@ -39,6 +39,12 @@ pub enum Command {
     Edit(usize, f32),
     /// A gesture ended: an undo step, saved.
     Commit,
+    /// Step back through the open photo's history.
+    Undo,
+    /// Step forward again.
+    Redo,
+    /// Every edit back to its default, as one undo step.
+    ResetAll,
     /// A pinch or drag: scale the zoom about `at`, then move by `pan`
     /// (surface pixels).
     View { scale: f32, at: [f32; 2], pan: [f32; 2] },
@@ -113,6 +119,17 @@ impl Engine {
         (stats.opened, stats.values.clone())
     }
 
+    /// Moves whenever the edit changed under the sliders (a photo opened,
+    /// undo, redo, reset): the UI then takes [`Engine::opened`]'s values.
+    pub fn values_version(&self) -> u32 {
+        self.stats.lock().unwrap_or_else(|e| e.into_inner()).values_version
+    }
+
+    /// Whether Undo and Redo have a step to take.
+    pub fn history(&self) -> (bool, bool) {
+        self.stats.lock().unwrap_or_else(|e| e.into_inner()).history
+    }
+
     /// Moves whenever the histogram does.
     pub fn histogram_version(&self) -> u32 {
         self.stats.lock().unwrap_or_else(|e| e.into_inner()).histogram_version
@@ -160,6 +177,10 @@ pub struct Stats {
     status: String,
     opened: u32,
     values: Vec<f32>,
+    /// Moves whenever `values` does.
+    values_version: u32,
+    /// Undo, Redo: is there a step to take.
+    history: (bool, bool),
     /// The open photo's as-shot white balance (kelvin, tint).
     as_shot: (f32, f32),
     /// Red, green, blue: 256 counts each, then the count to scale to
@@ -291,6 +312,8 @@ struct RenderThread {
     hdr: bool,
     /// The display's current HDR/SDR ratio.
     headroom: f32,
+    /// Undo/Redo availability as last published.
+    history: (bool, bool),
 }
 
 impl RenderThread {
@@ -305,7 +328,7 @@ impl RenderThread {
         session.surface_drawn = true;
         // No detail loupe here: it would render on every edit for nothing.
         let _none = session.set_loupe_panel_open(false);
-        Ok(Self { rt, session, context, files, live: None, stats, results, started: HashSet::new(), opening: None, exporting: false, hdr: false, headroom: 1.0 })
+        Ok(Self { rt, session, context, files, live: None, stats, results, started: HashSet::new(), opening: None, exporting: false, hdr: false, headroom: 1.0, history: (false, false) })
     }
 
     fn status(&self, text: impl Into<String>) {
@@ -346,6 +369,7 @@ impl RenderThread {
             self.start_loads();
             self.check_opened();
             self.check_export();
+            self.check_history();
             let changed = self.session.changed.take();
             dirty |= changed.contains(Changed::FRAME);
             if changed.contains(Changed::HISTOGRAM) {
@@ -414,6 +438,18 @@ impl RenderThread {
                 let fx = self.session.commit_edit();
                 self.spawn(fx);
                 Ok(false)
+            }
+            Command::Undo => {
+                let fx = self.session.undo();
+                self.history_moved(fx)
+            }
+            Command::Redo => {
+                let fx = self.session.redo();
+                self.history_moved(fx)
+            }
+            Command::ResetAll => {
+                let fx = self.session.reset_edits();
+                self.history_moved(fx)
             }
             Command::View { scale, at, pan } => {
                 self.session.transform_view(scale, at, pan);
@@ -599,6 +635,30 @@ impl RenderThread {
 
     /// The selected photo is ready (or failed): say so, and hand its saved
     /// exposure to the UI's slider.
+    /// Undo, redo or reset changed the edit: render it, and move the
+    /// sliders to it.
+    fn history_moved(&mut self, fx: Effects<SessionEvent>) -> Result<bool, String> {
+        self.spawn(fx);
+        self.publish_values();
+        Ok(false)
+    }
+
+    /// The sliders' values, after the edit changed under them.
+    fn publish_values(&mut self) {
+        let mut stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
+        stats.values = crate::controls::values(&self.session.current_edit_params);
+        stats.values_version = stats.values_version.wrapping_add(1);
+    }
+
+    /// Undo/Redo availability, for the buttons, when it changed.
+    fn check_history(&mut self) {
+        let steps = self.session.history_steps();
+        if steps != self.history {
+            self.history = steps;
+            self.stats.lock().unwrap_or_else(|e| e.into_inner()).history = steps;
+        }
+    }
+
     fn check_opened(&mut self) {
         let Some(Opening::Loading { id, name, since }) = &self.opening else { return };
         let ms = since.elapsed().as_millis();
@@ -608,6 +668,7 @@ impl RenderThread {
                 let mut stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
                 stats.status = format!("{name}, opened in {ms} ms");
                 stats.values = crate::controls::values(&self.session.current_edit_params);
+                stats.values_version = stats.values_version.wrapping_add(1);
                 stats.as_shot = self.session.as_shot_wb.unwrap_or((5000.0, 0.0));
                 stats.opened += 1;
             }

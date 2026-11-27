@@ -39,9 +39,20 @@ object NativeEngine {
     external fun export(handle: Long)
     /** The next finished export, once: "ok\t<path>" or "error\t<why>"; null while there is none. */
     external fun takeExport(handle: Long): String?
-    /** How many photos have opened; when it moves, [openedValues] has the new one's sliders. */
+    /** How many photos have opened. */
     external fun openedCount(handle: Long): Int
+    /** Moves whenever the edit changed under the sliders (a photo opened, undo, redo, reset). */
+    external fun valuesVersion(handle: Long): Int
+    /** Every slider's value for the open photo's edit, in index order. */
     external fun openedValues(handle: Long): FloatArray
+    /** Step back through the open photo's history. */
+    external fun undo(handle: Long)
+    /** Step forward again. */
+    external fun redo(handle: Long)
+    /** Every edit back to its default, as one undo step. */
+    external fun resetAll(handle: Long)
+    /** Bit 0: Undo has a step to take; bit 1: Redo does. */
+    external fun history(handle: Long): Int
     /** Moves whenever the histogram does: fetch [histogram] only then. */
     external fun histogramVersion(handle: Long): Int
     /** Red, green, blue: 256 counts each, then the count to scale to (empty before the first frame). */

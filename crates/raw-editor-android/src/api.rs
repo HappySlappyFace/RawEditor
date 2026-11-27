@@ -92,6 +92,39 @@ pub extern "system" fn Java_dev_raweditor_NativeEngine_commitEdit(_: JNIEnv, _: 
     }
 }
 
+/// Step back through the open photo's history.
+#[no_mangle]
+pub extern "system" fn Java_dev_raweditor_NativeEngine_undo(_: JNIEnv, _: JObject, handle: jlong) {
+    if let Some(e) = engine(handle) {
+        e.send(Command::Undo);
+    }
+}
+
+/// Step forward again.
+#[no_mangle]
+pub extern "system" fn Java_dev_raweditor_NativeEngine_redo(_: JNIEnv, _: JObject, handle: jlong) {
+    if let Some(e) = engine(handle) {
+        e.send(Command::Redo);
+    }
+}
+
+/// Every edit back to its default, as one undo step.
+#[no_mangle]
+pub extern "system" fn Java_dev_raweditor_NativeEngine_resetAll(_: JNIEnv, _: JObject, handle: jlong) {
+    if let Some(e) = engine(handle) {
+        e.send(Command::ResetAll);
+    }
+}
+
+/// Undo and Redo availability: bit 0 Undo, bit 1 Redo.
+#[no_mangle]
+pub extern "system" fn Java_dev_raweditor_NativeEngine_history(_: JNIEnv, _: JObject, handle: jlong) -> jint {
+    engine(handle).map_or(0, |e| {
+        let (undo, redo) = e.history();
+        undo as jint | (redo as jint) << 1
+    })
+}
+
 /// How control `index` reads at `value` for the open photo (white balance
 /// in kelvin from its as-shot value).
 #[no_mangle]
@@ -181,6 +214,13 @@ pub extern "system" fn Java_dev_raweditor_NativeEngine_takeExport(env: JNIEnv, _
 #[no_mangle]
 pub extern "system" fn Java_dev_raweditor_NativeEngine_openedCount(_: JNIEnv, _: JObject, handle: jlong) -> jint {
     engine(handle).map_or(0, |e| e.opened().0 as jint)
+}
+
+/// Moves whenever the sliders' values changed under them (a photo opened,
+/// undo, redo, reset): then fetch [`openedValues`].
+#[no_mangle]
+pub extern "system" fn Java_dev_raweditor_NativeEngine_valuesVersion(_: JNIEnv, _: JObject, handle: jlong) -> jint {
+    engine(handle).map_or(0, |e| e.values_version() as jint)
 }
 
 /// The last opened photo's values for every control, in index order.
