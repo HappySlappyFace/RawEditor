@@ -113,6 +113,8 @@ object Icons {
     const val Detail = "\uf002"
     const val Lens = "\uf030"
     const val Sliders = "\uf1de"
+    const val Library = "\uf009"
+    const val Import = "\uf067"
 }
 
 /** Material's components (menus, spinners) in the tokens' colours. */

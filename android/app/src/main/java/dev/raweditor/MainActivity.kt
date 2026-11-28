@@ -13,6 +13,7 @@ import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -34,6 +35,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.ui.input.pointer.PointerEventPass
+import kotlin.math.abs
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.horizontalDrag
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -112,17 +115,24 @@ class MainActivity : ComponentActivity() {
         engine = NativeEngine.create(filesDir.absolutePath)
         hdr = Hdr(this, engine)
         hdr.setEnabled(prefs.getBoolean("hdr", true))
-        // Reopen the last photo, else the first RAW in the folder.
-        val last = prefs.getString("last", null)?.let(::File)?.takeIf { it.exists() }
-        val raw = last ?: photos.listFiles()
-            ?.filter { it.extension.lowercase() in RAW }
-            ?.minByOrNull { it.name }
-        if (raw != null) open(raw)
+        // The library is the app's folder: new RAWs in it (pushed by adb,
+        // say) are imported now.
+        NativeEngine.library(engine, photos.absolutePath)
+        // Back to the photo being edited last time, else the library.
+        val last = prefs.getString("last", null)?.takeIf { File(it).exists() }
+        if (last != null) open(last)
         setContent {
             RawEditorTheme {
-                Editor(engine, hasPhoto = raw != null, ::importAndOpen, ::saveToGallery, ::viewInGallery, hdr, ::setHdr)
+                App(engine, last, ::open, ::importPhotos, ::saveToGallery, ::viewInGallery, hdr, ::setHdr)
             }
         }
+    }
+
+    // Android may end the app any time after this without onDestroy: the
+    // edit is saved at each release already; this saves its thumbnail.
+    override fun onStop() {
+        NativeEngine.leave(engine)
+        super.onStop()
     }
 
     private fun setHdr(on: Boolean) {
@@ -130,40 +140,47 @@ class MainActivity : ComponentActivity() {
         hdr.setEnabled(on)
     }
 
-    private fun open(file: File) {
-        prefs.edit().putString("last", file.absolutePath).apply()
-        NativeEngine.open(engine, file.absolutePath)
+    private fun open(path: String) {
+        prefs.edit().putString("last", path).apply()
+        NativeEngine.open(engine, path)
     }
 
     /**
      * The engine reads RAWs by path, and a picked document is only a URI,
-     * so the photo is copied into the app's folder first (once: a file of
-     * the same name and size is reused). Returns an error to show, or null.
+     * so each photo is copied into the app's folder first (once: a file of
+     * the same name and size is reused), then the catalogue takes the new
+     * ones in. Returns the copies and what went wrong with the rest.
      */
-    private suspend fun importAndOpen(uri: Uri): String? = withContext(Dispatchers.IO) {
+    private suspend fun importPhotos(uris: List<Uri>): Imported = withContext(Dispatchers.IO) {
+        val copied = mutableListOf<String>()
+        val errors = mutableListOf<String>()
+        for (uri in uris) {
+            copyIn(uri).fold({ copied += it }, { errors += it.message ?: "A photo could not be imported" })
+        }
+        if (copied.isNotEmpty()) NativeEngine.library(engine, photos.absolutePath)
+        Imported(copied, errors)
+    }
+
+    private fun copyIn(uri: Uri): Result<String> = runCatching {
         val name = contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
             ?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
             ?: uri.lastPathSegment?.substringAfterLast('/')
-            ?: return@withContext "That file has no name"
-        if (File(name).extension.lowercase() !in RAW) {
-            return@withContext "$name is not a RAW file this app opens"
-        }
+            ?: error("That file has no name")
+        check(File(name).extension.lowercase() in RAW) { "$name is not a RAW file this app opens" }
         val target = File(photos, File(name).name)
         val size = contentResolver.openFileDescriptor(uri, "r")?.use { it.statSize } ?: -1L
         if (!(target.exists() && target.length() == size)) {
             val part = File(photos, "${target.name}.part")
             try {
-                contentResolver.openInputStream(uri)?.use { input ->
-                    part.outputStream().use { input.copyTo(it, 1 shl 20) }
-                } ?: return@withContext "Could not read $name"
-                if (!part.renameTo(target)) return@withContext "Could not save $name"
+                val input = checkNotNull(contentResolver.openInputStream(uri)) { "Could not read $name" }
+                input.use { i -> part.outputStream().use { i.copyTo(it, 1 shl 20) } }
+                check(part.renameTo(target)) { "Could not save $name" }
             } catch (e: Exception) {
                 part.delete()
-                return@withContext "Could not copy $name: ${e.message}"
+                throw IllegalStateException("Could not copy $name: ${e.message}", e)
             }
         }
-        withContext(Dispatchers.Main) { open(target) }
-        null
+        target.absolutePath
     }
 
     /**
@@ -259,14 +276,115 @@ private data class PhotoInfo(
     }
 }
 
+/** What an import brought in: the copies' paths, and what went wrong. */
+data class Imported(val paths: List<String>, val errors: List<String>)
+
+/**
+ * The library, and the editor over it. Opening a photo goes to the editor;
+ * Back (or the grid button) returns, saving the photo's thumbnail.
+ */
+@Composable
+private fun App(
+    engine: Long,
+    last: String?,
+    open: (String) -> Unit,
+    importPhotos: suspend (List<Uri>) -> Imported,
+    saveToGallery: suspend (String) -> Result<Uri>,
+    viewInGallery: (Uri) -> Boolean,
+    hdr: Hdr,
+    setHdr: (Boolean) -> Unit,
+) {
+    var current by remember { mutableStateOf(last) }
+    var editing by remember { mutableStateOf(last != null) }
+    var items by remember { mutableStateOf(emptyList<LibraryItem>()) }
+    var importing by remember { mutableStateOf(false) }
+    var importNotice by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+
+    LaunchedEffect(engine) {
+        var seen = -1
+        while (true) {
+            val version = NativeEngine.libraryVersion(engine)
+            if (version != seen) {
+                seen = version
+                items = LibraryItem.parse(NativeEngine.libraryList(engine))
+            }
+            delay(250)
+        }
+    }
+
+    val openPhoto = { path: String ->
+        current = path
+        open(path)
+        editing = true
+    }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+        importing = true
+        scope.launch {
+            val result = importPhotos(uris)
+            importing = false
+            importNotice = result.errors.firstOrNull()?.let { first ->
+                if (result.errors.size == 1) first else "$first (and ${result.errors.size - 1} more)"
+            }
+            // One photo: straight into it. Several: they're in the library.
+            if (result.paths.size == 1) openPhoto(result.paths.first()) else editing = false
+        }
+    }
+    val importPicked = { picker.launch(arrayOf("image/*", "application/octet-stream")) }
+    val toLibrary = {
+        NativeEngine.leave(engine)
+        editing = false
+    }
+
+    BackHandler(enabled = editing) { toLibrary() }
+
+    if (editing) {
+        Editor(
+            engine,
+            library = items,
+            current = current,
+            openPhoto = openPhoto,
+            onLibrary = toLibrary,
+            onImport = importPicked,
+            importNotice = importNotice,
+            clearImportNotice = { importNotice = null },
+            saveToGallery = saveToGallery,
+            viewInGallery = viewInGallery,
+            hdr = hdr,
+            setHdr = setHdr,
+        )
+    } else {
+        Box(Modifier.fillMaxSize()) {
+            LibraryScreen(items, current, importing, onOpen = { openPhoto(it.path) }, onImport = importPicked)
+            importNotice?.let { text ->
+                LaunchedEffect(text) {
+                    delay(5000)
+                    importNotice = null
+                }
+                NoticeBar(
+                    Notice(text, isError = true),
+                    onDismiss = { importNotice = null },
+                    modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(Space.XL),
+                )
+            }
+        }
+    }
+}
+
 /** A message over the bottom of the photo: what happened, maybe an action. */
-private data class Notice(val text: String, val isError: Boolean = false, val action: String? = null, val onAction: (() -> Unit)? = null)
+internal data class Notice(val text: String, val isError: Boolean = false, val action: String? = null, val onAction: (() -> Unit)? = null)
 
 @Composable
 private fun Editor(
     engine: Long,
-    hasPhoto: Boolean,
-    importAndOpen: suspend (Uri) -> String?,
+    library: List<LibraryItem>,
+    current: String?,
+    openPhoto: (String) -> Unit,
+    onLibrary: () -> Unit,
+    onImport: () -> Unit,
+    importNotice: String?,
+    clearImportNotice: () -> Unit,
     saveToGallery: suspend (String) -> Result<Uri>,
     viewInGallery: (Uri) -> Boolean,
     hdr: Hdr,
@@ -278,7 +396,7 @@ private fun Editor(
     var showTimings by remember { mutableStateOf(false) }
     var photo by remember { mutableStateOf(PhotoInfo()) }
     // A photo was asked for and the engine hasn't said so yet.
-    var expecting by remember { mutableStateOf(hasPhoto) }
+    var expecting by remember { mutableStateOf(current != null) }
     var opened by remember { mutableIntStateOf(0) }
     var notice by remember { mutableStateOf<Notice?>(null) }
     var exporting by remember { mutableStateOf(false) }
@@ -288,7 +406,6 @@ private fun Editor(
     var cropFrame by remember { mutableStateOf(FloatArray(0)) }
     val cropping = section == CropSection
     val ready = photo.state == "ready"
-    val scope = rememberCoroutineScope()
 
     // Looked at once per display frame, so Undo moves the sliders with the
     // photo: the edit changed under them (a photo opened, undo, redo,
@@ -356,19 +473,22 @@ private fun Editor(
         }
     }
 
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) {
-            notice = null
-            expecting = true
-            scope.launch {
-                importAndOpen(uri)?.let {
-                    notice = Notice(it, isError = true)
-                    expecting = false
-                }
-            }
+    // A failed import shows here when it happened in the editor.
+    LaunchedEffect(importNotice) {
+        importNotice?.let {
+            notice = Notice(it, isError = true)
+            clearImportNotice()
         }
     }
-    val openPhoto = { picker.launch(arrayOf("image/*", "application/octet-stream")) }
+    // A new photo is opening: the engine still reports the last one until
+    // it takes the command.
+    LaunchedEffect(current) { expecting = current != null }
+
+    // Next or previous in the library's order (newest first).
+    val step = { by: Int ->
+        val at = library.indexOfFirst { it.path == current }
+        library.getOrNull(at + by)?.takeIf { at >= 0 }?.let { openPhoto(it.path) }
+    }
 
     Column(Modifier.fillMaxSize().background(Colours.Chrome)) {
         // The photo: the engine draws the surface; gestures go to it.
@@ -401,7 +521,7 @@ private fun Editor(
             if (cropping) {
                 CropOverlay(engine, cropFrame, Modifier.fillMaxSize())
             } else {
-                PhotoGestures(engine, enabled = ready, onPeek = { peeking = it }, modifier = Modifier.fillMaxSize())
+                PhotoGestures(engine, enabled = ready, onPeek = { peeking = it }, onSwipe = { step(it) }, modifier = Modifier.fillMaxSize())
             }
 
             when {
@@ -410,16 +530,16 @@ private fun Editor(
                     icon = Icons.Warning,
                     title = "${photo.name.ifEmpty { "The photo" }} did not open",
                     body = photo.error,
-                    action = "Open Another…",
-                    onAction = openPhoto,
+                    action = "Back to Library",
+                    onAction = onLibrary,
                     modifier = Modifier.align(Alignment.Center),
                 )
                 photo.state == "none" -> Message(
                     icon = Icons.Image,
                     title = "No photo open",
                     body = "Open a RAW file to start editing.",
-                    action = "Open Photo…",
-                    onAction = openPhoto,
+                    action = "Import Photos…",
+                    onAction = onImport,
                     modifier = Modifier.align(Alignment.Center),
                 )
             }
@@ -446,7 +566,8 @@ private fun Editor(
                         notice = null
                         NativeEngine.export(engine)
                     },
-                    onOpen = openPhoto,
+                    onLibrary = onLibrary,
+                    onImport = onImport,
                     onResetAll = { NativeEngine.resetAll(engine) },
                     onToggleTimings = { showTimings = !showTimings },
                 )
@@ -526,7 +647,8 @@ private fun TopBar(
     onRedo: () -> Unit,
     onHdr: () -> Unit,
     onExport: () -> Unit,
-    onOpen: () -> Unit,
+    onLibrary: () -> Unit,
+    onImport: () -> Unit,
     onResetAll: () -> Unit,
     onToggleTimings: () -> Unit,
 ) {
@@ -538,8 +660,9 @@ private fun TopBar(
             .background(Brush.verticalGradient(listOf(Color(0x99000000), Color.Transparent)))
             .statusBarsPadding()
             .height(Space.TopBar)
-            .padding(start = Space.Gutter, end = Space.XS),
+            .padding(start = Space.XS, end = Space.XS),
     ) {
+        IconButton(Icons.Library, "Library", true, onLibrary)
         Column(
             Modifier
                 .weight(1f)
@@ -596,7 +719,7 @@ private fun TopBar(
         Box {
             IconButton(Icons.More, "More", true, { menu = true })
             DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                DropdownMenuItem(text = { Text("Open Photo…") }, onClick = { menu = false; onOpen() })
+                DropdownMenuItem(text = { Text("Import Photos…") }, onClick = { menu = false; onImport() })
                 DropdownMenuItem(
                     text = { Text("Reset All") },
                     enabled = photo.state == "ready",
@@ -613,7 +736,7 @@ private fun TopBar(
 
 /** A glyph from the icon font in a touch-sized target; muted while it can't act. */
 @Composable
-private fun IconButton(glyph: String, description: String, enabled: Boolean, onClick: () -> Unit, tint: Color = Colours.OnPhoto) {
+internal fun IconButton(glyph: String, description: String, enabled: Boolean, onClick: () -> Unit, tint: Color = Colours.OnPhoto) {
     Box(
         contentAlignment = Alignment.Center,
         modifier = Modifier.size(Space.Touch).clickable(enabled = enabled, onClickLabel = description, onClick = onClick),
@@ -666,11 +789,34 @@ private fun Tabs(selected: String, onSelect: (String) -> Unit) {
  * drag is a drag: the pan takes the pointer and the peek never starts.
  */
 @Composable
-private fun PhotoGestures(engine: Long, enabled: Boolean, onPeek: (Boolean) -> Unit, modifier: Modifier) {
+private fun PhotoGestures(engine: Long, enabled: Boolean, onPeek: (Boolean) -> Unit, onSwipe: (Int) -> Unit, modifier: Modifier) {
     val hold = LocalViewConfiguration.current.longPressTimeoutMillis
     val canPeek by rememberUpdatedState(enabled)
+    val swipe by rememberUpdatedState(onSwipe)
     Box(
         modifier
+            // At fit a one-finger drag can't pan (the photo is all on
+            // screen): a sideways one turns to the next or previous photo.
+            // Watched after the pan has had the events, without taking them.
+            .pointerInput(engine) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Final)
+                    var fingers = 1
+                    var last = down.position
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Final)
+                        fingers = maxOf(fingers, event.changes.count { it.pressed })
+                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        last = change.position
+                        if (!change.pressed) break
+                    }
+                    val dx = last.x - down.position.x
+                    val dy = last.y - down.position.y
+                    if (fingers == 1 && abs(dx) > size.width * SwipeFraction && abs(dx) > 2 * abs(dy) && !NativeEngine.zoomed(engine)) {
+                        swipe(if (dx < 0) 1 else -1)
+                    }
+                }
+            }
             .pointerInput(engine) {
                 detectTransformGestures { centroid, pan, zoom, _ ->
                     NativeEngine.transformView(engine, zoom, centroid.x, centroid.y, pan.x, pan.y)
@@ -703,6 +849,9 @@ private fun PhotoGestures(engine: Long, enabled: Boolean, onPeek: (Boolean) -> U
     )
 }
 
+/** How far across the photo a drag must go to turn to the next one. */
+private const val SwipeFraction = 0.2f
+
 /** Runs [block] with a scope that lives as long as the pointer input. */
 private suspend fun coroutineScopeFor(block: suspend (kotlinx.coroutines.CoroutineScope) -> Unit) =
     kotlinx.coroutines.coroutineScope { block(this) }
@@ -723,7 +872,7 @@ private fun Opening(name: String, modifier: Modifier) {
 
 /** A centred message where the photo would be, with one thing to do about it. */
 @Composable
-private fun Message(icon: String, title: String, body: String, action: String, onAction: () -> Unit, modifier: Modifier) {
+internal fun Message(icon: String, title: String, body: String, action: String, onAction: () -> Unit, modifier: Modifier) {
     Column(modifier.padding(horizontal = 32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Icon(icon, TextSize.Display, Colours.TextMuted)
         Text(
@@ -773,7 +922,7 @@ private fun Badge(text: String, modifier: Modifier) {
 }
 
 @Composable
-private fun NoticeBar(notice: Notice, onDismiss: () -> Unit, modifier: Modifier) {
+internal fun NoticeBar(notice: Notice, onDismiss: () -> Unit, modifier: Modifier) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = modifier
