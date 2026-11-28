@@ -476,7 +476,11 @@ impl RenderThread {
             Command::Edit(index, value) => {
                 if let Some(control) = crate::controls::CONTROLS.get(index) {
                     let value = value.clamp(control.min, control.max);
-                    let fx = self.session.edit(|p| (control.set)(p, value));
+                    let fx = if control.noise {
+                        self.session.noise_changed(|p| (control.set)(p, value))
+                    } else {
+                        self.session.edit(|p| (control.set)(p, value))
+                    };
                     self.spawn(fx);
                 }
                 Ok(false)

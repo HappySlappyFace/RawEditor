@@ -19,6 +19,11 @@ pub struct Control {
     /// What the rail depicts, as the desktop's `rail_gradient`: `Rail::Plain`
     /// for most, a gradient of the effect for a few.
     pub rail: Rail,
+    /// A noise-reduction slider: it goes through `Session::noise_changed`,
+    /// as on the desktop, so the view keeps its noise reduction while the
+    /// finger moves (the stage costs ~10× any other) and takes the new
+    /// value once it pauses or lifts.
+    pub noise: bool,
 }
 
 /// A slider's rail, named for the UI, which holds the colours (the
@@ -71,19 +76,20 @@ fn whole(v: f32, _: (f32, f32)) -> String {
 }
 
 macro_rules! control {
-    ($section:literal, $label:literal, $field:ident, $min:expr, $max:expr, $show:expr) => {
-        control!($section, $label, $field, $min, $max, $show, Rail::Plain)
+    ($section:literal, $label:literal, $($field:ident).+, $min:expr, $max:expr, $show:expr) => {
+        control!($section, $label, $($field).+, $min, $max, $show, Rail::Plain)
     };
-    ($section:literal, $label:literal, $field:ident, $min:expr, $max:expr, $show:expr, $rail:expr) => {
+    ($section:literal, $label:literal, $($field:ident).+, $min:expr, $max:expr, $show:expr, $rail:expr) => {
         Control {
             section: $section,
             label: $label,
             min: $min,
             max: $max,
-            get: |p| p.$field,
-            set: |p, v| p.$field = v,
+            get: |p| p.$($field).+,
+            set: |p, v| p.$($field).+ = v,
             show: $show,
             rail: $rail,
+            noise: false,
         }
     };
 }
@@ -102,6 +108,20 @@ pub const CONTROLS: &[Control] = &[
     control!("Presence", "Texture", texture, -1.0, 1.0, plain),
     control!("Presence", "Clarity", clarity, -1.0, 1.0, plain),
     control!("Presence", "Dehaze", dehaze, -1.0, 1.0, plain),
+    // Detail and Lens as the desktop's sidebar has them. Lens profile
+    // corrections need the lensfun database, which the phone doesn't have
+    // yet: the manual corrections and defringe work without it.
+    Control { noise: true, ..control!("Detail", "Luminance", luma_noise, 0.0, 1.0, plain) },
+    Control { noise: true, ..control!("Detail", "Detail", luma_detail, 0.0, 1.0, plain) },
+    Control { noise: true, ..control!("Detail", "Colour", color_noise, 0.0, 1.0, plain) },
+    control!("Detail", "Sharpening", sharpening, 0.0, 2.0, plain),
+    control!("Detail", "Masking", sharpen_masking, 0.0, 1.0, plain),
+    control!("Lens", "Distortion", lens.distortion, -1.0, 1.0, plain),
+    control!("Lens", "Vignetting", lens.vignetting, -1.0, 1.0, plain),
+    control!("Lens", "Red/Cyan", lens.ca_red, -1.0, 1.0, plain),
+    control!("Lens", "Blue/Yellow", lens.ca_blue, -1.0, 1.0, plain),
+    control!("Lens", "Purple Fringe", defringe.purple_amount, 0.0, 1.0, plain),
+    control!("Lens", "Green Fringe", defringe.green_amount, 0.0, 1.0, plain),
     control!("Crop", "Straighten", rotation, -45.0, 45.0, degrees),
 ];
 

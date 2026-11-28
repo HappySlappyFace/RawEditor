@@ -99,18 +99,20 @@ val Mono = IconFont
 
 /** Font Awesome code points, as the desktop's `ui::icons`. */
 object Icons {
-    const val Undo = ""
-    const val Redo = ""
-    const val Open = ""
-    const val Export = ""
-    const val More = ""
-    const val Image = ""
-    const val Warning = ""
-    const val Light = ""
-    const val Colour = ""
-    const val Presence = ""
-    const val Crop = ""
-    const val Sliders = ""
+    const val Undo = "\uf0e2"
+    const val Redo = "\uf01e"
+    const val Open = "\uf07c"
+    const val Export = "\uf093"
+    const val More = "\uf142"
+    const val Image = "\uf03e"
+    const val Warning = "\uf071"
+    const val Light = "\uf185"
+    const val Colour = "\uf043"
+    const val Presence = "\uf042"
+    const val Crop = "\uf125"
+    const val Detail = "\uf002"
+    const val Lens = "\uf030"
+    const val Sliders = "\uf1de"
 }
 
 /** Material's components (menus, spinners) in the tokens' colours. */

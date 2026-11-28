@@ -235,6 +235,8 @@ private fun sectionIcon(section: String) = when (section) {
     "Light" -> Icons.Light
     "Colour" -> Icons.Colour
     "Presence" -> Icons.Presence
+    "Detail" -> Icons.Detail
+    "Lens" -> Icons.Lens
     CropSection -> Icons.Crop
     else -> Icons.Sliders
 }
