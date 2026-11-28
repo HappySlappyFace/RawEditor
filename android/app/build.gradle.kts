@@ -4,7 +4,17 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// The desktop's icon font (assets/fonts/icons.ttf) as a font resource,
+// copied at build time so the repository keeps one copy.
+val iconFont = layout.buildDirectory.dir("generated/iconFont")
+val copyIconFont by tasks.registering(Copy::class) {
+    from(rootProject.file("../assets/fonts/icons.ttf"))
+    into(iconFont.map { it.dir("font") })
+}
+tasks.named("preBuild") { dependsOn(copyIconFont) }
+
 android {
+    sourceSets["main"].res.srcDir(iconFont)
     namespace = "dev.raweditor"
     compileSdk = 35
     buildToolsVersion = "35.0.0"

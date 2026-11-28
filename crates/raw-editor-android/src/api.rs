@@ -197,6 +197,22 @@ pub extern "system" fn Java_dev_raweditor_NativeEngine_cropFrame(env: JNIEnv, _:
     array.into_raw()
 }
 
+/// Show the photo unedited while held.
+#[no_mangle]
+pub extern "system" fn Java_dev_raweditor_NativeEngine_setPeek(_: JNIEnv, _: JObject, handle: jlong, on: jboolean) {
+    if let Some(e) = engine(handle) {
+        e.send(Command::Peek(on != 0));
+    }
+}
+
+/// The open photo, tab-separated: state (none, loading, ready, failed),
+/// name, camera, exposure, lens, error.
+#[no_mangle]
+pub extern "system" fn Java_dev_raweditor_NativeEngine_photo(env: JNIEnv, _: JObject, handle: jlong) -> jstring {
+    let line = engine(handle).map(|e| e.photo()).unwrap_or_else(|| "none".into());
+    env.new_string(line).map_or(std::ptr::null_mut(), |s| s.into_raw())
+}
+
 /// Undo and Redo availability: bit 0 Undo, bit 1 Redo.
 #[no_mangle]
 pub extern "system" fn Java_dev_raweditor_NativeEngine_history(_: JNIEnv, _: JObject, handle: jlong) -> jint {

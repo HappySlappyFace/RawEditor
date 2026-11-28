@@ -16,6 +16,32 @@ pub struct Control {
     /// The value as shown; white balance reads against the photo's as-shot
     /// (kelvin, tint).
     pub show: fn(f32, (f32, f32)) -> String,
+    /// What the rail depicts, as the desktop's `rail_gradient`: `Rail::Plain`
+    /// for most, a gradient of the effect for a few.
+    pub rail: Rail,
+}
+
+/// A slider's rail, named for the UI, which holds the colours (the
+/// desktop's, `views::develop::rail_gradient`).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Rail {
+    Plain,
+    DarkToLight,
+    CoolToWarm,
+    GreenToMagenta,
+    GreyToColour,
+}
+
+impl Rail {
+    pub fn name(self) -> &'static str {
+        match self {
+            Rail::Plain => "plain",
+            Rail::DarkToLight => "dark-light",
+            Rail::CoolToWarm => "cool-warm",
+            Rail::GreenToMagenta => "green-magenta",
+            Rail::GreyToColour => "grey-colour",
+        }
+    }
 }
 
 fn plain(v: f32, _: (f32, f32)) -> String {
@@ -46,6 +72,9 @@ fn whole(v: f32, _: (f32, f32)) -> String {
 
 macro_rules! control {
     ($section:literal, $label:literal, $field:ident, $min:expr, $max:expr, $show:expr) => {
+        control!($section, $label, $field, $min, $max, $show, Rail::Plain)
+    };
+    ($section:literal, $label:literal, $field:ident, $min:expr, $max:expr, $show:expr, $rail:expr) => {
         Control {
             section: $section,
             label: $label,
@@ -54,34 +83,35 @@ macro_rules! control {
             get: |p| p.$field,
             set: |p, v| p.$field = v,
             show: $show,
+            rail: $rail,
         }
     };
 }
 
 pub const CONTROLS: &[Control] = &[
-    control!("Light", "Exposure", exposure, -5.0, 5.0, ev),
+    control!("Light", "Exposure", exposure, -5.0, 5.0, ev, Rail::DarkToLight),
     control!("Light", "Contrast", contrast, -10.0, 10.0, plain),
     control!("Light", "Highlights", highlights, -1.0, 1.0, plain),
     control!("Light", "Shadows", shadows, -1.0, 1.0, plain),
     control!("Light", "Whites", whites, 0.8, 1.2, plain),
     control!("Light", "Blacks", blacks, 0.0, 0.2, plain),
-    control!("Colour", "Temp", temperature, -1.0, 1.0, kelvin),
-    control!("Colour", "Tint", tint, -1.0, 1.0, tint),
-    control!("Colour", "Vibrance", vibrance, -1.0, 1.0, plain),
-    control!("Colour", "Saturation", saturation, -100.0, 100.0, whole),
+    control!("Colour", "Temp", temperature, -1.0, 1.0, kelvin, Rail::CoolToWarm),
+    control!("Colour", "Tint", tint, -1.0, 1.0, tint, Rail::GreenToMagenta),
+    control!("Colour", "Vibrance", vibrance, -1.0, 1.0, plain, Rail::GreyToColour),
+    control!("Colour", "Saturation", saturation, -100.0, 100.0, whole, Rail::GreyToColour),
     control!("Presence", "Texture", texture, -1.0, 1.0, plain),
     control!("Presence", "Clarity", clarity, -1.0, 1.0, plain),
     control!("Presence", "Dehaze", dehaze, -1.0, 1.0, plain),
     control!("Crop", "Straighten", rotation, -45.0, 45.0, degrees),
 ];
 
-/// One line per control, in index order: `section, label, min, max, default`,
-/// tab-separated.
+/// One line per control, in index order: `section, label, min, max,
+/// default, rail`, tab-separated.
 pub fn spec() -> String {
     let d = EditParams::default();
     CONTROLS
         .iter()
-        .map(|c| format!("{}\t{}\t{}\t{}\t{}", c.section, c.label, c.min, c.max, (c.get)(&d)))
+        .map(|c| format!("{}\t{}\t{}\t{}\t{}\t{}", c.section, c.label, c.min, c.max, (c.get)(&d), c.rail.name()))
         .collect::<Vec<_>>()
         .join("\n")
 }

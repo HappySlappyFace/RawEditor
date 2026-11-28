@@ -1678,7 +1678,13 @@ impl Session {
         if Some(resources.image_id) != self.selected_image_id {
             return None;
         }
-        let params = self.view_params();
+        // The peek draws the unedited photo (as `refresh_for_peek_state`);
+        // every frame pushes, so reading only the edit here undid it.
+        let params = if self.before_peek {
+            self.current_edit_params.before_reference()
+        } else {
+            self.view_params()
+        };
         let (interpolated, wb_override) = self.resolve_wb_and_dcp(&params);
         resources.update_uniforms(&context, &params, interpolated.as_deref(), wb_override);
         let (disp_w, disp_h) = self.image_display_dims();

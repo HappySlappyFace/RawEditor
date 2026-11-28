@@ -63,6 +63,10 @@ object NativeEngine {
     external fun turn(handle: Long, clockwise: Boolean)
     /** While cropping: the image's rectangle on the surface (x, y, w, h, pixels), then the crop (left, top, w, h, fractions); empty otherwise. */
     external fun cropFrame(handle: Long): FloatArray
+    /** Show the photo unedited while held. */
+    external fun setPeek(handle: Long, on: Boolean)
+    /** The open photo, tab-separated: state (none, loading, ready, failed), name, camera, exposure, lens, error. */
+    external fun photo(handle: Long): String
     /** Bit 0: Undo has a step to take; bit 1: Redo does. */
     external fun history(handle: Long): Int
     /** Moves whenever the histogram does: fetch [histogram] only then. */
