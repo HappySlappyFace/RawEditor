@@ -404,6 +404,7 @@ fn dispatch(editor: &mut RawEditor, message: Message) -> Task<Message> {
         Message::SetExportColorSpace(c) => handlers::export::handle_set_export_color_space(editor, c),
         Message::SetExportQuality(q) => handlers::export::handle_set_export_quality(editor, q),
         Message::ToggleExportResize(b) => handlers::export::handle_toggle_export_resize(editor, b),
+        Message::ToggleExportUltraHdr(b) => handlers::export::handle_toggle_export_ultra_hdr(editor, b),
         Message::SetExportWidth(w) => handlers::export::handle_set_export_width(editor, w),
         Message::SetExportSubfolder(s) => handlers::export::handle_set_export_subfolder(editor, s),
         Message::PickExportBasePath => handlers::export::handle_pick_export_base_path(editor),

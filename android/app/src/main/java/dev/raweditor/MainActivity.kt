@@ -214,17 +214,29 @@ private fun Editor(
     var notice by remember { mutableStateOf<String?>(null) }
     var exporting by remember { mutableStateOf(false) }
     var hdrOn by remember { mutableStateOf(hdr.enabled) }
+    var history by remember { mutableIntStateOf(0) }
     val scope = rememberCoroutineScope()
+
+    // Looked at once per display frame, so Undo moves the sliders with the
+    // photo: the edit changed under them (a photo opened, undo, redo,
+    // reset), and whether Undo and Redo have a step to take.
+    LaunchedEffect(engine) {
+        var seen = -1
+        while (true) {
+            withFrameNanos { }
+            val version = NativeEngine.valuesVersion(engine)
+            if (version != seen) {
+                seen = version
+                NativeEngine.openedValues(engine).forEachIndexed { i, v -> if (i < values.size) values[i] = v }
+            }
+            history = NativeEngine.history(engine)
+        }
+    }
 
     LaunchedEffect(engine) {
         while (true) {
             stats = NativeEngine.stats(engine)
-            // A photo opened: the sliders start at its saved edit.
-            val count = NativeEngine.openedCount(engine)
-            if (count != opened) {
-                opened = count
-                NativeEngine.openedValues(engine).forEachIndexed { i, v -> if (i < values.size) values[i] = v }
-            }
+            opened = NativeEngine.openedCount(engine)
             // An export finished: into the gallery with it.
             NativeEngine.takeExport(engine)?.let { result ->
                 val (kind, text) = result.split('\t', limit = 2).let { it[0] to it.getOrElse(1) { "" } }
@@ -345,7 +357,11 @@ private fun Editor(
                     Text(if (exporting) "Exporting…" else "Export", color = if (canExport) Orange else Muted)
                 }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(20.dp), modifier = Modifier.padding(vertical = 4.dp)) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(20.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(vertical = 4.dp),
+            ) {
                 Sections.forEach { s ->
                     Text(
                         s,
@@ -356,6 +372,12 @@ private fun Editor(
                             .clickable { section = s }
                             .padding(vertical = 8.dp),
                     )
+                }
+                Spacer(Modifier.weight(1f))
+                Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                    Action("Undo", enabled = history and 1 != 0) { NativeEngine.undo(engine) }
+                    Action("Redo", enabled = history and 2 != 0) { NativeEngine.redo(engine) }
+                    Action("Reset All", enabled = opened > 0) { NativeEngine.resetAll(engine) }
                 }
             }
             val shown = Controls.withIndex().filter { it.value.section == section }
@@ -383,6 +405,19 @@ private fun Editor(
 }
 
 private val RowHeight = 48.dp
+
+/** A word in the section row that does something; muted while it can't. */
+@Composable
+private fun Action(label: String, enabled: Boolean, onClick: () -> Unit) {
+    Text(
+        label,
+        color = if (enabled) Color.White else Muted.copy(alpha = 0.5f),
+        fontSize = 14.sp,
+        modifier = Modifier
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(vertical = 8.dp),
+    )
+}
 
 private val Channels = listOf(Color(0x80FF0000), Color(0x8000FF00), Color(0x800000FF))
 

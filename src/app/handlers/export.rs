@@ -31,6 +31,11 @@ pub fn handle_toggle_export_resize(editor: &mut RawEditor, resize: bool) -> Task
     Task::none()
 }
 
+pub fn handle_toggle_export_ultra_hdr(editor: &mut RawEditor, on: bool) -> Task<Message> {
+    editor.session.export_settings.ultra_hdr = on;
+    Task::none()
+}
+
 pub fn handle_set_export_width(editor: &mut RawEditor, text: String) -> Task<Message> {
     editor.session.export_settings.set_max_width_text(text);
     Task::none()

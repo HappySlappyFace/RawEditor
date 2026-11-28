@@ -83,6 +83,15 @@ pub fn settings_panel(editor: &RawEditor) -> Element<'_, Message> {
             ],
             slider(10..=100, s.quality, Message::SetExportQuality)
                 .style(crate::ui::styles::ProSlider::style),
+            checkbox("Ultra HDR", s.ultra_hdr)
+                .on_toggle(Message::ToggleExportUltraHdr)
+                .size(14)
+                .text_size(12)
+                .style(ui::styles::checkbox_style),
+            hint(
+                "Adds a gain map: HDR screens show the highlights brighter, others the normal image."
+                    .to_string()
+            ),
         ]
         .spacing(theme::space::XS)
         .into()

@@ -186,6 +186,8 @@ pub enum Message {
     SetExportColorSpace(crate::core::output_space::OutputSpace),
     SetExportQuality(u8),
     ToggleExportResize(bool),
+    /// JPEG only: add an HDR gain map (Ultra HDR).
+    ToggleExportUltraHdr(bool),
     SetExportWidth(String),
     SetExportSubfolder(String),
     SetExportBasePath(PathBuf),

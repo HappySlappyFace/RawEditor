@@ -49,6 +49,30 @@ fn an_edit_is_saved_and_undoable_without_a_gpu() {
     assert_eq!(s.current_edit_params.exposure, 0.0);
 }
 
+/// Undo and Redo say when they have a step to take: none before an edit,
+/// Undo after one, Redo after an undo, and a new edit drops the redo.
+#[test]
+fn history_steps_follow_undo_and_redo() {
+    let mut s = session_with_images(1);
+    let _ = open_in_develop(&mut s, 1);
+    assert_eq!(s.history_steps(), (false, false));
+    let _ = s.edit(|p| p.exposure = 1.0);
+    let _ = s.commit_edit();
+    assert_eq!(s.history_steps(), (true, false));
+    let _ = s.undo();
+    assert_eq!(s.history_steps(), (false, true));
+    let _ = s.redo();
+    assert_eq!(s.history_steps(), (true, false));
+    let _ = s.undo();
+    let _ = s.edit(|p| p.contrast = 10.0);
+    let _ = s.commit_edit();
+    assert_eq!(s.history_steps(), (true, false), "a new edit keeps a redo");
+    let _ = s.reset_edits();
+    assert_eq!(s.history_steps(), (true, false));
+    let _ = s.undo();
+    assert_eq!(s.current_edit_params.contrast, 10.0, "Reset is not one undo step");
+}
+
 /// The few events a front end has a part in come back to it, untouched.
 #[test]
 fn front_end_events_are_handed_back() {
