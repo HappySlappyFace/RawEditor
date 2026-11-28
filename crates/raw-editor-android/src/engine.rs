@@ -27,6 +27,7 @@ const EXPORT_QUALITY: u8 = 92;
 use raw_editor_session::gpu::render_functions::{render_to_target, DisplayTarget};
 use raw_editor_session::gpu::shared::{pick_surface_format, SharedContext, HDR_FORMAT};
 use raw_editor_session::core::output_space::OutputSpace;
+use crate::photo::{Photo, PhotoState};
 use raw_editor_session::session::{host, AppTab, CropHandle, EditorReadiness, ExportFormat, ExportJobState, LoadJob, SelectionChange, Session, SessionEvent};
 use raw_editor_session::{Changed, Effects};
 
@@ -58,6 +59,8 @@ pub enum Command {
     CropAspect(f32),
     /// A quarter turn of the whole frame.
     Turn { clockwise: bool },
+    /// Show the photo unedited while held (the desktop's Space peek).
+    Peek(bool),
     /// A pinch or drag: scale the zoom about `at`, then move by `pan`
     /// (surface pixels).
     View { scale: f32, at: [f32; 2], pan: [f32; 2] },
@@ -145,6 +148,11 @@ impl Engine {
         self.stats.lock().unwrap_or_else(|e| e.into_inner()).crop_frame.map_or_else(Vec::new, |f| f.to_vec())
     }
 
+    /// The open photo for the UI: see [`Photo::line`].
+    pub fn photo(&self) -> String {
+        self.stats.lock().unwrap_or_else(|e| e.into_inner()).photo.line()
+    }
+
     /// Whether Undo and Redo have a step to take.
     pub fn history(&self) -> (bool, bool) {
         self.stats.lock().unwrap_or_else(|e| e.into_inner()).history
@@ -203,6 +211,7 @@ pub struct Stats {
     history: (bool, bool),
     /// See [`Engine::crop_frame`].
     crop_frame: Option<[f32; 8]>,
+    photo: Photo,
     /// The open photo's as-shot white balance (kelvin, tint).
     as_shot: (f32, f32),
     /// Red, green, blue: 256 counts each, then the count to scale to
@@ -405,6 +414,7 @@ impl RenderThread {
             self.check_opened();
             self.check_export();
             self.check_history();
+            self.describe_photo();
             self.sync_cropping();
             self.check_crop_frame();
             let changed = self.session.changed.take();
@@ -517,6 +527,11 @@ impl RenderThread {
                 self.spawn(fx);
                 Ok(true)
             }
+            Command::Peek(on) => {
+                let fx = self.session.set_before_peek(on);
+                self.spawn(fx);
+                Ok(true)
+            }
             Command::Turn { clockwise } => {
                 let fx = self.session.turn_image(clockwise);
                 self.spawn(fx);
@@ -596,7 +611,9 @@ impl RenderThread {
     /// take it on as the work comes back.
     fn open(&mut self, path: PathBuf) {
         let since = Instant::now();
-        self.status(format!("Opening {}…", path.file_name().unwrap_or_default().to_string_lossy()));
+        let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        self.status(format!("Opening {name}…"));
+        self.set_photo(Photo::loading(name));
         if self.session.library.is_none() {
             match raw_editor_session::database::library::Library::open_at(&self.files.join("catalogue.db")) {
                 Ok(library) => {
@@ -605,6 +622,7 @@ impl RenderThread {
                 }
                 Err(e) => {
                     self.status(format!("Error: opening the catalogue: {e}"));
+                    self.photo_failed(&path, format!("The catalogue did not open: {e}"));
                     return;
                 }
             }
@@ -615,6 +633,7 @@ impl RenderThread {
         }
         let Some(folder) = path.parent().map(PathBuf::from) else {
             self.status("Error: the RAW has no folder");
+            self.photo_failed(&path, "The file has no folder");
             return;
         };
         let fx = self.session.import_folder(folder);
@@ -632,7 +651,11 @@ impl RenderThread {
         let Some(Opening::Importing { path, since }) = self.opening.take() else { return };
         match self.image_id(&path) {
             Some(id) => self.select(id, &path, since),
-            None => self.status(format!("Error: {} was not imported: {}", path.display(), self.session.status)),
+            None => {
+                self.status(format!("Error: {} was not imported: {}", path.display(), self.session.status));
+                let why = format!("It was not imported: {}", self.session.status);
+                self.photo_failed(&path, why);
+            }
         }
     }
 
@@ -773,6 +796,24 @@ impl RenderThread {
         }
     }
 
+    fn set_photo(&self, photo: Photo) {
+        self.stats.lock().unwrap_or_else(|e| e.into_inner()).photo = photo;
+    }
+
+    fn photo_failed(&self, path: &std::path::Path, why: impl Into<String>) {
+        let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        self.set_photo(Photo::failed(name, why));
+    }
+
+    /// The open photo's camera, exposure and lens, once its metadata is in.
+    fn describe_photo(&self) {
+        let Some(m) = self.session.selected_metadata() else { return };
+        let mut stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
+        if stats.photo.state == PhotoState::Ready && stats.photo.camera.is_empty() {
+            stats.photo.describe(&m.make, &m.model, &m.iso, &m.shutter_speed, &m.aperture, &m.lens);
+        }
+    }
+
     fn check_opened(&mut self) {
         let Some(Opening::Loading { id, name, since }) = &self.opening else { return };
         let ms = since.elapsed().as_millis();
@@ -785,8 +826,15 @@ impl RenderThread {
                 stats.values_version = stats.values_version.wrapping_add(1);
                 stats.as_shot = self.session.as_shot_wb.unwrap_or((5000.0, 0.0));
                 stats.opened += 1;
+                stats.photo = Photo { state: PhotoState::Ready, name: name.clone(), ..Default::default() };
+                drop(stats);
+                self.describe_photo();
             }
-            EditorReadiness::Failed(f, e) if f == id => self.status(format!("Error: {name} did not load: {e}")),
+            EditorReadiness::Failed(f, e) if f == id => {
+                self.status(format!("Error: {name} did not load: {e}"));
+                let photo = Photo::failed(name.clone(), format!("It did not load: {e}"));
+                self.set_photo(photo);
+            }
             _ => return,
         }
         self.opening = None;

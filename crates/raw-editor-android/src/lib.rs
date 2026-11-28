@@ -3,12 +3,13 @@
 //! session, the GPU and that surface — on one render thread
 //! (`engine`), behind the JNI functions in `api`.
 //!
-//! Only [`controls`] builds off Android, so its tests run with the rest of
-//! the workspace.
+//! Only [`controls`] and [`photo`] build off Android, so their tests run with
+//! the rest of the workspace.
 
 #![cfg_attr(not(target_os = "android"), allow(dead_code))]
 
 mod controls;
+mod photo;
 
 #[cfg(target_os = "android")]
 mod api;
