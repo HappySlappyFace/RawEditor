@@ -27,6 +27,7 @@ const EXPORT_QUALITY: u8 = 92;
 use raw_editor_session::gpu::render_functions::{render_to_target, DisplayTarget};
 use raw_editor_session::gpu::shared::{pick_surface_format, SharedContext, HDR_FORMAT};
 use raw_editor_session::core::output_space::OutputSpace;
+use crate::photo::{Photo, PhotoState};
 use raw_editor_session::session::{host, AppTab, CropHandle, EditorReadiness, ExportFormat, ExportJobState, LoadJob, SelectionChange, Session, SessionEvent};
 use raw_editor_session::{Changed, Effects};
 
@@ -58,6 +59,14 @@ pub enum Command {
     CropAspect(f32),
     /// A quarter turn of the whole frame.
     Turn { clockwise: bool },
+    /// Show the photo unedited while held (the desktop's Space peek).
+    Peek(bool),
+    /// Bring the catalogue up to date with the RAWs in this folder (new
+    /// ones are imported, and their thumbnails made in the background).
+    Library(PathBuf),
+    /// The UI is leaving the photo (to the library, or into the
+    /// background): save its edit and its edited thumbnail.
+    Leave,
     /// A pinch or drag: scale the zoom about `at`, then move by `pan`
     /// (surface pixels).
     View { scale: f32, at: [f32; 2], pan: [f32; 2] },
@@ -145,6 +154,25 @@ impl Engine {
         self.stats.lock().unwrap_or_else(|e| e.into_inner()).crop_frame.map_or_else(Vec::new, |f| f.to_vec())
     }
 
+    /// The catalogue for the library grid, one photo per line, newest
+    /// first: `id, file name, path, thumbnail` (tab-separated; the edited
+    /// thumbnail when there is one, else the camera's, else empty while it
+    /// is being made), and a number that moves whenever it changes.
+    pub fn library(&self) -> (u32, String) {
+        let stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
+        (stats.library_version, stats.library.clone())
+    }
+
+    /// The view is zoomed in past fit (a swipe pans rather than turns the page).
+    pub fn zoomed(&self) -> bool {
+        self.stats.lock().unwrap_or_else(|e| e.into_inner()).zoomed
+    }
+
+    /// The open photo for the UI: see [`Photo::line`].
+    pub fn photo(&self) -> String {
+        self.stats.lock().unwrap_or_else(|e| e.into_inner()).photo.line()
+    }
+
     /// Whether Undo and Redo have a step to take.
     pub fn history(&self) -> (bool, bool) {
         self.stats.lock().unwrap_or_else(|e| e.into_inner()).history
@@ -203,6 +231,11 @@ pub struct Stats {
     history: (bool, bool),
     /// See [`Engine::crop_frame`].
     crop_frame: Option<[f32; 8]>,
+    photo: Photo,
+    /// See [`Engine::library`].
+    library: String,
+    library_version: u32,
+    zoomed: bool,
     /// The open photo's as-shot white balance (kelvin, tint).
     as_shot: (f32, f32),
     /// Red, green, blue: 256 counts each, then the count to scale to
@@ -349,6 +382,10 @@ struct RenderThread {
     inset_for: Option<InsetFor>,
     /// The crop frame as last published.
     crop_frame: Option<[f32; 8]>,
+    /// The library list as last published, and when it was last looked at.
+    library: String,
+    library_checked: Instant,
+    zoomed: bool,
 }
 
 impl RenderThread {
@@ -363,7 +400,7 @@ impl RenderThread {
         session.surface_drawn = true;
         // No detail loupe here: it would render on every edit for nothing.
         let _none = session.set_loupe_panel_open(false);
-        Ok(Self { rt, session, context, files, live: None, stats, results, started: HashSet::new(), opening: None, exporting: false, hdr: false, headroom: 1.0, history: (false, false), cropping: false, crop_insets: [0.0; 4], inset_for: None, crop_frame: None })
+        Ok(Self { rt, session, context, files, live: None, stats, results, started: HashSet::new(), opening: None, exporting: false, hdr: false, headroom: 1.0, history: (false, false), cropping: false, crop_insets: [0.0; 4], inset_for: None, crop_frame: None, library: String::new(), library_checked: Instant::now(), zoomed: false })
     }
 
     fn status(&self, text: impl Into<String>) {
@@ -405,8 +442,10 @@ impl RenderThread {
             self.check_opened();
             self.check_export();
             self.check_history();
+            self.describe_photo();
             self.sync_cropping();
             self.check_crop_frame();
+            self.check_library();
             let changed = self.session.changed.take();
             dirty |= changed.contains(Changed::FRAME);
             if changed.contains(Changed::HISTOGRAM) {
@@ -466,7 +505,11 @@ impl RenderThread {
             Command::Edit(index, value) => {
                 if let Some(control) = crate::controls::CONTROLS.get(index) {
                     let value = value.clamp(control.min, control.max);
-                    let fx = self.session.edit(|p| (control.set)(p, value));
+                    let fx = if control.noise {
+                        self.session.noise_changed(|p| (control.set)(p, value))
+                    } else {
+                        self.session.edit(|p| (control.set)(p, value))
+                    };
                     self.spawn(fx);
                 }
                 Ok(false)
@@ -514,6 +557,24 @@ impl RenderThread {
                     None => return Ok(false),
                 };
                 let fx = self.session.edit_and_commit(|p| p.crop = crop);
+                self.spawn(fx);
+                Ok(true)
+            }
+            Command::Library(folder) => {
+                if self.ensure_library().is_ok() {
+                    let fx = self.session.import_folder(folder);
+                    self.spawn(fx);
+                }
+                Ok(false)
+            }
+            Command::Leave => {
+                self.session.flush_edits();
+                let fx = self.session.persist_proxy();
+                self.spawn(fx);
+                Ok(false)
+            }
+            Command::Peek(on) => {
+                let fx = self.session.set_before_peek(on);
                 self.spawn(fx);
                 Ok(true)
             }
@@ -596,18 +657,12 @@ impl RenderThread {
     /// take it on as the work comes back.
     fn open(&mut self, path: PathBuf) {
         let since = Instant::now();
-        self.status(format!("Opening {}…", path.file_name().unwrap_or_default().to_string_lossy()));
-        if self.session.library.is_none() {
-            match raw_editor_session::database::library::Library::open_at(&self.files.join("catalogue.db")) {
-                Ok(library) => {
-                    self.session.images = library.get_all_images().unwrap_or_default();
-                    self.session.library = Some(library);
-                }
-                Err(e) => {
-                    self.status(format!("Error: opening the catalogue: {e}"));
-                    return;
-                }
-            }
+        let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        self.status(format!("Opening {name}…"));
+        self.set_photo(Photo::loading(name));
+        if let Err(e) = self.ensure_library() {
+            self.photo_failed(&path, format!("The catalogue did not open: {e}"));
+            return;
         }
         if let Some(id) = self.image_id(&path) {
             self.select(id, &path, since);
@@ -615,6 +670,7 @@ impl RenderThread {
         }
         let Some(folder) = path.parent().map(PathBuf::from) else {
             self.status("Error: the RAW has no folder");
+            self.photo_failed(&path, "The file has no folder");
             return;
         };
         let fx = self.session.import_folder(folder);
@@ -622,17 +678,77 @@ impl RenderThread {
         self.opening = Some(Opening::Importing { path, since });
     }
 
+    /// Open the catalogue, once.
+    fn ensure_library(&mut self) -> Result<(), String> {
+        if self.session.library.is_some() {
+            return Ok(());
+        }
+        match raw_editor_session::database::library::Library::open_at(&self.files.join("catalogue.db")) {
+            Ok(library) => {
+                self.session.images = library.get_all_images().unwrap_or_default();
+                self.session.library = Some(library);
+                Ok(())
+            }
+            Err(e) => {
+                self.status(format!("Error: opening the catalogue: {e}"));
+                Err(e.to_string())
+            }
+        }
+    }
+
+    /// The library list and the zoom, for the UI, when they changed. The
+    /// list is looked at twice a second at most: imports and thumbnails
+    /// land at that pace, and it is a few hundred short strings.
+    fn check_library(&mut self) {
+        let zoomed = self.session.zoom > 1.001;
+        if zoomed != self.zoomed {
+            self.zoomed = zoomed;
+            self.stats.lock().unwrap_or_else(|e| e.into_inner()).zoomed = zoomed;
+        }
+        if self.library_checked.elapsed() < Duration::from_millis(500) {
+            return;
+        }
+        self.library_checked = Instant::now();
+        let clean = |s: &str| s.replace(['\t', '\n'], " ");
+        let list = self
+            .session
+            .images
+            .iter()
+            .filter(|i| i.file_status == "exists")
+            .map(|i| {
+                let thumb = i.cache_path_edited.as_ref().or(i.cache_path_instant.as_ref()).or(i.cache_path_thumb.as_ref());
+                format!("{}\t{}\t{}\t{}", i.id, clean(&i.filename), clean(&i.path), clean(thumb.map_or("", |t| t)))
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        if list != self.library {
+            self.library.clone_from(&list);
+            let mut stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
+            stats.library = list;
+            stats.library_version = stats.library_version.wrapping_add(1);
+        }
+    }
+
     fn image_id(&self, path: &std::path::Path) -> Option<i64> {
         let path = path.to_string_lossy();
         self.session.images.iter().find(|i| i.path == path).map(|i| i.id)
     }
 
-    /// An import finished: select the photo it was for.
+    /// An import finished: select the photo it was for, if one was waiting
+    /// on it. (Not every import is: the library's own, at startup, may land
+    /// while a photo already in the catalogue is loading.)
     fn imported(&mut self) {
+        if !matches!(self.opening, Some(Opening::Importing { .. })) {
+            return;
+        }
         let Some(Opening::Importing { path, since }) = self.opening.take() else { return };
         match self.image_id(&path) {
             Some(id) => self.select(id, &path, since),
-            None => self.status(format!("Error: {} was not imported: {}", path.display(), self.session.status)),
+            None => {
+                self.status(format!("Error: {} was not imported: {}", path.display(), self.session.status));
+                let why = format!("It was not imported: {}", self.session.status);
+                self.photo_failed(&path, why);
+            }
         }
     }
 
@@ -773,6 +889,24 @@ impl RenderThread {
         }
     }
 
+    fn set_photo(&self, photo: Photo) {
+        self.stats.lock().unwrap_or_else(|e| e.into_inner()).photo = photo;
+    }
+
+    fn photo_failed(&self, path: &std::path::Path, why: impl Into<String>) {
+        let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        self.set_photo(Photo::failed(name, why));
+    }
+
+    /// The open photo's camera, exposure and lens, once its metadata is in.
+    fn describe_photo(&self) {
+        let Some(m) = self.session.selected_metadata() else { return };
+        let mut stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
+        if stats.photo.state == PhotoState::Ready && stats.photo.camera.is_empty() {
+            stats.photo.describe(&m.make, &m.model, &m.iso, &m.shutter_speed, &m.aperture, &m.lens);
+        }
+    }
+
     fn check_opened(&mut self) {
         let Some(Opening::Loading { id, name, since }) = &self.opening else { return };
         let ms = since.elapsed().as_millis();
@@ -785,8 +919,15 @@ impl RenderThread {
                 stats.values_version = stats.values_version.wrapping_add(1);
                 stats.as_shot = self.session.as_shot_wb.unwrap_or((5000.0, 0.0));
                 stats.opened += 1;
+                stats.photo = Photo { state: PhotoState::Ready, name: name.clone(), ..Default::default() };
+                drop(stats);
+                self.describe_photo();
             }
-            EditorReadiness::Failed(f, e) if f == id => self.status(format!("Error: {name} did not load: {e}")),
+            EditorReadiness::Failed(f, e) if f == id => {
+                self.status(format!("Error: {name} did not load: {e}"));
+                let photo = Photo::failed(name.clone(), format!("It did not load: {e}"));
+                self.set_photo(photo);
+            }
             _ => return,
         }
         self.opening = None;

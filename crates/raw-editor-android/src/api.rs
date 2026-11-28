@@ -197,6 +197,58 @@ pub extern "system" fn Java_dev_raweditor_NativeEngine_cropFrame(env: JNIEnv, _:
     array.into_raw()
 }
 
+/// Bring the catalogue up to date with the RAWs in `folder`.
+#[no_mangle]
+pub extern "system" fn Java_dev_raweditor_NativeEngine_library(mut env: JNIEnv, _: JObject, handle: jlong, folder: JString) {
+    if let (Some(e), Some(folder)) = (engine(handle), string(&mut env, &folder)) {
+        e.send(Command::Library(folder.into()));
+    }
+}
+
+/// Moves whenever [`libraryList`] changes.
+#[no_mangle]
+pub extern "system" fn Java_dev_raweditor_NativeEngine_libraryVersion(_: JNIEnv, _: JObject, handle: jlong) -> jint {
+    engine(handle).map_or(0, |e| e.library().0 as jint)
+}
+
+/// The catalogue, one photo per line, newest first: id, file name, path,
+/// thumbnail (tab-separated; empty while the thumbnail is being made).
+#[no_mangle]
+pub extern "system" fn Java_dev_raweditor_NativeEngine_libraryList(env: JNIEnv, _: JObject, handle: jlong) -> jstring {
+    let list = engine(handle).map(|e| e.library().1).unwrap_or_default();
+    env.new_string(list).map_or(std::ptr::null_mut(), |s| s.into_raw())
+}
+
+/// The UI is leaving the photo: save its edit and edited thumbnail.
+#[no_mangle]
+pub extern "system" fn Java_dev_raweditor_NativeEngine_leave(_: JNIEnv, _: JObject, handle: jlong) {
+    if let Some(e) = engine(handle) {
+        e.send(Command::Leave);
+    }
+}
+
+/// True while the view is zoomed in past fit.
+#[no_mangle]
+pub extern "system" fn Java_dev_raweditor_NativeEngine_zoomed(_: JNIEnv, _: JObject, handle: jlong) -> jboolean {
+    engine(handle).is_some_and(|e| e.zoomed()) as jboolean
+}
+
+/// Show the photo unedited while held.
+#[no_mangle]
+pub extern "system" fn Java_dev_raweditor_NativeEngine_setPeek(_: JNIEnv, _: JObject, handle: jlong, on: jboolean) {
+    if let Some(e) = engine(handle) {
+        e.send(Command::Peek(on != 0));
+    }
+}
+
+/// The open photo, tab-separated: state (none, loading, ready, failed),
+/// name, camera, exposure, lens, error.
+#[no_mangle]
+pub extern "system" fn Java_dev_raweditor_NativeEngine_photo(env: JNIEnv, _: JObject, handle: jlong) -> jstring {
+    let line = engine(handle).map(|e| e.photo()).unwrap_or_else(|| "none".into());
+    env.new_string(line).map_or(std::ptr::null_mut(), |s| s.into_raw())
+}
+
 /// Undo and Redo availability: bit 0 Undo, bit 1 Redo.
 #[no_mangle]
 pub extern "system" fn Java_dev_raweditor_NativeEngine_history(_: JNIEnv, _: JObject, handle: jlong) -> jint {

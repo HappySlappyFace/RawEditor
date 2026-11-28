@@ -63,6 +63,20 @@ object NativeEngine {
     external fun turn(handle: Long, clockwise: Boolean)
     /** While cropping: the image's rectangle on the surface (x, y, w, h, pixels), then the crop (left, top, w, h, fractions); empty otherwise. */
     external fun cropFrame(handle: Long): FloatArray
+    /** Bring the catalogue up to date with the RAWs in [folder] (thumbnails are made in the background). */
+    external fun library(handle: Long, folder: String)
+    /** Moves whenever [libraryList] changes. */
+    external fun libraryVersion(handle: Long): Int
+    /** The catalogue, one photo per line, newest first: id, file name, path, thumbnail (tab-separated). */
+    external fun libraryList(handle: Long): String
+    /** The UI is leaving the photo: save its edit and edited thumbnail. */
+    external fun leave(handle: Long)
+    /** True while the view is zoomed in past fit. */
+    external fun zoomed(handle: Long): Boolean
+    /** Show the photo unedited while held. */
+    external fun setPeek(handle: Long, on: Boolean)
+    /** The open photo, tab-separated: state (none, loading, ready, failed), name, camera, exposure, lens, error. */
+    external fun photo(handle: Long): String
     /** Bit 0: Undo has a step to take; bit 1: Redo does. */
     external fun history(handle: Long): Int
     /** Moves whenever the histogram does: fetch [histogram] only then. */
