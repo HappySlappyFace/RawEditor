@@ -66,7 +66,7 @@ impl Photo {
         };
         let mut exposure = Vec::new();
         if known(shutter) {
-            exposure.push(if shutter.contains('/') || shutter.ends_with('s') { shutter.to_string() } else { format!("{shutter} s") });
+            exposure.push(shutter_speed(shutter));
         }
         if known(aperture) {
             exposure.push(format!("f/{aperture}"));
@@ -76,6 +76,23 @@ impl Photo {
         }
         self.exposure = exposure.join("  ");
         self.lens = if known(lens) { lens.trim().to_string() } else { String::new() };
+    }
+}
+
+/// A shutter speed as a photographer writes it. EXIF stores a fraction,
+/// which can come out as `1/50.00962685316924` (a phone's DNG) or a decimal:
+/// under a second it is 1/n, rounded; from a second up, seconds.
+fn shutter_speed(raw: &str) -> String {
+    let raw = raw.trim().trim_end_matches('s').trim();
+    let seconds = match raw.split_once('/') {
+        Some((n, d)) => n.trim().parse::<f64>().ok().zip(d.trim().parse::<f64>().ok()).and_then(|(n, d)| (d > 0.0).then(|| n / d)),
+        None => raw.parse::<f64>().ok(),
+    };
+    match seconds.filter(|t| t.is_finite() && *t > 0.0) {
+        Some(t) if t < 1.0 => format!("1/{:.0}", 1.0 / t),
+        Some(t) if (t - t.round()).abs() < 0.05 => format!("{:.0} s", t),
+        Some(t) => format!("{t:.1} s"),
+        None => raw.to_string(),
     }
 }
 
@@ -104,6 +121,17 @@ mod tests {
         let mut p = Photo::default();
         p.describe("", "X100V", "---", "2", "---", "---");
         assert_eq!((p.exposure.as_str(), p.lens.as_str()), ("2 s", ""));
+    }
+
+    #[test]
+    fn shutter_speeds_read_as_a_photographer_writes_them() {
+        assert_eq!(shutter_speed("1/50.00962685316924"), "1/50");
+        assert_eq!(shutter_speed("1/250"), "1/250");
+        assert_eq!(shutter_speed("0.004"), "1/250");
+        assert_eq!(shutter_speed("10/1"), "10 s");
+        assert_eq!(shutter_speed("2"), "2 s");
+        assert_eq!(shutter_speed("1.3 s"), "1.3 s");
+        assert_eq!(shutter_speed("odd"), "odd");
     }
 
     #[test]
