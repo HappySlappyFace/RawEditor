@@ -27,7 +27,7 @@ const EXPORT_QUALITY: u8 = 92;
 use raw_editor_session::gpu::render_functions::{render_to_target, DisplayTarget};
 use raw_editor_session::gpu::shared::{pick_surface_format, SharedContext, HDR_FORMAT};
 use raw_editor_session::core::output_space::OutputSpace;
-use raw_editor_session::session::{host, AppTab, EditorReadiness, ExportFormat, ExportJobState, LoadJob, SelectionChange, Session, SessionEvent};
+use raw_editor_session::session::{host, AppTab, CropHandle, EditorReadiness, ExportFormat, ExportJobState, LoadJob, SelectionChange, Session, SessionEvent};
 use raw_editor_session::{Changed, Effects};
 
 pub enum Command {
@@ -45,6 +45,19 @@ pub enum Command {
     Redo,
     /// Every edit back to its default, as one undo step.
     ResetAll,
+    /// The crop tool on or off: the whole frame shown, the part cut away
+    /// dimmed, and [`Engine::crop_frame`] published for the handles. The
+    /// frame sits inside `insets` (left, top, right, bottom, surface
+    /// pixels), clear of the system's edge gestures.
+    Cropping { on: bool, insets: [f32; 4] },
+    /// A crop handle dragged from one point to another (surface pixels).
+    CropDrag { handle: CropHandle, from: [f32; 2], to: [f32; 2] },
+    /// The crop drag ended: an undo step, saved.
+    CropEnd,
+    /// A centred crop of this width/height ratio; 0 for the whole frame.
+    CropAspect(f32),
+    /// A quarter turn of the whole frame.
+    Turn { clockwise: bool },
     /// A pinch or drag: scale the zoom about `at`, then move by `pan`
     /// (surface pixels).
     View { scale: f32, at: [f32; 2], pan: [f32; 2] },
@@ -125,6 +138,13 @@ impl Engine {
         self.stats.lock().unwrap_or_else(|e| e.into_inner()).values_version
     }
 
+    /// While cropping: the whole image's rectangle on the surface (x, y,
+    /// width, height, in pixels), then the crop within it (left, top, width,
+    /// height, fractions of the image); empty otherwise.
+    pub fn crop_frame(&self) -> Vec<f32> {
+        self.stats.lock().unwrap_or_else(|e| e.into_inner()).crop_frame.map_or_else(Vec::new, |f| f.to_vec())
+    }
+
     /// Whether Undo and Redo have a step to take.
     pub fn history(&self) -> (bool, bool) {
         self.stats.lock().unwrap_or_else(|e| e.into_inner()).history
@@ -181,6 +201,8 @@ pub struct Stats {
     values_version: u32,
     /// Undo, Redo: is there a step to take.
     history: (bool, bool),
+    /// See [`Engine::crop_frame`].
+    crop_frame: Option<[f32; 8]>,
     /// The open photo's as-shot white balance (kelvin, tint).
     as_shot: (f32, f32),
     /// Red, green, blue: 256 counts each, then the count to scale to
@@ -294,6 +316,10 @@ enum Opening {
     Loading { id: i64, name: String, since: Instant },
 }
 
+/// What an inset crop view was fitted for: the frame's shape, the surface,
+/// the insets.
+type InsetFor = ((u32, u32), (f32, f32), [f32; 4]);
+
 struct RenderThread {
     rt: tokio::runtime::Runtime,
     session: Session,
@@ -314,6 +340,15 @@ struct RenderThread {
     headroom: f32,
     /// Undo/Redo availability as last published.
     history: (bool, bool),
+    /// The crop tool is wanted (the UI's Crop tab).
+    cropping: bool,
+    /// Where its frame must stay inside (see `Command::Cropping`).
+    crop_insets: [f32; 4],
+    /// What the inset view was last fitted for: the frame's shape, the
+    /// surface, the insets. A turn or a new surface fits it again.
+    inset_for: Option<InsetFor>,
+    /// The crop frame as last published.
+    crop_frame: Option<[f32; 8]>,
 }
 
 impl RenderThread {
@@ -328,7 +363,7 @@ impl RenderThread {
         session.surface_drawn = true;
         // No detail loupe here: it would render on every edit for nothing.
         let _none = session.set_loupe_panel_open(false);
-        Ok(Self { rt, session, context, files, live: None, stats, results, started: HashSet::new(), opening: None, exporting: false, hdr: false, headroom: 1.0, history: (false, false) })
+        Ok(Self { rt, session, context, files, live: None, stats, results, started: HashSet::new(), opening: None, exporting: false, hdr: false, headroom: 1.0, history: (false, false), cropping: false, crop_insets: [0.0; 4], inset_for: None, crop_frame: None })
     }
 
     fn status(&self, text: impl Into<String>) {
@@ -370,6 +405,8 @@ impl RenderThread {
             self.check_opened();
             self.check_export();
             self.check_history();
+            self.sync_cropping();
+            self.check_crop_frame();
             let changed = self.session.changed.take();
             dirty |= changed.contains(Changed::FRAME);
             if changed.contains(Changed::HISTOGRAM) {
@@ -450,6 +487,42 @@ impl RenderThread {
             Command::ResetAll => {
                 let fx = self.session.reset_edits();
                 self.history_moved(fx)
+            }
+            Command::Cropping { on, insets } => {
+                self.cropping = on;
+                self.crop_insets = insets;
+                self.sync_cropping();
+                Ok(true)
+            }
+            Command::CropDrag { handle, from, to } => {
+                if self.session.is_cropping {
+                    self.session.drag_crop(handle, from, to);
+                }
+                Ok(true)
+            }
+            Command::CropEnd => {
+                self.session.end_handle_drag();
+                Ok(true)
+            }
+            Command::CropAspect(ratio) => {
+                let crop = match &self.session.image_resources {
+                    Some(res) if ratio > 0.0 => {
+                        let (w, h) = res.oriented_dims(self.session.current_edit_params.quarter_turns);
+                        Session::calculate_center_crop(ratio, w, h)
+                    }
+                    Some(_) => [0.0, 0.0, 1.0, 1.0],
+                    None => return Ok(false),
+                };
+                let fx = self.session.edit_and_commit(|p| p.crop = crop);
+                self.spawn(fx);
+                Ok(true)
+            }
+            Command::Turn { clockwise } => {
+                let fx = self.session.turn_image(clockwise);
+                self.spawn(fx);
+                // A turn returns to fit, even when the frame keeps its shape.
+                self.inset_for = None;
+                Ok(true)
             }
             Command::View { scale, at, pan } => {
                 self.session.transform_view(scale, at, pan);
@@ -635,6 +708,47 @@ impl RenderThread {
 
     /// The selected photo is ready (or failed): say so, and hand its saved
     /// exposure to the UI's slider.
+    /// Keep the session's crop tool as the UI wants it, once the photo is
+    /// ready (opening a photo turns it off), its whole frame fitted inside
+    /// the insets: again after a turn (which returns to fit) or a new surface.
+    fn sync_cropping(&mut self) {
+        if !matches!(self.session.editor_readiness, EditorReadiness::Ready(_)) {
+            return;
+        }
+        if self.session.is_cropping != self.cropping {
+            let fx = self.session.toggle_crop();
+            self.spawn(fx);
+            self.inset_for = None;
+            if !self.cropping {
+                // Back to fit: the inset view is the crop tool's alone.
+                let fx = self.session.reset_view();
+                self.spawn(fx);
+            }
+        }
+        if self.session.is_cropping {
+            let key = (self.session.image_display_dims(), self.session.viewport_size, self.crop_insets);
+            if self.inset_for != Some(key) {
+                self.inset_for = Some(key);
+                self.session.inset_view(self.crop_insets);
+            }
+        }
+    }
+
+    /// The crop frame for the UI's handles, when it moved.
+    fn check_crop_frame(&mut self) {
+        let frame = self.session.is_cropping.then(|| {
+            let (dw, dh) = self.session.image_display_dims();
+            let (vw, vh) = self.session.viewport_size;
+            let r = raw_editor_session::core::viewport::image_rect(dw, dh, vw, vh, self.session.zoom, self.session.pan_offset);
+            let c = self.session.current_edit_params.crop;
+            [r.x, r.y, r.width, r.height, c[0], c[1], c[2], c[3]]
+        });
+        if frame != self.crop_frame {
+            self.crop_frame = frame;
+            self.stats.lock().unwrap_or_else(|e| e.into_inner()).crop_frame = frame;
+        }
+    }
+
     /// Undo, redo or reset changed the edit: render it, and move the
     /// sliders to it.
     fn history_moved(&mut self, fx: Effects<SessionEvent>) -> Result<bool, String> {

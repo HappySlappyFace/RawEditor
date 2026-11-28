@@ -10,6 +10,7 @@ use jni::sys::{jboolean, jfloat, jfloatArray, jint, jintArray, jlong, jstring};
 use jni::JNIEnv;
 
 use crate::engine::{Command, Engine};
+use raw_editor_session::session::CropHandle;
 use crate::{controls, logcat};
 
 fn engine<'a>(handle: jlong) -> Option<&'a Engine> {
@@ -114,6 +115,86 @@ pub extern "system" fn Java_dev_raweditor_NativeEngine_resetAll(_: JNIEnv, _: JO
     if let Some(e) = engine(handle) {
         e.send(Command::ResetAll);
     }
+}
+
+/// The crop tool on or off, its frame kept inside the insets (left, top,
+/// right, bottom, surface pixels).
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "system" fn Java_dev_raweditor_NativeEngine_setCropping(
+    _: JNIEnv,
+    _: JObject,
+    handle: jlong,
+    on: jboolean,
+    left: jfloat,
+    top: jfloat,
+    right: jfloat,
+    bottom: jfloat,
+) {
+    if let Some(e) = engine(handle) {
+        e.send(Command::Cropping { on: on != 0, insets: [left, top, right, bottom] });
+    }
+}
+
+/// Crop handle `which` (0 top left, 1 top right, 2 bottom left, 3 bottom
+/// right, 4 the whole crop) dragged from (x0, y0) to (x1, y1), surface pixels.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "system" fn Java_dev_raweditor_NativeEngine_cropDrag(
+    _: JNIEnv,
+    _: JObject,
+    handle: jlong,
+    which: jint,
+    x0: jfloat,
+    y0: jfloat,
+    x1: jfloat,
+    y1: jfloat,
+) {
+    let crop_handle = match which {
+        0 => CropHandle::TopLeft,
+        1 => CropHandle::TopRight,
+        2 => CropHandle::BottomLeft,
+        3 => CropHandle::BottomRight,
+        _ => CropHandle::Body,
+    };
+    if let Some(e) = engine(handle) {
+        e.send(Command::CropDrag { handle: crop_handle, from: [x0, y0], to: [x1, y1] });
+    }
+}
+
+/// The crop drag ended: an undo step, saved.
+#[no_mangle]
+pub extern "system" fn Java_dev_raweditor_NativeEngine_cropEnd(_: JNIEnv, _: JObject, handle: jlong) {
+    if let Some(e) = engine(handle) {
+        e.send(Command::CropEnd);
+    }
+}
+
+/// A centred crop of `ratio` (width / height); 0 for the whole frame.
+#[no_mangle]
+pub extern "system" fn Java_dev_raweditor_NativeEngine_cropAspect(_: JNIEnv, _: JObject, handle: jlong, ratio: jfloat) {
+    if let Some(e) = engine(handle) {
+        e.send(Command::CropAspect(ratio));
+    }
+}
+
+/// A quarter turn of the whole frame.
+#[no_mangle]
+pub extern "system" fn Java_dev_raweditor_NativeEngine_turn(_: JNIEnv, _: JObject, handle: jlong, clockwise: jboolean) {
+    if let Some(e) = engine(handle) {
+        e.send(Command::Turn { clockwise: clockwise != 0 });
+    }
+}
+
+/// While cropping: the image's rectangle on the surface (x, y, width,
+/// height, pixels), then the crop (left, top, width, height, fractions of
+/// the image). Empty otherwise.
+#[no_mangle]
+pub extern "system" fn Java_dev_raweditor_NativeEngine_cropFrame(env: JNIEnv, _: JObject, handle: jlong) -> jfloatArray {
+    let frame = engine(handle).map(|e| e.crop_frame()).unwrap_or_default();
+    let Ok(array) = env.new_float_array(frame.len() as jint) else { return std::ptr::null_mut() };
+    let _ = env.set_float_array_region(&array, 0, &frame);
+    array.into_raw()
 }
 
 /// Undo and Redo availability: bit 0 Undo, bit 1 Redo.

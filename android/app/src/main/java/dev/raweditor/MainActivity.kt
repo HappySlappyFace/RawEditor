@@ -30,7 +30,16 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.systemGestureExclusion
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -215,6 +224,8 @@ private fun Editor(
     var exporting by remember { mutableStateOf(false) }
     var hdrOn by remember { mutableStateOf(hdr.enabled) }
     var history by remember { mutableIntStateOf(0) }
+    var cropFrame by remember { mutableStateOf(FloatArray(0)) }
+    val cropping = section == CropSection
     val scope = rememberCoroutineScope()
 
     // Looked at once per display frame, so Undo moves the sliders with the
@@ -230,6 +241,19 @@ private fun Editor(
                 NativeEngine.openedValues(engine).forEachIndexed { i, v -> if (i < values.size) values[i] = v }
             }
             history = NativeEngine.history(engine)
+            val frame = NativeEngine.cropFrame(engine)
+            if (!frame.contentEquals(cropFrame)) cropFrame = frame
+        }
+    }
+
+    // The Crop tab is the crop tool. Its frame stays clear of the screen's
+    // edges: the sides are the back gesture's, the top the status bar's.
+    val density = LocalDensity.current
+    val statusBar = WindowInsets.statusBars.getTop(density)
+    LaunchedEffect(cropping, statusBar) {
+        with(density) {
+            val side = CropSideInset.toPx()
+            NativeEngine.setCropping(engine, cropping, side, statusBar + CropEdgeInset.toPx(), side, CropEdgeInset.toPx())
         }
     }
 
@@ -294,7 +318,8 @@ private fun Editor(
                     }
                 },
             )
-            Histogram(
+            // Not over the crop tool: its top right corner is a handle.
+            if (!cropping) Histogram(
                 engine,
                 Modifier
                     .align(Alignment.TopEnd)
@@ -303,18 +328,22 @@ private fun Editor(
                     .size(width = 144.dp, height = 72.dp),
             )
             // The SurfaceView's size, so its pixels are the surface's.
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .pointerInput(engine) {
-                        detectTransformGestures { centroid, pan, zoom, _ ->
-                            NativeEngine.transformView(engine, zoom, centroid.x, centroid.y, pan.x, pan.y)
+            if (cropping) {
+                CropOverlay(engine, cropFrame, Modifier.fillMaxSize())
+            } else {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .pointerInput(engine) {
+                            detectTransformGestures { centroid, pan, zoom, _ ->
+                                NativeEngine.transformView(engine, zoom, centroid.x, centroid.y, pan.x, pan.y)
+                            }
                         }
-                    }
-                    .pointerInput(engine) {
-                        detectTapGestures(onDoubleTap = { NativeEngine.toggleZoom(engine, it.x, it.y) })
-                    },
-            )
+                        .pointerInput(engine) {
+                            detectTapGestures(onDoubleTap = { NativeEngine.toggleZoom(engine, it.x, it.y) })
+                        },
+                )
+            }
         }
 
         Column(
@@ -399,12 +428,131 @@ private fun Editor(
                     },
                 )
             }
-            repeat(Rows - shown.size) { Spacer(Modifier.height(RowHeight)) }
+            if (cropping) {
+                CropTools(engine, landscape = cropFrame.size < 8 || cropFrame[2] >= cropFrame[3], enabled = opened > 0)
+            }
+            repeat(Rows - shown.size - (if (cropping) CropToolRows else 0)) { Spacer(Modifier.height(RowHeight)) }
         }
     }
 }
 
 private val RowHeight = 48.dp
+
+private const val CropSection = "Crop"
+/** The crop frame's distance from the screen's sides (the back gesture's) and from the status bar and panel. */
+private val CropSideInset = 40.dp
+private val CropEdgeInset = 16.dp
+/** How far from a corner a finger still grabs it. */
+private val CropReach = 32.dp
+private const val CropToolRows = 2
+
+/** The crop on the surface, in pixels, from the engine's crop frame. */
+private fun cropRect(frame: FloatArray): Rect? {
+    if (frame.size < 8) return null
+    val (x, y, w, h) = frame
+    return Rect(x + frame[4] * w, y + frame[5] * h, x + (frame[4] + frame[6]) * w, y + (frame[5] + frame[7]) * h)
+}
+
+/**
+ * The crop tool's handles over the photo (the engine dims what is cut away):
+ * drag a corner to resize, inside to move. The engine owns the maths
+ * (`Session::drag_crop`); this only says which handle and how far.
+ */
+@Composable
+private fun CropOverlay(engine: Long, frame: FloatArray, modifier: Modifier) {
+    val current by rememberUpdatedState(frame)
+    val reach = with(LocalDensity.current) { CropReach.toPx() }
+    // The back gesture would take a drag that starts near a side: not
+    // around the corners.
+    val corners = cropRect(frame)?.let { listOf(it.topLeft, it.topRight, it.bottomLeft, it.bottomRight) }.orEmpty()
+    val excluded = corners.fold(modifier) { m, c ->
+        m.systemGestureExclusion { Rect(c.x - reach, c.y - reach, c.x + reach, c.y + reach) }
+    }
+    Canvas(
+        excluded.pointerInput(engine) {
+            var which = -1
+            detectDragGestures(
+                onDragStart = { at ->
+                    val r = cropRect(current)
+                    which = when {
+                        r == null -> -1
+                        (at - r.topLeft).getDistance() < reach -> 0
+                        (at - r.topRight).getDistance() < reach -> 1
+                        (at - r.bottomLeft).getDistance() < reach -> 2
+                        (at - r.bottomRight).getDistance() < reach -> 3
+                        r.contains(at) -> 4
+                        else -> -1
+                    }
+                },
+                onDragEnd = { if (which >= 0) NativeEngine.cropEnd(engine) },
+                onDragCancel = { if (which >= 0) NativeEngine.cropEnd(engine) },
+            ) { change, _ ->
+                if (which >= 0) {
+                    val from = change.previousPosition
+                    val to = change.position
+                    NativeEngine.cropDrag(engine, which, from.x, from.y, to.x, to.y)
+                }
+            }
+        },
+    ) {
+        val r = cropRect(frame) ?: return@Canvas
+        drawCropFrame(r)
+    }
+}
+
+private fun DrawScope.drawCropFrame(r: Rect) {
+    val line = 1.dp.toPx()
+    val thirds = Color(0x66FFFFFF)
+    for (i in 1..2) {
+        val x = r.left + r.width * i / 3
+        val y = r.top + r.height * i / 3
+        drawLine(thirds, Offset(x, r.top), Offset(x, r.bottom), line)
+        drawLine(thirds, Offset(r.left, y), Offset(r.right, y), line)
+    }
+    drawRect(Color.White, r.topLeft, r.size, style = androidx.compose.ui.graphics.drawscope.Stroke(line))
+    // Corner brackets: where a finger grabs.
+    val arm = 20.dp.toPx()
+    val thick = 3.dp.toPx()
+    listOf(
+        r.topLeft to Offset(1f, 1f),
+        r.topRight to Offset(-1f, 1f),
+        r.bottomLeft to Offset(1f, -1f),
+        r.bottomRight to Offset(-1f, -1f),
+    ).forEach { (corner, dir) ->
+        drawLine(Color.White, corner, corner + Offset(arm * dir.x, 0f), thick)
+        drawLine(Color.White, corner, corner + Offset(0f, arm * dir.y), thick)
+    }
+}
+
+/** A row of actions under a label, lined up with the sliders' labels. */
+@Composable
+private fun ToolRow(label: String, actions: @Composable () -> Unit) {
+    Row(Modifier.height(RowHeight), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, color = Color.White, fontSize = 13.sp, modifier = Modifier.width(80.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(20.dp)) { actions() }
+    }
+}
+
+/** Quarter turns and centred aspect presets, in the photo's own orientation. */
+@Composable
+private fun CropTools(engine: Long, landscape: Boolean, enabled: Boolean) {
+    ToolRow("Rotate") {
+        Action("Left", enabled) { NativeEngine.turn(engine, false) }
+        Action("Right", enabled) { NativeEngine.turn(engine, true) }
+    }
+    // (label, width / height) for a landscape photo; flipped for a portrait one.
+    val presets = listOf("Full" to 0f, "1:1" to 1f, "5:4" to 5f / 4f, "3:2" to 3f / 2f, "16:9" to 16f / 9f)
+    ToolRow("Aspect") {
+        presets.forEach { (label, ratio) ->
+            val (shown, r) = if (landscape || ratio == 0f || ratio == 1f) {
+                label to ratio
+            } else {
+                label.split(':').reversed().joinToString(":") to 1f / ratio
+            }
+            Action(shown, enabled) { NativeEngine.cropAspect(engine, r) }
+        }
+    }
+}
 
 /** A word in the section row that does something; muted while it can't. */
 @Composable

@@ -36,6 +36,10 @@ fn tint(v: f32, (_, t): (f32, f32)) -> String {
     format!("{:+.0}", p.tint_from_anchor(t))
 }
 
+fn degrees(v: f32, _: (f32, f32)) -> String {
+    format!("{v:+.1}°")
+}
+
 fn whole(v: f32, _: (f32, f32)) -> String {
     format!("{v:+.0}")
 }
@@ -68,6 +72,7 @@ pub const CONTROLS: &[Control] = &[
     control!("Presence", "Texture", texture, -1.0, 1.0, plain),
     control!("Presence", "Clarity", clarity, -1.0, 1.0, plain),
     control!("Presence", "Dehaze", dehaze, -1.0, 1.0, plain),
+    control!("Crop", "Straighten", rotation, -45.0, 45.0, degrees),
 ];
 
 /// One line per control, in index order: `section, label, min, max, default`,
