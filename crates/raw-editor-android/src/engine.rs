@@ -734,8 +734,13 @@ impl RenderThread {
         self.session.images.iter().find(|i| i.path == path).map(|i| i.id)
     }
 
-    /// An import finished: select the photo it was for.
+    /// An import finished: select the photo it was for, if one was waiting
+    /// on it. (Not every import is: the library's own, at startup, may land
+    /// while a photo already in the catalogue is loading.)
     fn imported(&mut self) {
+        if !matches!(self.opening, Some(Opening::Importing { .. })) {
+            return;
+        }
         let Some(Opening::Importing { path, since }) = self.opening.take() else { return };
         match self.image_id(&path) {
             Some(id) => self.select(id, &path, since),

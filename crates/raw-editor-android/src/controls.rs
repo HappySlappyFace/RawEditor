@@ -110,7 +110,8 @@ pub const CONTROLS: &[Control] = &[
     control!("Presence", "Dehaze", dehaze, -1.0, 1.0, plain),
     // Detail and Lens as the desktop's sidebar has them. Lens profile
     // corrections need the lensfun database, which the phone doesn't have
-    // yet: the manual corrections and defringe work without it.
+    // yet: the manual corrections and defringe work without it. Purple and
+    // Green are the defringe amounts, named as on the desktop.
     Control { noise: true, ..control!("Detail", "Luminance", luma_noise, 0.0, 1.0, plain) },
     Control { noise: true, ..control!("Detail", "Detail", luma_detail, 0.0, 1.0, plain) },
     Control { noise: true, ..control!("Detail", "Colour", color_noise, 0.0, 1.0, plain) },
@@ -120,8 +121,8 @@ pub const CONTROLS: &[Control] = &[
     control!("Lens", "Vignetting", lens.vignetting, -1.0, 1.0, plain),
     control!("Lens", "Red/Cyan", lens.ca_red, -1.0, 1.0, plain),
     control!("Lens", "Blue/Yellow", lens.ca_blue, -1.0, 1.0, plain),
-    control!("Lens", "Purple Fringe", defringe.purple_amount, 0.0, 1.0, plain),
-    control!("Lens", "Green Fringe", defringe.green_amount, 0.0, 1.0, plain),
+    control!("Lens", "Purple", defringe.purple_amount, 0.0, 1.0, plain),
+    control!("Lens", "Green", defringe.green_amount, 0.0, 1.0, plain),
     control!("Crop", "Straighten", rotation, -45.0, 45.0, degrees),
 ];
 
