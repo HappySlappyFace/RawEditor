@@ -21,6 +21,7 @@ object Colours {
     val Surface = Color(0xFF1A1A1A)
     val SurfaceRaised = Color(0xFF212121)
     val Control = Color(0xFF262626)
+    val ControlActive = Color(0xFF404040)
     val BorderSubtle = Color(0xFF333333)
     val Border = Color(0xFF404040)
     val TextStrong = Color.White
@@ -32,6 +33,23 @@ object Colours {
     val OnAccent = Color.White
     val OnPhoto = Color.White
     val Error = Color(0xFFF26659)
+}
+
+/**
+ * Slider rails that depict their effect: the desktop's `rail_gradient`
+ * colours, keyed by the controls table's rail names (`controls::Rail`).
+ * They show the effect, so they are not theme colours.
+ */
+object Rails {
+    private val gradients = mapOf(
+        "dark-light" to listOf(Color(0xFF141414), Color(0xFFD1D1D1)),
+        "cool-warm" to listOf(Color(0xFF4578DB), Color(0xFFEDC74D)),
+        "green-magenta" to listOf(Color(0xFF54B35C), Color(0xFFCC5CC2)),
+        "grey-colour" to listOf(Color(0xFF6B6B6B), Color(0xFFE0523D)),
+    )
+
+    /** The rail's colours, left to right; null for a plain rail. */
+    fun colours(name: String): List<Color>? = gradients[name]
 }
 
 /** Text sizes, as the desktop's `theme::size`. */

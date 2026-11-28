@@ -33,7 +33,12 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.horizontalDrag
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -47,8 +52,6 @@ import androidx.compose.foundation.systemGestureExclusion
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -217,11 +220,11 @@ class MainActivity : ComponentActivity() {
 }
 
 /** One slider, as the engine describes it ([NativeEngine.controls]). */
-private data class Control(val section: String, val label: String, val min: Float, val max: Float, val default: Float)
+private data class Control(val section: String, val label: String, val min: Float, val max: Float, val default: Float, val rail: String)
 
 private val Controls: List<Control> = NativeEngine.controls().lines().map { line ->
     val f = line.split('\t')
-    Control(f[0], f[1], f[2].toFloat(), f[3].toFloat(), f[4].toFloat())
+    Control(f[0], f[1], f[2].toFloat(), f[3].toFloat(), f[4].toFloat(), f.getOrElse(5) { "plain" })
 }
 private val Sections: List<String> = Controls.map { it.section }.distinct()
 /** Every section's panel is as tall as the longest, so the photo above never resizes. */
@@ -479,6 +482,7 @@ private fun Editor(
                     label = c.label,
                     value = values[i],
                     range = c.min..c.max,
+                    rail = Rails.colours(c.rail),
                     shown = NativeEngine.display(engine, i, values[i]),
                     onChange = {
                         values[i] = it
@@ -980,12 +984,79 @@ private fun Histogram(engine: Long, modifier: Modifier) {
     }
 }
 
+private val RailWidth = 4.dp
+private val HandleRadius = 7.dp
+
+/**
+ * The desktop's slider (`ProSlider`): a thin grey rail, or a gradient of
+ * what the slider does, and a light round handle, brighter while held.
+ * Touching the rail away from the handle jumps there, as a click does on
+ * the desktop; a drag that starts on the handle moves it by the finger's
+ * distance, so a fine adjustment never jumps first.
+ */
+@Composable
+private fun RailSlider(
+    value: Float,
+    range: ClosedFloatingPointRange<Float>,
+    rail: List<Color>?,
+    onChange: (Float) -> Unit,
+    onRelease: () -> Unit,
+    modifier: Modifier,
+) {
+    var held by remember { mutableStateOf(false) }
+    val current by rememberUpdatedState(value)
+    val change by rememberUpdatedState(onChange)
+    val release by rememberUpdatedState(onRelease)
+    val span = range.endInclusive - range.start
+    Canvas(
+        modifier.pointerInput(range) {
+            val inset = HandleRadius.toPx()
+            val width = (size.width - 2 * inset).coerceAtLeast(1f)
+            fun xOf(v: Float) = inset + (v - range.start) / span * width
+            fun valueAt(x: Float) = range.start + ((x - inset) / width).coerceIn(0f, 1f) * span
+            awaitEachGesture {
+                val down = awaitFirstDown()
+                held = true
+                var v = current
+                if (kotlin.math.abs(down.position.x - xOf(v)) > viewConfiguration.touchSlop * 2) {
+                    v = valueAt(down.position.x)
+                    change(v)
+                }
+                down.consume()
+                horizontalDrag(down.id) { move ->
+                    v = (v + move.positionChange().x / width * span).coerceIn(range.start, range.endInclusive)
+                    change(v)
+                    move.consume()
+                }
+                held = false
+                release()
+            }
+        },
+    ) {
+        val inset = HandleRadius.toPx()
+        val y = size.height / 2
+        val railH = RailWidth.toPx()
+        val railTop = Offset(inset, y - railH / 2)
+        val railSize = androidx.compose.ui.geometry.Size(size.width - 2 * inset, railH)
+        val corner = androidx.compose.ui.geometry.CornerRadius(railH / 2)
+        if (rail != null) {
+            drawRoundRect(Brush.horizontalGradient(rail, startX = inset, endX = size.width - inset), railTop, railSize, corner)
+        } else {
+            drawRoundRect(Colours.ControlActive, railTop, railSize, corner)
+        }
+        val x = inset + ((current - range.start) / span).coerceIn(0f, 1f) * (size.width - 2 * inset)
+        drawCircle(if (held) Colours.TextStrong else Colours.Text, HandleRadius.toPx(), Offset(x, y))
+        drawCircle(Colours.TextStrong, HandleRadius.toPx(), Offset(x, y), style = Stroke(1.dp.toPx()))
+    }
+}
+
 /** Label (double tap resets), track, and the value as the engine reads it. */
 @Composable
 private fun SliderRow(
     label: String,
     value: Float,
     range: ClosedFloatingPointRange<Float>,
+    rail: List<Color>?,
     shown: String,
     onChange: (Float) -> Unit,
     onRelease: () -> Unit,
@@ -1000,18 +1071,7 @@ private fun SliderRow(
                 .width(LabelWidth)
                 .pointerInput(Unit) { detectTapGestures(onDoubleTap = { onReset() }) },
         )
-        Slider(
-            value = value,
-            onValueChange = onChange,
-            onValueChangeFinished = onRelease,
-            valueRange = range,
-            colors = SliderDefaults.colors(
-                thumbColor = Colours.Accent,
-                activeTrackColor = Colours.Accent,
-                inactiveTrackColor = Colours.Border,
-            ),
-            modifier = Modifier.weight(1f),
-        )
+        RailSlider(value, range, rail, onChange, onRelease, Modifier.weight(1f).fillMaxHeight())
         Text(
             shown,
             color = Colours.TextSecondary,
